@@ -13,3 +13,6 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 dyad = "dyad_cli.__init__:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dyad_cli"]

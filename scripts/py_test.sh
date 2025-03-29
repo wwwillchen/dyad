@@ -1,1 +1,1 @@
-uv run --package dyad_core pytest packages/dyad_core/tests -vv && uv run --package dyad_cli pytest packages/dyad_cli/tests -vv
+uv run --package dyad_core pytest packages/dyad_core/tests -vv && uv run --package dyad pytest packages/dyad_cli/tests -vv
