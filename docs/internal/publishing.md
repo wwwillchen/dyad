@@ -9,7 +9,7 @@ Before, cutting a release, you'll want to check two things:
 1. The `main` branch should be healthy (e.g. latest commit is green).
 2. Check the [snyk dashboard](https://app.snyk.io/org/wwwillchen/project/2b50bd95-96a7-4d2b-b919-a458c02c9697) to review security issues:
 
-    - It only runs weekly so you need to click "Retest now". If there's any High security issues, then you should address it before publishing a release.
+   - It only runs weekly so you need to click "Retest now". If there's any High security issues, then you should address it before publishing a release.
 
 ## Bump versions
 
