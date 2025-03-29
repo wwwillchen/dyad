@@ -15,6 +15,7 @@ test('create multiple chats and navigate to them', async ({page}) => {
   await chatPage.clickNewChat();
   await chatPage.fillInChatInput('chat2');
   await chatPage.submitChat();
+  await page.waitForURL(/.*\?c=.*/);
 
   // Navigate to old chat
   await page.getByText('chat1').click();
