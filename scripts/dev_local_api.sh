@@ -1,0 +1,1 @@
+DYAD_API_BASE_URL=http://localhost:4242 ./scripts/dev.sh

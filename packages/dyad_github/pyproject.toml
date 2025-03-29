@@ -1,0 +1,11 @@
+[project]
+name = "dyad-github"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.32.3"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

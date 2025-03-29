@@ -1,0 +1,3 @@
+```javascript path="edit1.js"
+// edit1.js is edited.
+```

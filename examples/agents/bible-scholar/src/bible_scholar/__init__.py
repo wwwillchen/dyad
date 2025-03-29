@@ -1,0 +1,1 @@
+from bible_scholar.agent import bible_scholar_agent as bible_scholar_agent

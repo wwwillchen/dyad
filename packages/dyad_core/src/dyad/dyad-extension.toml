@@ -1,0 +1,19 @@
+[[agents]]
+name = "default"
+description = "Default agent"
+function = "dyad.agents.default_agent:default_agent"
+
+[[agents]]
+name = "search"
+description = "Searches the web using Perplexity"
+function = "dyad.agents.search_agent:search_agent"
+
+[[agents]]
+name = "vanilla"
+description = "Uses the model's default system prompt"
+function = "dyad.agents.vanilla_agent:vanilla_agent"
+
+[[agents]]
+name = "reasoner"
+description = "Uses the reasoning model"
+function = "dyad.agents.reasoner_agent:reasoner_agent"

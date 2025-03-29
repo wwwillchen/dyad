@@ -1,0 +1,235 @@
+body {
+  --mat-sys-body-large-font: 'Geist';
+  --mat-expansion-container-text-font: 'Geist';
+  --mdc-outlined-button-outline-width: 0.5px;
+}
+component-renderer {
+  min-width: 0;
+}
+
+.editor-container,
+.diff-editor-container {
+  width: 100%;
+  height: 100%;
+}
+
+.highlighted-line {
+  background-color: rgb(255 255 196) !important;
+}
+
+.hover-surface-container-high:hover {
+  background-color: var(--sys-surface-container-high) !important;
+}
+
+.hover-surface-container-highest:hover {
+  background-color: var(--sys-surface-container-highest) !important;
+}
+
+.hover-grow-side-pane-button:hover {
+  padding-left: 12px !important;
+  padding-right: 8px !important;
+}
+
+.two-lines {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cm-merge-revert button {
+  font-size: 1.5rem;
+  color: var(--sys-primary);
+}
+
+.user-select-none {
+  user-select: none;
+}
+
+mesop-markdown {
+  pre {
+    overflow-y: hidden;
+  }
+}
+
+dyad-markdown {
+  pre,
+  code {
+    font-size: 0.9rem;
+  }
+
+  .markdown {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .mention,
+  .hashtag {
+    color: var(--sys-primary);
+    background-color: var(--sys-surface-variant);
+    border-radius: 8px;
+    padding: 2px;
+    margin: -2px;
+    overflow-wrap: break-word;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-weight: 400;
+  }
+  a {
+    color: var(--sys-primary);
+  }
+  p {
+    font-size: 16px;
+    line-height: 1.5;
+    letter-spacing: 0.5;
+    /* margin-bottom: 1.5rem; */
+    font-weight: 400;
+  }
+  a:visited {
+    color: var(--sys-secondary);
+  }
+  .code-block-header {
+    border-radius: 8px 8px 0 0;
+    background: var(--sys-surface-container);
+    padding: 12px;
+    font-size: 16px;
+    font-weight: 500;
+    position: relative;
+    min-height: 54px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .code-block-header .file-path {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    direction: rtl;
+    text-align: left;
+    flex-grow: 1;
+    padding-right: 10px;
+    max-width: calc(100% - 120px);
+  }
+  .code-block-header .code-actions {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    position: absolute;
+    text-align: center;
+    right: 4px;
+    top: 2px;
+  }
+  .code-block {
+    border-radius: 0 0 8px 8px;
+    background: var(--sys-surface-container-low);
+    min-height: 57px;
+    padding: 12px;
+    position: relative;
+    overflow: hidden;
+    min-width: 0;
+    margin-bottom: 16px;
+  }
+  .code-block pre {
+    margin: 0;
+    white-space: pre;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .code-action-label {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .code-block-header .code-actions a {
+    border: none;
+    border-radius: 12%;
+    display: inline-block;
+    color: var(--sys-on-surface);
+    height: 48px;
+    width: 48px;
+  }
+  .code-block-header:hover .code-actions a:hover {
+    background: var(--sys-surface-container-highest);
+    cursor: pointer;
+  }
+  .code-block-header:hover .code-actions a:active {
+    background: transparent;
+    cursor: pointer;
+  }
+  table,
+  th,
+  td {
+    border: 1px var(--sys-on-surface) solid;
+    border-collapse: collapse;
+    padding: 10px;
+  }
+
+  .citation {
+    cursor: pointer;
+    position: relative;
+    background: var(--sys-surface-container-highest);
+    padding: 0px 4px;
+    border-radius: 4px;
+    font-weight: 500;
+    margin: 0 4px;
+  }
+
+  .citation:hover {
+    color: var(--sys-on-primary);
+    background: var(--sys-primary);
+  }
+
+  .citation-tooltip {
+    line-height: 1.25;
+    display: none;
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 12px;
+    background: var(--sys-surface-container-highest);
+    color: var(--sys-on-surface);
+    border-radius: 8px;
+    font-size: 14px;
+    white-space: pre-wrap;
+    width: 300px;
+    z-index: 1000;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    max-height: 320px;
+    overflow: auto;
+  }
+
+  .citation:hover .citation-tooltip {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .citation-title {
+    font-size: 16px;
+    font-weight: 500;
+    margin-bottom: 8px;
+    color: var(--sys-primary);
+  }
+
+  .citation-description {
+    font-size: 14px;
+    line-height: 1.4;
+    margin-bottom: 8px;
+  }
+
+  .citation-url {
+    font-size: 14px;
+    color: var(--sys-primary);
+    text-decoration: none;
+  }
+
+  .citation-url:hover {
+    text-decoration: underline;
+  }
+}

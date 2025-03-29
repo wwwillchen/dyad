@@ -1,0 +1,2 @@
+class Edit1 {}
+[LLM_MODIFIED_CODE]

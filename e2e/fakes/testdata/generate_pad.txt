@@ -1,0 +1,41 @@
+Here is a pad
+
+<dyad-pad title="Wiz Design Specification">
+## 1. Overview
+### 1.1 Purpose
+This document outlines the design for a wiz software
+
+There once was a fellow from Leeds, Who swallowed a packet of seeds. Through his beard and his hair Grew cucumbers fair, And tomatoes adorned both his knees!
+
+His garden-like state caused a stir, As people would point and refer: "That man is a patch! He's grown quite a batch! His produce is quite amateur!"
+
+He visited doctors galore, Who'd never seen anything more. They studied his case With puzzled embrace, While radishes sprouted some more!
+
+The man made the best of his state, And opened his yard as estate. He charged folks to see His botany spree, And now lives in garden-rich fate!
+
+Notes for Revision:
+
+Consider adding more verses about specific vegetables
+
+Could expand on the doctors' reactions
+
+Might add a moral to the story
+
+Possible alternate endings:
+
+He becomes a famous botanical attraction
+
+He starts a new farming technique
+
+He wins a gardening competition
+
+Technical Elements:
+
+Maintains AABBA rhyme scheme
+
+Uses anapestic meter
+
+Includes internal rhymes
+</dyad-pad>
+
+I hope you liked this pad

@@ -1,0 +1,4 @@
+[[agents]]
+name = "git"
+description = "Try @git review for an AI code review"
+function = "dyad_git.agent:git_agent"

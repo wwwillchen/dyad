@@ -1,0 +1,1 @@
+DYAD_APP_MODE=viewer DYAD_WORKSPACE_DIR=. MESOP_STATIC_FOLDER=./src/dyad_app/static uv run mesop viewer_dev.py

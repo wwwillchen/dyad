@@ -1,0 +1,1 @@
+DYAD_DISABLE_STATUS_POLLER=true DYAD_WORKSPACE_DIR=. MESOP_STATIC_FOLDER=./src/dyad_app/static uv run mesop main.py

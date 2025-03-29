@@ -1,0 +1,35 @@
+[project]
+name = "dyad-core"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "colorlog>=6.8.2",
+    "filelock>=3.17.0",
+    "instructor>=1.7.2",
+    "lancedb>=0.17.0",
+    "numpy>=2.2.1",
+    "openai>=1.58.1",
+    "pathspec>=0.12.1",
+    "posthog>=3.10.0",
+    "pydantic>=2.9.2",
+    "requests>=2.32.3",
+    "sqlalchemy>=2.0.35",
+    "sqlmodel>=0.0.22",
+    "tantivy>=0.22.0",
+    "tree-sitter-languages>=1.10.2",
+    # see: https://github.com/grantjenks/py-tree-sitter-languages/issues/64
+    "tree-sitter==0.21.3",
+    "watchfiles>=1.0.3",
+    "python-frontmatter>=1.1.0",
+    "anthropic>=0.42.0",
+    "toml>=0.10.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dyad"]

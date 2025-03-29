@@ -1,0 +1,4 @@
+[[agents]]
+name = "github"
+description = "Try @github for a PR review"
+function = "dyad_github.agent:github_agent"

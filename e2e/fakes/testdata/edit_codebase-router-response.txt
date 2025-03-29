@@ -1,0 +1,7 @@
+<output>
+<rationale>canned test response</rationale>                                 
+<tool>edit_codebase</tool>
+<args>
+    <arg name="query">python files</arg>
+</args>
+</output>

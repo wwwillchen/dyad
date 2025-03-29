@@ -1,0 +1,7 @@
+<output>
+<rationale>canned test response</rationale>                                 
+<tool>edit_codebase</tool>
+<args>
+    <arg name="query">make the file better</arg>
+</args>
+</output>

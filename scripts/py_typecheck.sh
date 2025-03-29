@@ -1,0 +1,1 @@
+uv sync && source .venv/bin/activate && yarn pyright

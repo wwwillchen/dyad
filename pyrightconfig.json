@@ -1,0 +1,21 @@
+{
+  "include": ["examples", "src", "packages"],
+  "exclude": [
+    "**/goldens",
+    "**/fixtures",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/venv",
+    "**/.venv",
+    // Not sure why it's not working, potentially
+    // because dyad-cli is not installed in the venv.
+    "packages/dyad_cli/tests/test_dyad_cli.py"
+  ],
+  "venv": ".venv",
+  "venvPath": ".",
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "reportInvalidStringEscapeSequence": false,
+  "pythonVersion": "3.10",
+  "pythonPlatform": "Linux"
+}

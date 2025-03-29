@@ -1,0 +1,4 @@
+[[agents]]
+name = "bible-scholar"
+description = "Answers questions based on the Bible"
+function = "bible_scholar.agent:bible_scholar_agent"

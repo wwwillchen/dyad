@@ -1,0 +1,4 @@
+[[agents]]
+name = "hello-world"
+description = "A simple greeting agent that demonstrates basic tool selection"
+function = "hello_world.agent:hello_world_agent"

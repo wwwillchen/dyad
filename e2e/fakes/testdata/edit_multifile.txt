@@ -1,0 +1,11 @@
+Some text
+
+```javascript path="edit_multifile1.js"
+// edit_multifile1.js is edited.
+```
+
+Another file to edit
+
+```javascript path="edit_multifile2.js"
+// edit_multifile2.js is edited.
+```

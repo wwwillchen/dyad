@@ -1,0 +1,3 @@
+```javascript path="generated/bar.js"
+console.log("hello world");
+```

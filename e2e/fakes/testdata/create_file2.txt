@@ -1,0 +1,3 @@
+```javascript path="generated/create_file2.js"
+console.log("create_file2");
+```

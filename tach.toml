@@ -1,0 +1,127 @@
+interfaces = []
+exclude = ["**/*__pycache__", "**/*egg-info", "**/docs", "**/tests", "**/venv"]
+source_roots = [
+    "packages/dyad_anthropic/src",
+    "packages/dyad_github/src",
+    "packages/dyad_gemini/src",
+    "packages/dyad.agents/src",
+    "src",
+    "packages/dyad_llms/src",
+    "packages/dyad_core/src",
+    "packages/dyad_code_edit/src",
+]
+root_module = "allow"
+
+[external]
+exclude = ["tantivy", "flask_sock"]
+
+[[modules]]
+path = "dyad.indexing"
+depends_on = [
+    "dyad",
+    "dyad.logging",
+    "dyad.extension",
+    "dyad.settings",
+    "dyad.storage",
+]
+
+[[modules]]
+path = "dyad.utils"
+depends_on = []
+
+[[modules]]
+path = "dyad.extension"
+depends_on = ["dyad.logging", "dyad.language_model", "dyad", "dyad.settings"]
+
+[[modules]]
+path = "dyad_app.pro"
+depends_on = []
+
+[[modules]]
+path = "dyad.ui_proxy"
+depends_on = ["dyad.logging"]
+
+[[modules]]
+path = "dyad_app.cli"
+depends_on = ["dyad_app.main", "dyad.indexing", "dyad.logging", "dyad"]
+
+[[modules]]
+path = "dyad.api"
+depends_on = []
+
+[[modules]]
+path = "dyad_app.ui"
+depends_on = [
+    "dyad.extension",
+    "dyad.indexing",
+    "dyad_app",
+    "dyad",
+    "dyad.settings",
+    "dyad_app.web_components",
+    "dyad.utils",
+    "dyad.agents",
+    "dyad.language_model",
+    "dyad_app.utils",
+    "dyad.ui_proxy",
+    "dyad.api",
+    "dyad.logging",
+    "dyad_app.logic",
+    "dyad.storage",
+]
+
+[[modules]]
+path = "dyad.agents"
+depends_on = ["dyad", "dyad.storage", "dyad.logging", "dyad.prompts"]
+
+[[modules]]
+path = "dyad.prompts"
+depends_on = []
+
+[[modules]]
+path = "dyad.storage"
+depends_on = ["dyad.logging", "dyad.settings", "dyad"]
+
+[[modules]]
+path = "dyad_app.main"
+depends_on = ["dyad.extension", "dyad_app.ui"]
+
+[[modules]]
+path = "dyad_app.logic"
+depends_on = ["dyad_app", "dyad.logging", "dyad.storage", "dyad", "dyad_app.ui"]
+
+[[modules]]
+path = "dyad.logging"
+depends_on = ["dyad", "dyad.settings"]
+
+[[modules]]
+path = "dyad"
+depends_on = [
+    "dyad.ui_proxy",
+    "dyad.extension",
+    "dyad.indexing",
+    "dyad.storage",
+    "dyad.agents",
+    "dyad.language_model",
+    "dyad.settings",
+    "dyad.logging",
+]
+
+[[modules]]
+path = "dyad_app.utils"
+depends_on = []
+
+[[modules]]
+path = "dyad.settings"
+depends_on = ["dyad", "dyad.language_model"]
+
+[[modules]]
+path = "dyad_app"
+depends_on = ["dyad_app.ui", "dyad.agents", "dyad.settings", "dyad"]
+
+[[modules]]
+path = "dyad_app.web_components"
+depends_on = ["dyad.settings", "dyad_app.logic", "dyad_app.ui", "dyad"]
+
+[[modules]]
+path = "dyad.language_model"
+depends_on = []

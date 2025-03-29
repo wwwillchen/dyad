@@ -1,0 +1,18 @@
+I'll add a comprehensive comment to the code editor file explaining its purpose and functionality.
+
+```typescript path="src/dyad_app/web_components/code_editor.ts"
+/**
+ * CodeEditor Web Component
+ * 
+ * A custom web component that wraps the Monaco Editor for code editing functionality.
+ * Built using LitElement
+ */
+
+// (keep rest of the code the same)
+```
+
+<dyad-prompts>
+- Should we add debug logging to track editor initialization?
+- The editor isn't updating when the theme changes - suggestions?
+- How can we handle very large files without performance issues?
+</dyad-prompts>

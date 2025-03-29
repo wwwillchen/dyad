@@ -1,0 +1,2 @@
+class EditMultifile2 {}
+[LLM_MODIFIED_CODE]
