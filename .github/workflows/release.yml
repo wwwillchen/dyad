@@ -17,6 +17,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.5.30'
+
       - name: Build release distributions
         run: ./scripts/build_pip.sh
 
