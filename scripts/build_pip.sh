@@ -1,3 +1,3 @@
 rm -rf dist && \
-yarn vite build && \
+yarn build && \
 uv build --all --wheel

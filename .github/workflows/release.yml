@@ -39,7 +39,7 @@ jobs:
     # Dedicated environments with protections for publishing are strongly recommended.
     environment:
       name: pypi
-      url: https://pypi.org/p/mesop
+      url: https://pypi.org/p/dyad
 
     steps:
       - name: Retrieve release distributions
