@@ -377,6 +377,7 @@ dependencies = [
 dev = [
     { name = "gunicorn" },
     { name = "mkdocs-material" },
+    { name = "mkdocstrings", extra = ["python"] },
     { name = "pyinstrument" },
     { name = "pytest" },
     { name = "pytest-clarity" },
@@ -398,6 +399,7 @@ requires-dist = [
 dev = [
     { name = "gunicorn", specifier = ">=23.0.0" },
     { name = "mkdocs-material", specifier = ">=9.5.42" },
+    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.29.0" },
     { name = "pyinstrument", specifier = ">=5.0.0" },
     { name = "pytest", specifier = ">=8.3.3" },
     { name = "pytest-clarity", specifier = ">=1.0.1" },
@@ -687,6 +689,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/18/87/470e01a940307796f1d25f8167b551a968540fbe0551c0ebb853cb527dd6/greenlet-3.1.1-cp313-cp313t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6510bf84a6b643dabba74d3049ead221257603a253d0a9873f55f6a59a65f822", size = 602753 },
     { url = "https://files.pythonhosted.org/packages/e2/72/576815ba674eddc3c25028238f74d7b8068902b3968cbe456771b166455e/greenlet-3.1.1-cp313-cp313t-musllinux_1_1_aarch64.whl", hash = "sha256:04b013dc07c96f83134b1e99888e7a79979f1a247e2a9f59697fa14b5862ed01", size = 1122731 },
     { url = "https://files.pythonhosted.org/packages/ac/38/08cc303ddddc4b3d7c628c3039a61a3aae36c241ed01393d00c2fd663473/greenlet-3.1.1-cp313-cp313t-musllinux_1_1_x86_64.whl", hash = "sha256:411f015496fec93c1c8cd4e5238da364e1da7a124bcb293f085bf2860c32c6f6", size = 1142112 },
+]
+
+[[package]]
+name = "griffe"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/30/1b/fe7a3a33a2fb7ad7807f71957e6108a50d93271ab718d9a56080415f66de/griffe-1.7.1.tar.gz", hash = "sha256:464730d0e95d0afd038e699a5f7276d7438d0712db0c489a17e761f70e011507", size = 394522 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1d/94/48e28b1c7402f750200e9e3ef4834c862ea85c64f426a231a6dc312f61a9/griffe-1.7.1-py3-none-any.whl", hash = "sha256:37a7f15233937d723ddc969fa4117fdd03988885c16938dc43bccdfe8fa4d02d", size = 129134 },
 ]
 
 [[package]]
@@ -1001,6 +1015,20 @@ wheels = [
 ]
 
 [[package]]
+name = "mkdocs-autorefs"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markdown" },
+    { name = "markupsafe" },
+    { name = "mkdocs" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c2/44/140469d87379c02f1e1870315f3143718036a983dd0416650827b8883192/mkdocs_autorefs-1.4.1.tar.gz", hash = "sha256:4b5b6235a4becb2b10425c2fa191737e415b37aa3418919db33e5d774c9db079", size = 4131355 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f8/29/1125f7b11db63e8e32bcfa0752a4eea30abff3ebd0796f808e14571ddaa2/mkdocs_autorefs-1.4.1-py3-none-any.whl", hash = "sha256:9793c5ac06a6ebbe52ec0f8439256e66187badf4b5334b5fde0b128ec134df4f", size = 5782047 },
+]
+
+[[package]]
 name = "mkdocs-get-deps"
 version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1043,6 +1071,43 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/79/9b/9b4c96d6593b2a541e1cb8b34899a6d021d208bb357042823d4d2cabdbe7/mkdocs_material_extensions-1.3.1.tar.gz", hash = "sha256:10c9511cea88f568257f960358a467d12b970e1f7b2c0e5fb2bb48cab1928443", size = 11847 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5b/54/662a4743aa81d9582ee9339d4ffa3c8fd40a4965e033d77b9da9774d3960/mkdocs_material_extensions-1.3.1-py3-none-any.whl", hash = "sha256:adff8b62700b25cb77b53358dad940f3ef973dd6db797907c49e3c2ef3ab4e31", size = 8728 },
+]
+
+[[package]]
+name = "mkdocstrings"
+version = "0.29.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "markdown" },
+    { name = "markupsafe" },
+    { name = "mkdocs" },
+    { name = "mkdocs-autorefs" },
+    { name = "pymdown-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8e/4d/a9484dc5d926295bdf308f1f6c4f07fcc99735b970591edc414d401fcc91/mkdocstrings-0.29.0.tar.gz", hash = "sha256:3657be1384543ce0ee82112c3e521bbf48e41303aa0c229b9ffcccba057d922e", size = 1212185 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/15/47/eb876dfd84e48f31ff60897d161b309cf6a04ca270155b0662aae562b3fb/mkdocstrings-0.29.0-py3-none-any.whl", hash = "sha256:8ea98358d2006f60befa940fdebbbc88a26b37ecbcded10be726ba359284f73d", size = 1630824 },
+]
+
+[package.optional-dependencies]
+python = [
+    { name = "mkdocstrings-python" },
+]
+
+[[package]]
+name = "mkdocstrings-python"
+version = "1.16.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "griffe" },
+    { name = "mkdocs-autorefs" },
+    { name = "mkdocstrings" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8e/b8/62190ea298fdb1e84670ef548590748c633ab4e05b35bcf902e89f2f28c6/mkdocstrings_python-1.16.8.tar.gz", hash = "sha256:9453ccae69be103810c1cf6435ce71c8f714ae37fef4d87d16aa92a7c800fe1d", size = 205119 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/67/d0/ef6e82f7a68c7ac02e1a01815fbe88773f4f9e40728ed35bd1664a5d76f2/mkdocstrings_python-1.16.8-py3-none-any.whl", hash = "sha256:211b7aaf776cd45578ecb531e5ad0d3a35a8be9101a6bfa10de38a69af9d8fd8", size = 124116 },
 ]
 
 [[package]]

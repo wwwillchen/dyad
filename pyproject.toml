@@ -33,6 +33,7 @@ dev-dependencies = [
     "pytest>=8.3.3",
     "pytest-clarity>=1.0.1",
     "gunicorn>=23.0.0",
+    "mkdocstrings[python]>=0.29.0",
 ]
 
 [tool.uv.workspace]
