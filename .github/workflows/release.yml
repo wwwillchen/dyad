@@ -55,3 +55,6 @@ jobs:
 
       - name: Publish release distributions to PyPI
         uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          # we may only bump versions for some of the packages, so we don't want to fail here.
+          skip-existing: true
