@@ -1,4 +1,8 @@
 rm -rf dist && \
 yarn && \
 yarn build && \
-uv build --all --wheel
+uv build --package dyad --wheel && \
+uv build --package dyad_cli --wheel && \
+uv build --package dyad_core --wheel && \
+uv build --package dyad_git --wheel && \
+uv build --package dyad_github --wheel
