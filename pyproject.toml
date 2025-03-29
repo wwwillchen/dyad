@@ -1,16 +1,16 @@
 [project]
-name = "dyad"
-version = "0.1.1"
+name = "dyad_app"
+version = "0.1.2"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "dyad-core==0.1.1",
+    "dyad-core==0.1.2",
     "click>=8.1.7",
     "pydantic>=2.9.2",
     "werkzeug>=3.1.2",
     "flask-sock>=0.7.0",
-    "dyad-git==0.1.1",
+    "dyad-git==0.1.2",
     "mesop==1.0.0rc1",
 ]
 

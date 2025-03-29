@@ -11,7 +11,7 @@ resolution-markers = [
 members = [
     "bible-scholar",
     "dyad",
-    "dyad-cli",
+    "dyad-app",
     "dyad-core",
     "dyad-git",
     "dyad-github",
@@ -362,6 +362,17 @@ wheels = [
 [[package]]
 name = "dyad"
 version = "0.1.1"
+source = { editable = "packages/dyad_cli" }
+dependencies = [
+    { name = "uv" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "uv", specifier = ">=0.5.0" }]
+
+[[package]]
+name = "dyad-app"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -407,19 +418,8 @@ dev = [
 ]
 
 [[package]]
-name = "dyad-cli"
-version = "0.1.0"
-source = { editable = "packages/dyad_cli" }
-dependencies = [
-    { name = "uv" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "uv", specifier = ">=0.5.0" }]
-
-[[package]]
 name = "dyad-core"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "packages/dyad_core" }
 dependencies = [
     { name = "anthropic" },
@@ -468,7 +468,7 @@ requires-dist = [
 
 [[package]]
 name = "dyad-git"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "packages/dyad_git" }
 dependencies = [
     { name = "gitpython" },
@@ -479,7 +479,7 @@ requires-dist = [{ name = "gitpython", specifier = ">=3.1.44" }]
 
 [[package]]
 name = "dyad-github"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "packages/dyad_github" }
 dependencies = [
     { name = "requests" },
