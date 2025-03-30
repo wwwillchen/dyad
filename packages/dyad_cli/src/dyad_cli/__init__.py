@@ -84,7 +84,7 @@ def check_package_version(
     Returns a string indicating the status of the version check/upgrade.
     """
     package_name = package_name or os.environ.get(
-        "DYAD_CLI_PACKAGE_NAME", "dyad-app"
+        "DYAD_CLI_PACKAGE_NAME", "dyad"
     )
     try:
         current_version = current_version or __version__
