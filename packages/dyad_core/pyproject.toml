@@ -8,7 +8,6 @@ dependencies = [
     "colorlog>=6.8.2",
     "filelock>=3.17.0",
     "instructor>=1.7.2",
-    "lancedb>=0.17.0",
     "numpy>=2.2.1",
     "openai>=1.58.1",
     "pathspec>=0.12.1",
@@ -25,6 +24,8 @@ dependencies = [
     "python-frontmatter>=1.1.0",
     "anthropic>=0.42.0",
     "toml>=0.10.2",
+    "lancedb>=0.21.2",
+    "pylance>=0.25.1",
 ]
 
 [build-system]
