@@ -155,7 +155,8 @@ def get_command_args(
     allow_prerelease: bool = False,
 ) -> list[str]:
     """Generate command arguments for uv tool."""
-    package_name = os.environ.get("DYAD_APP_PACKAGE_NAME", "dyad-app")
+    # Use the underscore version so that the CLI name matches.
+    package_name = os.environ.get("DYAD_APP_PACKAGE_NAME", "dyad_app")
     base_args = [
         uv_bin,
         "tool",
