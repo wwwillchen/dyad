@@ -22,8 +22,5 @@ def propose_revert_to_checkpoint(checkpoint: Checkpoint):
                 candidate=create_candidate_from_checkpoint(file_revision=file),
             )
         )
-    print(
-        "me.state(State).apply_code_state.file_states",
-        me.state(State).apply_code_state.file_states,
-    )
+
     open_apply_code_dialog(checkpoint=checkpoint)
