@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import subprocess
@@ -6,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, TypedDict
 
-import requests
+import aiohttp
 
 # Type-checking fails because we don't depend on dyad-cli package
 # since it's a special case where dyad-cli depends on everything else.
@@ -63,8 +64,40 @@ def save_cli_config(preferences: CliConfig) -> None:
         json.dump(preferences, f)
 
 
+async def fetch_package_version(
+    session: aiohttp.ClientSession, package_name: str
+) -> str | None:
+    """Fetch the latest version of a package from PyPI using aiohttp."""
+    try:
+        async with session.get(
+            f"https://pypi.org/pypi/{package_name}/json"
+        ) as response:
+            if response.status == 200:
+                data = await response.json()
+                return data["info"]["version"]
+    except Exception as e:
+        print(
+            f"{YELLOW}Failed to fetch latest version for {package_name} from PyPI: {e}{RESET}"
+        )
+    return None
+
+
+async def fetch_versions() -> tuple[str | None, str | None]:
+    """Fetch both CLI and app versions concurrently."""
+    cli_package = os.environ.get("DYAD_CLI_PACKAGE_NAME", "dyad")
+    app_package = os.environ.get("DYAD_APP_PACKAGE_NAME", "dyad_app")
+
+    async with aiohttp.ClientSession() as session:
+        cli_version, app_version = await asyncio.gather(
+            fetch_package_version(session, cli_package),
+            fetch_package_version(session, app_package),
+        )
+        return cli_version, app_version
+
+
 def check_package_version(
     cli_config: CliConfig,
+    latest_version: str | None,
     package_name: str | None = None,
     current_version: str | None = None,
     save_prefs_fn: Callable[[CliConfig], None] = save_cli_config,
@@ -82,6 +115,7 @@ def check_package_version(
     """
     Check if the current package is at the latest version.
     Returns a string indicating the status of the version check/upgrade.
+    If upgrade succeeds, exits the program and prompts user to restart.
     """
     package_name = package_name or os.environ.get(
         "DYAD_CLI_PACKAGE_NAME", "dyad"
@@ -89,17 +123,9 @@ def check_package_version(
     try:
         current_version = current_version or __version__
 
-        # Get latest version from PyPI
-        response = requests.get(f"https://pypi.org/pypi/{package_name}/json")
-        latest_version = response.json()["info"]["version"]
-    except Exception as e:
-        print(
-            f"{YELLOW}Failed to check for Dyad CLI package updates from pypi because of error{RESET}",
-            e,
-        )
-        print(f"{YELLOW}Continuing...{RESET}")
-        return "check-request-failed"
-    try:
+        if not latest_version:
+            return "check-request-failed"
+
         if current_version != latest_version:
             if cli_config["skip_updates_for_version"] == latest_version:
                 return "upgrade-skipped-previously"
@@ -118,7 +144,10 @@ def check_package_version(
                     print(
                         f"{GREEN}Successfully upgraded to version {latest_version}!{RESET}"
                     )
-                    return "upgrade-succeeded"
+                    print(
+                        f"\n{YELLOW}Please run dyad again to use the latest version.{RESET}"
+                    )
+                    sys.exit(0)  # Exit after successful upgrade
                 except subprocess.CalledProcessError:
                     print(
                         f"{RED}Failed to upgrade automatically. You can upgrade manually with:{RESET}"
@@ -142,12 +171,9 @@ def check_package_version(
         return "check-failed"
 
 
-def flatten(xss):
-    return [x for xs in xss for x in xs]
-
-
 def get_command_args(
     uv_bin: str,
+    app_version: str | None,
     additional_args: list[str] | None = None,
     *,
     is_offline: bool = False,
@@ -163,9 +189,19 @@ def get_command_args(
         "run",
         "--python=python3.12",
     ]
-    if is_offline:
-        print(f"{YELLOW}Running in offline mode{RESET}")
-        base_args.append("--offline")
+
+    if is_offline or app_version is None:
+        if is_offline:
+            print(f"{YELLOW}Running in offline mode{RESET}")
+            base_args.append("--offline")
+        if app_version is None:
+            print(
+                f"{YELLOW}Failed to fetch latest version, falling back to 'latest'{RESET}"
+            )
+
+    # Allow user to override the app version if needed.
+    if os.environ.get("DYAD_APP_VERSION"):
+        app_version = os.environ.get("DYAD_APP_VERSION")
     if allow_prerelease:
         print(f"{YELLOW}Allowing pre-release versions{RESET}")
         base_args.append("--prerelease")
@@ -180,7 +216,6 @@ def get_command_args(
         if refresh_extensions:
             base_args.append("--refresh")
 
-    app_version = os.environ.get("DYAD_APP_VERSION", "latest")
     base_args.append(f"{package_name}@{app_version}")
     if additional_args:
         base_args.extend(additional_args)
@@ -206,8 +241,13 @@ def run(
     """Main function with injectable dependencies for better testing."""
     try:
         uv_bin = uv_finder()
-        version_check_result = check_package_version(
-            cli_config=get_cli_config()
+
+        # Fetch both versions once at the start
+        cli_version, app_version = asyncio.run(fetch_versions())
+        is_offline = cli_version is None and app_version is None
+
+        check_package_version(
+            cli_config=get_cli_config(), latest_version=cli_version
         )
 
         # Extract args and check for flags
@@ -223,8 +263,9 @@ def run(
 
         command_args = get_command_args(
             uv_bin,
+            app_version,
             args_list,
-            is_offline=version_check_result == "check-request-failed",
+            is_offline=is_offline,
             refresh_extensions=refresh_extensions,
             allow_prerelease=allow_prerelease,
         )

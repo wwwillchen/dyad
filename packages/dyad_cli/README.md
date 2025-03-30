@@ -5,7 +5,7 @@ This package is special because it's not depended on by the root package (since 
 ## Run locally
 
 ```sh
-DYAD_CLI_PACKAGE_NAME=mesop DYAD_APP_PACKAGE_NAME=mesop uv run --package dyad_cli packages/dyad_cli/src/dyad_cli/__init__.py ~/mesop-demo/main.py
+DYAD_CLI_PACKAGE_NAME=mesop DYAD_APP_PACKAGE_NAME=mesop uv run --package dyad packages/dyad_cli/src/dyad_cli/__init__.py ~/mesop-demo/main.py
 ```
 
 > Optional: env var - DYAD_APP_VERSION=0.14.0
@@ -13,5 +13,5 @@ DYAD_CLI_PACKAGE_NAME=mesop DYAD_APP_PACKAGE_NAME=mesop uv run --package dyad_cl
 ## Run tests
 
 ```sh
-uv run --package dyad_cli pytest packages/dyad_cli/tests/test_dyad_cli.py
+uv run --package dyad pytest packages/dyad_cli/tests/test_dyad_cli.py
 ```
