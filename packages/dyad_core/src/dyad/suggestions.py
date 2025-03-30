@@ -114,13 +114,19 @@ def get_directory_suggestions(
         all_dir_files = [
             f
             for f in _suggestion_dict.get("file", {})
-            if f.startswith(dir_path + "/") or f == dir_path
+            if f.startswith(dir_path + os.path.sep) or f == dir_path
         ]
 
         # Get latest modification time from all files in directory and subdirectories
-        latest_mtime = max(
-            _suggestion_dict.get("file", {}).get(f, 0.0) for f in all_dir_files
-        )
+        if all_dir_files:
+            latest_mtime = max(
+                _suggestion_dict.get("file", {}).get(f, 0.0)
+                for f in all_dir_files
+            )
+        else:
+            # just in case all_dir_files is empty (shouldn't happen), avoid an error
+            # with max() and just set latest_mtime to 0
+            latest_mtime = 0.0
 
         suggestions.append(
             DirectorySuggestion(
