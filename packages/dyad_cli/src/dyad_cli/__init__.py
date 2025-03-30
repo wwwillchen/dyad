@@ -1,13 +1,14 @@
-import asyncio
+import concurrent.futures
 import json
 import os
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, TypedDict
-
-import aiohttp
 
 # Type-checking fails because we don't depend on dyad-cli package
 # since it's a special case where dyad-cli depends on everything else.
@@ -27,6 +28,10 @@ DYAD_CLI_HOME_DIR = Path(get_user_data_dir())
 CLI_JSON_PATH = DYAD_CLI_HOME_DIR / "cli.json"
 EXTENSIONS_DIR = DYAD_CLI_HOME_DIR / "extensions"
 EXTENSIONS_REQUIREMENTS_PATH = EXTENSIONS_DIR / "requirements.txt"
+
+# Constants for retry mechanism
+MAX_RETRIES = 1
+INITIAL_RETRY_DELAY = 1  # seconds
 
 
 class CliConfig(TypedDict):
@@ -58,40 +63,53 @@ def get_cli_config() -> CliConfig:
 
 def save_cli_config(preferences: CliConfig) -> None:
     """Save upgrade preferences to user config file."""
-
     DYAD_CLI_HOME_DIR.mkdir(exist_ok=True)
     with open(CLI_JSON_PATH, "w") as f:
         json.dump(preferences, f)
 
 
-async def fetch_package_version(
-    session: aiohttp.ClientSession, package_name: str
-) -> str | None:
-    """Fetch the latest version of a package from PyPI using aiohttp."""
-    try:
-        async with session.get(
-            f"https://pypi.org/pypi/{package_name}/json"
-        ) as response:
-            if response.status == 200:
-                data = await response.json()
-                return data["info"]["version"]
-    except Exception as e:
-        print(
-            f"{YELLOW}Failed to fetch latest version for {package_name} from PyPI: {e}{RESET}"
-        )
+def fetch_package_version(package_name: str) -> str | None:
+    """
+    Fetch the latest version of a package from PyPI using urllib with retry mechanism.
+    Uses exponential backoff for retries.
+    """
+    for attempt in range(MAX_RETRIES):
+        try:
+            url = f"https://pypi.org/pypi/{package_name}/json"
+            with urllib.request.urlopen(url, timeout=10) as response:
+                if response.status == 200:
+                    data = json.loads(response.read())
+                    return data["info"]["version"]
+        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+            delay = INITIAL_RETRY_DELAY * (2**attempt)  # exponential backoff
+            if (
+                attempt < MAX_RETRIES - 1
+            ):  # Don't print "retrying" on last attempt
+                print(
+                    f"{YELLOW}Failed to fetch version for {package_name}, retrying in {delay}s: {e}{RESET}"
+                )
+                time.sleep(delay)
+            else:
+                print(
+                    f"{YELLOW}Failed to fetch latest version for {package_name} from PyPI: {e}{RESET}"
+                )
     return None
 
 
-async def fetch_versions() -> tuple[str | None, str | None]:
-    """Fetch both CLI and app versions concurrently."""
+def fetch_versions() -> tuple[str | None, str | None]:
+    """Fetch both CLI and app versions concurrently using ThreadPoolExecutor."""
     cli_package = os.environ.get("DYAD_CLI_PACKAGE_NAME", "dyad")
     app_package = os.environ.get("DYAD_APP_PACKAGE_NAME", "dyad_app")
 
-    async with aiohttp.ClientSession() as session:
-        cli_version, app_version = await asyncio.gather(
-            fetch_package_version(session, cli_package),
-            fetch_package_version(session, app_package),
-        )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        # Submit both fetch tasks
+        future_cli = executor.submit(fetch_package_version, cli_package)
+        future_app = executor.submit(fetch_package_version, app_package)
+
+        # Wait for both to complete
+        cli_version = future_cli.result()
+        app_version = future_app.result()
+
         return cli_version, app_version
 
 
@@ -242,8 +260,8 @@ def run(
     try:
         uv_bin = uv_finder()
 
-        # Fetch both versions once at the start
-        cli_version, app_version = asyncio.run(fetch_versions())
+        # Fetch both versions concurrently with retry mechanism
+        cli_version, app_version = fetch_versions()
         is_offline = cli_version is None and app_version is None
 
         check_package_version(

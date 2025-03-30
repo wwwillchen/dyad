@@ -4,7 +4,7 @@ docker run --rm -it \
   python:3.10-slim bash -c "\
     apt-get update && \
     apt-get install -y git && \
-    git clone https://github.com/dyad-sh/dyad.git -b release --depth 1 && \
-    pip install dyad/release/*.whl --force-reinstall && \
-    cd dyad && \
-    dyad . --hostname=0.0.0.0"
+    git clone https://github.com/mesop-dev/mesop.git -b main --depth 1 && \
+    pip install dyad && \
+    cd mesop && \
+    dyad"

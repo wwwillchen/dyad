@@ -45,16 +45,10 @@ After you've submitted the PR which bumps the version, [publish a GitHub release
 
 ## Smoke testing
 
-Install dyad:
+Run:
 
 ```sh
-pip install dyad
-```
-
-Run dyad:
-
-```sh
-dyad
+./scripts/docker_smoketest.sh
 ```
 
 Scenarios:
