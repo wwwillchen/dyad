@@ -7,4 +7,4 @@ docker run --rm -it \
     git clone https://github.com/mesop-dev/mesop.git -b main --depth 1 && \
     pip install dyad && \
     cd mesop && \
-    dyad"
+    dyad --hostname=0.0.0.0"
