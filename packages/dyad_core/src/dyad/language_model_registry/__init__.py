@@ -249,6 +249,10 @@ register_language_model_provider(
             setup_text="Create an API key (generous free tier)",
             env_var_name="GEMINI_API_KEY",
         ),
+        base_url=os.getenv(
+            "GOOGLE_GENAI_OPENAI_API_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta/openai/",
+        ),
         proxy_config=ProxyConfig(language_model_prefix="gemini/"),
     )
 )
