@@ -2,9 +2,11 @@
 
 Dyad is an **open-source**, **standalone** AI tool that levels up your coding skills and helps you build real-world software. It’s more than a code generator—it’s a dedicated mentor and practical companion that runs locally, connects to your codebase, and complements—not replaces—your IDE.
 
-## What Dyad Offers
+https://github.com/user-attachments/assets/51fd27a5-ade6-41b5-ab32-7788fc5b3231
 
-Go to the [Dyad site](https://dyad.sh/) to see what Dyad looks like in action.
+Check out the [Dyad site](https://dyad.sh/) to see more videos of what Dyad looks like in action.
+
+## What Dyad Offers
 
 ### Mentoring
 
