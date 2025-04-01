@@ -259,7 +259,7 @@ def format_search_result(search_result: str):
         dyad.logger().warning(
             f"Error reading workspace file {search_result}: {e!s}"
         )
-    return ""
+        return ""
     return f"""
 <file path="{search_result}">
 {workspace_content}
