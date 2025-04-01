@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Optional
 
@@ -6,12 +7,29 @@ from pydantic import BaseModel
 from sqlalchemy import delete
 from sqlmodel import Field, Session, SQLModel, select
 
-from dyad.chat import LanguageModelRequest
 from dyad.logging.logs_sql_engine import engine
-from dyad.public.chat_message import CompletionMetadataChunk, LanguageModelChunk
+from dyad.public.chat_message import (
+    CompletionMetadataChunk,
+    LanguageModelChunk,
+    Role,
+)
 
 
-class LanguageModelResponse(BaseModel):
+class ChatMessageRecord(BaseModel):
+    role: Role = "user"
+    text: str = ""
+
+
+class LanguageModelRequestRecord(BaseModel):
+    input: str
+    language_model_id: str
+    history: Sequence[ChatMessageRecord] = Field(default_factory=list)
+    prediction: str | None = None
+    system_prompt: str = ""
+    output_type_name: str | None = None
+
+
+class LanguageModelResponseRecord(BaseModel):
     chunks: list[LanguageModelChunk]
 
     def get_completion_metadata(self) -> CompletionMetadataChunk | None:
@@ -30,8 +48,8 @@ class LanguageModelCallsTable(SQLModel, table=True):
 class LanguageModelCallRecord(BaseModel):
     id: int
     timestamp: datetime
-    request: LanguageModelRequest
-    response: LanguageModelResponse
+    request: LanguageModelRequestRecord
+    response: LanguageModelResponseRecord
 
 
 class LLMCallLogger:
@@ -46,7 +64,7 @@ class LLMCallLogger:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def record_request(self, request: LanguageModelRequest) -> int:
+    def record_request(self, request: LanguageModelRequestRecord) -> int:
         """
         Record an LLM request to the database.
 
@@ -70,7 +88,7 @@ class LLMCallLogger:
             return record.id
 
     def record_response(
-        self, request_id: int, response: LanguageModelResponse
+        self, request_id: int, response: LanguageModelResponseRecord
     ) -> None:
         """
         Record an LLM response to the database, updating the existing request record.
@@ -115,10 +133,10 @@ class LLMCallLogger:
 
             for db_record in results:
                 try:
-                    request = LanguageModelRequest.model_validate_json(
+                    request = LanguageModelRequestRecord.model_validate_json(
                         db_record.request_json
                     )
-                    response = LanguageModelResponse.model_validate_json(
+                    response = LanguageModelResponseRecord.model_validate_json(
                         db_record.response_json
                     )
 
