@@ -227,7 +227,7 @@ Tell me which of the following files are relevant to the user query:
 {NEW_LINE.join([format_search_result(search_result) for search_result in search_results])}
 </files>
 
-Return me the top 3 file paths that are most relevant to the user query.
+Return me the list of file paths that are relevant to the user query.
     """,
     ):
         pass
