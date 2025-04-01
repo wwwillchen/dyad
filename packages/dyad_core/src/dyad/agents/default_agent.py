@@ -37,10 +37,14 @@ def default_agent(
             system_prompt=get_default_system_prompt()
         )
         return
+    initial_loop = True
     while True:
         step = yield from context.stream_step(
-            tools=[search_codebase, edit_codebase]
+            tools=[search_codebase]
+            if initial_loop
+            else [search_codebase, edit_codebase],
         )
+        initial_loop = False
         if step.type == "error":
             return
         if step.type == "tool_call":
