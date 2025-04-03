@@ -6,4 +6,4 @@ import dyad
 def vanilla_agent(
     context: dyad.AgentContext,
 ) -> Generator[None, None, None]:
-    yield from context.stream_to_content()
+    yield from context.stream_to_content(system_prompt="")
