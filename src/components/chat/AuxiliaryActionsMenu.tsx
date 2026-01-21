@@ -26,10 +26,11 @@ import { Button } from "@/components/ui/button";
 import { ContextFilesPicker } from "@/components/ContextFilesPicker";
 import { FileAttachmentDropdown } from "./FileAttachmentDropdown";
 import { useThemes } from "@/hooks/useThemes";
-import { useAppTheme, APP_THEME_QUERY_KEY } from "@/hooks/useAppTheme";
+import { useAppTheme } from "@/hooks/useAppTheme";
 import { useSettings } from "@/hooks/useSettings";
 import { IpcClient } from "@/ipc/ipc_client";
 import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
 
 interface AuxiliaryActionsMenuProps {
   onFileSelect: (
@@ -68,7 +69,9 @@ export function AuxiliaryActionsMenu({
         themeId,
       });
       // Invalidate app theme query to refresh
-      queryClient.invalidateQueries({ queryKey: APP_THEME_QUERY_KEY(appId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.appTheme.byApp(appId),
+      });
     } else {
       // Update default theme in settings (for new apps)
       // Store as string for settings (empty string for no theme)
