@@ -118,5 +118,29 @@ describe("xmlEscape", () => {
       const unescaped = unescapeXmlContent(escaped);
       expect(unescaped).toBe(original);
     });
+
+    it("should preserve HTML entity references in MCP tool output", () => {
+      // This tests the fix for: MCP tool output containing HTML documentation
+      // with entity references like &amp;, &lt;, &gt; should not be corrupted
+      const htmlDocs =
+        "Use &lt;div&gt; for containers. Escape & as &amp; in attributes.";
+      const escaped = escapeXmlContent(htmlDocs);
+      // Entities should be double-escaped
+      expect(escaped).toBe(
+        "Use &amp;lt;div&amp;gt; for containers. Escape &amp; as &amp;amp; in attributes.",
+      );
+      const unescaped = unescapeXmlContent(escaped);
+      // Should restore original HTML documentation text
+      expect(unescaped).toBe(htmlDocs);
+    });
+
+    it("should preserve XML error messages containing entities", () => {
+      // Error messages from XML parsers often contain entity references
+      const errorMessage =
+        "Parse error: unexpected &lt; at position 42, expected &gt; or &amp;";
+      const escaped = escapeXmlContent(errorMessage);
+      const unescaped = unescapeXmlContent(escaped);
+      expect(unescaped).toBe(errorMessage);
+    });
   });
 });
