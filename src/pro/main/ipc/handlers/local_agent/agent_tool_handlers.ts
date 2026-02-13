@@ -8,7 +8,6 @@ import {
   resolveAgentToolConsent,
   TOOL_DEFINITIONS,
   getDefaultConsent,
-  type AgentToolName,
 } from "./tool_definitions";
 import { createLoggedHandler } from "@/ipc/handlers/safe_handle";
 import log from "electron-log";
@@ -36,7 +35,7 @@ export function registerAgentToolHandlers() {
   handle(
     "agent-tool:set-consent",
     async (_event, params: SetAgentToolConsentParams) => {
-      setAgentToolConsent(params.toolName as AgentToolName, params.consent);
+      setAgentToolConsent(params.toolName, params.consent);
       return { success: true };
     },
   );

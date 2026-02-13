@@ -42,6 +42,11 @@ import {
 } from "./tools/types";
 import { AgentToolConsent } from "@/lib/schemas";
 import { getSupabaseClientCode } from "@/supabase_admin/supabase_context";
+import {
+  AGENT_TOOL_NAMES,
+  type AgentToolName,
+} from "@/shared/agent_tool_names";
+export type { AgentToolName } from "@/shared/agent_tool_names";
 // Combined tool definitions array
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   writeFileTool,
@@ -69,11 +74,24 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   writePlanTool,
   exitPlanTool,
 ];
-// ============================================================================
-// Agent Tool Name Type (derived from TOOL_DEFINITIONS)
-// ============================================================================
 
-export type AgentToolName = (typeof TOOL_DEFINITIONS)[number]["name"];
+// Keep shared tool names synchronized with runtime tool definitions.
+const AGENT_TOOL_NAME_SET = new Set<string>(AGENT_TOOL_NAMES);
+const DEFINED_TOOL_NAME_SET = new Set<string>(
+  TOOL_DEFINITIONS.map((tool) => tool.name),
+);
+
+for (const toolName of AGENT_TOOL_NAMES) {
+  if (!DEFINED_TOOL_NAME_SET.has(toolName)) {
+    throw new Error(`Missing tool definition for "${toolName}"`);
+  }
+}
+
+for (const toolName of DEFINED_TOOL_NAME_SET) {
+  if (!AGENT_TOOL_NAME_SET.has(toolName)) {
+    throw new Error(`Unknown tool name "${toolName}" in TOOL_DEFINITIONS`);
+  }
+}
 
 // ============================================================================
 // Agent Tool Consent Management

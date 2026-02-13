@@ -7,6 +7,7 @@ import { IpcMainInvokeEvent } from "electron";
 import { jsonrepair } from "jsonrepair";
 import { AgentToolConsent } from "@/lib/schemas";
 import { AgentTodo } from "@/ipc/types";
+import type { AgentToolName } from "@/shared/agent_tool_names";
 
 // ============================================================================
 // XML Escape Helpers
@@ -73,7 +74,7 @@ export interface AgentContext {
    */
   onXmlComplete: (finalXml: string) => void;
   requireConsent: (params: {
-    toolName: string;
+    toolName: AgentToolName;
     toolDescription?: string | null;
     inputPreview?: string | null;
   }) => Promise<boolean>;
@@ -136,7 +137,7 @@ export type ToolResult = string;
 // ============================================================================
 
 export interface ToolDefinition<T = any> {
-  readonly name: string;
+  readonly name: AgentToolName;
   readonly description: string;
   readonly inputSchema: z.ZodType<T>;
   readonly defaultConsent: AgentToolConsent;

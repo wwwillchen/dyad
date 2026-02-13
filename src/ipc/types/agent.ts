@@ -6,6 +6,10 @@ import {
   createEventClient,
 } from "../contracts/core";
 import { AgentToolConsentSchema } from "../../lib/schemas";
+import {
+  AGENT_TOOL_NAMES,
+  type AgentToolName as SharedAgentToolName,
+} from "@/shared/agent_tool_names";
 
 // =============================================================================
 // Agent Schemas
@@ -17,7 +21,7 @@ import { AgentToolConsentSchema } from "../../lib/schemas";
 export const AgentToolConsentRequestSchema = z.object({
   requestId: z.string(),
   chatId: z.number(),
-  toolName: z.string(),
+  toolName: z.enum(AGENT_TOOL_NAMES),
   toolDescription: z.string().nullable().optional(),
   inputPreview: z.string().nullable().optional(),
 });
@@ -113,7 +117,7 @@ export type AgentProblemsUpdatePayload = z.infer<
  * Schema for agent tool info.
  */
 export const AgentToolSchema = z.object({
-  name: z.string(),
+  name: z.enum(AGENT_TOOL_NAMES),
   description: z.string(),
   isAllowedByDefault: z.boolean(),
   consent: AgentToolConsentSchema,
@@ -125,13 +129,14 @@ export type AgentTool = z.infer<typeof AgentToolSchema>;
  * Schema for set agent tool consent params.
  */
 export const SetAgentToolConsentParamsSchema = z.object({
-  toolName: z.string(),
+  toolName: z.enum(AGENT_TOOL_NAMES),
   consent: AgentToolConsentSchema,
 });
 
 export type SetAgentToolConsentParams = z.infer<
   typeof SetAgentToolConsentParamsSchema
 >;
+export type AgentToolName = SharedAgentToolName;
 
 // =============================================================================
 // Agent Contracts (Invoke/Response)
