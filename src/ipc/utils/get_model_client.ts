@@ -26,6 +26,7 @@ import { LanguageModelProvider } from "@/ipc/types";
 import {
   createDyadEngine,
   type DyadEngineProvider,
+  wrapOpenAIResponsesModelWithForkedReasoningSupport,
 } from "./llm_engine_provider";
 
 import { LM_STUDIO_BASE_URL } from "./lm_studio_utils";
@@ -260,7 +261,9 @@ function getRegularModelClient(
       const provider = createOpenAI({ apiKey });
       return {
         modelClient: {
-          model: provider.responses(model.name),
+          model: wrapOpenAIResponsesModelWithForkedReasoningSupport(
+            provider.responses(model.name),
+          ),
           builtinProviderId: providerId,
         },
         backupModelClients: [],

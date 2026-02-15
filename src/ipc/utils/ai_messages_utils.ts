@@ -49,7 +49,8 @@ function stripItemIdFromPart(part: Record<string, unknown>): boolean {
 
 /**
  * Clean up a message's content parts for OpenAI compatibility:
- * 1. Strip itemId from provider metadata (prevents "Item with id not found" errors)
+ * 1. Strip itemId from provider metadata
+ *    (prevents "Item with id not found" errors)
  * 2. Filter orphaned reasoning parts (prevents "reasoning without following item" errors)
  *
  * When messages contain `providerMetadata.openai.itemId` values, the AI SDK converts

@@ -53,6 +53,8 @@ export function getProviderOptions({
     "dyad-gateway": getExtraProviderOptions(builtinProviderId, settings),
     openai: {
       reasoningSummary: "auto",
+      // Avoid server-side item references for replayed reasoning parts.
+      store: false,
     } satisfies OpenAIResponsesProviderOptions,
   };
 

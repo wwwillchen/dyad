@@ -12,6 +12,153 @@ import type { UserSettings } from "../../lib/schemas";
 import type { LanguageModel } from "ai";
 
 const logger = log.scope("llm_engine_provider");
+const NON_OPENAI_REASONING_WARNING_PREFIX =
+  "Non-OpenAI reasoning parts are not supported. Skipping reasoning part:";
+const FORKED_REASONING_ID_PREFIX = "dyad_reasoning";
+
+function getReasoningMetadata(part: Record<string, unknown>): {
+  hasItemId: boolean;
+  encryptedContent?: string;
+} {
+  const providerOptions =
+    part.providerOptions && typeof part.providerOptions === "object"
+      ? (part.providerOptions as Record<string, unknown>)
+      : undefined;
+  const openaiOptions =
+    providerOptions?.openai && typeof providerOptions.openai === "object"
+      ? (providerOptions.openai as Record<string, unknown>)
+      : undefined;
+
+  const itemId = openaiOptions?.itemId;
+  const reasoningEncryptedContent = openaiOptions?.reasoningEncryptedContent;
+  return {
+    hasItemId: typeof itemId === "string" && itemId.length > 0,
+    encryptedContent:
+      typeof reasoningEncryptedContent === "string"
+        ? reasoningEncryptedContent
+        : undefined,
+  };
+}
+
+function getMissingReasoningItems(options: unknown): Array<{
+  type: "reasoning";
+  id: string;
+  encrypted_content?: string;
+  summary: Array<{ type: "summary_text"; text: string }>;
+}> {
+  if (!options || typeof options !== "object") {
+    return [];
+  }
+
+  const prompt = (options as { prompt?: unknown }).prompt;
+  if (!Array.isArray(prompt)) {
+    return [];
+  }
+
+  const reasoningItems: Array<{
+    type: "reasoning";
+    id: string;
+    encrypted_content?: string;
+    summary: Array<{ type: "summary_text"; text: string }>;
+  }> = [];
+
+  for (let messageIndex = 0; messageIndex < prompt.length; messageIndex++) {
+    const message = prompt[messageIndex];
+    if (!message || typeof message !== "object") continue;
+
+    const messageRecord = message as Record<string, unknown>;
+    if (messageRecord.role !== "assistant") continue;
+    if (!Array.isArray(messageRecord.content)) continue;
+
+    for (
+      let partIndex = 0;
+      partIndex < messageRecord.content.length;
+      partIndex++
+    ) {
+      const part = messageRecord.content[partIndex];
+      if (!part || typeof part !== "object") continue;
+
+      const partRecord = part as Record<string, unknown>;
+      if (partRecord.type !== "reasoning") continue;
+
+      const reasoningText =
+        typeof partRecord.text === "string" ? partRecord.text : "";
+      const reasoningMetadata = getReasoningMetadata(partRecord);
+      if (reasoningMetadata.hasItemId) continue;
+
+      reasoningItems.push({
+        type: "reasoning",
+        id: `${FORKED_REASONING_ID_PREFIX}_${messageIndex}_${partIndex}`,
+        ...(reasoningMetadata.encryptedContent
+          ? { encrypted_content: reasoningMetadata.encryptedContent }
+          : {}),
+        summary:
+          reasoningText.length > 0
+            ? [{ type: "summary_text", text: reasoningText }]
+            : [],
+      });
+    }
+  }
+
+  return reasoningItems;
+}
+
+function stripNonOpenAIReasoningWarnings(result: unknown): void {
+  if (!result || typeof result !== "object") return;
+  const resultRecord = result as Record<string, unknown>;
+  if (!Array.isArray(resultRecord.warnings)) return;
+
+  resultRecord.warnings = resultRecord.warnings.filter((warning) => {
+    if (!warning || typeof warning !== "object") return true;
+    const message = (warning as { message?: unknown }).message;
+    return !(
+      typeof message === "string" &&
+      message.startsWith(NON_OPENAI_REASONING_WARNING_PREFIX)
+    );
+  });
+}
+
+export function wrapOpenAIResponsesModelWithForkedReasoningSupport(
+  model: LanguageModel,
+): LanguageModel {
+  const target = model as unknown as LanguageModel & {
+    doGenerate: (options: unknown) => Promise<unknown>;
+    doStream: (options: unknown) => Promise<unknown>;
+    getArgs?: (options: unknown) => Promise<unknown>;
+  };
+
+  if (typeof target.getArgs !== "function") {
+    return model;
+  }
+
+  const originalGetArgs = target.getArgs.bind(target);
+  target.getArgs = async (options: unknown) => {
+    const result = await originalGetArgs(options);
+    const missingReasoningItems = getMissingReasoningItems(options);
+
+    if (missingReasoningItems.length === 0) {
+      stripNonOpenAIReasoningWarnings(result);
+      return result;
+    }
+
+    if (result && typeof result === "object") {
+      const resultRecord = result as Record<string, unknown>;
+      const args =
+        resultRecord.args && typeof resultRecord.args === "object"
+          ? (resultRecord.args as Record<string, unknown>)
+          : undefined;
+      const input = args?.input;
+      if (Array.isArray(input)) {
+        args!.input = [...input, ...missingReasoningItems];
+      }
+    }
+
+    stripNonOpenAIReasoningWarnings(result);
+    return result;
+  };
+
+  return model;
+}
 
 export type ExampleChatModelId = string & {};
 export interface ChatParams {
@@ -215,7 +362,11 @@ export function createDyadEngine(
       fetch: createDyadFetch({ providerId: chatParams.providerId }),
     };
 
-    return new OpenAIResponsesLanguageModel(modelId, config);
+    const model = new OpenAIResponsesLanguageModel(modelId, config);
+    if (chatParams.providerId === "openai") {
+      return wrapOpenAIResponsesModelWithForkedReasoningSupport(model);
+    }
+    return model;
   };
 
   const provider = (modelId: ExampleChatModelId, chatParams: ChatParams) =>
