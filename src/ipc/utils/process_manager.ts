@@ -213,30 +213,38 @@ const GC_CHECK_INTERVAL_MS = 60 * 1000;
 // Time in milliseconds after which an idle app is eligible for garbage collection (10 minutes)
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
-// Track the currently selected app ID to avoid garbage collecting it
-let currentlySelectedAppId: number | null = null;
+// Track the set of app IDs currently protected from garbage collection.
+// This holds the user's recently-viewed apps (LRU window) so their dev servers
+// stay warm when the user switches between app tabs.
+let protectedAppIds: Set<number> = new Set();
 
 /**
- * Sets the currently selected app ID. The selected app will never be garbage collected.
- * @param appId The app ID that is currently selected, or null if none
+ * Sets the set of app IDs protected from garbage collection. Apps in this set
+ * will never be GC'd. Apps leaving the set get their idle timer reset so the
+ * 10-minute countdown starts from the moment they fell out of the LRU window.
+ * @param appIds The app IDs to protect (typically the N most recently viewed)
  */
-export function setCurrentlySelectedAppId(appId: number | null): void {
-  // Update lastViewedAt for the previously selected app so the idle timer
-  // starts from when the user actually stopped viewing it
-  if (currentlySelectedAppId !== null && currentlySelectedAppId !== appId) {
-    updateAppLastViewed(currentlySelectedAppId);
+export function setProtectedAppIds(appIds: number[]): void {
+  const newSet = new Set(appIds);
+  // For apps dropping out of protection, restart the idle timer from now
+  for (const oldId of protectedAppIds) {
+    if (!newSet.has(oldId)) {
+      updateAppLastViewed(oldId);
+    }
   }
-  currentlySelectedAppId = appId;
-  if (appId !== null) {
-    updateAppLastViewed(appId);
+  protectedAppIds = newSet;
+  // Touch protected apps so their lastViewedAt is current (defensive;
+  // protected apps are skipped by GC anyway)
+  for (const id of newSet) {
+    updateAppLastViewed(id);
   }
 }
 
 /**
- * Gets the currently selected app ID.
+ * Gets the set of app IDs currently protected from garbage collection.
  */
-export function getCurrentlySelectedAppId(): number | null {
-  return currentlySelectedAppId;
+export function getProtectedAppIds(): ReadonlySet<number> {
+  return protectedAppIds;
 }
 
 /**
@@ -248,8 +256,8 @@ export async function garbageCollectIdleApps(): Promise<void> {
   const appsToStop: number[] = [];
 
   for (const [appId, appInfo] of runningApps.entries()) {
-    // Never garbage collect the currently selected app
-    if (appId === currentlySelectedAppId) {
+    // Never garbage collect apps the user is keeping warm (current + recent LRU)
+    if (protectedAppIds.has(appId)) {
       continue;
     }
 
@@ -268,9 +276,9 @@ export async function garbageCollectIdleApps(): Promise<void> {
     try {
       await withLock(appId, async () => {
         // Re-check: the user may have selected this app while we were stopping others
-        if (appId === currentlySelectedAppId) {
+        if (protectedAppIds.has(appId)) {
           logger.info(
-            `Skipping GC for app ${appId}: it became the selected app during this GC cycle`,
+            `Skipping GC for app ${appId}: it became protected during this GC cycle`,
           );
           return;
         }

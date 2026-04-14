@@ -1,8 +1,10 @@
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   appConsoleEntriesAtom,
   previewModeAtom,
   previewPanelKeyAtom,
+  pushRecentlyViewedAppAtom,
+  recentlyViewedAppIdsAtom,
   selectedAppIdAtom,
 } from "../../atoms/appAtoms";
 
@@ -72,12 +74,15 @@ export function PreviewPanel() {
       ? consoleEntries[consoleEntries.length - 1]?.message
       : undefined;
 
-  // Notify backend about app selection changes (for garbage collection tracking)
-  const notifyAppSelected = useCallback(async (appId: number | null) => {
+  const pushRecentlyViewedApp = useSetAtom(pushRecentlyViewedAppAtom);
+  const recentlyViewedAppIds = useAtomValue(recentlyViewedAppIdsAtom);
+
+  // Notify backend of the set of apps to keep warm (current + recent LRU)
+  const notifyProtectedApps = useCallback(async (appIds: number[]) => {
     try {
-      await ipc.app.selectAppForPreview({ appId });
+      await ipc.app.setProtectedAppIds({ appIds });
     } catch (error) {
-      console.error("Failed to notify app selection:", error);
+      console.error("Failed to notify protected app IDs:", error);
     }
   }, []);
 
@@ -85,14 +90,20 @@ export function PreviewPanel() {
     let cancelled = false;
 
     const handleAppSelection = async () => {
-      // Notify backend which app is currently selected (for GC tracking)
-      await notifyAppSelected(selectedAppId);
+      // Push the newly selected app to the front of the LRU and send the
+      // updated set to the backend so its dev server stays protected from GC.
+      // When selectedAppId is null (e.g. navigating away), we keep the
+      // existing LRU window intact so recently-viewed apps stay warm.
+      const protectedIds =
+        selectedAppId !== null
+          ? pushRecentlyViewedApp(selectedAppId)
+          : recentlyViewedAppIds;
 
-      // If the effect was cleaned up while awaiting, don't proceed
+      await notifyProtectedApps(protectedIds);
+
       if (cancelled) return;
 
-      // Start the app if it's selected
-      // The backend will handle the case where the app is already running
+      // Start the app if it's selected. The backend no-ops if it's already running.
       if (selectedAppId !== null) {
         console.debug(
           "Running app (will start if not already running)",
@@ -106,16 +117,11 @@ export function PreviewPanel() {
 
     return () => {
       cancelled = true;
-      // Notify backend that no app is being previewed so GC can reclaim idle apps
-      notifyAppSelected(null);
     };
-    // Note: We no longer stop apps when switching. The backend garbage collector
-    // will stop apps that haven't been viewed in 10 minutes.
-    // Apps are only stopped explicitly when:
-    // 1. User manually stops them
-    // 2. App is deleted
-    // 3. Garbage collector determines they've been idle too long
-  }, [selectedAppId, runApp, notifyAppSelected]);
+    // recentlyViewedAppIds intentionally omitted: we only want to re-run on
+    // selection changes, not when the LRU list is mutated by this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAppId, runApp, notifyProtectedApps, pushRecentlyViewedApp]);
 
   // Note: We no longer stop all apps on unmount. The garbage collector
   // will handle cleanup of idle apps, and users may want apps to keep

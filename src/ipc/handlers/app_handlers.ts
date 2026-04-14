@@ -29,7 +29,7 @@ import {
   removeAppIfCurrentProcess,
   stopAppByInfo,
   removeDockerVolumesForApp,
-  setCurrentlySelectedAppId,
+  setProtectedAppIds,
   startAppGarbageCollection,
 } from "../utils/process_manager";
 import { getEnvVar } from "../utils/read_env";
@@ -2664,16 +2664,12 @@ export function registerAppHandlers() {
     });
   });
 
-  // Handler for selecting an app for preview (updates lastViewedAt to prevent GC)
-  createTypedHandler(appContracts.selectAppForPreview, async (_, params) => {
-    const { appId } = params;
-    if (appId !== null) {
-      logger.debug(`App ${appId} selected for preview`);
-      setCurrentlySelectedAppId(appId);
-    } else {
-      logger.debug("No app selected for preview");
-      setCurrentlySelectedAppId(null);
-    }
+  // Handler for updating the set of apps protected from idle GC (current +
+  // recently-viewed LRU window). Keeps the dev servers of recent apps warm.
+  createTypedHandler(appContracts.setProtectedAppIds, async (_, params) => {
+    const { appIds } = params;
+    logger.debug(`Protecting apps from GC: [${appIds.join(", ")}]`);
+    setProtectedAppIds(appIds);
   });
 
   void reconcileCloudSandboxes().catch((error) => {

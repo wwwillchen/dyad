@@ -447,12 +447,14 @@ export const appContracts = {
   }),
 
   /**
-   * Notifies the backend that an app has been selected/viewed in the preview panel.
-   * This updates the lastViewedAt timestamp to prevent garbage collection.
+   * Notifies the backend of the set of app IDs the user is keeping warm.
+   * This is the current selected app plus up to N-1 recently-viewed apps.
+   * Apps in this set are protected from the idle garbage collector so their
+   * dev servers stay running when the user switches between app tabs.
    */
-  selectAppForPreview: defineContract({
-    channel: "select-app-for-preview",
-    input: z.object({ appId: z.number().nullable() }),
+  setProtectedAppIds: defineContract({
+    channel: "set-protected-app-ids",
+    input: z.object({ appIds: z.array(z.number()) }),
     output: z.void(),
   }),
 } as const;
