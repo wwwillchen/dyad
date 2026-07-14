@@ -213,6 +213,7 @@ export type {
   Problem,
   ProblemReport,
 } from "./agent";
+export { isSubagentAcceptingMessages } from "./agent";
 
 // GitHub types
 export type {
