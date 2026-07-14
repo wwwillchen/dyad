@@ -208,3 +208,8 @@ is still active, prematurely abandoning the stream.
 Cap Vitest worker concurrency for Git/sqlite/server-backed integration suites
 relative to `availableParallelism()`. Unbounded fork bursts on large or shared
 runners cause rotating DOM/event timeouts while increasing total runtime.
+
+`harness.waitForStreamEnd()` waits for `chat:response:end`, which can arrive
+before the transport emits `chat:stream:end`. If a test asserts the latter
+channel, also await `harness.waitForEvent("chat:stream:end")` before inspecting
+the recorded bridge events.
