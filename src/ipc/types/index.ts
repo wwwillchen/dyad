@@ -201,6 +201,12 @@ export type {
 export type {
   AgentTool,
   AgentTodo,
+  AgentToolConsentRequestPayload,
+  AgentToolConsentDecision,
+  SubagentPersona,
+  SubagentStatus,
+  SubagentThreadSummary,
+  SubagentMessage,
   AgentTodosUpdatePayload,
   AgentProblemsUpdatePayload,
   SetAgentToolConsentParams,
