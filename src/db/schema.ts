@@ -263,7 +263,9 @@ export const chatQueueEntries = sqliteTable("chat_queue_entries", {
     .default("queued"),
 });
 
-export const agentThreads = sqliteTable("agent_threads", {
+export const agentThreads = sqliteTable(
+  "agent_threads",
+  {
   id: text("id").primaryKey(),
   chatId: integer("chat_id")
     .notNull()
@@ -327,10 +329,12 @@ export const agentThreads = sqliteTable("agent_threads", {
     .default(sql`(unixepoch())`),
   startedAt: integer("started_at", { mode: "timestamp" }),
   completedAt: integer("completed_at", { mode: "timestamp" }),
-  updatedAt: integer("updated_at", { mode: "timestamp" })
-    .notNull()
-    .default(sql`(unixepoch())`),
-});
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (table) => [index("agent_threads_chat_id_idx").on(table.chatId)],
+);
 
 export const agentMessages = sqliteTable(
   "agent_messages",
