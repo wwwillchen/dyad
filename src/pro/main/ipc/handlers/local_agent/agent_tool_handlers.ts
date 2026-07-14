@@ -18,10 +18,12 @@ import { readSettings } from "@/main/settings";
 import {
   buildFixFindingsPrompt,
   cancelSubagent,
+  followupSubagent,
   getSubagentMessages,
   listSubagents,
   recoverInterruptedSubagents,
   runAutoReviewBarrier,
+  sendSubagentMessage,
   setSubagentEventTarget,
   skipReviewAutoFix,
   startReview,
@@ -63,6 +65,20 @@ export function registerAgentToolHandlers() {
     async (event, { chatId, threadId }) => {
       setSubagentEventTarget(event.sender);
       return getSubagentMessages(chatId, threadId);
+    },
+  );
+  handle(
+    agentContracts.sendSubagentMessage,
+    async (event, { chatId, threadId, message }) => {
+      setSubagentEventTarget(event.sender);
+      await sendSubagentMessage(chatId, threadId, message);
+    },
+  );
+  handle(
+    agentContracts.followupSubagent,
+    async (event, { chatId, threadId, message }) => {
+      setSubagentEventTarget(event.sender);
+      return followupSubagent(chatId, threadId, message);
     },
   );
   handle(agentContracts.startReview, async (event, params) => {
