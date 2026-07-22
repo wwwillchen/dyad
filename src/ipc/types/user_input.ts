@@ -51,6 +51,13 @@ export const UserInputDescriptorSchema = z.discriminatedUnion("kind", [
     toolDescription: z.string().nullable().optional(),
     inputPreview: z.string().nullable().optional(),
     metadata: z.unknown().optional(),
+    subagent: z
+      .object({
+        threadId: z.string(),
+        persona: z.enum(["explorer", "implementer"]),
+        taskName: z.string(),
+      })
+      .optional(),
     classifier: z.literal("none"),
   }),
   DescriptorBaseSchema.extend({

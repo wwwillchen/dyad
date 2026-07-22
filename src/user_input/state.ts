@@ -42,6 +42,11 @@ export type UserInputDescriptor =
       toolDescription?: string | null;
       inputPreview?: string | null;
       metadata?: unknown;
+      subagent?: {
+        threadId: string;
+        persona: "explorer" | "implementer";
+        taskName: string;
+      };
       classifier: "none";
     })
   | (DescriptorBase & {

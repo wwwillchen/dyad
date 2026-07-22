@@ -26,6 +26,11 @@ export interface PendingToolConsent {
   toolDescription?: string | null;
   inputPreview?: string | null;
   metadata?: SqlConsentMetadata | null;
+  subagent?: {
+    threadId: string;
+    persona: "explorer" | "implementer";
+    taskName: string;
+  };
   serverId?: number;
   serverName?: string | null;
   classifierReason?: string | null;
@@ -106,6 +111,7 @@ export function selectPendingToolConsents(
         toolDescription: descriptor.toolDescription,
         inputPreview: descriptor.inputPreview,
         metadata: descriptor.metadata as SqlConsentMetadata | null | undefined,
+        subagent: descriptor.subagent,
       });
     } else if (descriptor.kind === "mcp-consent") {
       consents.push({
