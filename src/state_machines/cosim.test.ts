@@ -315,4 +315,223 @@ describe("interleaving co-simulation", () => {
       'inject "start": send start to "participant"',
     ]);
   });
+
+  it("freezes caller snapshots without narrowing generic values", () => {
+    class State {
+      readonly callback = () => this.value;
+
+      constructor(readonly value: number) {}
+    }
+
+    const initialState = new State(0);
+    const result = runCosim<"participant", never, State, "advance", "finish">({
+      participants: {
+        participant: {
+          initialState,
+          stateKey: (state) => String(state.value),
+          eventKey: (event) => event,
+          commandKey: (command) => command,
+          transition: (state) => ({
+            kind: "applied",
+            state: new State(state.value + 1),
+            commands: ["finish"],
+          }),
+        },
+      },
+      channels: {},
+      scenario: {
+        actions: [
+          {
+            id: "advance",
+            target: "participant",
+            participant: "participant",
+            event: "advance",
+            enabled: (snapshot) => {
+              expect(snapshot.participants.participant).toBeInstanceOf(State);
+              expect(snapshot.participants.participant.callback()).toBe(0);
+              expect(() => {
+                (
+                  snapshot.participants.participant as {
+                    value: number;
+                  }
+                ).value = 99;
+              }).toThrow(TypeError);
+              return true;
+            },
+          },
+        ],
+        routeCommand: (_source, snapshot) => {
+          expect(snapshot.participants.participant).toBeInstanceOf(State);
+          expect(() => {
+            (
+              snapshot.participants.participant as {
+                value: number;
+              }
+            ).value = 99;
+          }).toThrow(TypeError);
+          return [];
+        },
+      },
+      assertions: {
+        perStep: (step) => {
+          expect(() => {
+            (
+              step.snapshot.participants.participant as {
+                value: number;
+              }
+            ).value = 99;
+          }).toThrow(TypeError);
+          if (step.transitions[0]) {
+            expect(() => {
+              (
+                step.transitions[0].result.state as {
+                  value: number;
+                }
+              ).value = 99;
+            }).toThrow(TypeError);
+          }
+        },
+        atQuiescence: (snapshot) => {
+          expect(snapshot.participants.participant.value).toBe(1);
+          expect(snapshot.participants.participant).toBeInstanceOf(State);
+          expect(() => {
+            (
+              snapshot.participants.participant as {
+                value: number;
+              }
+            ).value = 99;
+          }).toThrow(TypeError);
+        },
+      },
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(initialState.value).toBe(0);
+    expect(Object.isFrozen(initialState)).toBe(true);
+  });
+
+  it("reuses one frozen snapshot across action guards", () => {
+    const snapshots: object[] = [];
+    const result = runCosim<"participant", never, number, "noop", never>({
+      participants: {
+        participant: {
+          initialState: 0,
+          stateKey: String,
+          eventKey: (event) => event,
+          commandKey: (command) => command,
+          transition: (state) => ({
+            kind: "applied",
+            state,
+            commands: [],
+          }),
+        },
+      },
+      channels: {},
+      scenario: {
+        actions: ["first", "second"].map((id) => ({
+          id,
+          target: "participant" as const,
+          participant: "participant" as const,
+          event: "noop" as const,
+          enabled: (snapshot: object) => {
+            snapshots.push(snapshot);
+            return false;
+          },
+        })),
+        routeCommand: () => [],
+      },
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[1]).toBe(snapshots[0]);
+  });
+
+  it("does not re-traverse shared state after deeply freezing it", () => {
+    let ownKeysCalls = 0;
+    let callsAfterFirstSnapshot = 0;
+    const state = new Proxy(
+      { value: 0 },
+      {
+        ownKeys: (target) => {
+          ownKeysCalls++;
+          return Reflect.ownKeys(target);
+        },
+      },
+    );
+
+    const result = runCosim<
+      "participant",
+      never,
+      { value: number },
+      "noop",
+      never
+    >({
+      participants: {
+        participant: {
+          initialState: state,
+          stateKey: ({ value }) => String(value),
+          eventKey: (event) => event,
+          commandKey: (command) => command,
+          transition: (current) => ({
+            kind: "applied",
+            state: current,
+            commands: [],
+          }),
+        },
+      },
+      channels: {},
+      scenario: {
+        actions: [
+          {
+            id: "noop",
+            target: "participant",
+            participant: "participant",
+            event: "noop",
+            enabled: () => {
+              callsAfterFirstSnapshot = ownKeysCalls;
+              return true;
+            },
+          },
+        ],
+        routeCommand: () => [],
+      },
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(callsAfterFirstSnapshot).toBeGreaterThan(0);
+    expect(ownKeysCalls).toBe(callsAfterFirstSnapshot);
+  });
+
+  it("rejects a transition result without state before exploring it", () => {
+    const result = runCosim<"participant", never, number, "advance", never>({
+      participants: {
+        participant: {
+          initialState: 0,
+          stateKey: String,
+          eventKey: (event) => event,
+          commandKey: (command) => command,
+          transition: () => ({ kind: "applied", commands: [] }) as never,
+        },
+      },
+      channels: {},
+      scenario: {
+        actions: [
+          {
+            id: "advance",
+            target: "participant",
+            participant: "participant",
+            event: "advance",
+          },
+        ],
+        routeCommand: () => [],
+      },
+    });
+
+    expect(result.failure).toMatchObject({
+      phase: "driver",
+      trace: [],
+    });
+    expect(result.failure?.message).toContain("invalid transition result");
+  });
 });

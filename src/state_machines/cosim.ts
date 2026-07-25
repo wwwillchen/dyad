@@ -17,8 +17,10 @@ import type { TransitionResult } from "./types";
  * accidentally unbounded models. `schedulesExplored` reports that same count.
  * Keys and descriptions are caller projections, so the kernel neither
  * serializes domain objects nor introduces clocks, randomness, or mutable
- * module-level state. An exhaustive run reports the shortest failing trace;
- * a bounded run reports the shortest failure observed before the bound.
+ * module-level state. Callback snapshots and steps deeply freeze their domain
+ * objects in place, so callers must treat model inputs as immutable. An
+ * exhaustive run reports the shortest failing trace; a bounded run reports the
+ * shortest failure observed before the bound.
  */
 
 export type CosimTransitionResult<State, Command> = TransitionResult<
@@ -170,6 +172,32 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function freezeForCallback<Value>(
+  value: Value,
+  deeplyFrozenValues: WeakSet<object>,
+): Value {
+  const seen = new WeakSet<object>();
+  const freeze = (current: unknown): void => {
+    if (
+      (typeof current !== "object" && typeof current !== "function") ||
+      current === null ||
+      seen.has(current) ||
+      deeplyFrozenValues.has(current)
+    ) {
+      return;
+    }
+    seen.add(current);
+    for (const key of Reflect.ownKeys(current)) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (descriptor && "value" in descriptor) freeze(descriptor.value);
+    }
+    Object.freeze(current);
+    deeplyFrozenValues.add(current);
+  };
+  freeze(value);
+  return value;
+}
+
 function formatFailure(
   phase: CosimFailure["phase"],
   message: string,
@@ -259,6 +287,7 @@ export function runCosim<
   if (new Set(actionIds).size !== actionIds.length) {
     throw new Error("Scenario action ids must be unique");
   }
+  const deeplyFrozenCallbackValues = new WeakSet<object>();
 
   type Config = Configuration<
     ParticipantName,
@@ -271,14 +300,18 @@ export function runCosim<
 
   const snapshot = (
     configuration: Config,
-  ): CosimSnapshot<ParticipantName, ChannelName, State, Event, Command> => ({
-    participants: configuration.states,
-    channels: configuration.channels,
-    pendingCommands: configuration.commands,
-    remainingActionIds: configuration.remainingActions.map(
-      (index) => options.scenario.actions[index].id,
-    ),
-  });
+  ): CosimSnapshot<ParticipantName, ChannelName, State, Event, Command> =>
+    freezeForCallback(
+      {
+        participants: configuration.states,
+        channels: configuration.channels,
+        pendingCommands: configuration.commands,
+        remainingActionIds: configuration.remainingActions.map(
+          (index) => options.scenario.actions[index].id,
+        ),
+      },
+      deeplyFrozenCallbackValues,
+    );
 
   const configurationKey = (configuration: Config): string =>
     JSON.stringify({
@@ -315,8 +348,10 @@ export function runCosim<
     const previousState = configuration.states[participantName];
     const result = participant.transition(previousState, event);
     if (
+      typeof result !== "object" ||
       result === undefined ||
       result === null ||
+      !("state" in result) ||
       (result.kind !== "ignored" && result.kind !== "applied") ||
       (result.kind === "applied" && !Array.isArray(result.commands)) ||
       (result.kind === "ignored" && result.state !== previousState)
@@ -425,10 +460,13 @@ export function runCosim<
       });
     }
 
-    const currentSnapshot = snapshot(configuration);
+    let currentSnapshot: ReturnType<typeof snapshot> | undefined;
     for (const actionIndex of configuration.remainingActions) {
       const action = options.scenario.actions[actionIndex];
-      if (action.enabled?.(currentSnapshot) === false) continue;
+      if (action.enabled) {
+        currentSnapshot ??= snapshot(configuration);
+        if (action.enabled(currentSnapshot) === false) continue;
+      }
       enabled.push({
         apply: () => {
           const remainingActions = configuration.remainingActions.filter(
@@ -570,7 +608,9 @@ export function runCosim<
       let invariantFailed = false;
       for (const assertion of assertions(options.assertions?.perStep)) {
         try {
-          assertion(applied.step);
+          assertion(
+            freezeForCallback(applied.step, deeplyFrozenCallbackValues),
+          );
         } catch (error) {
           invariantFailed = true;
           failure = preferFailure(
