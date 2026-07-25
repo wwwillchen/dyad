@@ -49,6 +49,9 @@ Background and before/after examples of why this pattern exists:
   would drop the event against a partially modified old state. Cancellation is
   required resource hygiene, while operation/state-instance token checks are
   the correctness backstop that rejects any stale callback which still fires.
+- Recheck dispatcher admission after an effectful pre-commit hook. The hook can
+  synchronously re-enter owner disposal; if it does, do not commit, notify,
+  schedule commands, or report the current ticket as applied.
 - Use `TimerLeaseScope` for migrated watchdogs. Carry the lease's operation or
   state-instance token in its event, cancel it in the dispatcher's pre-commit
   lease hook before exiting state, explicitly replace it on self-re-entry, and
@@ -118,6 +121,49 @@ Background and before/after examples of why this pattern exists:
 - Controllers are disposable and their owner must call `dispose()` on provider
   unmount or entity deletion. Renderer controller collections belong to a
   provider-owned `KeyedControllerHost`; never keep them in module globals.
+- Async keyed disposal must stop admission synchronously but keep the lifetime
+  addressable until its final cleanup promise settles. Every disposal caller
+  awaits that same barrier, and same-key recreation stays blocked behind it.
+  If the key is still under synchronous construction, publish a keyed barrier
+  that adopts the eventual actor cleanup rather than treating the missing map
+  entry as already disposed. Publish the barrier before invoking any cleanup
+  hook, and aggregate synchronous admission/timer cleanup failures behind it.
+- Reserve a keyed lifetime before running definition factories. Factories may
+  synchronously re-enter host admission; reject that re-entry rather than
+  constructing a second owner that can be overwritten and leaked.
+- Bulk or machine-scoped disposal must publish one collection barrier before
+  snapshotting members and block new member admission until it settles. Enroll
+  members whose synchronous construction began before the barrier but finishes
+  after publication, suppress their buffered factory-time ingress, and await
+  their cleanup as part of that same barrier. Reserve every snapshotted member's
+  disposal cause before stopping any member: one member's injected cancellation
+  hook may otherwise re-enter and claim another member's barrier with the wrong
+  cause. If the definition remains registered, reopen admission only after
+  final cleanup.
+- Treat bounded retention as an edge-triggered deadline. Once a snapshot
+  qualifies for delayed disposal, traffic that leaves it qualifying must not
+  refresh the timer; cancel the deadline only when the authoritative snapshot
+  stops qualifying.
+- Reject bounded terminal-retention policies that do not provide a terminal
+  classifier; otherwise the configured deadline can never become eligible.
+- Retention scheduling must publish a provisional ownership token before
+  calling the injected clock, then attach the returned handle only if ownership
+  survived synchronous re-entry. Callbacks verify that token before acting, and
+  cancellation clears it before touching the clock; a clock may re-enter or
+  throw without physically removing the callback.
+- Route every actor event ingress—including command and timer callbacks—through
+  the host's shared enqueue wrapper. Bypassing it may preserve FIFO ordering
+  while skipping retention, tracing, or other host-owned settlement bookkeeping.
+- Register a newly constructed actor before draining events buffered by its
+  factories, and recheck collection/key admission for every drained event.
+  Disposal re-entered by the first event must be able to stop that actor before
+  any later buffered event commits.
+- After actor activation, recheck host, machine, and keyed admission before
+  returning the reference. Activation can synchronously re-enter disposal
+  through buffered observers or an injected retention clock.
+- When a host passes live scopes or snapshot/send methods into definition
+  factories, make factory-time access safe and construction failure-atomic.
+  Dispose every acquired task/timer resource if any later factory step throws.
 - When registering a manager method as a disposal callback, wrap it in a stable
   closure or bind it if it reads `this`; passing a bare prototype method loses
   its receiver when the registry invokes it.
