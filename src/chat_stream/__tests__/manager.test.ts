@@ -251,6 +251,8 @@ describe("ChatStreamManager", () => {
       queryClient: new QueryClient(),
       getSettings: () => undefined,
       getPosthog: () => null,
+      requestPreviewReload: vi.fn(),
+      requestCapture: vi.fn(),
     });
     manager.ensure(CHAT_ID).send({
       type: "submit",
@@ -279,6 +281,8 @@ describe("ChatStreamManager", () => {
       queryClient: new QueryClient(),
       getSettings: () => undefined,
       getPosthog: () => null,
+      requestPreviewReload: vi.fn(),
+      requestCapture: vi.fn(),
     });
     manager.ensure(CHAT_ID).send({
       type: "submit",
@@ -315,6 +319,8 @@ describe("ChatStreamManager", () => {
       queryClient: new QueryClient(),
       getSettings: () => undefined,
       getPosthog: () => null,
+      requestPreviewReload: vi.fn(),
+      requestCapture: vi.fn(),
     });
     const controller = manager.ensure(CHAT_ID);
     controller.send({
@@ -355,6 +361,8 @@ describe("ChatStreamManager", () => {
       queryClient: new QueryClient(),
       getSettings: () => undefined,
       getPosthog: () => null,
+      requestPreviewReload: vi.fn(),
+      requestCapture: vi.fn(),
     });
     const controller = manager.ensure(CHAT_ID);
     controller.send({
@@ -404,6 +412,8 @@ describe("ChatStreamManager", () => {
       queryClient: new QueryClient(),
       getSettings: () => undefined,
       getPosthog: () => null,
+      requestPreviewReload: vi.fn(),
+      requestCapture: vi.fn(),
     });
     const controller = manager.ensure(CHAT_ID);
     controller.send({

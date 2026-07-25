@@ -124,6 +124,7 @@ describe("chat stream command adapter instances", () => {
       getPosthog: () => null,
       requestPreviewReload: vi.fn(() => calls.push("reload")),
       requestCapture: vi.fn(() => calls.push("capture")),
+      getIsStreaming: () => false,
     };
     vi.spyOn(ipc.chatStream, "release").mockImplementation(() => {});
     vi.spyOn(ipc.chat, "getChat").mockResolvedValue({

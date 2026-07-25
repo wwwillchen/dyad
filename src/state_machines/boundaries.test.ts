@@ -143,13 +143,6 @@ const ALLOWLIST: readonly AllowlistEntry[] = [
     detail: "exported writable atom",
     deletionPr: "A6",
   },
-  {
-    rule: "atom-projection-call",
-    atom: "setPreviewRunStateForAppAtom",
-    file: "app_run/manager.ts",
-    detail: "registerAtomWriter",
-    deletionPr: "A4",
-  },
 ] as const;
 
 interface BoundaryViolation {
