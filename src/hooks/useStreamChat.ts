@@ -9,7 +9,11 @@ import {
 import type { Chat } from "@/ipc/types";
 import { useChatStreamManager } from "@/chat_stream/ChatStreamProvider";
 import type { StreamSettledResult } from "@/chat_stream/state";
-import { isStreamActive, selectStreamError } from "@/chat_stream/transition";
+import {
+  isStreamActive,
+  selectCanCancel,
+  selectStreamError,
+} from "@/chat_stream/transition";
 import { useChatStreamState } from "@/hooks/useChatStream";
 import { showError } from "@/lib/toast";
 import { useSearch } from "@tanstack/react-router";
@@ -113,9 +117,9 @@ export function useStreamChat({
   );
 
   const cancelStream = useCallback(() => {
-    if (chatId === undefined) return;
+    if (chatId === undefined || !selectCanCancel(streamState)) return;
     chatStreamManager.ensure(chatId).send({ type: "cancel" });
-  }, [chatId, chatStreamManager]);
+  }, [chatId, chatStreamManager, streamState]);
 
   // Memoize queue management functions to prevent unnecessary re-renders
   // in components that depend on these functions (e.g., restore effect)
