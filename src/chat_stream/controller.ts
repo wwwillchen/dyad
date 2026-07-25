@@ -55,6 +55,7 @@ export interface ChatStreamControllerOptions {
   idSource: IdSource;
   /** Read fresh on every command so tests / the runtime can swap adapters. */
   getCommands: () => ChatStreamCommands;
+  initialState?: StreamState;
   /** Invoked whenever the controller becomes fully quiescent (no pending commands). */
   onQuiescent?: (controller: ChatStreamController) => void;
   observer?: TransitionObserver<
@@ -68,9 +69,12 @@ export interface ChatStreamControllerOptions {
 export function createChatStreamController(
   options: ChatStreamControllerOptions,
 ): ChatStreamController {
-  const { chatId, idSource, getCommands, onQuiescent, observer } = options;
+  const { chatId, idSource, getCommands, initialState, onQuiescent, observer } =
+    options;
 
-  const store = new SnapshotStore<StreamState>(initialStreamState());
+  const store = new SnapshotStore<StreamState>(
+    initialState ?? initialStreamState(),
+  );
   const commandQueue: StreamCommand[] = [];
   let draining = false;
   let disposed = false;
@@ -112,21 +116,7 @@ export function createChatStreamController(
         );
       }
     },
-    publishFinalProjection() {
-      const state = disposalState;
-      if (!state || !isTransportOwned(state)) return;
-      try {
-        getCommands().syncProjection({
-          chatId,
-          state: { type: "idle" },
-        });
-      } catch (error) {
-        console.error(
-          `[chat-stream] Failed to clear projection for disposed chat ${chatId}:`,
-          error,
-        );
-      }
-    },
+    publishFinalProjection: () => undefined,
     releaseResources() {
       const state = disposalState;
       if (state && isTransportOwned(state)) {
@@ -178,32 +168,9 @@ export function createChatStreamController(
         : event;
     const result = transition(previous, transitionEvent);
     observeTransition(observer, previous, transitionEvent, result);
-    // ORDERING INVARIANT — send() can be re-entered synchronously while
-    // setState below is still on the stack: syncProjection writes
-    // isStreamingByIdAtom, plan_handoff's watch-stream-idle Jotai sub fires
-    // synchronously on that write, and its start-implementation command
-    // calls chatStream.submit(...) -> send() on this same controller
-    // (plan-accept -> implement flow). That re-entry is only safe because
-    // (a) applied commands are pushed to commandQueue BEFORE setState, so the
-    // inner event's commands cannot overtake this event's, and (b)
-    // SnapshotStore commits the snapshot BEFORE running this callback, so the
-    // inner transition sees committed state. Do not reorder these lines
-    // without adding a re-entrancy buffer (processing flag + pending-event
-    // FIFO).
     const commands = result.kind === "applied" ? result.commands : [];
     commandQueue.push(...commands);
-    store.setState(result.state, () => {
-      // Keep the legacy isStreaming projection in lockstep with the machine
-      // (single writer), then notify React subscribers.
-      try {
-        getCommands().syncProjection({ chatId, state: result.state });
-      } catch (error) {
-        console.error(
-          `[chat-stream] Failed to sync projection for chat ${chatId}:`,
-          error,
-        );
-      }
-    });
+    store.setState(result.state);
     void drain();
   }
 

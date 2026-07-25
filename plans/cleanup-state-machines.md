@@ -447,7 +447,7 @@ streaming status is read from it. Recorded decisions:
 4. **Not decided here:** message storage, queue authority, planState
    split, completion-history location, chat host placement — all G1.
 
-**A6a — Streaming status and error retirement: unblocked by G1a.**
+**A6a — Streaming status and error retirement: in flight (#4095).**
 
 The `isStreamingByIdAtom` + `chatErrorByIdAtom` stack from the appendix
 recipe: useStreamChat first (~15 components follow), ChatTabs aggregate

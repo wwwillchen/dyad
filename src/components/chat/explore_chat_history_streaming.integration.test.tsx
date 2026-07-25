@@ -3,7 +3,7 @@ import { createStore, Provider } from "jotai";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isStreamingByIdAtom, selectedChatIdAtom } from "@/atoms/chatAtoms";
+import { selectedChatIdAtom } from "@/atoms/chatAtoms";
 import { ChatStreamManager } from "@/chat_stream/manager";
 import { ChatStreamProvider } from "@/chat_stream/ChatStreamProvider";
 import { applyPreviewChunk } from "@/lib/streamingPreviewSync";
@@ -13,6 +13,7 @@ import { readChatTool } from "@/pro/main/ipc/handlers/local_agent/tools/read_cha
 
 const mocks = vi.hoisted(() => ({
   runExploreChatHistorySubagent: vi.fn(),
+  streamState: { type: "streaming" } as { type: string },
 }));
 
 vi.mock(
@@ -34,6 +35,11 @@ vi.mock("../preview_panel/FileEditor", () => ({
 
 vi.mock("@/hooks/useStreamChat", () => ({
   useStreamChat: () => ({ streamMessage: vi.fn() }),
+}));
+
+vi.mock("@/hooks/useChatStream", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/useChatStream")>()),
+  useChatStreamState: () => mocks.streamState,
 }));
 
 import { exploreChatHistoryTool } from "@/pro/main/ipc/handlers/local_agent/tools/explore_chat_history";
@@ -74,7 +80,6 @@ describe("explore_chat_history streaming preview", () => {
     const store = createStore();
     const manager = new ChatStreamManager(store);
     store.set(selectedChatIdAtom, chatId);
-    store.set(isStreamingByIdAtom, new Map([[chatId, true]]));
 
     let latestPreviewXml = "";
     const setPreview = (id: number, content: string) =>
@@ -139,7 +144,6 @@ describe("explore_chat_history streaming preview", () => {
     const store = createStore();
     const manager = new ChatStreamManager(store);
     store.set(selectedChatIdAtom, chatId);
-    store.set(isStreamingByIdAtom, new Map([[chatId, true]]));
 
     const mixedArgs = {
       chat_id: 703,

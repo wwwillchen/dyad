@@ -12,6 +12,9 @@ const CHAT_ID = 42;
 const mocks = vi.hoisted(() => ({
   controllerSend: vi.fn(),
   showError: vi.fn(),
+  streamState: {
+    current: { type: "idle" },
+  } as { current: { type: string } },
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -20,7 +23,11 @@ vi.mock("@tanstack/react-router", () => ({
 
 vi.mock("@/chat_stream/ChatStreamProvider", () => ({
   useChatStreamManager: () => ({
-    ensure: () => ({ send: mocks.controllerSend }),
+    ensure: () => ({
+      send: mocks.controllerSend,
+      getSnapshot: () => mocks.streamState.current,
+      subscribe: () => () => {},
+    }),
   }),
 }));
 
@@ -229,6 +236,7 @@ describe("useStreamChat queueMessage", () => {
 describe("useStreamChat cancelStream", () => {
   beforeEach(() => {
     mocks.controllerSend.mockReset();
+    mocks.streamState.current = { type: "starting" };
   });
 
   it("routes cancellation through the stream machine", () => {
@@ -243,6 +251,43 @@ describe("useStreamChat cancelStream", () => {
 
     expect(mocks.controllerSend).toHaveBeenCalledExactlyOnceWith({
       type: "cancel",
+    });
+  });
+
+  it("does not send cancel after the transport is already cancelling", () => {
+    mocks.streamState.current = { type: "cancelling" };
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useStreamChat(), {
+      wrapper: Wrapper,
+    });
+
+    act(() => {
+      result.current.cancelStream();
+    });
+
+    expect(mocks.controllerSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("useStreamChat external errors", () => {
+  beforeEach(() => {
+    mocks.controllerSend.mockReset();
+    mocks.streamState.current = { type: "idle" };
+  });
+
+  it("routes consent failures through the stream machine", () => {
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useStreamChat(), {
+      wrapper: Wrapper,
+    });
+
+    act(() => {
+      result.current.setError("Approval failed");
+    });
+
+    expect(mocks.controllerSend).toHaveBeenCalledExactlyOnceWith({
+      type: "external-error",
+      error: "Approval failed",
     });
   });
 });

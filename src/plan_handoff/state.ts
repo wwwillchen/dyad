@@ -95,9 +95,8 @@ export type HandoffEvent =
   /** `create-chat` / `switch-chat-mode` failed. */
   | { readonly type: "CHAT_PREPARE_FAILED"; readonly error: string }
   /**
-   * The stream for `chatId` is idle. Fed by the adapter, which today observes
-   * `isStreamingByIdAtom`; the machine only consumes the event, so the event
-   * source can be swapped without touching the machine.
+   * The stream for `chatId` is idle. Fed by the injected chat-stream facade;
+   * the machine only consumes the event, so its source remains replaceable.
    */
   | { readonly type: "STREAM_BECAME_IDLE"; readonly chatId: number }
   /** The implementation stream has been started. */

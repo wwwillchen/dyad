@@ -20,6 +20,9 @@ import { makeChatStreamRef } from "./test_refs";
 import {
   initialStreamState,
   isStreamActive,
+  selectCanCancel,
+  selectCanSubmitImmediately,
+  selectStreamError,
   streamInvocationRef,
   transition,
 } from "../transition";
@@ -114,6 +117,8 @@ function eventVariants(): StreamEvent[] {
     { type: "finalize-complete", invocationRef: ref(4), ok: false },
     { type: "finalize-complete", invocationRef: ref(999), ok: true },
     { type: "queue-poked" },
+    { type: "external-error", error: "external failure" },
+    { type: "external-error", error: "boom" },
   ];
 }
 
@@ -139,6 +144,7 @@ const ALL_IGNORE_REASONS = new Set<ChatStreamIgnoreReason>([
   "chunk-while-streaming",
   "not-finalizing",
   "stream-active",
+  "same-error",
   "too-late-to-cancel",
 ]);
 
@@ -150,6 +156,19 @@ describe("streamInvocationRef", () => {
     expect(streamInvocationRef(STATE_FACTORIES.cancelling())).toEqual(ref(4));
     expect(streamInvocationRef(STATE_FACTORIES.finalizing())).toEqual(ref(4));
     expect(streamInvocationRef(STATE_FACTORIES.errored())).toBeUndefined();
+  });
+});
+
+describe("stream selectors", () => {
+  it("derives lifecycle capabilities and terminal errors", () => {
+    expect(selectCanSubmitImmediately(STATE_FACTORIES.idle())).toBe(true);
+    expect(selectCanSubmitImmediately(STATE_FACTORIES.errored())).toBe(true);
+    expect(selectCanSubmitImmediately(STATE_FACTORIES.streaming())).toBe(false);
+    expect(selectCanCancel(STATE_FACTORIES.starting())).toBe(true);
+    expect(selectCanCancel(STATE_FACTORIES.streaming())).toBe(true);
+    expect(selectCanCancel(STATE_FACTORIES.cancelling())).toBe(false);
+    expect(selectStreamError(STATE_FACTORIES.idle())).toBeNull();
+    expect(selectStreamError(STATE_FACTORIES.errored())).toBe("boom");
   });
 });
 
@@ -440,6 +459,81 @@ describe("happy path", () => {
     expect(commandsOf(result)[0]).toMatchObject({
       type: "start-stream",
       invocationRef: ref(5),
+    });
+  });
+});
+
+describe("external errors during an active stream", () => {
+  it("retains the failure through finalization and then exposes it", () => {
+    for (const type of ["starting", "streaming", "cancelling"] as const) {
+      let result = step(STATE_FACTORIES[type](), {
+        type: "external-error",
+        error: `consent failed during ${type}`,
+      });
+      expect(result.state).toMatchObject({
+        type,
+        pendingExternalError: `consent failed during ${type}`,
+      });
+      expect(commandsOf(result)).toEqual([]);
+
+      result = step(result.state, {
+        type: "stream-ended",
+        invocationRef: ref(4),
+        response: endResponse(),
+      });
+      expect(result.state).toMatchObject({
+        type: "finalizing",
+        pendingExternalError: `consent failed during ${type}`,
+      });
+
+      result = step(result.state, {
+        type: "finalize-complete",
+        invocationRef: ref(4),
+        ok: true,
+      });
+      expect(result.state).toEqual({
+        type: "errored",
+        error: `consent failed during ${type}`,
+      });
+    }
+  });
+
+  it("retains a failure reported during finalization and suppresses queue dispatch", () => {
+    let result = step(STATE_FACTORIES.finalizing(), {
+      type: "external-error",
+      error: "consent failed while finalizing",
+    });
+    expect(result.state).toMatchObject({
+      type: "finalizing",
+      pendingExternalError: "consent failed while finalizing",
+    });
+
+    result = step(result.state, {
+      type: "finalize-complete",
+      invocationRef: ref(4),
+      ok: true,
+    });
+    expect(result.state).toEqual({
+      type: "errored",
+      error: "consent failed while finalizing",
+    });
+    expect(commandsOf(result)).toEqual([]);
+  });
+
+  it("lets a later transport error supersede a pending external error", () => {
+    const withExternalError = step(STATE_FACTORIES.streaming(), {
+      type: "external-error",
+      error: "consent failed",
+    }).state;
+    const result = step(withExternalError, {
+      type: "stream-errored",
+      invocationRef: ref(4),
+      error: "transport failed",
+    });
+
+    expect(result.state).toEqual({
+      type: "errored",
+      error: "transport failed",
     });
   });
 });

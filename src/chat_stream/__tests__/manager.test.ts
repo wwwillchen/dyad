@@ -2,12 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { createStore } from "jotai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  chatErrorByIdAtom,
-  isStreamingByIdAtom,
-  queuePausedByIdAtom,
-  queuedMessagesByIdAtom,
-} from "@/atoms/chatAtoms";
+import { queuePausedByIdAtom, queuedMessagesByIdAtom } from "@/atoms/chatAtoms";
 import { ipc } from "@/ipc/types";
 import { resolveAppIdForChat } from "@/lib/chatUtils";
 
@@ -131,6 +126,25 @@ describe("ChatStreamManager", () => {
       invocationRef: ref(3),
       error: "boom",
     });
+
+    controller.send({
+      type: "submit",
+      request: { chatId: CHAT_ID, prompt: "external error" },
+    });
+    controller.send({
+      type: "stream-ended",
+      invocationRef: ref(4),
+      response: { chatId: CHAT_ID, updatedFiles: false },
+    });
+    controller.send({
+      type: "external-error",
+      error: "consent failed while finalizing",
+    });
+    controller.send({
+      type: "finalize-complete",
+      invocationRef: ref(4),
+      ok: true,
+    });
     await flush();
 
     expect(listener.mock.calls.map(([event]) => event)).toEqual([
@@ -142,6 +156,7 @@ describe("ChatStreamManager", () => {
       },
       { chatId: CHAT_ID, invocationRef: ref(2), outcome: "cancelled" },
       { chatId: CHAT_ID, invocationRef: ref(3), outcome: "errored" },
+      { chatId: CHAT_ID, invocationRef: ref(4), outcome: "errored" },
     ]);
     expect(secondListener.mock.calls).toEqual(listener.mock.calls);
 
@@ -184,19 +199,19 @@ describe("ChatStreamManager", () => {
   it("disposes the controller and clears all stream residue for a deleted chat", () => {
     const store = createStore();
     const manager = new ChatStreamManager(store, createSequentialIdSource());
-    manager.ensure(CHAT_ID);
+    manager.ensure(CHAT_ID).send({
+      type: "external-error",
+      error: "boom",
+    });
     store.set(queuedMessagesByIdAtom, new Map([[CHAT_ID, []]]));
     store.set(queuePausedByIdAtom, new Map([[CHAT_ID, true]]));
-    store.set(chatErrorByIdAtom, new Map([[CHAT_ID, "boom"]]));
-    store.set(isStreamingByIdAtom, new Map([[CHAT_ID, false]]));
 
     manager.disposeKey(CHAT_ID);
 
     expect(manager.peek(CHAT_ID)).toBeUndefined();
     expect(store.get(queuedMessagesByIdAtom).has(CHAT_ID)).toBe(false);
     expect(store.get(queuePausedByIdAtom).has(CHAT_ID)).toBe(false);
-    expect(store.get(chatErrorByIdAtom).has(CHAT_ID)).toBe(false);
-    expect(store.get(isStreamingByIdAtom).has(CHAT_ID)).toBe(false);
+    expect(manager.ensure(CHAT_ID).getSnapshot()).toEqual({ type: "idle" });
   });
 
   it("retains runtime deps until a late stream registration can be released", async () => {
@@ -225,17 +240,16 @@ describe("ChatStreamManager", () => {
       request: { chatId: CHAT_ID, prompt: "hello" },
     });
     await flush();
-    expect(store.get(isStreamingByIdAtom).get(CHAT_ID)).toBe(true);
+    expect(manager.getIsStreaming(CHAT_ID)).toBe(true);
 
     manager.dispose();
     manager.dispose();
     expect(release).toHaveBeenCalledOnce();
-    expect(store.get(isStreamingByIdAtom).get(CHAT_ID)).toBe(false);
+    expect(manager.getIsStreaming(CHAT_ID)).toBe(false);
     const replacement = new ChatStreamManager(
       store,
       createSequentialIdSource(),
     );
-    expect(() => replacement.start()).not.toThrow();
     replacement.dispose();
 
     resolveAppId(4);
@@ -246,5 +260,248 @@ describe("ChatStreamManager", () => {
     expect(release).toHaveBeenLastCalledWith(CHAT_ID, {
       invocationRef: ref(1),
     });
+  });
+
+  it("fires a deletion-time idle watcher exactly once and asynchronously", async () => {
+    vi.mocked(resolveAppIdForChat).mockReturnValue(new Promise(() => {}));
+    const store = createStore();
+    const manager = new ChatStreamManager(store, createSequentialIdSource());
+    manager.registerRuntimeDeps({
+      store,
+      queryClient: new QueryClient(),
+      getSettings: () => undefined,
+      getPosthog: () => null,
+      requestPreviewReload: vi.fn(),
+      requestCapture: vi.fn(),
+    });
+    manager.ensure(CHAT_ID).send({
+      type: "submit",
+      request: { chatId: CHAT_ID, prompt: "in flight" },
+    });
+    const callback = vi.fn();
+    manager.watchIdle(CHAT_ID, callback);
+
+    manager.disposeKey(CHAT_ID);
+    expect(callback).not.toHaveBeenCalled();
+
+    await Promise.resolve();
+    expect(callback).toHaveBeenCalledOnce();
+
+    manager.disposeKey(CHAT_ID);
+    await Promise.resolve();
+    expect(callback).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a disposal watcher armed if the chat restarts before delivery", async () => {
+    vi.mocked(resolveAppIdForChat).mockReturnValue(new Promise(() => {}));
+    const store = createStore();
+    const manager = new ChatStreamManager(store, createSequentialIdSource());
+    manager.registerRuntimeDeps({
+      store,
+      queryClient: new QueryClient(),
+      getSettings: () => undefined,
+      getPosthog: () => null,
+      requestPreviewReload: vi.fn(),
+      requestCapture: vi.fn(),
+    });
+    manager.ensure(CHAT_ID).send({
+      type: "submit",
+      request: { chatId: CHAT_ID, prompt: "deleted" },
+    });
+    const callback = vi.fn();
+    manager.watchIdle(CHAT_ID, callback);
+
+    manager.disposeKey(CHAT_ID);
+    const replacement = manager.ensure(CHAT_ID);
+    replacement.send({
+      type: "submit",
+      request: { chatId: CHAT_ID, prompt: "replacement" },
+    });
+    await flush();
+    expect(callback).not.toHaveBeenCalled();
+
+    replacement.send({
+      type: "stream-errored",
+      invocationRef: ref(2),
+      error: "replacement failed",
+    });
+    await flush();
+    expect(callback).toHaveBeenCalledOnce();
+    manager.dispose();
+  });
+
+  it("defers idle re-entry so a callback submit starts a fresh send", async () => {
+    vi.mocked(resolveAppIdForChat).mockReturnValue(new Promise(() => {}));
+    const store = createStore();
+    const manager = new ChatStreamManager(store, createSequentialIdSource());
+    manager.registerRuntimeDeps({
+      store,
+      queryClient: new QueryClient(),
+      getSettings: () => undefined,
+      getPosthog: () => null,
+      requestPreviewReload: vi.fn(),
+      requestCapture: vi.fn(),
+    });
+    const controller = manager.ensure(CHAT_ID);
+    controller.send({
+      type: "submit",
+      request: { chatId: CHAT_ID, prompt: "first" },
+    });
+    const callback = vi.fn(() => {
+      manager.ensure(CHAT_ID).send({
+        type: "submit",
+        request: { chatId: CHAT_ID, prompt: "fresh" },
+      });
+    });
+    manager.watchIdle(CHAT_ID, callback);
+
+    controller.send({
+      type: "stream-errored",
+      invocationRef: ref(1),
+      error: "first failed",
+    });
+    expect(callback).not.toHaveBeenCalled();
+
+    await flush();
+    expect(callback).toHaveBeenCalledOnce();
+    expect(manager.ensure(CHAT_ID).getSnapshot()).toMatchObject({
+      type: "starting",
+      invocationRef: ref(2),
+      request: { prompt: "fresh" },
+    });
+    manager.dispose();
+  });
+
+  it("waits through finalization before an idle callback starts a fresh send", async () => {
+    vi.mocked(resolveAppIdForChat).mockReturnValue(new Promise(() => {}));
+    const store = createStore();
+    const manager = new ChatStreamManager(store, createSequentialIdSource());
+    manager.registerRuntimeDeps({
+      store,
+      queryClient: new QueryClient(),
+      getSettings: () => undefined,
+      getPosthog: () => null,
+      requestPreviewReload: vi.fn(),
+      requestCapture: vi.fn(),
+    });
+    const controller = manager.ensure(CHAT_ID);
+    controller.send({
+      type: "submit",
+      request: { chatId: CHAT_ID, prompt: "first" },
+    });
+    controller.send({
+      type: "stream-ended",
+      invocationRef: ref(1),
+      response: { chatId: CHAT_ID, updatedFiles: false },
+    });
+    expect(controller.getSnapshot().type).toBe("finalizing");
+    expect(manager.isIdle(CHAT_ID)).toBe(false);
+
+    const callback = vi.fn(() => {
+      manager.ensure(CHAT_ID).send({
+        type: "submit",
+        request: { chatId: CHAT_ID, prompt: "fresh" },
+      });
+    });
+    manager.watchIdle(CHAT_ID, callback);
+    await flush();
+    expect(callback).not.toHaveBeenCalled();
+
+    controller.send({
+      type: "finalize-complete",
+      invocationRef: ref(1),
+      ok: true,
+    });
+    await flush();
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(manager.ensure(CHAT_ID).getSnapshot()).toMatchObject({
+      type: "starting",
+      invocationRef: ref(2),
+      request: { prompt: "fresh" },
+    });
+    manager.dispose();
+  });
+
+  it("waits for a replacement stream that starts before idle delivery", async () => {
+    vi.mocked(resolveAppIdForChat).mockReturnValue(new Promise(() => {}));
+    const store = createStore();
+    const manager = new ChatStreamManager(store, createSequentialIdSource());
+    manager.registerRuntimeDeps({
+      store,
+      queryClient: new QueryClient(),
+      getSettings: () => undefined,
+      getPosthog: () => null,
+      requestPreviewReload: vi.fn(),
+      requestCapture: vi.fn(),
+    });
+    const controller = manager.ensure(CHAT_ID);
+    controller.send({
+      type: "submit",
+      request: { chatId: CHAT_ID, prompt: "first" },
+    });
+    const callback = vi.fn(() => {
+      manager.ensure(CHAT_ID).send({
+        type: "submit",
+        request: { chatId: CHAT_ID, prompt: "fresh" },
+      });
+    });
+    manager.watchIdle(CHAT_ID, callback);
+
+    controller.send({
+      type: "stream-errored",
+      invocationRef: ref(1),
+      error: "first failed",
+    });
+    controller.send({
+      type: "submit",
+      request: { chatId: CHAT_ID, prompt: "replacement" },
+    });
+    await flush();
+    expect(callback).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      type: "starting",
+      invocationRef: ref(2),
+    });
+
+    controller.send({
+      type: "stream-errored",
+      invocationRef: ref(2),
+      error: "replacement failed",
+    });
+    await flush();
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(manager.ensure(CHAT_ID).getSnapshot()).toMatchObject({
+      type: "starting",
+      invocationRef: ref(3),
+      request: { prompt: "fresh" },
+    });
+    manager.dispose();
+  });
+
+  it("bounds durable terminal errors and evicts the oldest chat", async () => {
+    const manager = new ChatStreamManager(
+      createStore(),
+      createSequentialIdSource(),
+    );
+    for (let chatId = 1; chatId <= 101; chatId += 1) {
+      manager.ensure(chatId).send({
+        type: "external-error",
+        error: `error ${chatId}`,
+      });
+    }
+    await flush();
+
+    expect(manager.ensure(1).getSnapshot()).toEqual({ type: "idle" });
+    expect(manager.ensure(2).getSnapshot()).toEqual({
+      type: "errored",
+      error: "error 2",
+    });
+    expect(manager.ensure(101).getSnapshot()).toEqual({
+      type: "errored",
+      error: "error 101",
+    });
+    manager.dispose();
   });
 });

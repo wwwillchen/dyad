@@ -36,6 +36,7 @@ describe("chat stream command adapter instances", () => {
         getPosthog: () => null,
         requestPreviewReload: vi.fn(),
         requestCapture: vi.fn(),
+        getIsStreaming: () => false,
       };
       return createProductionChatStreamCommands(() => deps);
     };
@@ -80,6 +81,7 @@ describe("chat stream command adapter instances", () => {
       getPosthog: () => null,
       requestPreviewReload: vi.fn(),
       requestCapture: vi.fn(),
+      getIsStreaming: () => false,
     };
     vi.spyOn(ipc.chatStream, "start").mockImplementation(
       ({ chatId, userInputRequestId }, callbacks) => {
@@ -122,6 +124,7 @@ describe("chat stream command adapter instances", () => {
       getPosthog: () => null,
       requestPreviewReload: vi.fn(() => calls.push("reload")),
       requestCapture: vi.fn(() => calls.push("capture")),
+      getIsStreaming: () => false,
     };
     vi.spyOn(ipc.chatStream, "release").mockImplementation(() => {});
     vi.spyOn(ipc.chat, "getChat").mockResolvedValue({
@@ -172,6 +175,7 @@ describe("chat stream command adapter instances", () => {
       getPosthog: () => null,
       requestPreviewReload: vi.fn(),
       requestCapture: vi.fn(),
+      getIsStreaming: () => false,
     };
     deps.store.set(
       chatMessagesByIdAtom,

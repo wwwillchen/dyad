@@ -31,6 +31,21 @@ export function isStreamActive(state: StreamState): boolean {
   );
 }
 
+/** True when a submit starts immediately instead of joining the prompt queue. */
+export function selectCanSubmitImmediately(state: StreamState): boolean {
+  return state.type === "idle" || state.type === "errored";
+}
+
+/** True while cancel can still affect the active transport. */
+export function selectCanCancel(state: StreamState): boolean {
+  return state.type === "starting" || state.type === "streaming";
+}
+
+/** The terminal stream error rendered by chat surfaces. */
+export function selectStreamError(state: StreamState): string | null {
+  return state.type === "errored" ? state.error : null;
+}
+
 /** Initial state for a freshly created controller. */
 export function initialStreamState(): StreamState {
   return { type: "idle" };
@@ -81,6 +96,34 @@ function isStaleRegistration(
   );
 }
 
+function pendingExternalError(
+  state: Extract<
+    StreamState,
+    { type: "starting" | "streaming" | "cancelling" | "finalizing" }
+  >,
+): { pendingExternalError?: string } {
+  return state.pendingExternalError === undefined
+    ? {}
+    : { pendingExternalError: state.pendingExternalError };
+}
+
+function retainExternalError(
+  state: Extract<
+    StreamState,
+    { type: "starting" | "streaming" | "cancelling" | "finalizing" }
+  >,
+  error: string,
+): TransitionResult<StreamState, StreamCommand, ChatStreamIgnoreReason> {
+  if (state.pendingExternalError === error) {
+    return ignore(state, "same-error");
+  }
+  return {
+    kind: "applied",
+    state: { ...state, pendingExternalError: error },
+    commands: [],
+  };
+}
+
 export function transition(
   state: StreamState,
   event: StreamTransitionEvent,
@@ -116,6 +159,12 @@ export function transition(
             state,
             commands: [{ type: "dispatch-next-queued" }],
           };
+        case "external-error":
+          return {
+            kind: "applied",
+            state: { type: "errored", error: event.error },
+            commands: [],
+          };
         case "cancel":
         case "registered":
         case "stream-context":
@@ -150,6 +199,7 @@ export function transition(
               request: state.request,
               registered: false,
               targetAppId: state.targetAppId,
+              ...pendingExternalError(state),
             },
             commands: [{ type: "request-abort" }],
           };
@@ -164,6 +214,7 @@ export function transition(
               invocationRef: state.invocationRef,
               request: state.request,
               targetAppId: state.targetAppId,
+              ...pendingExternalError(state),
             },
             commands: [],
           };
@@ -188,6 +239,7 @@ export function transition(
               invocationRef: state.invocationRef,
               request: state.request,
               targetAppId: state.targetAppId,
+              ...pendingExternalError(state),
             },
             commands: [],
           };
@@ -201,6 +253,7 @@ export function transition(
               request: state.request,
               wasCancelled: event.response.wasCancelled === true,
               targetAppId: state.targetAppId,
+              ...pendingExternalError(state),
               ...(event.response.chatSummary === undefined
                 ? {}
                 : { chatSummary: event.response.chatSummary }),
@@ -238,6 +291,8 @@ export function transition(
           return ignore(state, "not-finalizing");
         case "queue-poked":
           return ignore(state, "stream-active");
+        case "external-error":
+          return retainExternalError(state, event.error);
       }
       break;
     }
@@ -259,6 +314,7 @@ export function transition(
               request: state.request,
               registered: true,
               targetAppId: state.targetAppId,
+              ...pendingExternalError(state),
             },
             commands: [{ type: "request-abort" }],
           };
@@ -272,6 +328,7 @@ export function transition(
               request: state.request,
               wasCancelled: event.response.wasCancelled === true,
               targetAppId: state.targetAppId,
+              ...pendingExternalError(state),
               ...(event.response.chatSummary === undefined
                 ? {}
                 : { chatSummary: event.response.chatSummary }),
@@ -331,6 +388,8 @@ export function transition(
           return ignore(state, "not-finalizing");
         case "queue-poked":
           return ignore(state, "stream-active");
+        case "external-error":
+          return retainExternalError(state, event.error);
       }
       break;
     }
@@ -372,6 +431,7 @@ export function transition(
               request: state.request,
               wasCancelled: event.response.wasCancelled === true,
               targetAppId: state.targetAppId,
+              ...pendingExternalError(state),
               ...(event.response.chatSummary === undefined
                 ? {}
                 : { chatSummary: event.response.chatSummary }),
@@ -427,6 +487,8 @@ export function transition(
           return ignore(state, "not-finalizing");
         case "queue-poked":
           return ignore(state, "stream-active");
+        case "external-error":
+          return retainExternalError(state, event.error);
       }
       break;
     }
@@ -443,10 +505,19 @@ export function transition(
           };
         case "finalize-complete": {
           if (isStale(state, event)) return ignore(state, "stale-stream-id");
-          const shouldDispatch = event.ok && !state.wasCancelled;
+          const shouldDispatch =
+            event.ok &&
+            !state.wasCancelled &&
+            state.pendingExternalError === undefined;
           return {
             kind: "applied",
-            state: { type: "idle" },
+            state:
+              state.pendingExternalError === undefined
+                ? { type: "idle" }
+                : {
+                    type: "errored",
+                    error: state.pendingExternalError,
+                  },
             // Queue dispatch is an explicit command emitted ONLY on this
             // transition (single-dispatch by construction; fixes the queue
             // double-dispatch race).
@@ -488,6 +559,8 @@ export function transition(
           );
         case "queue-poked":
           return ignore(state, "stream-active");
+        case "external-error":
+          return retainExternalError(state, event.error);
       }
       break;
     }
@@ -521,6 +594,15 @@ export function transition(
             kind: "applied",
             state,
             commands: [{ type: "dispatch-next-queued" }],
+          };
+        case "external-error":
+          if (event.error === state.error) {
+            return ignore(state, "same-error");
+          }
+          return {
+            kind: "applied",
+            state: { type: "errored", error: event.error },
+            commands: [],
           };
         case "cancel":
         case "registered":

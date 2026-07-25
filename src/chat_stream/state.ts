@@ -96,12 +96,14 @@ export type StreamState =
       invocationRef: ChatStreamInvocationRef;
       request: StreamRequest;
       targetAppId: number | null;
+      pendingExternalError?: string;
     }
   | {
       type: "streaming";
       invocationRef: ChatStreamInvocationRef;
       request: StreamRequest;
       targetAppId: number | null;
+      pendingExternalError?: string;
     }
   | {
       type: "cancelling";
@@ -109,6 +111,7 @@ export type StreamState =
       request: StreamRequest;
       registered: boolean;
       targetAppId: number | null;
+      pendingExternalError?: string;
     }
   | {
       type: "finalizing";
@@ -117,6 +120,7 @@ export type StreamState =
       wasCancelled: boolean;
       targetAppId: number | null;
       chatSummary?: string;
+      pendingExternalError?: string;
     }
   | { type: "errored"; error: string };
 
@@ -163,6 +167,8 @@ export type StreamEvent =
       invocationRef: ChatStreamInvocationRef;
       ok: boolean;
     }
+  /** A non-streaming chat action failed and reports through the same owner. */
+  | { type: "external-error"; error: string }
   /** The queue may have become dispatchable (resume clicked, etc.). */
   | { type: "queue-poked" };
 
@@ -213,4 +219,5 @@ export type ChatStreamIgnoreReason =
   | "chunk-while-streaming"
   | "not-finalizing"
   | "stream-active"
+  | "same-error"
   | "too-late-to-cancel";

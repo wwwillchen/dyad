@@ -22,8 +22,12 @@ import { DyadCodebaseContext } from "./DyadCodebaseContext";
 import { DyadThink } from "./DyadThink";
 import { CodeHighlight } from "./CodeHighlight";
 import { useAtomValue } from "jotai";
-import { isStreamingByIdAtom, selectedChatIdAtom } from "@/atoms/chatAtoms";
-import { useChatStreamPreview } from "@/hooks/useChatStream";
+import { selectedChatIdAtom } from "@/atoms/chatAtoms";
+import {
+  useChatStreamPreview,
+  useChatStreamState,
+} from "@/hooks/useChatStream";
+import { isStreamActive } from "@/chat_stream/transition";
 import { CustomTagState } from "./stateTypes";
 import { DyadOutput } from "./DyadOutput";
 import { DyadProblemSummary } from "./DyadProblemSummary";
@@ -126,9 +130,10 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
   showStreamingPreview = false,
 }) => {
   const chatId = useAtomValue(selectedChatIdAtom);
-  const isStreamingMap = useAtomValue(isStreamingByIdAtom);
-  const isStreaming =
-    chatId != null ? (isStreamingMap.get(chatId) ?? false) : false;
+  const streamState = useChatStreamState(chatId ?? undefined) ?? {
+    type: "idle",
+  };
+  const isStreaming = isStreamActive(streamState);
   const deferredContent = useDeferredValue(content);
   const contentToParse = isStreaming ? deferredContent : content;
 

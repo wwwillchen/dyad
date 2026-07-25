@@ -8,13 +8,11 @@ import {
   useMemo,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { selectAtom } from "jotai/utils";
 import { AnimatePresence, motion, type Transition } from "framer-motion";
 import {
-  chatErrorByIdAtom,
   chatMessagesByIdAtom,
-  isStreamingByIdAtom,
   scrollToBottomRequestedChatIdsAtom,
 } from "../atoms/chatAtoms";
 import { ipc } from "@/ipc/types";
@@ -43,8 +41,15 @@ import { useLoadApps } from "@/hooks/useLoadApps";
 import { useVersionPreview } from "@/hooks/useVersionPreview";
 import { isPaneVisibleState } from "@/version_preview/state";
 import { useChatStreamState } from "@/hooks/useChatStream";
-import { useStreamFinished } from "@/chat_stream/ChatStreamProvider";
-import { streamInvocationRef } from "@/chat_stream/transition";
+import {
+  useChatStreamManager,
+  useStreamFinished,
+} from "@/chat_stream/ChatStreamProvider";
+import {
+  isStreamActive,
+  selectStreamError,
+  streamInvocationRef,
+} from "@/chat_stream/transition";
 import { automaticChatScrollReason } from "./chatPanelScroll";
 import {
   useChatMessages,
@@ -67,7 +72,6 @@ export function ChatPanel({
   const { t } = useTranslation("chat");
   const messages = useChatMessages(chatId);
   const messagesLoaded = useChatMessagesLoaded(chatId);
-  const chatErrorById = useAtomValue(chatErrorByIdAtom);
   const setMessagesById = useSetAtom(chatMessagesByIdAtom);
   const setScrollToBottomRequestedChatIds = useSetAtom(
     scrollToBottomRequestedChatIdsAtom,
@@ -98,9 +102,8 @@ export function ChatPanel({
     useVersionPreview(selectedAppId);
   const isVersionPaneOpen = isPaneVisibleState(versionPreviewState);
   const [terminalFitSignal, setTerminalFitSignal] = useState(0);
-  const isStreamingById = useAtomValue(isStreamingByIdAtom);
-  const streamState = useChatStreamState(chatId);
-  const store = useStore();
+  const streamState = useChatStreamState(chatId) ?? { type: "idle" };
+  const chatStreamManager = useChatStreamManager();
   const { settings } = useSettings();
   const { selectedMode, setChatMode } = useChatMode(chatId);
   const { isQuotaExceeded } = useFreeAgentQuota();
@@ -146,10 +149,8 @@ export function ChatPanel({
   }, [scrollToBottom]);
 
   // Scroll to bottom when a new stream starts (user sent a message)
-  const streamOperationId = streamState
-    ? (streamInvocationRef(streamState)?.operationId ?? "")
-    : "";
-  const streamError = chatId ? (chatErrorById.get(chatId) ?? null) : null;
+  const streamOperationId = streamInvocationRef(streamState)?.operationId ?? "";
+  const streamError = selectStreamError(streamState);
   const isTerminalOpen = chatId
     ? (terminalOpenByChatId.get(chatId) ?? false)
     : false;
@@ -270,24 +271,23 @@ export function ChatPanel({
     // content than the throttled DB snapshot, and overwriting would corrupt the
     // renderer's base for subsequent patches (offset mismatch). onEnd will do
     // a correct full sync when the stream finishes.
-    // Read via store.get so both checks see the current atom value regardless
-    // of React batching or commit-to-effect timing.
-    if (store.get(isStreamingByIdAtom).get(chatId)) return;
+    // Read at call time so both checks observe the current machine snapshot.
+    if (chatStreamManager.getIsStreaming(chatId)) return;
     const chat = await ipc.chat.getChat(chatId);
     // Re-check after the async fetch: streaming may have started while in flight.
-    if (store.get(isStreamingByIdAtom).get(chatId)) return;
+    if (chatStreamManager.getIsStreaming(chatId)) return;
     setMessagesById((prev) => {
       const next = new Map(prev);
       next.set(chatId, chat.messages);
       return next;
     });
-  }, [chatId, setMessagesById, store]); // store is stable; isStreamingById read via store.get at call time
+  }, [chatId, chatStreamManager, setMessagesById]);
 
   useEffect(() => {
     fetchChatMessages();
   }, [fetchChatMessages]);
 
-  const isStreaming = chatId ? (isStreamingById.get(chatId) ?? false) : false;
+  const isStreaming = isStreamActive(streamState);
 
   // Scroll to bottom when streaming completes to ensure footer content is
   // Keep the completed footer visible if the user was following the stream.

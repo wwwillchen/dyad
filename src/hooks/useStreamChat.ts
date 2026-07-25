@@ -2,8 +2,6 @@ import { useCallback } from "react";
 import type { ComponentSelection, FileAttachment } from "@/ipc/types";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
-  chatErrorByIdAtom,
-  isStreamingByIdAtom,
   queuedMessagesByIdAtom,
   queuePausedByIdAtom,
   type QueuedMessageItem,
@@ -11,6 +9,12 @@ import {
 import type { Chat } from "@/ipc/types";
 import { useChatStreamManager } from "@/chat_stream/ChatStreamProvider";
 import type { StreamSettledResult } from "@/chat_stream/state";
+import {
+  isStreamActive,
+  selectCanCancel,
+  selectStreamError,
+} from "@/chat_stream/transition";
+import { useChatStreamState } from "@/hooks/useChatStream";
 import { showError } from "@/lib/toast";
 import { useSearch } from "@tanstack/react-router";
 import { validateChatAttachmentFiles } from "@/shared/chatAttachmentLimits";
@@ -35,16 +39,12 @@ async function rejectQueuedOwner(
  *
  * The stream lifecycle itself (start/cancel/finalize/queue dispatch) is owned
  * by the per-chat state machine in `src/chat_stream/`; this hook validates
- * submissions, forwards them as machine events, and exposes the legacy
- * projections (`isStreamingByIdAtom`, `chatErrorByIdAtom`) plus the prompt
- * queue helpers.
+ * submissions, forwards them as machine events, and exposes authoritative
+ * machine status/error plus the prompt queue helpers.
  */
 export function useStreamChat({
   hasChatId = true,
 }: { hasChatId?: boolean } = {}) {
-  const isStreamingById = useAtomValue(isStreamingByIdAtom);
-  const errorById = useAtomValue(chatErrorByIdAtom);
-  const setErrorById = useSetAtom(chatErrorByIdAtom);
   const [queuedMessagesById, setQueuedMessagesById] = useAtom(
     queuedMessagesByIdAtom,
   );
@@ -57,6 +57,7 @@ export function useStreamChat({
     const { id } = useSearch({ from: "/chat" });
     chatId = id;
   }
+  const streamState = useChatStreamState(chatId) ?? { type: "idle" };
 
   const streamMessage = useCallback(
     async ({
@@ -116,9 +117,9 @@ export function useStreamChat({
   );
 
   const cancelStream = useCallback(() => {
-    if (chatId === undefined) return;
+    if (chatId === undefined || !selectCanCancel(streamState)) return;
     chatStreamManager.ensure(chatId).send({ type: "cancel" });
-  }, [chatId, chatStreamManager]);
+  }, [chatId, chatStreamManager, streamState]);
 
   // Memoize queue management functions to prevent unnecessary re-renders
   // in components that depend on these functions (e.g., restore effect)
@@ -292,19 +293,16 @@ export function useStreamChat({
     streamMessage,
     cancelStream,
     isStreaming:
-      hasChatId && chatId !== undefined
-        ? (isStreamingById.get(chatId) ?? false)
-        : false,
+      hasChatId && chatId !== undefined ? isStreamActive(streamState) : false,
     error:
-      hasChatId && chatId !== undefined
-        ? (errorById.get(chatId) ?? null)
-        : null,
-    setError: (value: string | null) =>
-      setErrorById((prev) => {
-        const next = new Map(prev);
-        if (chatId !== undefined) next.set(chatId, value);
-        return next;
-      }),
+      hasChatId && chatId !== undefined ? selectStreamError(streamState) : null,
+    setError: (value: string | null) => {
+      if (chatId === undefined || value === null) return;
+      chatStreamManager.ensure(chatId).send({
+        type: "external-error",
+        error: value,
+      });
+    },
     // Multi-message queue support
     queuedMessages:
       hasChatId && chatId !== undefined

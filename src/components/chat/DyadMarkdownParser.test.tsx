@@ -8,7 +8,11 @@ import type {
   Block as ParserBlock,
   ParserState,
 } from "@/lib/streamingMessageParser";
-import { isStreamingByIdAtom, selectedChatIdAtom } from "@/atoms/chatAtoms";
+import { selectedChatIdAtom } from "@/atoms/chatAtoms";
+
+const mockStreamState = vi.hoisted(() => ({
+  current: { type: "idle" } as { type: string },
+}));
 
 // Track every render of the inner ReactMarkdown component keyed by the
 // content string it received. The DyadMarkdownParser wraps ReactMarkdown
@@ -40,10 +44,15 @@ vi.mock("@/hooks/useStreamChat", () => ({
   useStreamChat: () => ({ streamMessage: vi.fn() }),
 }));
 
+vi.mock("@/hooks/useChatStream", () => ({
+  useChatStreamState: () => mockStreamState.current,
+}));
+
 import { DyadMarkdownParser } from "./DyadMarkdownParser";
 
 describe("DyadMarkdownParser dyad-status", () => {
   afterEach(() => {
+    mockStreamState.current = { type: "idle" };
     cleanup();
   });
 
@@ -161,7 +170,7 @@ describe("DyadMarkdownParser dyad-git", () => {
   it("renders a pending state while the Git tag streams", () => {
     const store = createStore();
     store.set(selectedChatIdAtom, 1);
-    store.set(isStreamingByIdAtom, new Map([[1, true]]));
+    mockStreamState.current = { type: "streaming" };
     render(
       <Provider store={store}>
         <DyadMarkdownParser
