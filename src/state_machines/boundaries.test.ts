@@ -60,42 +60,6 @@ const ALLOWLIST: readonly AllowlistEntry[] = [
     note: "Inventory gap: lifecycle request types still come from IPC.",
   },
   {
-    rule: "pure-machine-module",
-    atom: "imageGenerationJobsAtom",
-    file: "image_generation/state.ts",
-    detail: "@/ipc/types",
-    deletionPr: "A3",
-    note: "Inventory gap: the state type still imports its IPC response types.",
-  },
-  {
-    rule: "writable-projection-export",
-    atom: "streamingPreviewByChatIdAtom",
-    file: "atoms/chatAtoms.ts",
-    detail: "exported writable atom",
-    deletionPr: "A3",
-  },
-  {
-    rule: "writable-projection-export",
-    atom: "setImageGenerationJobsProjectionAtom",
-    file: "atoms/imageGenerationAtoms.ts",
-    detail: "exported writable atom",
-    deletionPr: "A3",
-  },
-  {
-    rule: "writable-projection-export",
-    atom: "previewAppExitByAppIdAtom",
-    file: "atoms/previewRuntimeAtoms.ts",
-    detail: "exported writable atom",
-    deletionPr: "A3",
-  },
-  {
-    rule: "writable-projection-export",
-    atom: "setPreviewAppExitForAppAtom",
-    file: "atoms/previewRuntimeAtoms.ts",
-    detail: "exported writable atom",
-    deletionPr: "A3",
-  },
-  {
     rule: "writable-projection-export",
     atom: "pendingScreenshotAppIdsAtom",
     file: "atoms/previewAtoms.ts",
@@ -248,27 +212,6 @@ const ALLOWLIST: readonly AllowlistEntry[] = [
     file: "atoms/planAtoms.ts",
     detail: "exported writable atom",
     deletionPr: "A6",
-  },
-  {
-    rule: "atom-projection-call",
-    atom: "setImageGenerationJobsProjectionAtom",
-    file: "image_generation/ImageGenerationProvider.tsx",
-    detail: "projectToAtom",
-    deletionPr: "A3",
-  },
-  {
-    rule: "atom-projection-call",
-    atom: "writableUserInputRequestsAtom",
-    file: "user_input/projection.ts",
-    detail: "registerAtomWriter",
-    deletionPr: "A3",
-  },
-  {
-    rule: "atom-projection-call",
-    atom: "writableRespondingRequestIdsAtom",
-    file: "user_input/projection.ts",
-    detail: "registerAtomWriter",
-    deletionPr: "A3",
   },
   {
     rule: "atom-projection-call",
@@ -602,11 +545,122 @@ function importedCallName(
   return undefined;
 }
 
+function usesRuntimeGetDefaultStore(sourceFile: ts.SourceFile): boolean {
+  const jotaiNamespaces = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteralLike(statement.moduleSpecifier) &&
+      isJotaiModule(statement.moduleSpecifier.text) &&
+      !statement.importClause?.isTypeOnly
+    ) {
+      const bindings = statement.importClause?.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings)) {
+        jotaiNamespaces.add(bindings.name.text);
+      } else if (bindings && ts.isNamedImports(bindings)) {
+        if (
+          bindings.elements.some(
+            (specifier) =>
+              !specifier.isTypeOnly &&
+              (specifier.propertyName?.text ?? specifier.name.text) ===
+                "getDefaultStore",
+          )
+        ) {
+          return true;
+        }
+      }
+    }
+    if (
+      ts.isExportDeclaration(statement) &&
+      statement.moduleSpecifier &&
+      ts.isStringLiteralLike(statement.moduleSpecifier) &&
+      isJotaiModule(statement.moduleSpecifier.text) &&
+      !statement.isTypeOnly
+    ) {
+      if (
+        !statement.exportClause ||
+        ts.isNamespaceExport(statement.exportClause)
+      ) {
+        return true;
+      }
+      if (
+        ts.isNamedExports(statement.exportClause) &&
+        statement.exportClause.elements.some(
+          (specifier) =>
+            !specifier.isTypeOnly &&
+            (specifier.propertyName?.text ?? specifier.name.text) ===
+              "getDefaultStore",
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      jotaiNamespaces.has(node.expression.text) &&
+      node.name.text === "getDefaultStore"
+    ) {
+      found = true;
+      return;
+    }
+    if (
+      ts.isElementAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      jotaiNamespaces.has(node.expression.text) &&
+      node.argumentExpression &&
+      ts.isStringLiteralLike(node.argumentExpression) &&
+      node.argumentExpression.text === "getDefaultStore"
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
 describe("state-machine boundaries", () => {
   it("normalizes Windows paths used in boundary assertions", () => {
     expect(toPortablePath("first_prompt\\FirstPromptProvider.tsx")).toBe(
       "first_prompt/FirstPromptProvider.tsx",
     );
+  });
+
+  it("recognizes runtime default-store access through supported import forms", () => {
+    const parse = (source: string) =>
+      ts.createSourceFile(
+        "fixture.ts",
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+    expect(
+      usesRuntimeGetDefaultStore(
+        parse('import { getDefaultStore as store } from "jotai"; store();'),
+      ),
+    ).toBe(true);
+    expect(
+      usesRuntimeGetDefaultStore(
+        parse('import * as jotai from "jotai"; jotai.getDefaultStore();'),
+      ),
+    ).toBe(true);
+    expect(
+      usesRuntimeGetDefaultStore(
+        parse('import * as jotai from "jotai"; jotai["getDefaultStore"]();'),
+      ),
+    ).toBe(true);
+    expect(
+      usesRuntimeGetDefaultStore(
+        parse('import type { getDefaultStore } from "jotai";'),
+      ),
+    ).toBe(false);
   });
 
   it("keeps the shared kernel independent from domain and platform modules", () => {
@@ -833,6 +887,13 @@ describe("state-machine boundaries", () => {
       }
     }
     expectExactAllowlist("writable-projection-export", violations);
+  });
+
+  it("does not import Jotai's process-global default store at runtime", () => {
+    const violations = productionFiles(SOURCE_ROOT)
+      .filter((filePath) => usesRuntimeGetDefaultStore(sourceFileFor(filePath)))
+      .map(relativeSourcePath);
+    expect(violations).toEqual([]);
   });
 
   it("allows only inventoried atom projection call sites", () => {
@@ -1069,22 +1130,5 @@ describe("state-machine boundaries", () => {
       });
     }
     expectExactAllowlist("cross-machine-atom-read", violations);
-  });
-
-  it("keeps image-generation projection writes inside its provider", () => {
-    const projectionAtomModule = path.join(
-      SOURCE_ROOT,
-      "atoms/imageGenerationAtoms.ts",
-    );
-    const writers = productionFiles(SOURCE_ROOT)
-      .filter((filePath) => filePath !== projectionAtomModule)
-      .filter((filePath) =>
-        fs
-          .readFileSync(filePath, "utf8")
-          .includes("setImageGenerationJobsProjectionAtom"),
-      )
-      .map((filePath) => toPortablePath(path.relative(SOURCE_ROOT, filePath)));
-
-    expect(writers).toEqual(["image_generation/ImageGenerationProvider.tsx"]);
   });
 });

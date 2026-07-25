@@ -2,10 +2,8 @@ import React, { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { previewModeAtom, selectedAppIdAtom } from "@/atoms/appAtoms";
 import { selectedChatIdAtom } from "@/atoms/chatAtoms";
-import {
-  integrationProviderSelectionAtom,
-  pendingIntegrationAtom,
-} from "@/atoms/integrationAtoms";
+import { integrationProviderSelectionAtom } from "@/atoms/integrationAtoms";
+import { usePendingIntegrations } from "@/user_input/hooks";
 import { isPreviewOpenAtom } from "@/atoms/viewAtoms";
 import { useAtomValue, useSetAtom } from "jotai";
 import { useLoadApp } from "@/hooks/useLoadApp";
@@ -38,7 +36,7 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
   const { t } = useTranslation("home");
   const appId = useAtomValue(selectedAppIdAtom);
   const chatId = useAtomValue(selectedChatIdAtom);
-  const pendingIntegrationMap = useAtomValue(pendingIntegrationAtom);
+  const pendingIntegrationMap = usePendingIntegrations();
   const setIntegrationProviderSelection = useSetAtom(
     integrationProviderSelectionAtom,
   );
@@ -83,7 +81,7 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
   ];
 
   // Derived: prefer explicit user choice, then tool-locked, then AI-requested
-  // (from the IPC-driven atom), then default. Re-derives every render so a
+  // (from the IPC-driven read model), then default. Re-derives every render so a
   // late `pendingIntegration?.provider` is reflected without a sync effect.
   const selectedProvider =
     userSelectedProvider ??
@@ -172,7 +170,7 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
     if (!effectiveSelectedProvider || chatId == null || !pendingIntegration)
       return;
     // Share the UI choice with the Configure panel without mutating the
-    // main-authoritative request projection.
+    // main-authoritative request read model.
     setIntegrationProviderSelection((prev) => {
       if (prev.get(pendingIntegration.requestId) === effectiveSelectedProvider)
         return prev;

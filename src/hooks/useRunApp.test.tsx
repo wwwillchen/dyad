@@ -7,7 +7,6 @@ import {
   currentConsoleEntriesAtom,
   currentAppUrlAtom,
   currentPackageManagerWarningAtom,
-  currentPreviewAppExitAtom,
   currentPreviewErrorAtom,
   currentPreviewReloadTokenAtom,
   setConsoleEntriesForAppAtom,
@@ -235,11 +234,13 @@ describe("useAppOutputSubscription", () => {
     unmount();
   });
 
-  it("tracks app process exit without adding an extra console log", () => {
-    const { store, Wrapper } = makeWrapper(1);
+  it("tracks app process exit without adding an extra console log", async () => {
+    const { manager, store, Wrapper } = makeWrapper(1);
     const { unmount } = renderHook(() => useAppOutputSubscription(), {
       wrapper: Wrapper,
     });
+
+    const consoleEntriesBeforeExit = store.get(currentConsoleEntriesAtom);
 
     act(() => {
       for (const listener of appOutputListeners) {
@@ -253,18 +254,62 @@ describe("useAppOutputSubscription", () => {
       }
     });
 
-    expect(store.get(currentPreviewAppExitAtom)).toEqual({
+    expect(manager.getAppExitSnapshot(1)).toEqual({
       appId: 1,
       exitCode: 1,
       timestamp: 123,
     });
-    expect(store.get(currentConsoleEntriesAtom)).toEqual([]);
+    expect(store.get(currentConsoleEntriesAtom)).toBe(consoleEntriesBeforeExit);
 
     unmount();
   });
 
+  it("tracks an admitted app exit while startup IPC is still pending", async () => {
+    const { manager, Wrapper } = makeWrapper(1);
+    let finishRunApp: () => void = () => {};
+    runAppMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishRunApp = resolve;
+      }),
+    );
+    const { unmount } = renderHook(() => useAppOutputSubscription(), {
+      wrapper: Wrapper,
+    });
+
+    const pending = manager.dispatch(1, { type: "START", startedAt: 100 });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const invocationRef = runAppMock.mock.calls[0]?.[0].invocationRef;
+    if (!invocationRef) throw new Error("expected run invocation");
+
+    act(() => {
+      for (const listener of appOutputListeners) {
+        listener({
+          type: "app-exit",
+          message: "App process exited during startup",
+          appId: 1,
+          invocationRef,
+          exitCode: 1,
+          timestamp: 123,
+        });
+      }
+    });
+
+    expect(manager.getSnapshot(1).type).toBe("starting");
+    expect(manager.getAppExitSnapshot(1)).toEqual({
+      appId: 1,
+      exitCode: 1,
+      timestamp: 123,
+    });
+
+    finishRunApp();
+    await pending;
+    unmount();
+  });
+
   it("does not project a stale exit from a superseded invocation", async () => {
-    const { manager, store, Wrapper } = makeWrapper(1);
+    const { manager, Wrapper } = makeWrapper(1);
     let finishRunApp: () => void = () => {};
     runAppMock.mockReturnValueOnce(
       new Promise<void>((resolve) => {
@@ -311,7 +356,7 @@ describe("useAppOutputSubscription", () => {
       }
     });
 
-    expect(store.get(currentPreviewAppExitAtom)).toBeNull();
+    expect(manager.getAppExitSnapshot(1)).toBeNull();
     expect(manager.getSnapshot(1)).toMatchObject({
       type: "starting",
       startedAt: 200,

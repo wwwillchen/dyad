@@ -1,9 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
-import { useAtomValue } from "jotai";
 import { useRouterState } from "@tanstack/react-router";
 import { useStreamFinished } from "@/chat_stream/ChatStreamProvider";
-import { userInputRequestsAtom } from "@/user_input/projection";
+import { useUserInputRequests } from "@/user_input/hooks";
 import { useSelectChat } from "./useSelectChat";
 import { ipc } from "../ipc/types";
 import { showWarning } from "../lib/toast";
@@ -80,7 +79,7 @@ export function useNotificationHandler() {
     >(),
   );
   const pendingClassifiedNotificationRequestIdsRef = useRef(new Set<string>());
-  const projectedUserInputRequests = useAtomValue(userInputRequestsAtom);
+  const projectedUserInputRequests = useUserInputRequests();
 
   useEffect(() => {
     selectChatRef.current = selectChat;
@@ -295,10 +294,10 @@ export function useNotificationHandler() {
     [closeNativeNotification],
   );
 
-  // getPending hydrates the projection after a renderer reload. Seed the
+  // getPending hydrates the read model after a renderer reload. Seed the
   // notification lookup from that same source so a later classified event can
   // still identify a racing MCP request. If classification beats hydration,
-  // replay the notification once the descriptor appears in the projection.
+  // replay the notification once the descriptor appears in the read model.
   useEffect(() => {
     for (const [requestId, request] of projectedUserInputRequests) {
       if (request.status === "settled") continue;

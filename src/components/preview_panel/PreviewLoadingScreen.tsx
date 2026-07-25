@@ -10,15 +10,12 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ConsoleEntry } from "@/ipc/types";
-import {
-  currentConsoleEntriesAtom,
-  currentPreviewAppExitAtom,
-  type PreviewAppExit,
-} from "@/atoms/previewRuntimeAtoms";
+import { currentConsoleEntriesAtom } from "@/atoms/previewRuntimeAtoms";
+import type { AppExit } from "@/app_run/selectors";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { selectedChatIdAtom } from "@/atoms/chatAtoms";
 import { useRunApp } from "@/hooks/useRunApp";
-import { useAppRunState } from "@/hooks/useAppRun";
+import { useAppExit, useAppRunState } from "@/hooks/useAppRun";
 import { useStreamChat } from "@/hooks/useStreamChat";
 import { projectRunState } from "@/app_run/transition";
 import { cn } from "@/lib/utils";
@@ -108,7 +105,7 @@ export function didPreviewCommandFail({
   sessionStartedAt,
   currentAppId,
 }: {
-  previewAppExit: PreviewAppExit | null;
+  previewAppExit: AppExit | null;
   sessionStartedAt: number;
   currentAppId: number | null;
 }) {
@@ -128,7 +125,7 @@ export function shouldShowPreviewErrorBanner({
   currentAppId,
 }: {
   errorMessages: string[];
-  previewAppExit: PreviewAppExit | null;
+  previewAppExit: AppExit | null;
   sessionStartedAt: number;
   currentAppId: number | null;
 }) {
@@ -159,10 +156,10 @@ export function PreviewLoadingScreen({
 }: PreviewLoadingScreenProps) {
   const { t } = useTranslation("home");
   const consoleEntries = useAtomValue(currentConsoleEntriesAtom);
-  const previewAppExit = useAtomValue(currentPreviewAppExitAtom);
   const selectedAppId = useAtomValue(selectedAppIdAtom);
-  const previewRunStartedAt =
-    projectRunState(useAppRunState(selectedAppId))?.startedAt ?? null;
+  const runState = useAppRunState(selectedAppId);
+  const previewAppExit = useAppExit(selectedAppId);
+  const previewRunStartedAt = projectRunState(runState)?.startedAt ?? null;
   const selectedChatId = useAtomValue(selectedChatIdAtom);
   const { streamMessage, isStreaming } = useStreamChat();
   const { restartApp } = useRunApp();

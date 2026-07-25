@@ -1,21 +1,22 @@
-import { createStore, type WritableAtom } from "jotai";
+import { createStore } from "jotai";
 import { describe, expect, it, vi } from "vitest";
 
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
-import { pendingQuestionnaireAtom } from "@/atoms/planAtoms";
 import type {
   PendingUserInputPayload,
   UserInputDescriptorPayload,
 } from "@/ipc/types/user_input";
 import {
-  getUserInputProjectionAdapter,
-  respondingRequestIdsAtom,
-  selectPendingToolConsents,
-  userInputRequestsAtom,
-  type ProjectedUserInputRequest,
-  type UserInputProjectionIpc,
-  type UserInputRequests,
-} from "./projection";
+  getUserInputReadModel,
+  type UserInputReadModelIpc,
+} from "./read_model";
+import { selectPendingQuestionnaires } from "./selectors";
+
+type JotaiStore = ReturnType<typeof createStore>;
+
+function snapshotFor(store: JotaiStore) {
+  return getUserInputReadModel({ store }).getSnapshot();
+}
 
 type RequestedListener = (payload: UserInputDescriptorPayload) => void;
 type ArmedListener = (payload: {
@@ -148,7 +149,7 @@ function createFakeIpc() {
           subscribe(followUpDue, listener),
       },
     },
-  } as UserInputProjectionIpc;
+  } as UserInputReadModelIpc;
 
   return {
     ipcClient,
@@ -167,42 +168,7 @@ function createFakeIpc() {
   };
 }
 
-describe("user-input renderer projection", () => {
-  it("selects unresolved, non-responding tool consents for one chat", () => {
-    const otherChat = {
-      ...agentDescriptor("other-chat"),
-      chatId: 8,
-    };
-    const requests: UserInputRequests = new Map<
-      string,
-      ProjectedUserInputRequest
-    >([
-      ["agent-responding", pending(agentDescriptor("agent-responding"))],
-      ["mcp-visible", pending(mcpDescriptor("mcp-visible"))],
-      ["other-chat", pending(otherChat)],
-      [
-        "settled",
-        {
-          status: "settled",
-          requestId: "settled",
-          outcome: "human",
-          settledAt: 1,
-          descriptor: agentDescriptor("settled"),
-        },
-      ],
-    ]);
-
-    expect(
-      selectPendingToolConsents(requests, new Set(["agent-responding"]), 7),
-    ).toEqual([
-      expect.objectContaining({
-        kind: "mcp",
-        requestId: "mcp-visible",
-        classifierPending: true,
-      }),
-    ]);
-  });
-
+describe("user-input renderer read model", () => {
   it("lets events received during hydration win by requestId", async () => {
     const store = createStore();
     const fake = createFakeIpc();
@@ -212,7 +178,7 @@ describe("user-input renderer projection", () => {
         resolveHydration = resolve;
       }),
     );
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
     });
@@ -222,7 +188,7 @@ describe("user-input renderer projection", () => {
     resolveHydration([pending(agentDescriptor("request-1", "stale-tool"))]);
 
     await vi.waitFor(() => {
-      const request = store.get(userInputRequestsAtom).get("request-1");
+      const request = snapshotFor(store).requests.get("request-1");
       expect(request?.status).toBe("awaiting");
       if (!request || request.status === "settled") return;
       expect(request.descriptor.kind).toBe("agent-consent");
@@ -233,15 +199,37 @@ describe("user-input renderer projection", () => {
     stop();
   });
 
-  it("exposes a read-only projection so rogue writers fail", () => {
+  it("exposes a read-only public snapshot API", () => {
     const store = createStore();
-    const rogueWritable = userInputRequestsAtom as WritableAtom<
-      UserInputRequests,
-      [UserInputRequests],
-      void
-    >;
+    const readModel = getUserInputReadModel({ store });
+    expect(readModel).not.toHaveProperty("setState");
+    expect(readModel.getSnapshot().requests).toEqual(new Map());
+  });
 
-    expect(() => store.set(rogueWritable, new Map())).toThrow();
+  it("keeps snapshot identity for buffered events with no visible request", () => {
+    const store = createStore();
+    const fake = createFakeIpc();
+    const readModel = getUserInputReadModel({
+      store,
+      ipcClient: fake.ipcClient,
+    });
+    const stop = readModel.start();
+    const initial = readModel.getSnapshot();
+    const listener = vi.fn();
+    const unsubscribe = readModel.subscribe(listener);
+
+    fake.sendArmed({
+      requestId: "buffered",
+      followUpPrompt: "Continue",
+    });
+    fake.sendClassified({ requestId: "buffered", reason: "Review" });
+    fake.sendFollowUpDue({ requestId: "buffered", chatId: 7, prompt: "Go" });
+
+    expect(readModel.getSnapshot()).toBe(initial);
+    expect(listener).not.toHaveBeenCalled();
+
+    unsubscribe();
+    stop();
   });
 
   it("replays a classified event that beats its hydration snapshot", async () => {
@@ -253,7 +241,7 @@ describe("user-input renderer projection", () => {
         resolveHydration = resolve;
       }),
     );
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
     });
@@ -263,7 +251,7 @@ describe("user-input renderer projection", () => {
     resolveHydration([pending(mcpDescriptor("mcp-request"))]);
 
     await vi.waitFor(() => {
-      const request = store.get(userInputRequestsAtom).get("mcp-request");
+      const request = snapshotFor(store).requests.get("mcp-request");
       expect(request?.status).toBe("awaiting");
       if (!request || request.status === "settled") return;
       expect(request.classifier).toBe("review");
@@ -282,14 +270,14 @@ describe("user-input renderer projection", () => {
         classifierReason: "sensitive input",
       },
     ]);
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
     });
     const stop = adapter.start();
 
     await vi.waitFor(() => {
-      const request = store.get(userInputRequestsAtom).get("review-request");
+      const request = snapshotFor(store).requests.get("review-request");
       expect(request?.status).toBe("awaiting");
       if (!request || request.status === "settled") return;
       expect(request.classifierReason).toBe("sensitive input");
@@ -304,7 +292,7 @@ describe("user-input renderer projection", () => {
     fake.respond.mockRejectedValueOnce(
       new DyadError("gone", DyadErrorKind.NotFound),
     );
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       showErrorToast,
@@ -322,10 +310,10 @@ describe("user-input renderer projection", () => {
 
     expect(fake.getPending).toHaveBeenCalledTimes(2);
     expect(showErrorToast).toHaveBeenCalledWith("request expired");
-    expect(store.get(respondingRequestIdsAtom).has("expired-request")).toBe(
+    expect(snapshotFor(store).respondingRequestIds.has("expired-request")).toBe(
       false,
     );
-    expect(store.get(userInputRequestsAtom).has("expired-request")).toBe(false);
+    expect(snapshotFor(store).requests.has("expired-request")).toBe(false);
     stop();
   });
 
@@ -339,7 +327,7 @@ describe("user-input renderer projection", () => {
     fake.getPending
       .mockResolvedValueOnce([])
       .mockRejectedValueOnce(new Error("renderer IPC unavailable"));
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       showErrorToast,
@@ -355,8 +343,8 @@ describe("user-input renderer projection", () => {
       }),
     ).resolves.toBe(false);
 
-    expect(store.get(userInputRequestsAtom).has("expired-request")).toBe(false);
-    expect(store.get(respondingRequestIdsAtom).has("expired-request")).toBe(
+    expect(snapshotFor(store).requests.has("expired-request")).toBe(false);
+    expect(snapshotFor(store).respondingRequestIds.has("expired-request")).toBe(
       false,
     );
     expect(showErrorToast).toHaveBeenCalledWith("request expired");
@@ -372,26 +360,40 @@ describe("user-input renderer projection", () => {
         resolveRespond = resolve;
       }),
     );
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
     });
     const stop = adapter.start();
     fake.sendRequested(agentDescriptor("request-2"));
+    const observed: ReturnType<typeof adapter.getSnapshot>[] = [];
+    const unsubscribe = adapter.subscribe(() => {
+      observed.push(adapter.getSnapshot());
+    });
 
     const response = adapter.respond("request-2", {
       kind: "agent-consent",
       decision: "decline",
     });
-    expect(store.get(respondingRequestIdsAtom).has("request-2")).toBe(true);
+    expect(snapshotFor(store).respondingRequestIds.has("request-2")).toBe(true);
 
     fake.sendSettled({ requestId: "request-2", outcome: "human" });
     resolveRespond();
     await expect(response).resolves.toBe(true);
-    expect(store.get(respondingRequestIdsAtom).has("request-2")).toBe(false);
-    expect(store.get(userInputRequestsAtom).get("request-2")?.status).toBe(
+    expect(snapshotFor(store).respondingRequestIds.has("request-2")).toBe(
+      false,
+    );
+    expect(snapshotFor(store).requests.get("request-2")?.status).toBe(
       "settled",
     );
+    expect(
+      observed.some(
+        (snapshot) =>
+          snapshot.requests.get("request-2")?.status === "settled" &&
+          snapshot.respondingRequestIds.has("request-2"),
+      ),
+    ).toBe(false);
+    unsubscribe();
     stop();
   });
 
@@ -404,7 +406,7 @@ describe("user-input renderer projection", () => {
         resolveRespond = resolve;
       }),
     );
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
     });
@@ -416,7 +418,9 @@ describe("user-input renderer projection", () => {
       answers: { framework: "Vue" },
     });
 
-    expect(store.get(pendingQuestionnaireAtom).get(7)).toMatchObject({
+    expect(
+      selectPendingQuestionnaires(snapshotFor(store)).get(7),
+    ).toMatchObject({
       requestId: "questionnaire-responding",
       isResponding: true,
     });
@@ -427,7 +431,7 @@ describe("user-input renderer projection", () => {
     });
     resolveRespond();
     await expect(response).resolves.toBe(true);
-    expect(store.get(pendingQuestionnaireAtom).has(7)).toBe(false);
+    expect(selectPendingQuestionnaires(snapshotFor(store)).has(7)).toBe(false);
     stop();
   });
 
@@ -438,7 +442,7 @@ describe("user-input renderer projection", () => {
     fake.respond.mockRejectedValueOnce(
       new DyadError("gone", DyadErrorKind.NotFound),
     );
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       showErrorToast,
@@ -447,13 +451,13 @@ describe("user-input renderer projection", () => {
     await vi.waitFor(() => expect(fake.getPending).toHaveBeenCalledTimes(1));
 
     fake.sendRequested(questionnaireDescriptor("questionnaire-1"));
-    expect(store.get(pendingQuestionnaireAtom).has(7)).toBe(true);
+    expect(selectPendingQuestionnaires(snapshotFor(store)).has(7)).toBe(true);
 
     fake.sendSettled({
       requestId: "questionnaire-1",
       outcome: "timed-out",
     });
-    expect(store.get(pendingQuestionnaireAtom).has(7)).toBe(false);
+    expect(selectPendingQuestionnaires(snapshotFor(store)).has(7)).toBe(false);
 
     await expect(
       adapter.respond("questionnaire-1", {
@@ -464,7 +468,7 @@ describe("user-input renderer projection", () => {
 
     expect(showErrorToast).toHaveBeenCalledWith("request expired");
     expect(
-      Array.from(store.get(userInputRequestsAtom).values()).some(
+      Array.from(snapshotFor(store).requests.values()).some(
         (request) =>
           request.status === "settled" && request.questionnaireSubmitted,
       ),
@@ -477,7 +481,7 @@ describe("user-input renderer projection", () => {
     vi.setSystemTime(1_000);
     const store = createStore();
     const fake = createFakeIpc();
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
     });
@@ -492,16 +496,14 @@ describe("user-input renderer projection", () => {
     fake.sendSettled({ requestId: "questionnaire-2", outcome: "human" });
     await expect(response).resolves.toBe(true);
 
-    expect(
-      store.get(userInputRequestsAtom).get("questionnaire-2"),
-    ).toMatchObject({
+    expect(snapshotFor(store).requests.get("questionnaire-2")).toMatchObject({
       status: "settled",
       settledAt: 1_000,
       questionnaireSubmitted: true,
     });
 
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(store.get(userInputRequestsAtom).has("questionnaire-2")).toBe(false);
+    expect(snapshotFor(store).requests.has("questionnaire-2")).toBe(false);
     stop();
     vi.useRealTimers();
   });
@@ -515,7 +517,7 @@ describe("user-input renderer projection", () => {
         rejectRespond = reject;
       }),
     );
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       showErrorToast: vi.fn(),
@@ -532,12 +534,12 @@ describe("user-input renderer projection", () => {
       outcome: "timed-out",
     });
 
-    expect(
-      store.get(userInputRequestsAtom).get("questionnaire-race"),
-    ).toMatchObject({
-      status: "settled",
-      questionnaireSubmitted: false,
-    });
+    expect(snapshotFor(store).requests.get("questionnaire-race")).toMatchObject(
+      {
+        status: "settled",
+        questionnaireSubmitted: false,
+      },
+    );
     rejectRespond(new DyadError("gone", DyadErrorKind.NotFound));
     await expect(response).resolves.toBe(false);
     stop();
@@ -555,7 +557,7 @@ describe("user-input renderer projection", () => {
         followUpPrompt: descriptor.followUpPrompt,
       },
     ]);
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
     });
@@ -564,7 +566,7 @@ describe("user-input renderer projection", () => {
     const submit = vi.fn(() => ({ accepted: true }));
 
     expect(
-      getUserInputProjectionAdapter({
+      getUserInputReadModel({
         store,
         ipcClient: fake.ipcClient,
         chatStream: { submit },
@@ -590,7 +592,7 @@ describe("user-input renderer projection", () => {
           resolveHydration = resolve;
         }),
       );
-      const adapter = getUserInputProjectionAdapter({
+      const adapter = getUserInputReadModel({
         store,
         ipcClient: fake.ipcClient,
       });
@@ -610,7 +612,7 @@ describe("user-input renderer projection", () => {
 
       await vi.waitFor(() =>
         expect(
-          store.get(userInputRequestsAtom).get(descriptor.requestId)?.status,
+          snapshotFor(store).requests.get(descriptor.requestId)?.status,
         ).toBe("armed"),
       );
       stop();
@@ -621,7 +623,7 @@ describe("user-input renderer projection", () => {
     const store = createStore();
     const fake = createFakeIpc();
     const submit = vi.fn(() => ({ accepted: true }));
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       chatStream: { submit },
@@ -664,7 +666,7 @@ describe("user-input renderer projection", () => {
           accept = () => resolve({ accepted: true });
         }),
     );
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       chatStream: { submit },
@@ -697,7 +699,7 @@ describe("user-input renderer projection", () => {
     const fake = createFakeIpc();
     const submit = vi.fn(() => Promise.resolve({ accepted: false }));
     const showErrorToast = vi.fn();
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       chatStream: { submit },
@@ -729,7 +731,7 @@ describe("user-input renderer projection", () => {
       .mockRejectedValueOnce(dispatchError)
       .mockResolvedValueOnce({ accepted: true });
     const showErrorToast = vi.fn();
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       chatStream: { submit },
@@ -775,7 +777,7 @@ describe("user-input renderer projection", () => {
       },
     ]);
     const submit = vi.fn(() => ({ accepted: true }));
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       chatStream: { submit },
@@ -795,14 +797,14 @@ describe("user-input renderer projection", () => {
       requestId: "integration-2",
       followUpPrompt: descriptor.followUpPrompt!,
     });
-    expect(store.get(userInputRequestsAtom).get("integration-2")?.status).toBe(
+    expect(snapshotFor(store).requests.get("integration-2")?.status).toBe(
       "armed",
     );
 
     stopFirstMount();
     const stopSecondMount = adapter.start();
     await vi.waitFor(() => expect(fake.getPending).toHaveBeenCalledTimes(2));
-    expect(store.get(userInputRequestsAtom).get("integration-2")?.status).toBe(
+    expect(snapshotFor(store).requests.get("integration-2")?.status).toBe(
       "armed",
     );
     expect(submit).not.toHaveBeenCalled();
@@ -829,7 +831,7 @@ describe("user-input renderer projection", () => {
       },
     ]);
     const submit = vi.fn(() => ({ accepted: true }));
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       chatStream: { submit },
@@ -863,7 +865,7 @@ describe("user-input renderer projection", () => {
           acknowledge = () => resolve({ accepted: true });
         }),
     );
-    const adapter = getUserInputProjectionAdapter({
+    const adapter = getUserInputReadModel({
       store,
       ipcClient: fake.ipcClient,
       chatStream: { submit },
