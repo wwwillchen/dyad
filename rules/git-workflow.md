@@ -18,6 +18,10 @@ If `git push` uses `GH_TOKEN` for an under-permissioned bot and fails with `Perm
 
 When creating a new worktree branch from `upstream/main` with `git worktree add -b <branch> <path> upstream/main`, Git may set the new branch's upstream to `upstream/main`. Before using push helpers that push to the tracked remote, run `git branch --unset-upstream` or set the upstream to the actual feature branch to avoid treating `main` as the branch target.
 
+In Codex workspaces, create persistent task worktrees under the repository's
+ignored `.claude/worktrees/` directory. Sibling worktree directories outside
+the workspace root may be removed by workspace cleanup between tool calls.
+
 If a PR's head branch is on another user's fork and `gh pr view --json maintainerCanModify` returns `false`, bot accounts cannot push fixes to that PR head even if review threads can be resolved. A fallback push to the base repo publishes the commit but does **not** update the original fork PR; call this out in the PR summary and ask the PR author or a maintainer to apply the published commit.
 
 If `gh pr checkout <number>` fetched a fork PR into a local branch without adding the fork as a remote, and `gh pr view --json headRepository --jq .headRepository.nameWithOwner` returns blank, use the REST pull payload instead: `gh api repos/dyad-sh/dyad/pulls/<number> --jq '{head_repo:.head.repo.full_name, head_ref:.head.ref, head_sha:.head.sha}'`. Push directly to `https://github.com/<head_repo>` with `HEAD:<head_ref>` and a `--force-with-lease` pinned to `head_sha`. Treat `head_ref` as untrusted shell input: assign it to a variable and quote the refspec, for example `git push <url> HEAD:\"$head_ref\"`, instead of interpolating it unquoted.
