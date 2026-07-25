@@ -14,6 +14,8 @@ interface PendingPayload<T> {
 
 export class HighVolumeWindowInterests<T> {
   private readonly interestsByWebContents = new Map<number, Set<string>>();
+  private readonly explicitSubscriptionKeys = new Set<string>();
+  private readonly liveSubscriptionKeys = new Set<string>();
   private readonly subscriptionStates = new Map<string, SubscriptionState<T>>();
   private readonly pendingByDestination = new Map<
     number,
@@ -25,6 +27,7 @@ export class HighVolumeWindowInterests<T> {
     private readonly registry: WindowRegistry,
     private readonly channel: string,
     private readonly flushDelayMs = 100,
+    private readonly deliveryMode: "batch" | "individual" = "batch",
   ) {
     registry.onUnregister((id) => this.removeWindow(id));
   }
@@ -36,6 +39,7 @@ export class HighVolumeWindowInterests<T> {
   ): Promise<void> {
     const key = windowInterestKey(interest);
     const stateKey = this.subscriptionKey(webContentsId, key);
+    this.explicitSubscriptionKeys.add(stateKey);
     const interests =
       this.interestsByWebContents.get(webContentsId) ?? new Set<string>();
     if (interests.has(key)) {
@@ -62,29 +66,58 @@ export class HighVolumeWindowInterests<T> {
     } catch (error) {
       if (this.subscriptionStates.get(stateKey) === state) {
         this.subscriptionStates.delete(stateKey);
-        const interests = this.interestsByWebContents.get(webContentsId);
-        interests?.delete(key);
-        if (interests?.size === 0) {
-          this.interestsByWebContents.delete(webContentsId);
-        }
+        this.explicitSubscriptionKeys.delete(stateKey);
+        this.removeInterestIfUnowned(webContentsId, key);
       }
       throw error;
     }
   }
 
+  /**
+   * Installs an interest synchronously when the initiating renderer is also
+   * the producer. Explicit renderer subscriptions should use attach() so
+   * bootstrap closes the subscribe/delivery race.
+   */
+  attachLive(webContentsId: number, interest: WindowInterest): void {
+    const key = windowInterestKey(interest);
+    const stateKey = this.subscriptionKey(webContentsId, key);
+    this.liveSubscriptionKeys.add(stateKey);
+    const interests =
+      this.interestsByWebContents.get(webContentsId) ?? new Set<string>();
+    interests.add(key);
+    this.interestsByWebContents.set(webContentsId, interests);
+    if (!this.subscriptionStates.has(stateKey)) {
+      this.subscriptionStates.set(stateKey, {
+        attaching: false,
+        bufferedDuringAttach: [],
+      });
+    }
+  }
+
   detach(webContentsId: number, interest: WindowInterest): void {
     const key = windowInterestKey(interest);
+    const stateKey = this.subscriptionKey(webContentsId, key);
     this.flushDestination(webContentsId);
-    const interests = this.interestsByWebContents.get(webContentsId);
-    interests?.delete(key);
-    if (interests?.size === 0) {
-      this.interestsByWebContents.delete(webContentsId);
+    this.explicitSubscriptionKeys.delete(stateKey);
+    if (!this.liveSubscriptionKeys.has(stateKey)) {
+      this.subscriptionStates.delete(stateKey);
     }
-    this.subscriptionStates.delete(this.subscriptionKey(webContentsId, key));
+    this.removeInterestIfUnowned(webContentsId, key);
+  }
+
+  releaseLive(webContentsId: number, interest: WindowInterest): void {
+    const key = windowInterestKey(interest);
+    const stateKey = this.subscriptionKey(webContentsId, key);
+    this.liveSubscriptionKeys.delete(stateKey);
+    if (!this.explicitSubscriptionKeys.has(stateKey)) {
+      this.subscriptionStates.delete(stateKey);
+    }
+    this.removeInterestIfUnowned(webContentsId, key);
   }
 
   enqueue(interest: WindowInterest, payload: T): void {
     const key = windowInterestKey(interest);
+    let scheduledDelivery = false;
     for (const [webContentsId, interests] of this.interestsByWebContents) {
       if (!interests.has(key)) continue;
       const state = this.subscriptionStates.get(
@@ -97,8 +130,30 @@ export class HighVolumeWindowInterests<T> {
       const pending = this.pendingByDestination.get(webContentsId) ?? [];
       pending.push({ interestKey: key, payload });
       this.pendingByDestination.set(webContentsId, pending);
+      scheduledDelivery = true;
     }
-    this.flushTimer ??= setTimeout(() => this.flushAll(), this.flushDelayMs);
+    if (scheduledDelivery) {
+      this.flushTimer ??= setTimeout(() => this.flushAll(), this.flushDelayMs);
+    }
+  }
+
+  sendImmediate(
+    interest: WindowInterest,
+    payload: T,
+    channel = this.channel,
+  ): void {
+    const key = windowInterestKey(interest);
+    for (const [webContentsId, interests] of this.interestsByWebContents) {
+      if (!interests.has(key)) continue;
+      const state = this.subscriptionStates.get(
+        this.subscriptionKey(webContentsId, key),
+      );
+      if (state?.attaching) {
+        state.bufferedDuringAttach.push(payload);
+        continue;
+      }
+      this.endpoint(webContentsId)?.send(channel, payload);
+    }
   }
 
   terminalFlush(interest: WindowInterest, finalPayload?: T): void {
@@ -146,10 +201,18 @@ export class HighVolumeWindowInterests<T> {
 
   private sendNow(webContentsId: number, payloads: readonly T[]): void {
     if (payloads.length === 0) return;
-    const endpoint = this.registry
+    const endpoint = this.endpoint(webContentsId);
+    if (this.deliveryMode === "individual") {
+      for (const payload of payloads) endpoint?.send(this.channel, payload);
+      return;
+    }
+    endpoint?.send(this.channel, payloads);
+  }
+
+  private endpoint(webContentsId: number) {
+    return this.registry
       .liveEndpoints()
       .find((candidate) => candidate.id === webContentsId);
-    endpoint?.send(this.channel, payloads);
   }
 
   private removeWindow(webContentsId: number): void {
@@ -158,7 +221,27 @@ export class HighVolumeWindowInterests<T> {
     for (const key of this.subscriptionStates.keys()) {
       if (key.startsWith(`${webContentsId}:`)) {
         this.subscriptionStates.delete(key);
+        this.explicitSubscriptionKeys.delete(key);
+        this.liveSubscriptionKeys.delete(key);
       }
+    }
+  }
+
+  private removeInterestIfUnowned(
+    webContentsId: number,
+    interestKey: string,
+  ): void {
+    const stateKey = this.subscriptionKey(webContentsId, interestKey);
+    if (
+      this.explicitSubscriptionKeys.has(stateKey) ||
+      this.liveSubscriptionKeys.has(stateKey)
+    ) {
+      return;
+    }
+    const interests = this.interestsByWebContents.get(webContentsId);
+    interests?.delete(interestKey);
+    if (interests?.size === 0) {
+      this.interestsByWebContents.delete(webContentsId);
     }
   }
 

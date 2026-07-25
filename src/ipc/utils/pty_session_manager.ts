@@ -412,6 +412,12 @@ export class PtySessionManager {
       nextOutputOffset: session.outputEndOffset,
       attachmentCount: 1,
     });
+    sender.once?.("destroyed", () => {
+      const subscriber = session.subscribers.get(sender.id);
+      if (subscriber?.webContents === sender) {
+        session.subscribers.delete(sender.id);
+      }
+    });
   }
 
   private findSession(sessionId: string): PtySession | undefined {
