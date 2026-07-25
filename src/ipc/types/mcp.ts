@@ -35,6 +35,10 @@ export const McpServerSchema = z.object({
   oauthConnected: z.boolean(),
   // Null falls back to DEFAULT_OAUTH_CALLBACK_PORT.
   oauthCallbackPort: z.number().nullable(),
+  // Public OAuth client id (not a secret). Surfaced so the UI can tell
+  // whether a pre-registered client has been configured; the secret is
+  // never sent to the renderer.
+  oauthClientId: z.string().nullable(),
   // Set when the server was added from the curated catalog.
   catalogSlug: z.string().nullable(),
   createdAt: z.date(),
@@ -42,6 +46,19 @@ export const McpServerSchema = z.object({
 });
 
 export type McpServer = z.infer<typeof McpServerSchema>;
+
+// OAuth scope tokens use only printable ASCII (no space, quote, or
+// backslash), separated by single spaces. Catches typos like
+// leading/trailing spaces, control chars, or quotes at validation time so
+// they don't surface as opaque OAuth provider errors later. Empty string
+// means "use the server's default scope".
+const oauthScopeSchema = z
+  .string()
+  .regex(/^(?:[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*)?$/, {
+    message: "OAuth scope contains invalid characters",
+  })
+  .nullable()
+  .optional();
 
 export const CreateMcpServerSchema = z.object({
   name: z.string(),
@@ -66,18 +83,7 @@ export const CreateMcpServerSchema = z.object({
   // Plaintext OAuth client_secret on create. The handler encrypts it
   // before storing and never returns it via `McpServerSchema`.
   oauthClientSecret: z.string().nullable().optional(),
-  // OAuth scope tokens use only printable ASCII (no space, quote, or
-  // backslash), separated by single spaces. Catches typos like
-  // leading/trailing spaces, control chars, or quotes at validation
-  // time so they don't surface as opaque OAuth provider errors later.
-  // Empty string means "use the server's default scope".
-  oauthScope: z
-    .string()
-    .regex(/^(?:[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*)?$/, {
-      message: "OAuth scope contains invalid characters",
-    })
-    .nullable()
-    .optional(),
+  oauthScope: oauthScopeSchema,
   // Null falls back to DEFAULT_OAUTH_CALLBACK_PORT.
   oauthCallbackPort: z
     .number()
@@ -103,6 +109,11 @@ export const McpServerUpdateSchema = z.object({
   url: z.string().optional(),
   enabled: z.boolean().optional(),
   oauthEnabled: z.boolean().optional(),
+  oauthClientId: z.string().nullable().optional(),
+  // Plaintext on update; the handler encrypts it before storing and never
+  // returns it via `McpServerSchema`.
+  oauthClientSecret: z.string().nullable().optional(),
+  oauthScope: oauthScopeSchema,
 });
 
 export type McpServerUpdate = z.infer<typeof McpServerUpdateSchema>;
