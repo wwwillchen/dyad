@@ -166,12 +166,20 @@ export const neonContracts = {
       success: z.boolean(),
       warning: z.string().optional(),
     }),
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
   }),
 
   unsetAppProject: defineContract({
     channel: "neon:unset-app-project",
     input: UnsetNeonAppProjectParamsSchema,
     output: z.object({ success: z.boolean() }),
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
   }),
 
   setActiveBranch: defineContract({
@@ -181,6 +189,11 @@ export const neonContracts = {
       success: z.boolean(),
       warning: z.string().optional(),
     }),
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
+    originHandles: (input) => [{ family: "app", appId: input.appId }],
   }),
 
   getEmailPasswordConfig: defineContract({

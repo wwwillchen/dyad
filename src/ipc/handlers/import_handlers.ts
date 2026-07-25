@@ -19,6 +19,7 @@ import {
   slugifyAppFolderName,
 } from "@/shared/app_names";
 import { resolveUniqueFolderName } from "../utils/app_name_resolution";
+import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 
 const logger = log.scope("import-handlers");
 const handle = createLoggedHandler(logger);
@@ -66,7 +67,7 @@ export function registerImportHandlers() {
   handle(
     "import-app",
     async (
-      _,
+      event,
       {
         path: sourcePath,
         installCommand,
@@ -153,6 +154,9 @@ export function registerImportHandlers() {
           chatMode: initialChatMode,
         })
         .returning();
+      queryInvalidationBus.publish([{ family: "apps" }, { family: "chats" }], {
+        originEndpoint: event.sender,
+      });
       return { appId: app.id, chatId: chat.id };
     },
   );

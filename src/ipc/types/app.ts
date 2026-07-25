@@ -398,6 +398,7 @@ export const appContracts = {
     channel: "create-app",
     input: CreateAppParamsSchema,
     output: CreateAppResultSchema,
+    invalidates: () => [{ family: "apps" }, { family: "chats" }],
   }),
 
   getApp: defineContract({
@@ -416,24 +417,48 @@ export const appContracts = {
     channel: "delete-app",
     input: DeleteAppParamsSchema,
     output: z.void(),
+    invalidates: () => [
+      { family: "apps" },
+      { family: "chats" },
+      { family: "app-collections" },
+    ],
+    originHandles: () => [{ family: "apps" }, { family: "app-collections" }],
   }),
 
   deleteApps: defineContract({
     channel: "delete-apps",
     input: DeleteAppsParamsSchema,
     output: DeleteAppsResultSchema,
+    invalidates: (_input, output) =>
+      output.results.some((result) => result.success)
+        ? [
+            { family: "apps" },
+            { family: "chats" },
+            { family: "app-collections" },
+          ]
+        : [],
+    originHandles: (_input, output) =>
+      output.results.some((result) => result.success)
+        ? [{ family: "apps" }, { family: "app-collections" }]
+        : [],
   }),
 
   copyApp: defineContract({
     channel: "copy-app",
     input: CopyAppParamsSchema,
     output: CopyAppResultSchema,
+    invalidates: () => [{ family: "apps" }, { family: "chats" }],
   }),
 
   renameApp: defineContract({
     channel: "rename-app",
     input: RenameAppParamsSchema,
     output: RenameAppResultSchema,
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
+    originHandles: () => [{ family: "apps" }],
   }),
 
   previewAppFolderName: defineContract({
@@ -476,6 +501,7 @@ export const appContracts = {
     channel: "edit-app-file",
     input: EditAppFileParamsSchema,
     output: EditAppFileResultSchema,
+    invalidates: (input) => [{ family: "versions", appId: input.appId }],
   }),
 
   readAppFile: defineContract({
@@ -500,24 +526,42 @@ export const appContracts = {
     channel: "change-app-location",
     input: ChangeAppLocationParamsSchema,
     output: ChangeAppLocationResultSchema,
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
   }),
 
   renameBranch: defineContract({
     channel: "rename-branch",
     input: RenameBranchParamsSchema,
     output: z.void(),
+    invalidates: (input) => [
+      { family: "branches", appId: input.appId },
+      { family: "versions", appId: input.appId },
+    ],
   }),
 
   addToFavorite: defineContract({
     channel: "add-to-favorite",
     input: AppIdParamsSchema,
     output: AddToFavoriteResultSchema,
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
+    originHandles: () => [{ family: "apps" }],
   }),
 
   setTestingEnabled: defineContract({
     channel: "set-testing-enabled",
     input: SetTestingEnabledParamsSchema,
     output: SetTestingEnabledResultSchema,
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
+    originHandles: (input) => [{ family: "app", appId: input.appId }],
   }),
 
   selectAppLocation: defineContract({
@@ -542,6 +586,7 @@ export const appContracts = {
     channel: "update-app-commands",
     input: UpdateAppCommandsParamsSchema,
     output: z.void(),
+    invalidates: (input) => [{ family: "app", appId: input.appId }],
   }),
 
   /**

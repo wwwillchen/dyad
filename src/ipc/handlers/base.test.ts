@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
@@ -12,6 +13,15 @@ import {
   configureTrustedRenderer,
   isTrustedRendererUrl,
 } from "../utils/renderer_security";
+import { windowRegistry } from "@/window_infrastructure/main/window_registry";
+import {
+  queryInvalidationBus,
+  queryInvalidationChannel,
+} from "@/window_infrastructure/main/query_invalidation_bus";
+import type {
+  QueryInvalidationBatch,
+  WindowSessionId,
+} from "@/window_infrastructure/types";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, input: unknown) => unknown>(),
@@ -78,6 +88,57 @@ describe("IPC handler envelopes", () => {
 
     expect(unwrapIpcEnvelope(envelope)).toEqual({ doubled: 42 });
     expect(mocks.sendTelemetryException).not.toHaveBeenCalled();
+  });
+
+  it("publishes contract invalidations after a successful mutation", async () => {
+    const originSend = vi.fn();
+    const peerSend = vi.fn();
+    const originFrame = { url: "http://localhost:5173/", parent: null };
+    const origin = {
+      id: 91_001,
+      isDestroyed: () => false,
+      send: originSend,
+      mainFrame: originFrame,
+    };
+    const peer = {
+      id: 91_002,
+      isDestroyed: () => false,
+      send: peerSend,
+    };
+    windowRegistry.register(origin, randomUUID() as WindowSessionId);
+    windowRegistry.register(peer, randomUUID() as WindowSessionId);
+    createTypedHandler(
+      defineContract({
+        channel: "invalidating-channel",
+        input: z.object({ appId: z.number() }),
+        output: z.object({ ok: z.literal(true) }),
+        invalidates: (input) => [{ family: "app", appId: input.appId }],
+        originHandles: () => [],
+      }),
+      async () => ({ ok: true as const }),
+    );
+
+    try {
+      const envelope = await getEnvelope(
+        "invalidating-channel",
+        { appId: 7 },
+        { sender: origin, senderFrame: originFrame },
+      );
+      expect(unwrapIpcEnvelope(envelope)).toEqual({ ok: true });
+      queryInvalidationBus.flush();
+
+      const peerBatch = peerSend.mock.calls.find(
+        ([channel]) => channel === queryInvalidationChannel(),
+      )?.[1] as QueryInvalidationBatch;
+      expect(peerBatch.invalidations.at(-1)).toMatchObject({
+        scopes: [{ family: "app", appId: 7 }],
+        originWindowSessionId: windowRegistry.sessionForWebContents(origin.id),
+        originHandledScopes: [],
+      });
+    } finally {
+      windowRegistry.unregister(origin.id);
+      windowRegistry.unregister(peer.id);
+    }
   });
 
   it("accepts IPC from the local development renderer", async () => {

@@ -56,24 +56,28 @@ export const appCollectionContracts = {
     channel: "appCollections:create",
     input: CreateAppCollectionParamsSchema,
     output: AppCollectionDtoSchema,
+    invalidates: () => [{ family: "app-collections" }],
   }),
 
   update: defineContract({
     channel: "appCollections:update",
     input: UpdateAppCollectionParamsSchema,
     output: z.void(),
+    invalidates: () => [{ family: "app-collections" }],
   }),
 
   delete: defineContract({
     channel: "appCollections:delete",
     input: z.number(),
     output: z.void(),
+    invalidates: () => [{ family: "app-collections" }, { family: "apps" }],
   }),
 
   assignApps: defineContract({
     channel: "appCollections:assignApps",
     input: AssignAppsParamsSchema,
     output: z.void(),
+    invalidates: () => [{ family: "app-collections" }, { family: "apps" }],
   }),
 } as const;
 

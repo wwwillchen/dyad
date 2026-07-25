@@ -33,6 +33,7 @@ describe("QueryInvalidationBus", () => {
         epoch: 1,
         scopes: [{ family: "apps" }],
         originWindowSessionId: sessionId,
+        originHandledScopes: [{ family: "apps" }],
       },
       { epoch: 2, scopes: [{ family: "chats" }] },
     ]);

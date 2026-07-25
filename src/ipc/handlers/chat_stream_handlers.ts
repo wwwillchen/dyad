@@ -84,6 +84,11 @@ import {
 import { userInputRegistry } from "../../user_input/main";
 
 import { safeSend } from "../utils/safe_sender";
+import {
+  releaseChatProducerInterest,
+  sendChatChunk,
+} from "@/window_infrastructure/main/production_high_volume";
+import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 import { cancelOrphanedBaseStream } from "../utils/stream_text_utils";
 import { cleanFullResponse } from "../utils/cleanFullResponse";
 import { escapeXmlAttr, escapeXmlContent } from "../../../shared/xmlEscape";
@@ -1106,12 +1111,16 @@ ${componentSnippet}
         // inserting another user message or starting another model turn. The
         // transaction above also repairs a still-null first-turn mode.
         replayedAcceptedFollowUp = true;
-        safeSend(event.sender, "chat:response:chunk", {
+        sendChatChunk(event.sender, {
           chatId: req.chatId,
           invocationRef: req.invocationRef,
           streamId: req.streamId,
           acceptedUserInputRequestId: req.userInputRequestId,
         } satisfies ChatStreamChunkPayload);
+        queryInvalidationBus.publish(
+          [{ family: "chats" }, { family: "chat", chatId: req.chatId }],
+          { originEndpoint: event.sender },
+        );
         safeSend(event.sender, "chat:response:end", {
           chatId: req.chatId,
           invocationRef: req.invocationRef,
@@ -1138,7 +1147,7 @@ ${componentSnippet}
 
       const userMessageId = acceptedTurn.userMessageId;
       if (req.userInputRequestId) {
-        safeSend(event.sender, "chat:response:chunk", {
+        sendChatChunk(event.sender, {
           chatId: req.chatId,
           invocationRef: req.invocationRef,
           streamId: req.streamId,
@@ -1168,7 +1177,7 @@ ${componentSnippet}
           storedAttachments,
           attachmentDeliveryConfig,
         );
-      safeSend(event.sender, "chat:response:chunk", {
+      sendChatChunk(event.sender, {
         chatId: req.chatId,
         invocationRef: req.invocationRef,
         streamId: req.streamId,
@@ -1215,7 +1224,7 @@ ${componentSnippet}
       }
 
       // Send the messages right away so that the loading state is shown for the message.
-      safeSend(event.sender, "chat:response:chunk", {
+      sendChatChunk(event.sender, {
         chatId: req.chatId,
         invocationRef: req.invocationRef,
         streamId: req.streamId,
@@ -1852,7 +1861,7 @@ This conversation includes one or more image attachments. When the user uploads 
           if (!patch) {
             return fullResponse;
           }
-          safeSend(event.sender, "chat:response:chunk", {
+          sendChatChunk(event.sender, {
             chatId: req.chatId,
             invocationRef: req.invocationRef,
             streamId: req.streamId,
@@ -2274,7 +2283,7 @@ This conversation includes one or more image attachments. When the user uploads 
             },
           });
 
-          safeSend(event.sender, "chat:response:chunk", {
+          sendChatChunk(event.sender, {
             chatId: req.chatId,
             invocationRef: req.invocationRef,
             streamId: req.streamId,
@@ -2292,6 +2301,10 @@ This conversation includes one or more image attachments. When the user uploads 
           }
 
           // Signal that the stream has completed
+          queryInvalidationBus.publish(
+            [{ family: "chats" }, { family: "chat", chatId: req.chatId }],
+            { originEndpoint: event.sender },
+          );
           safeSend(event.sender, "chat:response:end", {
             chatId: req.chatId,
             invocationRef: req.invocationRef,
@@ -2303,6 +2316,10 @@ This conversation includes one or more image attachments. When the user uploads 
             chatSummary,
           } satisfies ChatStreamEndPayload);
         } else {
+          queryInvalidationBus.publish(
+            [{ family: "chats" }, { family: "chat", chatId: req.chatId }],
+            { originEndpoint: event.sender },
+          );
           safeSend(event.sender, "chat:response:end", {
             chatId: req.chatId,
             invocationRef: req.invocationRef,
@@ -2328,6 +2345,7 @@ This conversation includes one or more image attachments. When the user uploads 
 
       return "error";
     } finally {
+      releaseChatProducerInterest(event.sender, req.chatId);
       // Clean up the abort controller
       if (trackedStream) {
         removeTrackedValue(activeStreams, req.chatId, trackedStream);

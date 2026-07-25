@@ -7,6 +7,7 @@ import {
   type InvocationClaim,
 } from "../../state_machines/invocation_ref";
 import { DyadError, DyadErrorKind, isDyadError } from "../../errors/dyad_error";
+import type { QueryInvalidationScope } from "../../window_infrastructure/types";
 
 // =============================================================================
 // Contract Type Definitions
@@ -24,6 +25,14 @@ export interface IpcContract<
   readonly channel: TChannel;
   readonly input: TInput;
   readonly output: TOutput;
+  readonly invalidates?: (
+    input: z.infer<TInput>,
+    output: z.infer<TOutput>,
+  ) => readonly QueryInvalidationScope[];
+  readonly originHandles?: (
+    input: z.infer<TInput>,
+    output: z.infer<TOutput>,
+  ) => readonly QueryInvalidationScope[];
 }
 
 /**
@@ -94,6 +103,14 @@ export function defineContract<
   channel: TChannel;
   input: TInput;
   output: TOutput;
+  invalidates?: (
+    input: z.infer<TInput>,
+    output: z.infer<TOutput>,
+  ) => readonly QueryInvalidationScope[];
+  originHandles?: (
+    input: z.infer<TInput>,
+    output: z.infer<TOutput>,
+  ) => readonly QueryInvalidationScope[];
 }): IpcContract<TChannel, TInput, TOutput> {
   return contract;
 }

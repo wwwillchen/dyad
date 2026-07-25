@@ -54,6 +54,8 @@ export const securityContracts = {
       chatId: z.number(),
       created: z.boolean(),
     }),
+    invalidates: (_input, output) =>
+      output.created ? [{ family: "chats" }] : [],
   }),
 } as const;
 

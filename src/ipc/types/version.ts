@@ -172,12 +172,24 @@ export const versionContracts = {
     channel: "revert-version",
     input: RevertVersionParamsSchema,
     output: VersionCommandResultSchema,
+    invalidates: (input) => [
+      { family: "branches", appId: input.appId },
+      { family: "versions", appId: input.appId },
+      { family: "app", appId: input.appId },
+      { family: "problems", appId: input.appId },
+    ],
   }),
 
   checkoutVersion: defineContract({
     channel: "checkout-version",
     input: CheckoutVersionParamsSchema,
     output: CheckoutVersionResponseSchema,
+    invalidates: (input) => [
+      { family: "branches", appId: input.appId },
+      { family: "versions", appId: input.appId },
+      { family: "app", appId: input.appId },
+      { family: "problems", appId: input.appId },
+    ],
   }),
 
   getVersionChanges: defineContract({
@@ -190,18 +202,27 @@ export const versionContracts = {
     channel: "set-version-favorite",
     input: SetVersionFavoriteParamsSchema,
     output: VersionMetadataResultSchema,
+    invalidates: (input) => [{ family: "versions", appId: input.appId }],
   }),
 
   setVersionNote: defineContract({
     channel: "set-version-note",
     input: SetVersionNoteParamsSchema,
     output: VersionMetadataResultSchema,
+    invalidates: (input) => [{ family: "versions", appId: input.appId }],
   }),
 
   restoreToMessageVersion: defineContract({
     channel: "restore-to-message-version",
     input: RestoreToMessageParamsSchema,
     output: RestoreToMessageResponseSchema,
+    invalidates: (input) => [
+      { family: "branches", appId: input.appId },
+      { family: "versions", appId: input.appId },
+      { family: "app", appId: input.appId },
+      { family: "problems", appId: input.appId },
+      { family: "chats" },
+    ],
   }),
 
   getCurrentBranch: defineContract({

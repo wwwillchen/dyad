@@ -46,4 +46,30 @@ describe("RendererQueryInvalidationConsumer", () => {
     });
     expect(invalidateQueries).toHaveBeenCalledTimes(3);
   });
+
+  it("invalidates only scopes that the origin did not handle locally", () => {
+    const invalidateQueries = vi.fn(() => Promise.resolve());
+    const ownSession = randomUUID() as WindowSessionId;
+    const consumer = new RendererQueryInvalidationConsumer(
+      { invalidateQueries },
+      ownSession,
+    );
+
+    consumer.consume({
+      invalidations: [
+        {
+          epoch: 1,
+          scopes: [{ family: "apps" }, { family: "app", appId: 7 }],
+          originWindowSessionId: ownSession,
+          originHandledScopes: [{ family: "apps" }],
+        },
+      ],
+      recoveryScopes: [],
+    });
+
+    expect(invalidateQueries).toHaveBeenCalledOnce();
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.apps.detail({ appId: 7 }),
+    });
+  });
 });

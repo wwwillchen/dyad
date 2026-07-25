@@ -191,6 +191,10 @@ export const appBlueprintContracts = {
     channel: "app-blueprint:approve",
     input: AppBlueprintApproveSchema,
     output: z.void(),
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "chat", chatId: input.chatId },
+    ],
   }),
 
   editField: defineContract({
