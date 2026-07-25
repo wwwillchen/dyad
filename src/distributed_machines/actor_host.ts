@@ -1,6 +1,5 @@
 import {
   TransactionalDispatcher,
-  type DispatchTicket,
   type DispatchTicketOutcome,
   type DispatcherError,
 } from "@/state_machines/dispatcher";
@@ -8,9 +7,14 @@ import { TaskScope, collectDisposalError } from "@/state_machines/task_scope";
 import { TimerLeaseScope } from "@/state_machines/timer_lease";
 import { createTraceObserver } from "@/state_machines/trace";
 import type { Clock, ClockHandle, IdSource } from "@/state_machines/clock";
-import type { IgnoreReason, TransitionObserver } from "@/state_machines/types";
+import type {
+  DispatchContext,
+  IgnoreReason,
+  TransitionObserver,
+} from "@/state_machines/types";
 import type {
   ActorDisposalCause,
+  ActorDispatchTicket,
   ActorDisposalContext,
   ActorInstanceId,
   ActorRuntimeMetadata,
@@ -41,6 +45,14 @@ export interface ActorHostOptions {
   readonly reportError?: (error: ActorHostError) => void;
 }
 
+export interface ActorDisposedEvent {
+  readonly machineId: string;
+  readonly key: unknown;
+  readonly metadata: ActorRuntimeMetadata;
+  readonly snapshot: unknown;
+  readonly cause: ActorDisposalCause;
+}
+
 export class ActorAdmissionError extends Error {
   constructor(
     readonly code:
@@ -60,8 +72,11 @@ export class ActorAdmissionError extends Error {
 
 function settledTicket<State, Reason extends IgnoreReason>(
   outcome: DispatchTicketOutcome<State, Reason>,
-): DispatchTicket<State, Reason> {
-  return { settled: Promise.resolve(outcome) };
+): ActorDispatchTicket<State, Reason> {
+  return {
+    settled: Promise.resolve(outcome),
+    getSettledMetadata: () => undefined,
+  };
 }
 
 function composeObservers<State, Event, Command, Reason extends IgnoreReason>(
@@ -134,6 +149,7 @@ class HostedActor<
     private readonly removeFromHost: (
       actor: HostedActor<Key, State, Event, Command, Reason>,
     ) => void,
+    private readonly notifyDisposed: (event: ActorDisposedEvent) => void,
   ) {
     this.actorInstanceId = options.ids.next(`${definition.id}-actor`);
     const initialState = definition.initialState(key);
@@ -235,25 +251,39 @@ class HostedActor<
     };
   };
 
-  send = (event: Event): void => {
-    void this.enqueue(event);
+  send = (event: Event, dispatchContext?: DispatchContext): void => {
+    void this.enqueue(event, dispatchContext);
   };
 
-  enqueue = (event: Event): DispatchTicket<State, Reason> => {
+  enqueue = (
+    event: Event,
+    dispatchContext?: DispatchContext,
+  ): ActorDispatchTicket<State, Reason> => {
     if (this.isAdmissionClosed()) this.stopAdmission();
-    const ticket = this.dispatcher.enqueue(event);
+    let settledMetadata: ActorRuntimeMetadata | undefined;
+    const ticket = this.dispatcher.enqueue(
+      event,
+      () => {
+        settledMetadata = this.getMetadata();
+      },
+      dispatchContext,
+    );
     void ticket.settled
       .then((outcome) => {
         if (outcome.kind !== "disposed") this.reconcileRetention();
       })
       .catch((failure) => this.reportFailure(failure));
-    return ticket;
+    return {
+      settled: ticket.settled,
+      getSettledMetadata: () => settledMetadata,
+    };
   };
 
   enqueueExpected(
     event: Event,
     expectedActorInstanceId?: ActorInstanceId,
-  ): DispatchTicket<State, Reason> {
+    dispatchContext?: DispatchContext,
+  ): ActorDispatchTicket<State, Reason> {
     if (
       expectedActorInstanceId !== undefined &&
       expectedActorInstanceId !== this.actorInstanceId
@@ -267,7 +297,7 @@ class HostedActor<
         ),
       });
     }
-    return this.enqueue(event);
+    return this.enqueue(event, dispatchContext);
   }
 
   stopAdmission(): void {
@@ -336,6 +366,17 @@ class HostedActor<
     await this.runDisposalStep(errors, () =>
       this.definition.lifecycle.onDisposed?.(context),
     );
+    try {
+      this.notifyDisposed({
+        machineId: this.definition.id,
+        key: this.key,
+        metadata: context.metadata,
+        snapshot: context.snapshot,
+        cause: context.cause,
+      });
+    } catch (error) {
+      errors.push(error);
+    }
     if (errors.length > 0) {
       throw new AggregateError(
         errors,
@@ -517,8 +558,16 @@ export class ActorHost {
   private readonly hostConstructionDisposals: Promise<void>[] = [];
   private disposed = false;
   private disposal: Promise<void> | undefined;
+  private readonly disposalListeners = new Set<
+    (event: ActorDisposedEvent) => void
+  >();
 
   constructor(private readonly options: ActorHostOptions) {}
+
+  onActorDisposed(listener: (event: ActorDisposedEvent) => void): () => void {
+    this.disposalListeners.add(listener);
+    return () => this.disposalListeners.delete(listener);
+  }
 
   register<
     Id extends string,
@@ -653,7 +702,8 @@ export class ActorHost {
     key: Key,
     event: Event,
     expectedActorInstanceId?: ActorInstanceId,
-  ): DispatchTicket<State, Reason> {
+    dispatchContext?: DispatchContext,
+  ): ActorDispatchTicket<State, Reason> {
     this.assertRegistered(definition);
     if (this.disposed) {
       return settledTicket({
@@ -740,7 +790,11 @@ export class ActorHost {
         });
       }
     }
-    return actor.enqueueExpected(event, expectedActorInstanceId);
+    return actor.enqueueExpected(
+      event,
+      expectedActorInstanceId,
+      dispatchContext,
+    );
   }
 
   async disposeKey(
@@ -884,6 +938,15 @@ export class ActorHost {
         (disposedActor) => {
           if (keyed?.get(key) === disposedActor) keyed.delete(key);
           if (keyed?.size === 0) this.actors.delete(definition.id);
+        },
+        (event) => {
+          for (const listener of this.disposalListeners) {
+            try {
+              listener(event);
+            } catch (failure) {
+              this.reportFailure(definition.id, key, failure);
+            }
+          }
         },
       );
     } catch (error) {

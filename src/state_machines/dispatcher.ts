@@ -1,6 +1,7 @@
 import { SnapshotStore } from "./snapshot_store";
 import { validateTransitionResult } from "./transition_validation";
 import type {
+  DispatchContext,
   IgnoreReason,
   TransitionObserver,
   TransitionResult,
@@ -48,6 +49,10 @@ export interface DispatchTicket<State, Reason extends IgnoreReason> {
 
 interface PendingDispatch<State, Event> {
   readonly event: Event;
+  readonly dispatchContext?: DispatchContext;
+  readonly onSettled?: (
+    outcome: DispatchTicketOutcome<State, IgnoreReason>,
+  ) => void;
   readonly settle: (
     outcome: DispatchTicketOutcome<State, IgnoreReason>,
   ) => void;
@@ -153,7 +158,11 @@ export class TransactionalDispatcher<
     });
   };
 
-  enqueue = (event: Event): DispatchTicket<State, Reason> => {
+  enqueue = (
+    event: Event,
+    onSettled?: (outcome: DispatchTicketOutcome<State, Reason>) => void,
+    dispatchContext?: DispatchContext,
+  ): DispatchTicket<State, Reason> => {
     let settle!: (outcome: DispatchTicketOutcome<State, Reason>) => void;
     const settled = new Promise<DispatchTicketOutcome<State, Reason>>(
       (resolve) => {
@@ -167,6 +176,10 @@ export class TransactionalDispatcher<
     }
     this.pendingEvents.push({
       event,
+      dispatchContext,
+      onSettled: onSettled as
+        | ((outcome: DispatchTicketOutcome<State, IgnoreReason>) => void)
+        | undefined,
       settle: (outcome) =>
         settle(outcome as DispatchTicketOutcome<State, Reason>),
     });
@@ -191,8 +204,8 @@ export class TransactionalDispatcher<
     return ticket;
   };
 
-  send = (event: Event): void => {
-    void this.enqueue(event);
+  send = (event: Event, dispatchContext?: DispatchContext): void => {
+    void this.enqueue(event, undefined, dispatchContext);
   };
 
   /**
@@ -229,14 +242,25 @@ export class TransactionalDispatcher<
     return this.disposed;
   }
 
-  private processOne({ event, settle }: PendingDispatch<State, Event>): void {
+  private processOne({
+    event,
+    dispatchContext,
+    onSettled,
+    settle,
+  }: PendingDispatch<State, Event>): void {
+    const settleCurrent = (
+      outcome: DispatchTicketOutcome<State, Reason>,
+    ): void => {
+      onSettled?.(outcome);
+      settle(outcome);
+    };
     const previous = this.store.getSnapshot();
     let result: TransitionResult<State, Command, Reason>;
     try {
       result = this.options.transition(previous, event);
     } catch (error) {
       this.report({ stage: "transition", error });
-      settle({ kind: "failed", stage: "transition", error });
+      settleCurrent({ kind: "failed", stage: "transition", error });
       return;
     }
 
@@ -244,13 +268,13 @@ export class TransactionalDispatcher<
       validateTransitionResult(previous, event, result);
     } catch (error) {
       this.report({ stage: "validation", error });
-      settle({ kind: "failed", stage: "validation", error });
+      settleCurrent({ kind: "failed", stage: "validation", error });
       return;
     }
 
     if (result.kind === "ignored") {
-      this.notifyObserver(previous, event, result);
-      settle({
+      this.notifyObserver(previous, event, result, dispatchContext);
+      settleCurrent({
         kind: "ignored",
         state: this.store.getSnapshot(),
         reason: result.reason,
@@ -266,7 +290,7 @@ export class TransactionalDispatcher<
       this.report({ stage: "before-commit", error });
     }
     if (!this.accepting) {
-      settle({ kind: "disposed" });
+      settleCurrent({ kind: "disposed" });
       return;
     }
 
@@ -277,9 +301,9 @@ export class TransactionalDispatcher<
       this.store.setState(result.state, () => this.project(result.state));
     }
 
-    this.notifyObserver(previous, event, result);
+    this.notifyObserver(previous, event, result, dispatchContext);
     this.startBatch(batch);
-    settle({ kind: "applied", state: this.store.getSnapshot() });
+    settleCurrent({ kind: "applied", state: this.store.getSnapshot() });
   }
 
   private reserve(commands: readonly Command[]): ReservedCommandBatch<Command> {
@@ -341,6 +365,7 @@ export class TransactionalDispatcher<
     previous: State,
     event: Event,
     result: TransitionResult<State, Command, Reason>,
+    dispatchContext?: DispatchContext,
   ): void {
     try {
       if (result.kind === "ignored") {
@@ -348,6 +373,7 @@ export class TransactionalDispatcher<
           state: this.store.getSnapshot(),
           event,
           reason: result.reason,
+          ...(dispatchContext ? { dispatchContext } : {}),
         });
       } else {
         this.options.observer?.onTransitionApplied?.({
@@ -355,6 +381,7 @@ export class TransactionalDispatcher<
           event,
           state: this.store.getSnapshot(),
           commands: result.commands,
+          ...(dispatchContext ? { dispatchContext } : {}),
         });
       }
     } catch (error) {

@@ -1,4 +1,5 @@
 import type { IdSource } from "@/state_machines/clock";
+import type { z } from "zod";
 import type {
   CommandScheduler,
   DispatchTicket,
@@ -7,6 +8,7 @@ import type { InvocationRef } from "@/state_machines/invocation_ref";
 import type { TaskScope } from "@/state_machines/task_scope";
 import type { TimerLeaseScope } from "@/state_machines/timer_lease";
 import type {
+  DispatchContext,
   IgnoreReason,
   TransitionObserver,
   TransitionResult,
@@ -110,11 +112,34 @@ export interface MachinePersistencePolicy<Key, State> {
  * Remote transport is a definition-time contract only in B2. Codecs,
  * authorization, and transport execution are introduced in B3.
  */
+export interface RemoteMachineSender {
+  readonly webContentsId: number;
+  readonly windowSessionId?: string;
+}
+
+export type RemoteRevisionPolicy = "allow-stale" | "reject-stale";
+
 export interface RemoteMachineContract<Key, State, Event> {
   readonly protocolVersion: number;
-  readonly keyType?: Key;
-  readonly stateType?: State;
-  readonly eventType?: Event;
+  readonly keyCodec: z.ZodType<Key>;
+  readonly encodeKey: (key: Key) => unknown;
+  readonly eventCodec: z.ZodType<Event>;
+  readonly snapshotCodec: z.ZodType;
+  readonly keyToString: (key: Key) => string;
+  readonly projectSnapshot: (state: State, key: Key) => unknown;
+  readonly revisionPolicy: (event: Event) => RemoteRevisionPolicy;
+  /** Throw DyadErrorKind.Auth for an expected access denial. */
+  readonly authorizeSubscribe: (context: {
+    readonly sender: RemoteMachineSender;
+    readonly key: Key;
+  }) => void | Promise<void>;
+  /** Throw DyadErrorKind.Auth for an expected access denial. */
+  readonly authorizeDispatch: (context: {
+    readonly sender: RemoteMachineSender;
+    readonly key: Key;
+    readonly event: Event;
+    readonly currentState: State | undefined;
+  }) => void | Promise<void>;
 }
 
 export interface DistributedMachineDefinition<
@@ -157,7 +182,7 @@ export interface LocalActorRef<State, Event> {
   getSnapshot(): State;
   getMetadata(): ActorRuntimeMetadata;
   subscribe(listener: () => void): () => void;
-  send(event: Event): void;
+  send(event: Event, dispatchContext?: DispatchContext): void;
 }
 
 export interface HostedActorRef<
@@ -165,5 +190,15 @@ export interface HostedActorRef<
   Event,
   Reason extends IgnoreReason,
 > extends LocalActorRef<State, Event> {
-  enqueue(event: Event): DispatchTicket<State, Reason>;
+  enqueue(
+    event: Event,
+    dispatchContext?: DispatchContext,
+  ): ActorDispatchTicket<State, Reason>;
+}
+
+export interface ActorDispatchTicket<
+  State,
+  Reason extends IgnoreReason,
+> extends DispatchTicket<State, Reason> {
+  getSettledMetadata(): ActorRuntimeMetadata | undefined;
 }

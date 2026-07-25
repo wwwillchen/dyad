@@ -68,6 +68,44 @@ Background and before/after examples of why this pattern exists:
   idempotency key through every queue, IPC, and persistence boundary. Make the
   receiving boundary durably deduplicate acceptance, and acknowledge only
   after that acceptance; a renderer-local enqueue is not durable acceptance.
+  Bounded dedup caches may evict settled history, never unresolved receipts;
+  reject excess in-flight work through a separate bounded admission limit.
+  Scope renderer retries to the stable window-session identity, not an
+  ephemeral `webContents.id`, so reconnect cannot bypass deduplication. Start
+  the retention window when the receipt settles, not when slow authorization
+  begins, or a lost receipt can be immediately evicted after acceptance. Evict
+  transient pre-admission transport-lifetime rejections after settlement, with
+  an identity check against the cached entry, so reconnect can retry work that
+  was never admitted while concurrent in-flight duplicates still coalesce.
+- Make remote subscribe/bootstrap idempotent per window, machine, and key.
+  Resync and reconnect retries must refresh the bootstrap without incrementing
+  ownership; projection/encoding failure rolls back only ownership acquired by
+  that call. Coalesce concurrent retries of the same logical attach behind one
+  pending quota reservation and admission result. Track pending attach identity
+  so unsubscribe, window destruction, actor disposal, or transport disposal
+  invalidates authorization still in flight; after every await, reject a
+  cancelled or closed lifetime before admission. Renderer bootstrap applies both
+  codecs and refuses disposed actor lifetimes, or failed retries and delayed
+  responses can retain stale state.
+- After asynchronous remote authorization, revalidate both the sender's window
+  session and the actor instance/revision used for the decision. Re-authorize
+  changed state only a bounded number of times (then reject it), and keep
+  admission synchronous. Remote dispatch may address only an existing actor
+  created by subscription and must lock admission to that actor instance.
+- Remote key codecs need an explicit encoder as well as a decoder. Use the
+  canonical encoded value in every wire envelope; never emit the decoded domain
+  key, which may be transformed or non-serializable. Bound every untrusted
+  envelope before its codec runs, including subscribe/unsubscribe addresses,
+  and bound snapshot envelopes before delivery. Use a
+  structured-clone-compatible byte measurement; JSON sizing is not
+  wire-compatible with values such as `bigint`.
+- Remote authorization hooks use `DyadErrorKind.Auth` for expected access
+  denial. Convert only that explicit classification to an unauthorized receipt;
+  propagate unexpected hook failures so telemetry can distinguish dependency
+  failures and bugs from ordinary refusal.
+- Capture receipt metadata synchronously when that dispatch ticket settles.
+  Reading mutable actor metadata after awaiting the ticket can observe a
+  re-entrant follow-up transaction instead of the acknowledged event.
 - Machine-generated queued work must not be editable or removable (including
   through bulk-clear paths) unless removal explicitly settles or rejects the
   owning machine request; otherwise reload can resurrect abandoned work.
