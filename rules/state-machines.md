@@ -13,6 +13,9 @@ Background and before/after examples of why this pattern exists:
   adapters in `commands.ts`, and renderer bindings in a hook/provider.
 - `state.ts` and `transition.ts` stay pure. They must not depend on React,
   Electron, Jotai, TanStack Query, zod, timers, `Date`, or randomness.
+- When that purity requires a hand-written state type to duplicate an IPC zod
+  schema, add a mutual-assignability assertion beside the schema so either
+  definition drifting fails type-checking.
 - Cover the full state × event matrix with exhaustive switches and `never`
   checks. Deliberate no-ops must use shared `ignore(state, reason)` so they are
   distinguishable from omissions and observable in telemetry.
@@ -77,6 +80,11 @@ Background and before/after examples of why this pattern exists:
 - `observeTransition` runs before a controller commits its next snapshot. If
   an observer callback can re-enter the machine (for example, by submitting a
   follow-up turn), defer that callback until the committed state is visible.
+- In custom controllers that start an async command batch before committing,
+  the batch executes synchronously through its first `await`. Defer any
+  command callback that promises post-commit delivery (or reserve the batch
+  until after commit), and test the snapshot observed inside the callback—not
+  only the snapshot after the event returns.
 - When a manager needs machine-specific observer behavior, compose it with the
   production trace observer (including ignored events) instead of replacing
   trace coverage.

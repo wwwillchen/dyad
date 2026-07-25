@@ -13,8 +13,10 @@ import {
 } from "@/atoms/chatAtoms";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { isPreviewOpenAtom } from "@/atoms/viewAtoms";
-import { pendingScreenshotAppIdsAtom } from "@/atoms/previewAtoms";
-import { bumpPreviewReloadTokenForAppAtom } from "@/atoms/previewRuntimeAtoms";
+import type {
+  PreviewReloadRequestFacade,
+  ScreenshotRequestFacade,
+} from "@/app_wiring/cross_machine_facades";
 import { setPackageManagerWarningForAppAtom } from "@/atoms/previewRuntimeAtoms";
 import { ipc } from "@/ipc/types";
 import type { Chat, ChatResponseEnd, Message } from "@/ipc/types";
@@ -103,6 +105,8 @@ export interface ChatStreamRuntimeDeps {
   queryClient: QueryClient;
   getSettings: () => UserSettings | null | undefined;
   getPosthog: () => PostHog | null;
+  requestPreviewReload: PreviewReloadRequestFacade["requestManualReload"];
+  requestCapture: ScreenshotRequestFacade["requestCapture"];
 }
 
 // =============================================================================
@@ -479,7 +483,14 @@ export function createProductionChatStreamCommands(
       targetAppId,
       response,
     }) {
-      const { store, queryClient, getSettings, getPosthog } = deps();
+      const {
+        store,
+        queryClient,
+        getSettings,
+        getPosthog,
+        requestPreviewReload,
+        requestCapture,
+      } = deps();
       const settings = getSettings();
 
       cleanupStreamTransport(chatId, invocationRef);
@@ -513,12 +524,11 @@ export function createProductionChatStreamCommands(
             store.set(isPreviewOpenAtom, true);
           }
           if (targetAppId !== null) {
-            store.set(bumpPreviewReloadTokenForAppAtom, targetAppId);
-            store.set(pendingScreenshotAppIdsAtom, (pending) => {
-              const next = new Map(pending);
-              next.set(targetAppId, "stream");
-              return next;
-            });
+            requestPreviewReload(targetAppId);
+            // Phase B1 marker: the window-capability router replaces the
+            // facade implementation with lease-targeted routing. Call sites
+            // continue to express the same idempotent capture intent.
+            requestCapture(targetAppId, "stream");
           }
         }
 
