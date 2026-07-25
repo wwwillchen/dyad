@@ -51,9 +51,7 @@ export class RendererQueryInvalidationConsumer {
       return;
     }
     const handledScopeKeys = new Set(
-      (invalidation.originHandledScopes ?? invalidation.scopes).map(
-        queryInvalidationScopeKey,
-      ),
+      (invalidation.originHandledScopes ?? []).map(queryInvalidationScopeKey),
     );
     this.invalidateScopes(
       invalidation.scopes.filter(

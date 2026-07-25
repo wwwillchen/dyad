@@ -171,6 +171,12 @@ When modifying `ChatResponseChunkSchema` or adding new `safeSend("chat:response:
 
 **Tail-diff baseline invariant:** Never call `safeSend("chat:response:chunk", { messages: ... })` directly in `local_agent_handler.ts`. Route all full-update sends through `sendResponseChunk(..., true, lastSentRef)` so `lastSentRef` stays in sync automatically. A bare `safeSend` bypasses the sync and leaves `lastSentRef` stale, causing the next patch to compute LCP against the wrong baseline and corrupting streamed output.
 
+**Peer-stream correlation:** A multi-window passive stream consumer may project
+chunks classified as unsolicited because that renderer has no local invocation
+owner. It must not project chunks classified as stale: those belong to a
+superseded local invocation and retaining the old correlation rejection prevents
+late output from overwriting the current stream.
+
 **Zod schema contract changes:** Making a field optional (e.g., `messages` → `messages.optional()`) causes TypeScript errors in all consumers that assume the field is always present. Search for all destructuring/usage sites and add guards before committing.
 
 **Renderer-visible fields must be in the output schema:** `createTypedHandler` validates handler output through the contract's Zod schema. If the handler returns extra fields that are not declared in the output schema, renderer code cannot type-safely consume them and they may be stripped by parsing. Add any consumed fields (for example `appId` on `ChatSchema`) to the IPC output schema when relying on them in renderer code.

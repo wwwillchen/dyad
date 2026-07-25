@@ -523,7 +523,7 @@ export function createStreamClient<
         const claim = claimPayload(key, payload);
         if (claim.kind === "claimed") {
           claim.value.callbacks.onChunk(parsed.data);
-        } else {
+        } else if (claim.kind === "unsolicited") {
           for (const listener of unclaimedChunkListeners) {
             listener(parsed.data);
           }

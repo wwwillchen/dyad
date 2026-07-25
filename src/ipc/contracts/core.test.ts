@@ -427,21 +427,16 @@ describe("IPC stream callback cleanup", () => {
     expect(onEnd).toHaveBeenCalledWith({ chatId: 1 });
   });
 
-  it("exposes chunks owned by another renderer without double-delivering local chunks", () => {
+  it("exposes peer chunks but drops chunks from a superseded local stream", () => {
     const { client, listeners } = setupStreamClient();
     const passive = vi.fn();
     const local = vi.fn();
     client.subscribeUnclaimedChunks(passive);
-    const localRef = {
+    const oldRef = {
       kind: "chat-stream",
       entityKey: 1,
-      operationId: "local",
+      operationId: "old",
     };
-    client.start(
-      { chatId: 1 },
-      { onChunk: local, onEnd: vi.fn(), onError: vi.fn() },
-      { invocationRef: localRef },
-    );
 
     listeners.get("test:stream:chunk")?.({
       chatId: 1,
@@ -452,15 +447,38 @@ describe("IPC stream callback cleanup", () => {
       },
       value: "peer",
     });
+    client.start(
+      { chatId: 1 },
+      { onChunk: vi.fn(), onEnd: vi.fn(), onError: vi.fn() },
+      { invocationRef: oldRef },
+    );
+    const currentRef = {
+      kind: "chat-stream",
+      entityKey: 1,
+      operationId: "current",
+    };
+    client.start(
+      { chatId: 1 },
+      { onChunk: local, onEnd: vi.fn(), onError: vi.fn() },
+      { invocationRef: currentRef },
+    );
     listeners.get("test:stream:chunk")?.({
       chatId: 1,
-      invocationRef: localRef,
+      invocationRef: oldRef,
+      value: "stale",
+    });
+    listeners.get("test:stream:chunk")?.({
+      chatId: 1,
+      invocationRef: currentRef,
       value: "local",
     });
 
     expect(passive).toHaveBeenCalledOnce();
     expect(passive).toHaveBeenCalledWith(
       expect.objectContaining({ value: "peer" }),
+    );
+    expect(passive).not.toHaveBeenCalledWith(
+      expect.objectContaining({ value: "stale" }),
     );
     expect(local).toHaveBeenCalledOnce();
   });

@@ -5,7 +5,7 @@ import type { WindowSessionId } from "./types";
 import { RendererQueryInvalidationConsumer } from "./renderer_query_invalidation";
 
 describe("RendererQueryInvalidationConsumer", () => {
-  it("dedupes epochs, skips the origin, and recovers conservatively on gaps", () => {
+  it("dedupes epochs, defaults origin handling to empty, and recovers on gaps", () => {
     const invalidateQueries = vi.fn(() => Promise.resolve());
     const ownSession = randomUUID() as WindowSessionId;
     const consumer = new RendererQueryInvalidationConsumer(
@@ -23,7 +23,9 @@ describe("RendererQueryInvalidationConsumer", () => {
       ],
       recoveryScopes: [{ family: "apps" }, { family: "chats" }],
     });
-    expect(invalidateQueries).not.toHaveBeenCalled();
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.apps.all,
+    });
 
     consumer.consume({
       invalidations: [{ epoch: 3, scopes: [{ family: "apps" }] }],
@@ -36,6 +38,7 @@ describe("RendererQueryInvalidationConsumer", () => {
     ).map(([filter]) => filter.queryKey);
     expect(invalidatedKeys).toEqual([
       queryKeys.apps.all,
+      queryKeys.apps.all,
       queryKeys.chats.all,
       queryKeys.apps.all,
     ]);
@@ -44,7 +47,7 @@ describe("RendererQueryInvalidationConsumer", () => {
       invalidations: [{ epoch: 3, scopes: [{ family: "apps" }] }],
       recoveryScopes: [],
     });
-    expect(invalidateQueries).toHaveBeenCalledTimes(3);
+    expect(invalidateQueries).toHaveBeenCalledTimes(4);
   });
 
   it("invalidates only scopes that the origin did not handle locally", () => {
