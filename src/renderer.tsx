@@ -36,6 +36,7 @@ import {
 } from "./chat_stream/ChatStreamProvider";
 import {
   EntityDisposalProvider,
+  useEntityDisposal,
   useRegisterEntityDisposer,
 } from "./state_machines/react";
 import { clearTestRuntimeForAppAtom } from "./atoms/testRuntimeAtoms";
@@ -147,6 +148,7 @@ function RendererServices() {
   const queryClient = useQueryClient();
   const store = useStore();
   const chatStreamManager = useChatStreamManager();
+  const entityDisposal = useEntityDisposal();
   const clearAppRuntime = useCallback(
     (appId: number) => {
       store.set(clearTestRuntimeForAppAtom, appId);
@@ -190,6 +192,7 @@ function RendererServices() {
       store,
       queryClient,
       chatStreamManager,
+      entityDisposal,
       onTelemetryEvent: ({ eventName, properties }) => {
         if (eventName === "$exception") {
           posthog.captureException(
@@ -202,7 +205,7 @@ function RendererServices() {
         posthog.capture(eventName, properties);
       },
     });
-  }, [chatStreamManager, queryClient, store]);
+  }, [chatStreamManager, entityDisposal, queryClient, store]);
 
   return <RouterProvider router={router} />;
 }

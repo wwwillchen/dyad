@@ -84,6 +84,11 @@ import {
 import { userInputRegistry } from "../../user_input/main";
 
 import { safeSend } from "../utils/safe_sender";
+import {
+  releaseChatProducerInterest,
+  sendChatChunk,
+} from "@/window_infrastructure/main/production_high_volume";
+import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 import { cancelOrphanedBaseStream } from "../utils/stream_text_utils";
 import { cleanFullResponse } from "../utils/cleanFullResponse";
 import { escapeXmlAttr, escapeXmlContent } from "../../../shared/xmlEscape";
@@ -612,6 +617,7 @@ export function registerChatStreamHandlers() {
     let trackedStream: TrackedStream | undefined;
     let finishedNaturally = false;
     let replayedAcceptedFollowUp = false;
+    let mutatedPersistedChat = false;
     // Expose a promise that resolves once this handler fully unwinds (see the
     // `finally` block) so `cancelStream` can await in-flight tool/file writes.
     let resolveCompletion: () => void = () => {};
@@ -764,6 +770,7 @@ export function registerChatStreamHandlers() {
           await db
             .delete(messages)
             .where(eq(messages.id, chatMessages[lastUserMessageIndex].id));
+          mutatedPersistedChat = true;
 
           // If there's an assistant message after the user message, delete it too
           if (
@@ -1099,6 +1106,7 @@ ${componentSnippet}
           defaultAiUserPrompt,
         userInputRequestId: req.userInputRequestId,
       });
+      mutatedPersistedChat = true;
 
       if (acceptedTurn.userMessageId === null) {
         // A renderer replayed a continuation after main had already accepted
@@ -1106,7 +1114,7 @@ ${componentSnippet}
         // inserting another user message or starting another model turn. The
         // transaction above also repairs a still-null first-turn mode.
         replayedAcceptedFollowUp = true;
-        safeSend(event.sender, "chat:response:chunk", {
+        sendChatChunk(event.sender, {
           chatId: req.chatId,
           invocationRef: req.invocationRef,
           streamId: req.streamId,
@@ -1138,7 +1146,7 @@ ${componentSnippet}
 
       const userMessageId = acceptedTurn.userMessageId;
       if (req.userInputRequestId) {
-        safeSend(event.sender, "chat:response:chunk", {
+        sendChatChunk(event.sender, {
           chatId: req.chatId,
           invocationRef: req.invocationRef,
           streamId: req.streamId,
@@ -1168,7 +1176,7 @@ ${componentSnippet}
           storedAttachments,
           attachmentDeliveryConfig,
         );
-      safeSend(event.sender, "chat:response:chunk", {
+      sendChatChunk(event.sender, {
         chatId: req.chatId,
         invocationRef: req.invocationRef,
         streamId: req.streamId,
@@ -1215,7 +1223,7 @@ ${componentSnippet}
       }
 
       // Send the messages right away so that the loading state is shown for the message.
-      safeSend(event.sender, "chat:response:chunk", {
+      sendChatChunk(event.sender, {
         chatId: req.chatId,
         invocationRef: req.invocationRef,
         streamId: req.streamId,
@@ -1852,7 +1860,7 @@ This conversation includes one or more image attachments. When the user uploads 
           if (!patch) {
             return fullResponse;
           }
-          safeSend(event.sender, "chat:response:chunk", {
+          sendChatChunk(event.sender, {
             chatId: req.chatId,
             invocationRef: req.invocationRef,
             streamId: req.streamId,
@@ -2274,7 +2282,7 @@ This conversation includes one or more image attachments. When the user uploads 
             },
           });
 
-          safeSend(event.sender, "chat:response:chunk", {
+          sendChatChunk(event.sender, {
             chatId: req.chatId,
             invocationRef: req.invocationRef,
             streamId: req.streamId,
@@ -2328,6 +2336,18 @@ This conversation includes one or more image attachments. When the user uploads 
 
       return "error";
     } finally {
+      if (mutatedPersistedChat) {
+        queryInvalidationBus.publish(
+          [{ family: "chats" }, { family: "chat", chatId: req.chatId }],
+          {
+            originEndpoint: event.sender,
+            // Every terminal path refreshes the origin's list; detail must
+            // still be invalidated on errors/cancellation.
+            originHandledScopes: [{ family: "chats" }],
+          },
+        );
+      }
+      releaseChatProducerInterest(event.sender, req.chatId);
       // Clean up the abort controller
       if (trackedStream) {
         removeTrackedValue(activeStreams, req.chatId, trackedStream);

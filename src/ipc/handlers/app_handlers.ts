@@ -130,6 +130,7 @@ import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import { detectFrameworkType } from "../utils/framework_utils";
 import { readAppFileForEditor } from "../utils/bounded_text_file";
 import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
+import { entityDisposalBus } from "@/window_infrastructure/main/entity_disposal_bus";
 
 const logger = log.scope("app_handlers");
 const handle = createLoggedHandler(logger);
@@ -351,6 +352,7 @@ async function searchAppFilesWithRipgrep({
 interface DeleteAppByIdOptions {
   allowMissing?: boolean;
   knownAppPath?: string;
+  publishDisposal?: boolean;
 }
 
 async function removeAppFiles(appId: number, appPath: string): Promise<void> {
@@ -415,6 +417,12 @@ async function deleteAppById(
       );
       await db.delete(apps).where(eq(apps.id, appId));
       // Note: Associated chats will cascade delete
+      if (options.publishDisposal !== false) {
+        for (const { id: chatId } of appChats) {
+          entityDisposalBus.publish({ kind: "chat", id: chatId });
+        }
+        entityDisposalBus.publish({ kind: "app", id: appId });
+      }
     } catch (error: any) {
       logger.error(`Error deleting app ${appId} from database:`, error);
       throw new DyadError(
@@ -424,7 +432,17 @@ async function deleteAppById(
     }
 
     appRuntimeService.cleanup(appId);
-    await removeAppFiles(appId, getDyadAppPath(app.path));
+    try {
+      await removeAppFiles(appId, getDyadAppPath(app.path));
+    } catch (error) {
+      // Database deletion is the authoritative state transition. A failed
+      // best-effort filesystem cleanup must not make renderers treat the
+      // already-deleted app as retryable or suppress contract invalidations.
+      logger.warn(
+        `App ${appId} was deleted, but its files require manual cleanup`,
+        error,
+      );
+    }
   });
 }
 
@@ -499,6 +517,7 @@ export function registerAppHandlers() {
         await deleteAppById(app.id, {
           allowMissing: true,
           knownAppPath: fullAppPath,
+          publishDisposal: false,
         });
       } finally {
         queryInvalidationBus.publish([{ family: "apps" }, { family: "chats" }]);
@@ -546,9 +565,6 @@ export function registerAppHandlers() {
         app: { ...app, resolvedPath: fullAppPath },
         chatId: chat.id,
       };
-      queryInvalidationBus.publish([{ family: "apps" }, { family: "chats" }], {
-        originEndpoint: event?.sender,
-      });
       return result;
     } finally {
       if (params.firstPromptCreationOperationId) {

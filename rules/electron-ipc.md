@@ -150,7 +150,11 @@ When an IPC event can fire at very high frequency (e.g., stdout/stderr from chil
 
 **Pattern** (see `app_handlers.ts` `enqueueAppOutput`/`flushAllAppOutputs`):
 
-- Buffer outgoing events in a `Map<WebContents, Payload[]>`.
+- Buffer outgoing events by registered window identity and keyed entity
+  interest. A renderer closing or crashing can make `send()` throw after a
+  liveness check, so catch per destination (and per payload for individual
+  delivery) to ensure one failed window cannot abort fanout to healthy peers or
+  escape from a timer callback.
 - Start a `setTimeout` on first enqueue; flush all buffered messages as a single batch event (e.g., `app:output-batch`) when the timer fires (100ms default).
 - Flush immediately on process exit so no messages are lost.
 - Keep latency-sensitive events (e.g., `input-requested`) on an immediate, unbatched channel.
@@ -166,6 +170,12 @@ The `chat:response:chunk` event supports two modes:
 When modifying `ChatResponseChunkSchema` or adding new `safeSend("chat:response:chunk", ...)` call sites, decide which mode is appropriate. All frontend consumers (`useStreamChat`, `usePlanImplementation`, `useResolveMergeConflictsWithAI`) must handle both modes.
 
 **Tail-diff baseline invariant:** Never call `safeSend("chat:response:chunk", { messages: ... })` directly in `local_agent_handler.ts`. Route all full-update sends through `sendResponseChunk(..., true, lastSentRef)` so `lastSentRef` stays in sync automatically. A bare `safeSend` bypasses the sync and leaves `lastSentRef` stale, causing the next patch to compute LCP against the wrong baseline and corrupting streamed output.
+
+**Peer-stream correlation:** A multi-window passive stream consumer may project
+chunks classified as unsolicited because that renderer has no local invocation
+owner. It must not project chunks classified as stale: those belong to a
+superseded local invocation and retaining the old correlation rejection prevents
+late output from overwriting the current stream.
 
 **Zod schema contract changes:** Making a field optional (e.g., `messages` → `messages.optional()`) causes TypeScript errors in all consumers that assume the field is always present. Search for all destructuring/usage sites and add guards before committing.
 
@@ -211,6 +221,15 @@ When creating hooks/components that call IPC handlers:
   a rejected bootstrap can leave later payloads buffered forever. Pending
   delivery queues must also retain the interest/generation key so replacement
   can discard superseded payloads before sending its bootstrap.
+- Contract-declared query invalidation runs only through typed handler wrappers.
+  Legacy handlers registered through `createLoggedHandler`/`handle(...)` must
+  publish after their authoritative mutation explicitly or migrate to a typed
+  contract. When the origin renderer installs only some mutation scopes
+  locally, carry the exact handled scopes with the invalidation event: peers
+  invalidate every scope, while the origin skips only equivalent local data
+  and still receives its unhandled scopes. Omitted origin-handled metadata must
+  default to no handled scopes; only declare `originHandles` when every caller
+  of that contract performs the matching local cache update/invalidation.
 - Wrap reads in `useQuery`, using keys from `queryKeys` factory (see above), async `queryFn` that calls the relevant domain client (e.g., `appClient.getApp(...)`) or unified `ipc` namespace, and conditionally use `enabled`/`initialData`/`meta` as needed.
 - Wrap writes in `useMutation`; validate inputs locally, call the domain client, and invalidate related queries on success. Use shared utilities (e.g., toast helpers) in `onError`.
 - When a mutation changes fields exposed by both `apps.detail(...)` and `apps.all` (for example linking or unlinking a GitHub repository), invalidate both query families. Refreshing only the detail query can leave parent pages that derive conditional UI from the apps list stale.

@@ -7,6 +7,7 @@ import {
   type InvocationClaim,
 } from "../../state_machines/invocation_ref";
 import { DyadError, DyadErrorKind, isDyadError } from "../../errors/dyad_error";
+import type { QueryInvalidationScope } from "../../window_infrastructure/types";
 
 // =============================================================================
 // Contract Type Definitions
@@ -24,6 +25,14 @@ export interface IpcContract<
   readonly channel: TChannel;
   readonly input: TInput;
   readonly output: TOutput;
+  readonly invalidates?: (
+    input: z.infer<TInput>,
+    output: z.infer<TOutput>,
+  ) => readonly QueryInvalidationScope[];
+  readonly originHandles?: (
+    input: z.infer<TInput>,
+    output: z.infer<TOutput>,
+  ) => readonly QueryInvalidationScope[];
 }
 
 /**
@@ -94,6 +103,14 @@ export function defineContract<
   channel: TChannel;
   input: TInput;
   output: TOutput;
+  invalidates?: (
+    input: z.infer<TInput>,
+    output: z.infer<TOutput>,
+  ) => readonly QueryInvalidationScope[];
+  originHandles?: (
+    input: z.infer<TInput>,
+    output: z.infer<TOutput>,
+  ) => readonly QueryInvalidationScope[];
 }): IpcContract<TChannel, TInput, TOutput> {
   return contract;
 }
@@ -490,6 +507,7 @@ export function createStreamClient<
   let nextStreamId = 0;
 
   let listenersSetUp = false;
+  const unclaimedChunkListeners = new Set<(data: z.infer<TChunk>) => void>();
 
   const setupListeners = () => {
     if (listenersSetUp) return;
@@ -503,8 +521,13 @@ export function createStreamClient<
         const payload = parsed.data as Record<string, unknown>;
         const key = payload[contract.keyField] as KeyValue;
         const claim = claimPayload(key, payload);
-        if (claim.kind !== "claimed") return;
-        claim.value.callbacks.onChunk(parsed.data);
+        if (claim.kind === "claimed") {
+          claim.value.callbacks.onChunk(parsed.data);
+        } else if (claim.kind === "unsolicited") {
+          for (const listener of unclaimedChunkListeners) {
+            listener(parsed.data);
+          }
+        }
       }
     });
 
@@ -696,6 +719,18 @@ export function createStreamClient<
           "Presence checks observe current ownership but do not consume or mutate it.",
         ).kind === "claimed"
       );
+    },
+
+    /**
+     * Observe valid chunks that are not owned by a stream started in this
+     * renderer. Multi-window consumers use this to project peer streams.
+     */
+    subscribeUnclaimedChunks(
+      listener: (data: z.infer<TChunk>) => void,
+    ): () => void {
+      setupListeners();
+      unclaimedChunkListeners.add(listener);
+      return () => unclaimedChunkListeners.delete(listener);
     },
   };
 }

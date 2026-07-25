@@ -9,7 +9,9 @@ import {
   QueryInvalidationBatchSchema,
   QueryInvalidationEventSchema,
   QueryInvalidationScopeSchema,
+  EntityDisposalEventSchema,
   VisibleEntitySchema,
+  WindowInterestSchema,
   WindowSessionIdSchema,
 } from "../../window_infrastructure/types";
 
@@ -36,12 +38,26 @@ export const windowInfrastructureContracts = {
     input: z.array(VisibleEntitySchema),
     output: z.void(),
   }),
+  attachInterest: defineContract({
+    channel: "window-infrastructure:attach-interest",
+    input: WindowInterestSchema,
+    output: z.void(),
+  }),
+  detachInterest: defineContract({
+    channel: "window-infrastructure:detach-interest",
+    input: WindowInterestSchema,
+    output: z.void(),
+  }),
 } as const;
 
 export const windowInfrastructureEvents = {
   queryInvalidations: defineEvent({
     channel: "window:query-invalidations",
     payload: QueryInvalidationBatchSchema,
+  }),
+  entityDisposed: defineEvent({
+    channel: "window:entity-disposed",
+    payload: EntityDisposalEventSchema,
   }),
 } as const;
 

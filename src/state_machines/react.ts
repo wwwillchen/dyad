@@ -150,18 +150,33 @@ export function useManagerLifecycle(manager: DisposableManager): void {
   }, [manager]);
 }
 
+function usePagehideTeardown(teardown: () => void): void {
+  useEffect(() => {
+    const handlePagehide = (event: PageTransitionEvent) => {
+      if (!event.persisted) teardown();
+    };
+    window.addEventListener("pagehide", handlePagehide);
+    return () => window.removeEventListener("pagehide", handlePagehide);
+  }, [teardown]);
+}
+
 /**
- * Disposes a renderer-owned manager before document teardown. React effect
- * cleanup is not guaranteed when Electron reloads or destroys the renderer.
+ * Disposes a renderer-owned manager before document teardown. Main-hosted
+ * managers must use useMainHostedSubscriptionPagehideRelease instead.
  */
 export function useManagerPagehideDisposal(manager: DisposableManager): void {
-  useEffect(() => {
-    const dispose = (event: PageTransitionEvent) => {
-      if (!event.persisted) manager.dispose();
-    };
-    window.addEventListener("pagehide", dispose);
-    return () => window.removeEventListener("pagehide", dispose);
-  }, [manager]);
+  const dispose = useCallback(() => manager.dispose(), [manager]);
+  usePagehideTeardown(dispose);
+}
+
+/**
+ * Releases this renderer's subscription to main-hosted state without
+ * disposing the authoritative main actor.
+ */
+export function useMainHostedSubscriptionPagehideRelease(
+  releaseSubscription: () => void,
+): void {
+  usePagehideTeardown(releaseSubscription);
 }
 
 export interface KeyedSnapshotSource<K, Snapshot> {

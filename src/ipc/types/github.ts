@@ -129,6 +129,18 @@ export const CloneRepoResultSchema = z.union([
 // Note: the GitHub device flow (start/cancel + state updates) goes through
 // the connection-flow contracts (`connection_flow.ts`) — it is driven by the
 // flowId-correlated state machine shared with Supabase/Neon.
+const gitMutationInvalidations = (appId: number) =>
+  [
+    { family: "branches", appId },
+    { family: "versions", appId },
+    { family: "app", appId },
+  ] as const;
+
+const gitMutationOriginHandles = (appId: number) =>
+  [
+    { family: "branches", appId },
+    { family: "app", appId },
+  ] as const;
 
 export const githubContracts = {
   listRepos: defineContract({
@@ -158,6 +170,10 @@ export const githubContracts = {
       branch: z.string().optional(),
     }),
     output: z.void(),
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
   }),
 
   connectExistingRepo: defineContract({
@@ -169,6 +185,10 @@ export const githubContracts = {
       appId: z.number(),
     }),
     output: z.void(),
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
   }),
 
   push: defineContract({
@@ -179,42 +199,56 @@ export const githubContracts = {
       forceWithLease: z.boolean().optional(),
     }),
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   fetch: defineContract({
     channel: "github:fetch",
     input: GitBranchAppIdParamsSchema,
     output: z.void(),
+    invalidates: (input) => [{ family: "branches", appId: input.appId }],
+    originHandles: (input) => [{ family: "branches", appId: input.appId }],
   }),
 
   pull: defineContract({
     channel: "github:pull",
     input: GitBranchAppIdParamsSchema,
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   rebase: defineContract({
     channel: "github:rebase",
     input: z.object({ appId: z.number() }),
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   rebaseAbort: defineContract({
     channel: "github:rebase-abort",
     input: z.object({ appId: z.number() }),
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   mergeAbort: defineContract({
     channel: "github:merge-abort",
     input: GitBranchAppIdParamsSchema,
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   rebaseContinue: defineContract({
     channel: "github:rebase-continue",
     input: z.object({ appId: z.number() }),
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   listLocalBranches: defineContract({
@@ -233,30 +267,40 @@ export const githubContracts = {
     channel: "github:create-branch",
     input: CreateGitBranchParamsSchema,
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   switchBranch: defineContract({
     channel: "github:switch-branch",
     input: GitBranchParamsSchema,
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   deleteBranch: defineContract({
     channel: "github:delete-branch",
     input: GitBranchParamsSchema,
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   renameBranch: defineContract({
     channel: "github:rename-branch",
     input: RenameGitBranchParamsSchema,
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   mergeBranch: defineContract({
     channel: "github:merge-branch",
     input: GitBranchParamsSchema,
     output: z.void(),
+    invalidates: (input) => gitMutationInvalidations(input.appId),
+    originHandles: (input) => gitMutationOriginHandles(input.appId),
   }),
 
   getConflicts: defineContract({
@@ -275,6 +319,10 @@ export const githubContracts = {
     channel: "github:disconnect",
     input: z.object({ appId: z.number() }),
     output: z.void(),
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
   }),
 
   listCollaborators: defineContract({
@@ -320,12 +368,14 @@ export const gitContracts = {
     channel: "git:commit-changes",
     input: CommitChangesParamsSchema,
     output: z.string(), // Returns commit hash
+    invalidates: (input) => [{ family: "versions", appId: input.appId }],
   }),
 
   discardChanges: defineContract({
     channel: "git:discard-changes",
     input: GitBranchAppIdParamsSchema,
     output: z.void(),
+    invalidates: (input) => [{ family: "versions", appId: input.appId }],
   }),
 } as const;
 

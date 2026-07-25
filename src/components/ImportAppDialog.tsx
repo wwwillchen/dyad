@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { ipc } from "@/ipc/types";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { showError, showSuccess, showWarning } from "@/lib/toast";
 import { Folder, X, Loader2, Info } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -36,6 +36,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSettings } from "@/hooks/useSettings";
 import { UnconnectedGitHubConnector } from "@/components/GitHubConnector";
+import { queryKeys } from "@/lib/queryKeys";
 
 interface ImportAppDialogProps {
   isOpen: boolean;
@@ -45,6 +46,7 @@ export const AI_RULES_PROMPT =
   "Generate an AI_RULES.md file for this app. Describe the tech stack in 5-10 bullet points and describe clear rules about what libraries to use for what.";
 export function ImportAppDialog({ isOpen, onClose }: ImportAppDialogProps) {
   const { t } = useTranslation(["home", "common"]);
+  const queryClient = useQueryClient();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [hasAiRules, setHasAiRules] = useState<boolean | null>(null);
   const [customAppName, setCustomAppName] = useState<string>("");
@@ -130,6 +132,7 @@ export function ImportAppDialog({ isOpen, onClose }: ImportAppDialogProps) {
       showWarning(t("home:autoUpgradeFailed"));
     }
     const chatId = await ipc.chat.createChat(result.app.id);
+    await queryClient.invalidateQueries({ queryKey: queryKeys.chats.all });
     selectChat({ chatId, appId: result.app.id });
     if (!result.hasAiRules) {
       streamMessage({

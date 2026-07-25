@@ -11,6 +11,7 @@ import {
   useMachineSelector,
   useManagerLifecycle,
   useManagerPagehideDisposal,
+  useMainHostedSubscriptionPagehideRelease,
   useProjectionSource,
   type KeyedSnapshotSource,
 } from "./react";
@@ -161,6 +162,24 @@ describe("useManagerPagehideDisposal", () => {
     act(() => window.dispatchEvent(pagehide));
 
     expect(manager.dispose).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+});
+
+describe("useMainHostedSubscriptionPagehideRelease", () => {
+  it("releases only the window subscription on pagehide", () => {
+    const releaseSubscription = vi.fn();
+    const disposeMainActor = vi.fn();
+    const hook = renderHook(() =>
+      useMainHostedSubscriptionPagehideRelease(releaseSubscription),
+    );
+
+    const event = new Event("pagehide");
+    Object.defineProperty(event, "persisted", { value: false });
+    act(() => window.dispatchEvent(event));
+
+    expect(releaseSubscription).toHaveBeenCalledOnce();
+    expect(disposeMainActor).not.toHaveBeenCalled();
     hook.unmount();
   });
 });

@@ -6,10 +6,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppRunManager } from "@/app_run/manager";
 import { AppRunProvider } from "@/app_run/AppRunProvider";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
-import {
-  currentConsoleEntriesAtom,
-  currentPackageManagerWarningAtom,
-} from "@/atoms/previewRuntimeAtoms";
 import { useAppOutputSubscription, useRunApp } from "@/hooks/useRunApp";
 import { createImageGenerationCommandRunner } from "@/image_generation/commands";
 import { ImageGenerationProvider } from "@/image_generation/ImageGenerationProvider";
@@ -19,6 +15,12 @@ import {
   createSequentialIdSource,
 } from "@/state_machines/testing";
 import { createVersionPreviewRuntime } from "@/version_preview/commands";
+import {
+  DeferredPreviewErrorFacade,
+  PreviewErrorFacadeProvider,
+} from "@/app_wiring/preview_error_facade";
+import { PackageManagerWarningProvider } from "@/package_manager_warnings/PackageManagerWarningProvider";
+import { PackageManagerWarningStore } from "@/package_manager_warnings/store";
 
 const mocks = vi.hoisted(() => ({
   appOutputBatchListeners: new Set<(outputs: any[]) => void>(),
@@ -97,16 +99,25 @@ vi.mock("sonner", () => ({
 
 function makeRunWrapper() {
   const store = createStore();
-  const manager = new AppRunManager(store);
+  const previewErrors = new DeferredPreviewErrorFacade();
+  const packageWarnings = new PackageManagerWarningStore();
+  const manager = new AppRunManager(store, undefined, undefined, {
+    previewErrors,
+    packageWarnings,
+  });
   store.set(selectedAppIdAtom, 7);
   function Wrapper({ children }: PropsWithChildren) {
     return (
       <Provider store={store}>
-        <AppRunProvider manager={manager}>{children}</AppRunProvider>
+        <PreviewErrorFacadeProvider facade={previewErrors}>
+          <PackageManagerWarningProvider manager={packageWarnings}>
+            <AppRunProvider manager={manager}>{children}</AppRunProvider>
+          </PackageManagerWarningProvider>
+        </PreviewErrorFacadeProvider>
       </Provider>
     );
   }
-  return { store, Wrapper };
+  return { manager, packageWarnings, store, Wrapper };
 }
 
 describe("golden single-window: runtime presentation delivery", () => {
@@ -128,7 +139,7 @@ describe("golden single-window: runtime presentation delivery", () => {
   });
 
   it("retains the first console line emitted at the app-start boundary", async () => {
-    const { store, Wrapper } = makeRunWrapper();
+    const { manager, Wrapper } = makeRunWrapper();
     const hook = renderHook(
       () => {
         useAppOutputSubscription();
@@ -144,15 +155,15 @@ describe("golden single-window: runtime presentation delivery", () => {
     // Protects the Phase B interest-keyed console fan-out.
     expect(mocks.runApp).toHaveBeenCalledOnce();
     expect(
-      store
-        .get(currentConsoleEntriesAtom)
+      manager.previewConsole
+        .getSnapshot(7)
         .filter((entry) => entry.message === "first line"),
     ).toEqual([expect.objectContaining({ timestamp: 123 })]);
     hook.unmount();
   });
 
   it("routes package warnings and consent prompts once to the selected app", () => {
-    const { store, Wrapper } = makeRunWrapper();
+    const { packageWarnings, Wrapper } = makeRunWrapper();
     const hook = renderHook(() => useAppOutputSubscription(), {
       wrapper: Wrapper,
     });
@@ -173,7 +184,7 @@ describe("golden single-window: runtime presentation delivery", () => {
       }
     });
 
-    expect(store.get(currentPackageManagerWarningAtom)).toEqual({
+    expect(packageWarnings.getSnapshot(7)).toEqual({
       kind: "release-age",
       message: "Upgrade pnpm",
       appId: 7,

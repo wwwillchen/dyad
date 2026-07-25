@@ -36,6 +36,9 @@ import { getDyadAppPath } from "@/paths/paths";
 import { detectFrameworkType } from "@/ipc/utils/framework_utils";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 import { safeSend } from "@/ipc/utils/safe_sender";
+import { sendChatChunk } from "@/ipc/utils/high_volume_delivery";
+import { broadcastToRegisteredWindows } from "@/ipc/utils/window_broadcast";
+import { publishQueryInvalidations } from "@/ipc/utils/query_invalidation_delivery";
 import {
   cancelOrphanedBaseStream,
   fastTextOutput,
@@ -498,7 +501,7 @@ export async function handleLocalAgentStream(
   // overlays this string after the message's parsed blocks and clears the
   // overlay when content is empty. Used for tool-input XML preview.
   const sendPreview = (content: string) => {
-    safeSend(event.sender, "chat:response:chunk", {
+    sendChatChunk(event.sender, {
       chatId: req.chatId,
       invocationRef: req.invocationRef,
       streamId: req.streamId,
@@ -725,7 +728,7 @@ export async function handleLocalAgentStream(
     }
     if (persistedTodos.length > 0) {
       // Emit loaded todos to the renderer so the UI shows them immediately
-      safeSend(event.sender, "agent-tool:todos-update", {
+      broadcastToRegisteredWindows(event.sender, "agent-tool:todos-update", {
         chatId: chat.id,
         todos: persistedTodos,
       });
@@ -793,7 +796,7 @@ export async function handleLocalAgentStream(
         pendingUserMessages.push(content);
       },
       onUpdateTodos: (todos) => {
-        safeSend(event.sender, "agent-tool:todos-update", {
+        broadcastToRegisteredWindows(event.sender, "agent-tool:todos-update", {
           chatId: chat.id,
           todos,
         });
@@ -1866,6 +1869,10 @@ export async function handleLocalAgentStream(
     }
 
     // Send completion
+    publishQueryInvalidations(
+      [{ family: "chats" }, { family: "chat", chatId: req.chatId }],
+      event.sender,
+    );
     safeSend(event.sender, "chat:response:end", {
       chatId: req.chatId,
       invocationRef: req.invocationRef,
@@ -1951,7 +1958,7 @@ async function clearTodosOnCancel(
   } else {
     await deleteTodos(appPath, chatId);
   }
-  safeSend(event.sender, "agent-tool:todos-update", {
+  broadcastToRegisteredWindows(event.sender, "agent-tool:todos-update", {
     chatId,
     todos: priorTodos,
   });
@@ -2142,7 +2149,7 @@ function sendResponseChunk(
     if (placeholderMsg) {
       placeholderMsg.content = fullResponse;
     }
-    safeSend(event.sender, "chat:response:chunk", {
+    sendChatChunk(event.sender, {
       chatId,
       invocationRef,
       streamId,
@@ -2179,7 +2186,7 @@ function sendResponseChunk(
       return;
     }
     lastSentRef.value = fullResponse;
-    safeSend(event.sender, "chat:response:chunk", {
+    sendChatChunk(event.sender, {
       chatId,
       invocationRef,
       streamId,

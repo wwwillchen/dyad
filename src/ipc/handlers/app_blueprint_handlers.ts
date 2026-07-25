@@ -7,7 +7,7 @@ import {
   type AppBlueprintData,
   type AppBlueprintVisual,
 } from "../types/app_blueprint";
-import { safeSend } from "../utils/safe_sender";
+import { broadcastToRegisteredWindows } from "../utils/window_broadcast";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { db } from "../../db";
 import { apps, chats } from "../../db/schema";
@@ -75,7 +75,7 @@ export function registerAppBlueprintHandlers() {
     logger.info(`App blueprint approved for chat ${params.chatId}`);
 
     // Notify renderer that approval is confirmed
-    safeSend(event.sender, "app-blueprint:approved", {
+    broadcastToRegisteredWindows(event.sender, "app-blueprint:approved", {
       chatId: params.chatId,
     });
   });

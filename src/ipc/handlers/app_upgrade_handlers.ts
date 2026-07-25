@@ -21,6 +21,7 @@ import {
   getManagedPnpmMajorVersion,
   isPnpmVersionMigrationNeeded,
 } from "../utils/pnpm_migration";
+import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 
 export const logger = log.scope("app_upgrade_handlers");
 const handle = createLoggedHandler(logger);
@@ -208,7 +209,10 @@ export function registerAppUpgradeHandlers() {
 
   handle(
     "execute-app-upgrade",
-    async (_, { appId, upgradeId }: { appId: number; upgradeId: string }) => {
+    async (
+      event,
+      { appId, upgradeId }: { appId: number; upgradeId: string },
+    ) => {
       if (!upgradeId) {
         throw new DyadError("upgradeId is required", DyadErrorKind.Validation);
       }
@@ -228,6 +232,9 @@ export function registerAppUpgradeHandlers() {
           DyadErrorKind.External,
         );
       }
+      queryInvalidationBus.publish([{ family: "versions", appId }], {
+        originEndpoint: event.sender,
+      });
     },
   );
 }

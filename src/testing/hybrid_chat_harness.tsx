@@ -114,6 +114,7 @@ import { selectStreamError } from "@/chat_stream/transition";
 import { ChatStreamProvider } from "@/chat_stream/ChatStreamProvider";
 import {
   EntityDisposalProvider,
+  useEntityDisposal,
   useRegisterEntityDisposer,
 } from "@/state_machines/react";
 import { createImageGenerationCommandRunner } from "@/image_generation/commands";
@@ -548,6 +549,7 @@ function HybridAppEventWiring({
   queryClient: QueryClient;
   chatStreamManager: ChatStreamManager;
 }) {
+  const entityDisposal = useEntityDisposal();
   useEffect(
     () =>
       registerRendererIpcListeners({
@@ -555,8 +557,9 @@ function HybridAppEventWiring({
         store,
         queryClient,
         chatStreamManager,
+        entityDisposal,
       }),
-    [chatStreamManager, queryClient, store],
+    [chatStreamManager, entityDisposal, queryClient, store],
   );
   return null;
 }

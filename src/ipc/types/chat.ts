@@ -383,30 +383,44 @@ export const chatContracts = {
       }),
     ]),
     output: CreateChatResultSchema,
+    invalidates: () => [{ family: "chats" }],
+    originHandles: () => [{ family: "chats" }],
   }),
 
   updateChat: defineContract({
     channel: "update-chat",
     input: UpdateChatParamsSchema,
     output: z.void(),
+    invalidates: (input) => [
+      { family: "chats" },
+      { family: "chat", chatId: input.chatId },
+    ],
+    originHandles: () => [{ family: "chats" }],
   }),
 
   setChatFavorite: defineContract({
     channel: "set-chat-favorite",
     input: SetChatFavoriteParamsSchema,
     output: SetChatFavoriteResultSchema,
+    invalidates: (input) => [
+      { family: "chats" },
+      { family: "chat", chatId: input.chatId },
+    ],
+    originHandles: () => [{ family: "chats" }],
   }),
 
   deleteChat: defineContract({
     channel: "delete-chat",
     input: z.number(), // chatId
     output: z.void(),
+    invalidates: () => [{ family: "chats" }],
   }),
 
   deleteMessages: defineContract({
     channel: "delete-messages",
     input: z.number(), // chatId
     output: z.void(),
+    invalidates: (chatId) => [{ family: "chat", chatId }],
   }),
 
   searchChats: defineContract({

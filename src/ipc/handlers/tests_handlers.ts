@@ -32,7 +32,7 @@ import { assertMutationPathAllowed, safeJoin } from "../utils/path_utils";
 import { gitAdd, gitRemove } from "../utils/git_utils";
 import { runningApps } from "../utils/process_manager";
 import { isLockHeld, withLock } from "../utils/lock_utils";
-import { safeSend } from "../utils/safe_sender";
+import { broadcastToRegisteredWindows } from "@/ipc/utils/window_broadcast";
 import { spawnStreaming } from "../utils/spawn_streaming";
 import {
   ensurePlaywrightBootstrap,
@@ -173,14 +173,18 @@ function emitOutput(
   chunk: string,
   phase: "setup" | "running",
 ): void {
-  safeSend(event.sender, "tests:output", { appId, chunk, phase });
+  broadcastToRegisteredWindows(event.sender, "tests:output", {
+    appId,
+    chunk,
+    phase,
+  });
 }
 
 function emitRunState(
   event: IpcMainInvokeEvent,
   payload: TestsRunStatePayload,
 ): void {
-  safeSend(event.sender, "tests:run-state", payload);
+  broadcastToRegisteredWindows(event.sender, "tests:run-state", payload);
 }
 
 export interface RunAppTestsCoreOptions {

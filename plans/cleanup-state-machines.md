@@ -311,6 +311,7 @@ noted. Known items (from the inventory and review record):
   broadcasts to all windows — correct for multi-window reads; audit every
   remaining `event.sender`-targeted emission. _Responses_ are claimed by
   requestId (first-applied-wins already exists in user_input). [Phase B]
+  **In flight (#4104).**
 - **Deep-link / OAuth-return routing** to "the" window: claims are
   main-owned (`connection_flow`/`mcp_oauth` already are); the focus target
   follows the recorded presentation-routing matrix. [Phase B]
@@ -319,10 +320,10 @@ noted. Known items (from the inventory and review record):
 - **`useManagerPagehideDisposal`**: one window's pagehide must dispose
   only window-local machines, never main-hosted state. Split into
   per-window disposal (renderer machines) and subscription release
-  (remote refs). [Phase B]
+  (remote refs). [Phase B] **In flight (#4104).**
 - **`EntityDisposalRegistry` scope**: app/chat deletion initiated in
   window A must dispose window-local controllers in _all_ windows
-  (broadcast) and the main actor once. [Phase B]
+  (broadcast) and the main actor once. [Phase B] **In flight (#4104).**
 - **Module-level `getDefaultStore()`** escape hatches: each window has its
   own Jotai store; all such call sites are bugs under multi-window. Phase
   A already removes the known one (ImageGenerationToast); boundary test
@@ -332,15 +333,17 @@ noted. Known items (from the inventory and review record):
   session restore. Moving a tab uses acknowledged adopt-then-remove.
   [Phase C]
 - **Trusted-main-frame IPC enforcement**: verify it is per-window, not
-  per-"the window". [Phase B]
+  per-"the window". [Phase B] **In flight (#4104).**
 - **React Query invalidation**: inventory every mutation path that currently
   invalidates only the initiating window and route it through the typed
   invalidation channel. Include an inventory of origin-window
   `setQueryData` call sites — the "unless they have already installed
   equivalent mutation data" carve-out requires knowing every one. [Phase B]
+  **In flight (#4104).**
 - **High-volume event destinations**: audit app output, chat chunks, terminal
   output, and progress streams for singleton-window or global-broadcast
   assumptions; convert to keyed interest fan-out. [Phase B/C wave]
+  **In flight (#4104).**
 - **Window-owned capability routing**: screenshot, iframe, focus, dialog, and
   navigation requests identify a target/lease through `WindowRegistry`;
   no first-responder broadcast. [Phase B]

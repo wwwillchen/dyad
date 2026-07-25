@@ -2,9 +2,10 @@ import type { WebContents } from "electron";
 
 import type { AppOutput } from "@/ipc/types/misc";
 import type { AppRuntimeOutput } from "@/ipc/types/app_runtime";
-import { safeSend } from "@/ipc/utils/safe_sender";
-
-const APP_OUTPUT_FLUSH_INTERVAL_MS = 100;
+import {
+  appOutputInterests,
+  ensureProducerInterest,
+} from "@/window_infrastructure/main/production_high_volume";
 
 const outputsBySender = new WeakMap<WebContents, IpcAppRuntimeOutput>();
 
@@ -15,36 +16,25 @@ const outputsBySender = new WeakMap<WebContents, IpcAppRuntimeOutput>();
  * importing Electron or knowing which renderer initiated the command.
  */
 export class IpcAppRuntimeOutput implements AppRuntimeOutput {
-  private pendingOutputs: AppOutput[] = [];
-  private flushTimer: ReturnType<typeof setTimeout> | null = null;
-
   constructor(private readonly sender: WebContents) {}
 
   send(output: AppOutput): void {
-    safeSend(this.sender, "app:output", output);
+    const interest = { kind: "app-output" as const, appId: output.appId };
+    ensureProducerInterest(this.sender, interest);
+    appOutputInterests.sendImmediate(interest, output, "app:output");
+    if (output.type === "app-exit") {
+      appOutputInterests.releaseLive(this.sender.id, interest);
+    }
   }
 
   enqueue(output: AppOutput): void {
-    this.pendingOutputs.push(output);
-    if (!this.flushTimer) {
-      this.flushTimer = setTimeout(
-        () => this.flush(),
-        APP_OUTPUT_FLUSH_INTERVAL_MS,
-      );
-    }
+    const interest = { kind: "app-output" as const, appId: output.appId };
+    ensureProducerInterest(this.sender, interest);
+    appOutputInterests.enqueue(interest, output);
   }
 
   flush(): void {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
-    if (this.pendingOutputs.length === 0) {
-      return;
-    }
-    const outputs = this.pendingOutputs;
-    this.pendingOutputs = [];
-    safeSend(this.sender, "app:output-batch", outputs);
+    appOutputInterests.flushAll();
   }
 }
 

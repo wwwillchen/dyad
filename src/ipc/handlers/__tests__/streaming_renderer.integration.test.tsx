@@ -123,7 +123,11 @@ describe("streaming renderer (integration)", () => {
             };
           },
       )
-      .filter((payload) => payload.chatId === chatId);
+      .filter((payload) => payload.chatId === chatId)
+      .filter(
+        (payload) =>
+          !payload.invocationRef?.operationId.startsWith("window-bootstrap:"),
+      );
 
     expect(payloads.length).toBeGreaterThan(0);
     expect(payloads.every((payload) => payload.invocationRef)).toBe(true);

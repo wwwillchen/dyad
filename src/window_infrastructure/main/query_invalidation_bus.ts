@@ -15,6 +15,17 @@ const QUERY_INVALIDATION_CHANNEL = "window:query-invalidations";
 export interface PublishInvalidationOptions {
   originWebContentsId?: number;
   originEndpoint?: WindowEndpoint;
+  originHandledScopes?: readonly QueryInvalidationScope[];
+}
+
+function isWindowEndpoint(value: unknown): value is WindowEndpoint {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Number.isInteger((value as Partial<WindowEndpoint>).id) &&
+    typeof (value as Partial<WindowEndpoint>).isDestroyed === "function" &&
+    typeof (value as Partial<WindowEndpoint>).send === "function"
+  );
 }
 
 export class QueryInvalidationBus {
@@ -35,7 +46,7 @@ export class QueryInvalidationBus {
     options: PublishInvalidationOptions = {},
   ): number {
     if (scopes.length === 0) return this.epoch;
-    const originWindowSessionId = options.originEndpoint
+    const originWindowSessionId = isWindowEndpoint(options.originEndpoint)
       ? this.registry.ensureRegistered(options.originEndpoint)
       : options.originWebContentsId === undefined
         ? undefined
@@ -44,6 +55,10 @@ export class QueryInvalidationBus {
       epoch: ++this.epoch,
       scopes: this.dedupeScopes(scopes),
       originWindowSessionId,
+      originHandledScopes:
+        originWindowSessionId === undefined
+          ? undefined
+          : this.dedupeScopes(options.originHandledScopes ?? []),
     };
     this.journal.push(event);
     if (this.journal.length > this.journalLimit) this.journal.shift();

@@ -27,7 +27,6 @@ import { useAppThumbnails } from "@/hooks/useAppThumbnails";
 import { sortAppsForShowcase } from "@/lib/sortApps";
 import { ipc } from "@/ipc/types";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
-import { useEntityDisposal } from "@/state_machines/react";
 import { showError } from "@/lib/toast";
 import { AppsViewTabs, type AppsView } from "@/components/AppsViewTabs";
 import {
@@ -41,7 +40,6 @@ import { AssignAppsToCollectionDialog } from "@/components/AssignAppsToCollectio
 import { DeleteCollectionDialog } from "@/components/DeleteCollectionDialog";
 
 export default function AppsPage() {
-  const entityDisposal = useEntityDisposal();
   const navigate = useNavigate();
   const { apps, loading, refreshApps } = useLoadApps();
   const { collections, isLoading: collectionsLoading } = useAppCollections();
@@ -152,9 +150,6 @@ export default function AppsPage() {
       // so app-details and the sidebar don't render against a stale id.
       if (selectedAppId != null && succeededIds.has(selectedAppId)) {
         setSelectedAppId(null);
-      }
-      for (const appId of succeededIds) {
-        entityDisposal.disposeForApp(appId);
       }
       if (failed.length > 0) {
         const failedNames = failed

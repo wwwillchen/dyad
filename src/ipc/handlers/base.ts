@@ -8,6 +8,7 @@ import {
 } from "../contracts/core";
 import { sendTelemetryException } from "../utils/telemetry";
 import { registerTrustedIpcHandler } from "./trusted_handle";
+import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 
 type RegisteredHandler = (
   event: IpcMainInvokeEvent,
@@ -54,7 +55,21 @@ export function createTypedHandler<
     input: z.infer<TInput>,
   ) => Promise<z.infer<TOutput>>,
 ): void {
-  registeredHandlers.set(contract.channel, handler);
+  const runHandler = async (
+    event: IpcMainInvokeEvent,
+    input: z.infer<TInput>,
+  ) => {
+    const result = await handler(event, input);
+    const invalidationScopes = contract.invalidates?.(input, result) ?? [];
+    if (invalidationScopes.length > 0) {
+      queryInvalidationBus.publish(invalidationScopes, {
+        originEndpoint: event.sender,
+        originHandledScopes: contract.originHandles?.(input, result) ?? [],
+      });
+    }
+    return result;
+  };
+  registeredHandlers.set(contract.channel, runHandler);
   registerTrustedIpcHandler(
     contract.channel,
     async (event: IpcMainInvokeEvent, rawInput: unknown) => {
@@ -74,7 +89,7 @@ export function createTypedHandler<
 
       let result: z.infer<TOutput>;
       try {
-        result = await handler(event, parsed.data);
+        result = await runHandler(event, parsed.data);
       } catch (err) {
         sendTelemetryException(err, { ipc_channel: contract.channel });
         return createIpcErrorEnvelope(err);
@@ -124,7 +139,21 @@ export function createLoggedTypedHandler(logger: {
       input: z.infer<TInput>,
     ) => Promise<z.infer<TOutput>>,
   ): void {
-    registeredHandlers.set(contract.channel, handler);
+    const runHandler = async (
+      event: IpcMainInvokeEvent,
+      input: z.infer<TInput>,
+    ) => {
+      const result = await handler(event, input);
+      const invalidationScopes = contract.invalidates?.(input, result) ?? [];
+      if (invalidationScopes.length > 0) {
+        queryInvalidationBus.publish(invalidationScopes, {
+          originEndpoint: event.sender,
+          originHandledScopes: contract.originHandles?.(input, result) ?? [],
+        });
+      }
+      return result;
+    };
+    registeredHandlers.set(contract.channel, runHandler);
     registerTrustedIpcHandler(
       contract.channel,
       async (event: IpcMainInvokeEvent, rawInput: unknown) => {
@@ -144,7 +173,7 @@ export function createLoggedTypedHandler(logger: {
 
         try {
           logger.info(`[${contract.channel}] Handling request`);
-          const result = await handler(event, parsed.data);
+          const result = await runHandler(event, parsed.data);
 
           // Validate output in development mode only
           if (process.env.NODE_ENV === "development") {

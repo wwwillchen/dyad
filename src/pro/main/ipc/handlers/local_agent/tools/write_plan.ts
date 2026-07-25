@@ -1,7 +1,7 @@
 import { z } from "zod";
 import log from "electron-log";
 import { ToolDefinition, AgentContext, escapeXmlAttr } from "./types";
-import { safeSend } from "@/ipc/utils/safe_sender";
+import { broadcastToRegisteredWindows } from "@/ipc/utils/window_broadcast";
 import { savePlanToDisk } from "@/ipc/handlers/planPersistence";
 
 const logger = log.scope("write_plan");
@@ -65,7 +65,7 @@ export const writePlanTool: ToolDefinition<z.infer<typeof writePlanSchema>> = {
   execute: async (args, ctx: AgentContext) => {
     logger.log(`Writing plan: ${args.title}`);
 
-    safeSend(ctx.event.sender, "plan:update", {
+    broadcastToRegisteredWindows(ctx.event.sender, "plan:update", {
       chatId: ctx.chatId,
       title: args.title,
       summary: args.summary,

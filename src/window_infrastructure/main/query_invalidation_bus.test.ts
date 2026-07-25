@@ -33,8 +33,14 @@ describe("QueryInvalidationBus", () => {
         epoch: 1,
         scopes: [{ family: "apps" }],
         originWindowSessionId: sessionId,
+        originHandledScopes: [],
       },
-      { epoch: 2, scopes: [{ family: "chats" }] },
+      {
+        epoch: 2,
+        scopes: [{ family: "chats" }],
+        originWindowSessionId: undefined,
+        originHandledScopes: undefined,
+      },
     ]);
     expect(bus.synchronize(1).invalidations).toEqual([
       { epoch: 2, scopes: [{ family: "chats" }] },

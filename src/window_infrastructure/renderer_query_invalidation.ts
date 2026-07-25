@@ -46,8 +46,18 @@ export class RendererQueryInvalidationConsumer {
 
   private consumeEvent(invalidation: QueryInvalidationEvent): void {
     this.lastEpoch = invalidation.epoch;
-    if (invalidation.originWindowSessionId === this.sessionId) return;
-    this.invalidateScopes(invalidation.scopes);
+    if (invalidation.originWindowSessionId !== this.sessionId) {
+      this.invalidateScopes(invalidation.scopes);
+      return;
+    }
+    const handledScopeKeys = new Set(
+      (invalidation.originHandledScopes ?? []).map(queryInvalidationScopeKey),
+    );
+    this.invalidateScopes(
+      invalidation.scopes.filter(
+        (scope) => !handledScopeKeys.has(queryInvalidationScopeKey(scope)),
+      ),
+    );
   }
 
   private invalidateScopes(scopes: readonly QueryInvalidationScope[]): void {
