@@ -107,6 +107,7 @@ export const QueryInvalidationEventSchema = z.object({
   epoch: z.number().int().positive(),
   scopes: z.array(QueryInvalidationScopeSchema).min(1),
   originWindowSessionId: WindowSessionIdSchema.optional(),
+  originHandledScopes: z.array(QueryInvalidationScopeSchema).optional(),
 });
 export type QueryInvalidationEvent = z.infer<
   typeof QueryInvalidationEventSchema
@@ -131,6 +132,12 @@ export const WindowInterestSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type WindowInterest = z.infer<typeof WindowInterestSchema>;
+
+export const EntityDisposalEventSchema = z.object({
+  epoch: z.number().int().positive(),
+  entity: VisibleEntitySchema,
+});
+export type EntityDisposalEvent = z.infer<typeof EntityDisposalEventSchema>;
 
 export function visibleEntityKey(entity: VisibleEntity): string {
   return `${entity.kind}:${entity.id}`;

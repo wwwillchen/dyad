@@ -14,12 +14,19 @@ import {
 } from "@/window_infrastructure/main/window_registry";
 import { HighVolumeWindowInterests } from "@/window_infrastructure/main/high_volume_interests";
 import { RendererQueryInvalidationConsumer } from "@/window_infrastructure/renderer_query_invalidation";
+import { EntityDisposalRegistry } from "@/state_machines/entity_disposal";
+import {
+  EntityDisposalBus,
+  entityDisposalChannel,
+} from "@/window_infrastructure/main/entity_disposal_bus";
 import type {
+  EntityDisposalEvent,
   QueryInvalidationBatch,
   QueryInvalidationScope,
   TabInstanceId,
   WindowInterest,
   WindowSessionId,
+  VisibleEntity,
 } from "@/window_infrastructure/types";
 
 interface HarnessWindow {
@@ -27,6 +34,13 @@ interface HarnessWindow {
   sessionId: WindowSessionId;
   consumer: RendererQueryInvalidationConsumer;
   invalidatedKeys: QueryKey[];
+  mainFrame: {
+    url: string;
+    processId: number;
+    routingId: number;
+    parent: null;
+  };
+  entityDisposals: EntityDisposalRegistry;
 }
 
 class HarnessEndpoint implements WindowEndpoint {
@@ -65,6 +79,11 @@ class HarnessEndpoint implements WindowEndpoint {
 export class TwoWindowHarness {
   readonly registry = new WindowRegistry();
   readonly invalidations = new QueryInvalidationBus(this.registry, 0, 8);
+  readonly mainEntityDisposals = new EntityDisposalRegistry();
+  readonly entityDisposals = new EntityDisposalBus(
+    this.registry,
+    this.mainEntityDisposals,
+  );
   readonly interests = new HighVolumeWindowInterests<string>(
     this.registry,
     "test:high-volume",
@@ -77,15 +96,29 @@ export class TwoWindowHarness {
     sessionId = randomUUID() as WindowSessionId,
   ): WindowSessionId {
     const invalidatedKeys: QueryKey[] = [];
+    const entityDisposals = new EntityDisposalRegistry();
     let consumer!: RendererQueryInvalidationConsumer;
     const endpoint = new HarnessEndpoint(
       this.nextWebContentsId++,
       (channel, payload) => {
         if (channel === queryInvalidationChannel()) {
           consumer.consume(payload as QueryInvalidationBatch);
+        } else if (channel === entityDisposalChannel()) {
+          const event = payload as EntityDisposalEvent;
+          if (event.entity.kind === "app") {
+            entityDisposals.disposeForApp(event.entity.id);
+          } else {
+            entityDisposals.disposeForChat(event.entity.id);
+          }
         }
       },
     );
+    const mainFrame = {
+      url: "http://localhost:5173/chat",
+      processId: endpoint.id,
+      routingId: 1,
+      parent: null,
+    } as const;
     consumer = new RendererQueryInvalidationConsumer(
       {
         invalidateQueries: (filters) => {
@@ -101,6 +134,8 @@ export class TwoWindowHarness {
       sessionId,
       consumer,
       invalidatedKeys,
+      mainFrame,
+      entityDisposals,
     });
     return sessionId;
   }
@@ -170,6 +205,37 @@ export class TwoWindowHarness {
 
   inspectSubscriptions(sessionId: WindowSessionId): readonly string[] {
     return this.interests.inspect(this.webContentsId(sessionId));
+  }
+
+  setVisibleEntities(
+    sessionId: WindowSessionId,
+    entities: readonly VisibleEntity[],
+  ): void {
+    this.registry.setVisibleEntities(sessionId, entities);
+  }
+
+  windowEntityDisposals(sessionId: WindowSessionId): EntityDisposalRegistry {
+    return this.requireWindow(sessionId).entityDisposals;
+  }
+
+  deleteEntity(originSessionId: WindowSessionId, entity: VisibleEntity): void {
+    this.requireWindow(originSessionId);
+    this.entityDisposals.publish(entity);
+  }
+
+  trustedInvokeEvent(
+    senderSessionId: WindowSessionId,
+    frameSessionId: WindowSessionId = senderSessionId,
+  ) {
+    const sender = this.requireWindow(senderSessionId);
+    const frame = this.requireWindow(frameSessionId).mainFrame;
+    return {
+      sender: {
+        ...sender.endpoint,
+        mainFrame: sender.mainFrame,
+      },
+      senderFrame: frame,
+    };
   }
 
   async transferTab<TState>(

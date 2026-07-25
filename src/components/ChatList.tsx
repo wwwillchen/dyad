@@ -53,7 +53,6 @@ import { useLoadApps } from "@/hooks/useLoadApps";
 import { useSetChatFavorite } from "@/hooks/useSetChatFavorite";
 import { useReducedMotionPref } from "@/hooks/useReducedMotion";
 import { cn } from "@/lib/utils";
-import { useEntityDisposal } from "@/state_machines/react";
 
 const CHAT_ACTION_SPRING = {
   type: "spring" as const,
@@ -76,7 +75,6 @@ export function ChatList({
   const [selectedChatId, setSelectedChatId] = useAtom(selectedChatIdAtom);
   const [selectedAppId] = useAtom(selectedAppIdAtom);
   const [, setIsDropdownOpen] = useAtom(dropdownOpenAtom);
-  const entityDisposal = useEntityDisposal();
 
   const { chats, loading, invalidateChats } = useChats(selectedAppId);
   const { apps } = useLoadApps();
@@ -234,7 +232,6 @@ export function ChatList({
   const handleDeleteChat = async (chatId: number) => {
     try {
       await ipc.chat.deleteChat(chatId);
-      entityDisposal.disposeForChat(chatId);
       showSuccess(t("chatDeleted"));
 
       // Remove from tab tracking to prevent stale IDs

@@ -7,7 +7,6 @@ import {
 import { useSetAtom } from "jotai";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { selectedChatIdAtom } from "@/atoms/chatAtoms";
-import { useEntityDisposal } from "@/state_machines/react";
 import { ipc } from "@/ipc/types";
 import { useLoadApps } from "@/hooks/useLoadApps";
 import { useChats } from "@/hooks/useChats";
@@ -96,7 +95,6 @@ function UnavailableIntegrationCard({
 }
 
 export default function AppDetailsPage() {
-  const entityDisposal = useEntityDisposal();
   const navigate = useNavigate();
   const search = useSearch({ from: "/app-details" as const });
   const appId = search.appId ? Number(search.appId) : null;
@@ -191,7 +189,6 @@ export default function AppDetailsPage() {
       setIsDeleting(true);
       await ipc.app.deleteApp({ appId });
       setIsDeleteDialogOpen(false);
-      entityDisposal.disposeForApp(appId);
       setSelectedAppId(null);
       setSelectedChatId(null);
       await refreshApps();

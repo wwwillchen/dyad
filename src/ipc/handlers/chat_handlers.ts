@@ -7,6 +7,7 @@ import log from "electron-log";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { withLock } from "../utils/lock_utils";
 import { createTypedHandler } from "./base";
+import { entityDisposalBus } from "@/window_infrastructure/main/entity_disposal_bus";
 import { chatContracts } from "../types/chat";
 import { normalizeStoredChatMode } from "./chat_mode_resolution";
 import {
@@ -191,6 +192,7 @@ export function registerChatHandlers() {
       mutation: async () => {
         await userInputRegistry.settleChat(chatId);
         await db.delete(chats).where(eq(chats.id, chatId));
+        entityDisposalBus.publish({ kind: "chat", id: chatId });
       },
     });
   });

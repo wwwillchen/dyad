@@ -1,7 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { createStore } from "jotai";
 
-import { agentTodosByChatIdAtom } from "@/atoms/chatAtoms";
+import { agentTodosByChatIdAtom, selectedChatIdAtom } from "@/atoms/chatAtoms";
+import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import type { ChatStreamManager } from "@/chat_stream/manager";
 import { ipc as defaultIpc, type TelemetryEventPayload } from "@/ipc/types";
 import { queryKeys } from "@/lib/queryKeys";
@@ -12,17 +13,23 @@ import {
 } from "@/user_input/read_model";
 import { RendererQueryInvalidationConsumer } from "@/window_infrastructure/renderer_query_invalidation";
 import type { QueryInvalidationBatch } from "@/window_infrastructure/types";
+import type { EntityDisposalRegistry } from "@/state_machines/entity_disposal";
 
 export type RendererIpcClient = typeof defaultIpc;
 type JotaiStore = ReturnType<typeof createStore>;
 
 const lastQueryInvalidationEpochByClient = new WeakMap<QueryClient, number>();
+const lastEntityDisposalEpochByRegistry = new WeakMap<
+  EntityDisposalRegistry,
+  number
+>();
 
 export interface RegisterRendererIpcListenersOptions {
   ipcClient: RendererIpcClient;
   store: JotaiStore;
   queryClient: QueryClient;
   chatStreamManager: ChatStreamManager;
+  entityDisposal: EntityDisposalRegistry;
   onTelemetryEvent?: (payload: TelemetryEventPayload) => void;
 }
 
@@ -142,10 +149,76 @@ export function registerRendererIpcListeners({
   store,
   queryClient,
   chatStreamManager,
+  entityDisposal,
   onTelemetryEvent,
 }: RegisterRendererIpcListenersOptions): () => void {
   const unsubscribes: Array<() => void> = [];
   unsubscribes.push(registerQueryInvalidationListener(ipcClient, queryClient));
+
+  let selectedAppInterest = store.get(selectedAppIdAtom);
+  let selectedChatInterest = store.get(selectedChatIdAtom);
+  const updateInterest = (
+    previous: number | null,
+    next: number | null,
+    kind: "app-output" | "chat-chunk",
+  ) => {
+    const interestFor = (id: number) =>
+      kind === "app-output"
+        ? ({ kind, appId: id } as const)
+        : ({ kind, chatId: id } as const);
+    if (previous !== null) {
+      void ipcClient.windowInfrastructure
+        .detachInterest(interestFor(previous))
+        .catch((error) =>
+          console.error(`Failed to detach ${kind} interest`, error),
+        );
+    }
+    if (next !== null) {
+      void ipcClient.windowInfrastructure
+        .attachInterest(interestFor(next))
+        .catch((error) =>
+          console.error(`Failed to attach ${kind} interest`, error),
+        );
+    }
+  };
+  updateInterest(null, selectedAppInterest, "app-output");
+  updateInterest(null, selectedChatInterest, "chat-chunk");
+  unsubscribes.push(
+    store.sub(selectedAppIdAtom, () => {
+      const next = store.get(selectedAppIdAtom);
+      updateInterest(selectedAppInterest, next, "app-output");
+      selectedAppInterest = next;
+    }),
+    store.sub(selectedChatIdAtom, () => {
+      const next = store.get(selectedChatIdAtom);
+      updateInterest(selectedChatInterest, next, "chat-chunk");
+      selectedChatInterest = next;
+    }),
+  );
+  unsubscribes.push(
+    ipcClient.events.windowInfrastructure.onEntityDisposed(
+      ({ entity, epoch }) => {
+        if (
+          epoch <= (lastEntityDisposalEpochByRegistry.get(entityDisposal) ?? 0)
+        ) {
+          return;
+        }
+        lastEntityDisposalEpochByRegistry.set(entityDisposal, epoch);
+        try {
+          if (entity.kind === "app") {
+            entityDisposal.disposeForApp(entity.id);
+          } else {
+            entityDisposal.disposeForChat(entity.id);
+          }
+        } catch (error) {
+          console.error("Window-local entity disposal failed", {
+            entity,
+            error,
+          });
+        }
+      },
+    ),
+  );
 
   const userInputChatStream = createUserInputChatStreamFacade(
     ipcClient,
@@ -216,6 +289,8 @@ export function registerRendererIpcListeners({
   );
 
   return () => {
+    updateInterest(selectedAppInterest, null, "app-output");
+    updateInterest(selectedChatInterest, null, "chat-chunk");
     for (const unsubscribe of unsubscribes.splice(0).reverse()) {
       unsubscribe();
     }
