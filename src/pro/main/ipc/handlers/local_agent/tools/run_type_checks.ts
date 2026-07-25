@@ -11,7 +11,7 @@ import {
   getTypeCheckPreconditionKind,
 } from "@/ipc/processors/tsc";
 import type { Problem, ProblemReport } from "@/ipc/types";
-import { safeSend } from "@/ipc/utils/safe_sender";
+import { broadcastToRegisteredWindows } from "@/ipc/utils/window_broadcast";
 import { DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 
 import { normalizePath } from "../../../../../../../shared/normalizePath";
@@ -181,10 +181,14 @@ export const runTypeChecksTool: ToolDefinition<
           : "dyad-command",
       });
 
-      safeSend(ctx.event.sender, "agent-tool:problems-update", {
-        appId: ctx.appId,
-        problems: { problems: [] },
-      });
+      broadcastToRegisteredWindows(
+        ctx.event.sender,
+        "agent-tool:problems-update",
+        {
+          appId: ctx.appId,
+          problems: { problems: [] },
+        },
+      );
 
       ctx.onXmlComplete(
         `<dyad-output type="warning" message="${escapeXmlAttr("Type checking unavailable")}">\n${escapeXmlContent(result)}\n</dyad-output>`,
@@ -194,10 +198,14 @@ export const runTypeChecksTool: ToolDefinition<
     }
 
     // Send the full problem report to update the Problems panel in the UI
-    safeSend(ctx.event.sender, "agent-tool:problems-update", {
-      appId: ctx.appId,
-      problems: problemReport,
-    });
+    broadcastToRegisteredWindows(
+      ctx.event.sender,
+      "agent-tool:problems-update",
+      {
+        appId: ctx.appId,
+        problems: problemReport,
+      },
+    );
 
     const outcome = getOutcome(problemReport);
     const allProblems = problemReport.problems;

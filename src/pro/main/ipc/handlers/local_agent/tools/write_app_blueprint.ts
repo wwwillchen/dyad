@@ -4,7 +4,7 @@ import log from "electron-log";
 import { ToolDefinition, AgentContext, escapeXmlAttr } from "./types";
 import { setAppBlueprintForChat } from "@/ipc/handlers/app_blueprint_handlers";
 import { AppBlueprintVisualTypeSchema } from "@/ipc/types/app_blueprint";
-import { safeSend } from "@/ipc/utils/safe_sender";
+import { broadcastToRegisteredWindows } from "@/ipc/utils/window_broadcast";
 import { readSettings } from "@/main/settings";
 import { localTemplatesData } from "@/shared/templates";
 import { themesData } from "@/shared/themes";
@@ -217,7 +217,7 @@ export const writeAppBlueprintTool: ToolDefinition<
 
     setAppBlueprintForChat(ctx.chatId, data);
 
-    safeSend(ctx.event.sender, "app-blueprint:update", {
+    broadcastToRegisteredWindows(ctx.event.sender, "app-blueprint:update", {
       chatId: ctx.chatId,
       data,
     });
