@@ -13,13 +13,16 @@ describe("two-window infrastructure harness", () => {
     const originalSecondWebContents = harness.webContentsId(second);
 
     harness.dispatchInvalidation(first, [{ family: "apps" }]);
-    expect(harness.invalidatedKeys(first)).toEqual([]);
+    expect(harness.invalidatedKeys(first)).toEqual([queryKeys.apps.all]);
     expect(harness.invalidatedKeys(second)).toEqual([queryKeys.apps.all]);
 
     harness.reload(second);
     expect(harness.webContentsId(second)).not.toBe(originalSecondWebContents);
     harness.dispatchInvalidation(second, [{ family: "chats" }]);
-    expect(harness.invalidatedKeys(first)).toEqual([queryKeys.chats.all]);
+    expect(harness.invalidatedKeys(first)).toEqual([
+      queryKeys.apps.all,
+      queryKeys.chats.all,
+    ]);
 
     harness.destroy(first);
     expect(

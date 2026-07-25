@@ -1,10 +1,19 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { createStore } from "jotai";
 
-import { agentTodosByChatIdAtom, selectedChatIdAtom } from "@/atoms/chatAtoms";
+import {
+  agentTodosByChatIdAtom,
+  chatMessagesByIdAtom,
+  selectedChatIdAtom,
+} from "@/atoms/chatAtoms";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import type { ChatStreamManager } from "@/chat_stream/manager";
-import { ipc as defaultIpc, type TelemetryEventPayload } from "@/ipc/types";
+import {
+  ipc as defaultIpc,
+  type ChatResponseChunk,
+  type TelemetryEventPayload,
+} from "@/ipc/types";
+import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
 import { queryKeys } from "@/lib/queryKeys";
 import { showError } from "@/lib/toast";
 import {
@@ -154,6 +163,49 @@ export function registerRendererIpcListeners({
 }: RegisterRendererIpcListenersOptions): () => void {
   const unsubscribes: Array<() => void> = [];
   unsubscribes.push(registerQueryInvalidationListener(ipcClient, queryClient));
+  unsubscribes.push(
+    ipcClient.chatStream.subscribeUnclaimedChunks(
+      ({
+        chatId,
+        messages,
+        streamingMessageId,
+        streamingPatch,
+        streamingPreview,
+        chatModeFallbackReason,
+      }: ChatResponseChunk) => {
+        if (streamingPreview !== undefined) {
+          chatStreamManager.setPreview(chatId, streamingPreview.content);
+        }
+        if (messages) {
+          store.set(chatMessagesByIdAtom, (previous) => {
+            const next = new Map(previous);
+            next.set(chatId, messages);
+            return next;
+          });
+        } else if (
+          streamingMessageId !== undefined &&
+          streamingPatch !== undefined
+        ) {
+          const applied = applyStreamingPatch(
+            (update) => store.set(chatMessagesByIdAtom, update),
+            chatId,
+            streamingMessageId,
+            streamingPatch,
+          );
+          if (!applied) {
+            void queryClient.invalidateQueries({
+              queryKey: queryKeys.chats.detail({ chatId }),
+            });
+          }
+        }
+        if (chatModeFallbackReason) {
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.chats.detail({ chatId }),
+          });
+        }
+      },
+    ),
+  );
 
   let selectedAppInterest = store.get(selectedAppIdAtom);
   let selectedChatInterest = store.get(selectedChatIdAtom);

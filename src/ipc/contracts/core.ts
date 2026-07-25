@@ -507,6 +507,7 @@ export function createStreamClient<
   let nextStreamId = 0;
 
   let listenersSetUp = false;
+  const unclaimedChunkListeners = new Set<(data: z.infer<TChunk>) => void>();
 
   const setupListeners = () => {
     if (listenersSetUp) return;
@@ -520,8 +521,13 @@ export function createStreamClient<
         const payload = parsed.data as Record<string, unknown>;
         const key = payload[contract.keyField] as KeyValue;
         const claim = claimPayload(key, payload);
-        if (claim.kind !== "claimed") return;
-        claim.value.callbacks.onChunk(parsed.data);
+        if (claim.kind === "claimed") {
+          claim.value.callbacks.onChunk(parsed.data);
+        } else {
+          for (const listener of unclaimedChunkListeners) {
+            listener(parsed.data);
+          }
+        }
       }
     });
 
@@ -713,6 +719,18 @@ export function createStreamClient<
           "Presence checks observe current ownership but do not consume or mutate it.",
         ).kind === "claimed"
       );
+    },
+
+    /**
+     * Observe valid chunks that are not owned by a stream started in this
+     * renderer. Multi-window consumers use this to project peer streams.
+     */
+    subscribeUnclaimedChunks(
+      listener: (data: z.infer<TChunk>) => void,
+    ): () => void {
+      setupListeners();
+      unclaimedChunkListeners.add(listener);
+      return () => unclaimedChunkListeners.delete(listener);
     },
   };
 }

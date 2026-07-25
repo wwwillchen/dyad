@@ -384,6 +384,7 @@ export const chatContracts = {
     ]),
     output: CreateChatResultSchema,
     invalidates: () => [{ family: "chats" }],
+    originHandles: () => [{ family: "chats" }],
   }),
 
   updateChat: defineContract({

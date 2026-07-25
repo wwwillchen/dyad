@@ -152,7 +152,7 @@ export class HighVolumeWindowInterests<T> {
         state.bufferedDuringAttach.push(payload);
         continue;
       }
-      this.endpoint(webContentsId)?.send(channel, payload);
+      this.safeSend(webContentsId, channel, payload);
     }
   }
 
@@ -201,12 +201,27 @@ export class HighVolumeWindowInterests<T> {
 
   private sendNow(webContentsId: number, payloads: readonly T[]): void {
     if (payloads.length === 0) return;
-    const endpoint = this.endpoint(webContentsId);
     if (this.deliveryMode === "individual") {
-      for (const payload of payloads) endpoint?.send(this.channel, payload);
+      for (const payload of payloads) {
+        this.safeSend(webContentsId, this.channel, payload);
+      }
       return;
     }
-    endpoint?.send(this.channel, payloads);
+    this.safeSend(webContentsId, this.channel, payloads);
+  }
+
+  private safeSend(webContentsId: number, channel: string, payload: unknown) {
+    const endpoint = this.endpoint(webContentsId);
+    if (!endpoint) return;
+    try {
+      endpoint.send(channel, payload);
+    } catch (error) {
+      console.error("Failed to deliver high-volume window payload", {
+        webContentsId,
+        channel,
+        error,
+      });
+    }
   }
 
   private endpoint(webContentsId: number) {

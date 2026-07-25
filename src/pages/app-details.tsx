@@ -334,6 +334,7 @@ export default function AppDetailsPage() {
       await invalidateAppQuery(queryClient, { appId });
       await refreshApps();
       await ipc.chat.createChat(appId);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.chats.all });
       setIsCopyDialogOpen(false);
       navigate({ to: "/app-details", search: { appId } });
     },

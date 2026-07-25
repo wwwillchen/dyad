@@ -6,6 +6,14 @@ import {
   appOutputInterests,
   chatChunkInterests,
 } from "../../window_infrastructure/main/production_high_volume";
+import { db } from "../../db";
+import { chats } from "../../db/schema";
+import { eq } from "drizzle-orm";
+import {
+  rendererMessageColumns,
+  toRendererMessage,
+} from "../utils/renderer_chat_message";
+import type { ChatResponseChunk } from "../types/chat";
 
 export function registerWindowInfrastructureHandlers(): void {
   createTypedHandler(
@@ -44,11 +52,37 @@ export function registerWindowInfrastructureHandlers(): void {
     windowInfrastructureContracts.attachInterest,
     async (event, interest) => {
       windowRegistry.ensureRegistered(event.sender);
-      const interests =
-        interest.kind === "app-output"
-          ? appOutputInterests
-          : chatChunkInterests;
-      await interests.attach(event.sender.id, interest, () => []);
+      if (interest.kind === "app-output") {
+        await appOutputInterests.attach(event.sender.id, interest, () => []);
+        return;
+      }
+      await chatChunkInterests.attach(event.sender.id, interest, async () => {
+        const chat = await db.query.chats.findFirst({
+          where: eq(chats.id, interest.chatId),
+          with: {
+            messages: {
+              columns: rendererMessageColumns,
+              orderBy: (messages, { asc }) => [asc(messages.createdAt)],
+            },
+          },
+        });
+        return chat
+          ? ([
+              {
+                chatId: interest.chatId,
+                // A distinct correlation identity ensures this bootstrap is
+                // always projected through the passive peer-stream path even
+                // if a local stream starts while the DB query is in flight.
+                invocationRef: {
+                  kind: "chat-stream",
+                  entityKey: interest.chatId,
+                  operationId: `window-bootstrap:${event.sender.id}`,
+                },
+                messages: chat.messages.map(toRendererMessage),
+              },
+            ] satisfies ChatResponseChunk[])
+          : [];
+      });
     },
   );
 

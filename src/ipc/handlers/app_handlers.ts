@@ -432,7 +432,17 @@ async function deleteAppById(
     }
 
     appRuntimeService.cleanup(appId);
-    await removeAppFiles(appId, getDyadAppPath(app.path));
+    try {
+      await removeAppFiles(appId, getDyadAppPath(app.path));
+    } catch (error) {
+      // Database deletion is the authoritative state transition. A failed
+      // best-effort filesystem cleanup must not make renderers treat the
+      // already-deleted app as retryable or suppress contract invalidations.
+      logger.warn(
+        `App ${appId} was deleted, but its files require manual cleanup`,
+        error,
+      );
+    }
   });
 }
 

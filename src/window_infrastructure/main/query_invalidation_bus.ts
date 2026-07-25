@@ -58,7 +58,7 @@ export class QueryInvalidationBus {
       originHandledScopes:
         originWindowSessionId === undefined
           ? undefined
-          : this.dedupeScopes(options.originHandledScopes ?? scopes),
+          : this.dedupeScopes(options.originHandledScopes ?? []),
     };
     this.journal.push(event);
     if (this.journal.length > this.journalLimit) this.journal.shift();

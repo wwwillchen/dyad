@@ -426,4 +426,42 @@ describe("IPC stream callback cleanup", () => {
 
     expect(onEnd).toHaveBeenCalledWith({ chatId: 1 });
   });
+
+  it("exposes chunks owned by another renderer without double-delivering local chunks", () => {
+    const { client, listeners } = setupStreamClient();
+    const passive = vi.fn();
+    const local = vi.fn();
+    client.subscribeUnclaimedChunks(passive);
+    const localRef = {
+      kind: "chat-stream",
+      entityKey: 1,
+      operationId: "local",
+    };
+    client.start(
+      { chatId: 1 },
+      { onChunk: local, onEnd: vi.fn(), onError: vi.fn() },
+      { invocationRef: localRef },
+    );
+
+    listeners.get("test:stream:chunk")?.({
+      chatId: 1,
+      invocationRef: {
+        kind: "chat-stream",
+        entityKey: 1,
+        operationId: "peer",
+      },
+      value: "peer",
+    });
+    listeners.get("test:stream:chunk")?.({
+      chatId: 1,
+      invocationRef: localRef,
+      value: "local",
+    });
+
+    expect(passive).toHaveBeenCalledOnce();
+    expect(passive).toHaveBeenCalledWith(
+      expect.objectContaining({ value: "peer" }),
+    );
+    expect(local).toHaveBeenCalledOnce();
+  });
 });

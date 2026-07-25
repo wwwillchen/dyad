@@ -157,6 +157,37 @@ describe("HighVolumeWindowInterests", () => {
     expect(interests.inspect(2)).toEqual([]);
   });
 
+  it("isolates immediate and queued delivery failures by destination", async () => {
+    const registry = new WindowRegistry();
+    const broken = endpoint(1);
+    const healthy = endpoint(2);
+    vi.mocked(broken.send).mockImplementation(() => {
+      throw new Error("renderer crashed during send");
+    });
+    registry.register(broken, randomUUID() as WindowSessionId);
+    registry.register(healthy, randomUUID() as WindowSessionId);
+    const interests = new HighVolumeWindowInterests<string>(
+      registry,
+      "chunk",
+      1_000,
+      "individual",
+    );
+    const interest = { kind: "chat-chunk" as const, chatId: 9 };
+    interests.attachLive(1, interest);
+    interests.attachLive(2, interest);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    expect(() => interests.sendImmediate(interest, "immediate")).not.toThrow();
+    expect(healthy.send).toHaveBeenCalledWith("chunk", "immediate");
+
+    interests.enqueue(interest, "queued");
+    expect(() => interests.flushAll()).not.toThrow();
+    expect(healthy.send).toHaveBeenCalledWith("chunk", "queued");
+    consoleError.mockRestore();
+  });
+
   it("keeps explicit and live ownership independent", async () => {
     const registry = new WindowRegistry();
     const renderer = endpoint(1);

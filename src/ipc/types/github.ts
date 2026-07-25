@@ -207,6 +207,8 @@ export const githubContracts = {
     channel: "github:fetch",
     input: GitBranchAppIdParamsSchema,
     output: z.void(),
+    invalidates: (input) => [{ family: "branches", appId: input.appId }],
+    originHandles: (input) => [{ family: "branches", appId: input.appId }],
   }),
 
   pull: defineContract({

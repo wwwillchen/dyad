@@ -64,8 +64,7 @@ export function createTypedHandler<
     if (invalidationScopes.length > 0) {
       queryInvalidationBus.publish(invalidationScopes, {
         originEndpoint: event.sender,
-        originHandledScopes:
-          contract.originHandles?.(input, result) ?? invalidationScopes,
+        originHandledScopes: contract.originHandles?.(input, result) ?? [],
       });
     }
     return result;
@@ -149,8 +148,7 @@ export function createLoggedTypedHandler(logger: {
       if (invalidationScopes.length > 0) {
         queryInvalidationBus.publish(invalidationScopes, {
           originEndpoint: event.sender,
-          originHandledScopes:
-            contract.originHandles?.(input, result) ?? invalidationScopes,
+          originHandledScopes: contract.originHandles?.(input, result) ?? [],
         });
       }
       return result;
