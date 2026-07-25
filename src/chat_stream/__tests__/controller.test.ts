@@ -91,9 +91,6 @@ function createFakeCommands() {
     dispatchNextQueued: vi.fn(() => {
       log.push("dispatchNextQueued");
     }),
-    syncProjection: vi.fn(() => {
-      log.push("syncProjection");
-    }),
   };
 
   return { commands, log, startDeferreds, endDeferreds };
@@ -222,10 +219,6 @@ describe("chat stream controller", () => {
     controller.dispose();
 
     expect(onSettled).toHaveBeenCalledExactlyOnceWith({ success: false });
-    expect(commands.syncProjection).toHaveBeenLastCalledWith({
-      chatId: CHAT_ID,
-      state: { type: "idle" },
-    });
     expect(commands.releaseTransport).toHaveBeenCalledExactlyOnceWith({
       chatId: CHAT_ID,
       invocationRef: ref(1),
@@ -250,7 +243,7 @@ describe("chat stream controller", () => {
     });
   });
 
-  it("settles callers and publishes the final projection before releasing transport", async () => {
+  it("settles callers before releasing transport", async () => {
     const fake = createFakeCommands();
     const onSettled = vi.fn(() => fake.log.push("settleWaiters"));
     const { controller } = createController(fake);
@@ -262,9 +255,8 @@ describe("chat stream controller", () => {
     await flush();
     controller.dispose();
 
-    expect(fake.log.slice(-3)).toEqual([
+    expect(fake.log.slice(-2)).toEqual([
       "settleWaiters",
-      "syncProjection",
       "releaseTransport:chat-stream:1",
     ]);
   });

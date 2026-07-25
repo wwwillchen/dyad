@@ -9,7 +9,6 @@ import { useLoadApps } from "@/hooks/useLoadApps";
 import { useSelectChat } from "@/hooks/useSelectChat";
 import { useIsMac } from "@/hooks/useChatModeToggle";
 import {
-  isStreamingByIdAtom,
   recentViewedChatIdsAtom,
   selectedChatIdAtom,
   setRecentViewedChatIdsAtom,
@@ -48,6 +47,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useChatStreamState } from "@/hooks/useChatStream";
+import { isStreamActive } from "@/chat_stream/transition";
 
 const MIN_VISIBLE_TAB_WIDTH_PX = 160;
 const TAB_GAP_PX = 4;
@@ -238,11 +239,42 @@ interface ChatTabsProps {
   selectedChatId: number | null;
 }
 
+function ChatTabActivity({
+  chatId,
+  notified,
+}: {
+  chatId: number;
+  notified: boolean;
+}) {
+  const { t } = useTranslation("chat");
+  const streamState = useChatStreamState(chatId) ?? { type: "idle" };
+  if (isStreamActive(streamState)) {
+    return (
+      <span
+        className="flex items-center text-purple-600"
+        aria-label={t("chatInProgress")}
+        title={t("chatInProgress")}
+      >
+        <Loader2 size={12} className="animate-spin" />
+      </span>
+    );
+  }
+  if (!notified) return null;
+  return (
+    <span
+      className="flex items-center"
+      aria-label={t("newActivity")}
+      title={t("newActivity")}
+    >
+      <span className="h-2 w-2 rounded-full bg-blue-500" />
+    </span>
+  );
+}
+
 export function ChatTabs({ selectedChatId }: ChatTabsProps) {
   const { t } = useTranslation("chat");
   const { chats, loading } = useChats(null);
   const { apps } = useLoadApps();
-  const isStreamingById = useAtomValue(isStreamingByIdAtom);
   const recentViewedChatIds = useAtomValue(recentViewedChatIdsAtom);
   const closedChatIds = useAtomValue(closedChatIdsAtom);
   const sessionOpenedChatIds = useAtomValue(sessionOpenedChatIdsAtom);
@@ -604,8 +636,6 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
             const appName = app?.name ?? `App ${chat.appId}`;
             const titleExcerpt = getChatTitleExcerpt(title);
             const isDragging = draggingChatId === chat.id;
-            const inProgress = isStreamingById.get(chat.id) === true;
-            const hasNotification = !inProgress && notifiedChatIds.has(chat.id);
 
             const tabIndex = orderedChatIds.indexOf(chat.id);
             const hasTabsToRight =
@@ -683,24 +713,10 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                         name={appName}
                         className="h-4 w-4 rounded-sm text-[8px]"
                       />
-                      {inProgress && (
-                        <span
-                          className="flex items-center text-purple-600"
-                          aria-label={t("chatInProgress")}
-                          title={t("chatInProgress")}
-                        >
-                          <Loader2 size={12} className="animate-spin" />
-                        </span>
-                      )}
-                      {hasNotification && (
-                        <span
-                          className="flex items-center"
-                          aria-label={t("newActivity")}
-                          title={t("newActivity")}
-                        >
-                          <span className="h-2 w-2 rounded-full bg-blue-500" />
-                        </span>
-                      )}
+                      <ChatTabActivity
+                        chatId={chat.id}
+                        notified={notifiedChatIds.has(chat.id)}
+                      />
                       <button
                         type="button"
                         onPointerDown={(event) => {
@@ -832,9 +848,6 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                 const title = chat.title?.trim() || t("newChat");
                 const appName =
                   appById.get(chat.appId)?.name ?? `App ${chat.appId}`;
-                const inProgress = isStreamingById.get(chat.id) === true;
-                const hasNotification =
-                  !inProgress && notifiedChatIds.has(chat.id);
                 return (
                   <DropdownMenuItem
                     key={chat.id}
@@ -852,24 +865,10 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                       name={appName}
                       className="h-5 w-5 rounded text-[9px]"
                     />
-                    {inProgress && (
-                      <span
-                        className="flex items-center text-purple-600"
-                        aria-label={t("chatInProgress")}
-                        title={t("chatInProgress")}
-                      >
-                        <Loader2 size={12} className="animate-spin" />
-                      </span>
-                    )}
-                    {hasNotification && (
-                      <span
-                        className="flex items-center"
-                        aria-label={t("newActivity")}
-                        title={t("newActivity")}
-                      >
-                        <span className="h-2 w-2 rounded-full bg-blue-500" />
-                      </span>
-                    )}
+                    <ChatTabActivity
+                      chatId={chat.id}
+                      notified={notifiedChatIds.has(chat.id)}
+                    />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-xs leading-3.5 font-bold">
                         {appName}

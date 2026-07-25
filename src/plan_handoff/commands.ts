@@ -7,7 +7,7 @@ import {
   type PlanState,
 } from "@/atoms/planAtoms";
 import { previewModeAtom } from "@/atoms/appAtoms";
-import { isStreamingByIdAtom, selectedChatIdAtom } from "@/atoms/chatAtoms";
+import { selectedChatIdAtom } from "@/atoms/chatAtoms";
 import { ipc } from "@/ipc/types";
 import { planClient } from "@/ipc/types/plan";
 import { queryKeys } from "@/lib/queryKeys";
@@ -39,6 +39,8 @@ export interface PlanHandoffDeps {
     search: { id: number; appId: number };
   }) => void;
   chatStream: {
+    isIdle(chatId: number): boolean;
+    watchIdle(chatId: number, callback: () => void): () => void;
     submit(request: {
       chatId: number;
       prompt: string;
@@ -65,7 +67,7 @@ export function createPlanHandoffCommandRunner(
 ): HandoffCommandRunner {
   // Active stream-idle watchers, keyed by watched chatId. Tracked so a
   // watcher can be disposed when the machine leaves awaiting-stream-idle for
-  // any reason (a superseding accept) instead of leaking a Jotai
+  // any reason (a superseding accept) instead of leaking a status
   // subscription that waits forever on a stream that may never go idle.
   const idleWatchers = new TaskScope<number>();
 
@@ -179,25 +181,10 @@ export function createPlanHandoffCommandRunner(
       }
 
       case "watch-stream-idle": {
-        // The one place the handoff observes stream state. Today the source
-        // is `isStreamingByIdAtom`; swapping the source later only means
-        // changing how this command produces STREAM_BECAME_IDLE.
-        //
-        // Non-blocking: the watcher lives outside the serial command queue,
-        // emits at most once, disposes itself when it fires, and can be
-        // disposed externally via `unwatch-stream-idle`.
         disposeIdleWatcher(command.chatId);
-        const isIdle = () =>
-          !(store.get(isStreamingByIdAtom).get(command.chatId) ?? false);
-        if (isIdle()) {
+        const unsubscribe = deps.chatStream.watchIdle(command.chatId, () => {
+          disposeIdleWatcher(command.chatId);
           emit({ type: "STREAM_BECAME_IDLE", chatId: command.chatId });
-          return;
-        }
-        const unsubscribe = store.sub(isStreamingByIdAtom, () => {
-          if (isIdle()) {
-            disposeIdleWatcher(command.chatId);
-            emit({ type: "STREAM_BECAME_IDLE", chatId: command.chatId });
-          }
         });
         idleWatchers.replace(command.chatId, unsubscribe);
         return;

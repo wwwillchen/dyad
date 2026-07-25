@@ -4,11 +4,9 @@ import type { createStore } from "jotai";
 import type { PostHog } from "posthog-js";
 
 import {
-  chatErrorByIdAtom,
   chatMessagesByIdAtom,
   queuePausedByIdAtom,
   queuedMessagesByIdAtom,
-  isStreamingByIdAtom,
   type QueuedMessageItem,
 } from "@/atoms/chatAtoms";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
@@ -45,9 +43,7 @@ import type {
   ChatStreamInvocationRef,
   StreamEvent,
   StreamRequest,
-  StreamState,
 } from "./state";
-import { isStreamActive } from "./transition";
 
 type JotaiStore = ReturnType<typeof createStore>;
 
@@ -96,8 +92,6 @@ export interface ChatStreamCommands {
     chatId: number;
     emit: (event: StreamEvent) => void;
   }): void;
-  /** Mirror machine state into the legacy `isStreamingByIdAtom` projection (single writer). */
-  syncProjection(args: { chatId: number; state: StreamState }): void;
 }
 
 export interface ChatStreamRuntimeDeps {
@@ -107,6 +101,7 @@ export interface ChatStreamRuntimeDeps {
   getPosthog: () => PostHog | null;
   requestPreviewReload: PreviewReloadRequestFacade["requestManualReload"];
   requestCapture: ScreenshotRequestFacade["requestCapture"];
+  getIsStreaming(chatId: number): boolean;
 }
 
 // =============================================================================
@@ -151,9 +146,6 @@ function invalidatePostStreamQueries(
 
 export function createProductionChatStreamCommands(
   getDeps: () => ChatStreamRuntimeDeps,
-  writeStreamingProjection?: (
-    update: (previous: Map<number, boolean>) => Map<number, boolean>,
-  ) => void,
   setPreview: (chatId: number, content: string) => void = () => undefined,
 ): ChatStreamCommands {
   const latestChunkByChatId = new Map<number, number>();
@@ -222,12 +214,6 @@ export function createProductionChatStreamCommands(
     async startStream({ chatId, invocationRef, request, emit, isStale }) {
       const { store, queryClient, getSettings } = deps();
       const settings = getSettings();
-
-      store.set(chatErrorByIdAtom, (prev) => {
-        const next = new Map(prev);
-        next.set(chatId, null);
-        return next;
-      });
 
       const shouldInvalidateFreeModelQuota = isFreeProModel(
         settings?.selectedModel,
@@ -464,7 +450,7 @@ export function createProductionChatStreamCommands(
             chatId,
             makeSetMessagesById(store),
             "[CHAT] onCancel",
-            store,
+            deps().getIsStreaming,
           );
         })
         .catch((err) => {
@@ -628,12 +614,6 @@ export function createProductionChatStreamCommands(
         showWarningMessage(warningMessage, targetAppId);
       }
       console.error(`[CHAT] Stream error for ${chatId}:`, error);
-      store.set(chatErrorByIdAtom, (prev) => {
-        const next = new Map(prev);
-        next.set(chatId, error);
-        return next;
-      });
-
       // Invalidate free agent quota to update the UI after error (the server
       // may have refunded the quota).
       queryClient.invalidateQueries({
@@ -649,7 +629,7 @@ export function createProductionChatStreamCommands(
         chatId,
         makeSetMessagesById(store),
         "[CHAT] onError",
-        store,
+        deps().getIsStreaming,
       );
       invalidatePostStreamQueries(queryClient, targetAppId);
       request.onSettled?.({ success: false });
@@ -705,20 +685,6 @@ export function createProductionChatStreamCommands(
           onAcceptanceRejected: messageToSend.onAcceptanceRejected,
         },
       });
-    },
-
-    syncProjection({ chatId, state }) {
-      const { store } = deps();
-      const streaming = isStreamActive(state);
-      const current = store.get(isStreamingByIdAtom).get(chatId) ?? false;
-      if (current === streaming) return;
-      const update = (prev: Map<number, boolean>) => {
-        const next = new Map(prev);
-        next.set(chatId, streaming);
-        return next;
-      };
-      if (writeStreamingProjection) writeStreamingProjection(update);
-      else store.set(isStreamingByIdAtom, update);
     },
   };
 }

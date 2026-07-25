@@ -13,12 +13,10 @@ import { planAcceptInNewChatByChatIdAtom } from "@/atoms/planAtoms";
 
 // Per-chat atoms implemented with maps keyed by chatId
 export const chatMessagesByIdAtom = atom<Map<number, Message[]>>(new Map());
-export const chatErrorByIdAtom = atom<Map<number, string | null>>(new Map());
 
 // Atom to hold the currently selected chat ID
 export const selectedChatIdAtom = atom<number | null>(null);
 
-export const isStreamingByIdAtom = atom<Map<number, boolean>>(new Map());
 export const chatInputValuesByIdAtom = atom<Map<number, string>>(new Map());
 export const chatInputValueAtom = atom(
   (get) => {

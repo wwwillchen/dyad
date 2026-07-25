@@ -52,6 +52,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   const { settings } = useSettings();
   const planHandoffChatStream = useMemo(
     () => ({
+      isIdle: (chatId: number) => chatStreamManager.isIdle(chatId),
+      watchIdle: (chatId: number, callback: () => void) =>
+        chatStreamManager.watchIdle(chatId, callback),
       submit: (request: {
         chatId: number;
         prompt: string;

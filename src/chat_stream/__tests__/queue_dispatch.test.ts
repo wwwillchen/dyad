@@ -3,8 +3,6 @@ import { createStore } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  chatErrorByIdAtom,
-  isStreamingByIdAtom,
   queuePausedByIdAtom,
   queuedMessagesByIdAtom,
   type QueuedMessageItem,
@@ -20,6 +18,7 @@ import { createChatStreamController } from "../controller";
 import { ChatStreamManager } from "../manager";
 import { createSequentialIdSource } from "@/state_machines/testing";
 import { makeChatStreamRef } from "./test_refs";
+import { isStreamActive } from "../transition";
 
 const CHAT_ID = 11;
 
@@ -37,6 +36,7 @@ function setup({
 }: { queue?: QueuedMessageItem[]; chatId?: number } = {}) {
   const store = createStore();
   const queryClient = new QueryClient();
+  let controller: ReturnType<typeof createChatStreamController> | undefined;
   const runtimeDeps = {
     store,
     queryClient,
@@ -44,6 +44,8 @@ function setup({
     getPosthog: () => null,
     requestPreviewReload: vi.fn(),
     requestCapture: vi.fn(),
+    getIsStreaming: () =>
+      controller ? isStreamActive(controller.getSnapshot()) : false,
   };
   if (queue.length > 0) {
     store.set(queuedMessagesByIdAtom, new Map([[chatId, queue]]));
@@ -58,7 +60,7 @@ function setup({
     ...productionCommands,
     startStream,
   };
-  const controller = createChatStreamController({
+  controller = createChatStreamController({
     chatId,
     idSource: createSequentialIdSource(),
     getCommands: () => commands,
@@ -83,12 +85,8 @@ beforeEach(() => {
 });
 
 describe("queue dispatch", () => {
-  it("uses machine state instead of the legacy streaming projection", async () => {
+  it("uses machine state to dispatch an idle chat's queued prompt", async () => {
     const { store, controller, startStream } = setup();
-
-    // Projection writes can lag behind machine transitions. An idle machine
-    // remains authoritative and must dispatch its queued prompt.
-    store.set(isStreamingByIdAtom, new Map([[CHAT_ID, true]]));
 
     controller.send({ type: "queue-poked" });
     await flush();
@@ -256,7 +254,10 @@ describe("manager disposal", () => {
     await vi.waitFor(() => {
       expect(manager.peek(chatId)).toBeUndefined();
     });
-    expect(store.get(chatErrorByIdAtom).get(chatId)).toBeTruthy();
+    expect(manager.ensure(chatId).getSnapshot()).toMatchObject({
+      type: "errored",
+      error: expect.any(String),
+    });
 
     const replacement = manager.ensure(chatId);
     replacement.send({

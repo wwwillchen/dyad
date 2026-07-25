@@ -117,21 +117,7 @@ const ALLOWLIST: readonly AllowlistEntry[] = [
   },
   {
     rule: "writable-projection-export",
-    atom: "chatErrorByIdAtom",
-    file: "atoms/chatAtoms.ts",
-    detail: "exported writable atom",
-    deletionPr: "A6",
-  },
-  {
-    rule: "writable-projection-export",
     atom: "chatMessagesByIdAtom",
-    file: "atoms/chatAtoms.ts",
-    detail: "exported writable atom",
-    deletionPr: "A6",
-  },
-  {
-    rule: "writable-projection-export",
-    atom: "isStreamingByIdAtom",
     file: "atoms/chatAtoms.ts",
     detail: "exported writable atom",
     deletionPr: "A6",
@@ -159,24 +145,10 @@ const ALLOWLIST: readonly AllowlistEntry[] = [
   },
   {
     rule: "atom-projection-call",
-    atom: "isStreamingByIdAtom",
-    file: "chat_stream/manager.ts",
+    atom: "setPreviewRunStateForAppAtom",
+    file: "app_run/manager.ts",
     detail: "registerAtomWriter",
-    deletionPr: "A6",
-  },
-  {
-    rule: "cross-machine-atom-read",
-    atom: "isStreamingByIdAtom",
-    file: "plan_handoff/commands.ts",
-    detail: "get:chat_stream",
-    deletionPr: "A6",
-  },
-  {
-    rule: "cross-machine-atom-read",
-    atom: "isStreamingByIdAtom",
-    file: "plan_handoff/commands.ts",
-    detail: "sub:chat_stream",
-    deletionPr: "A6",
+    deletionPr: "A4",
   },
 ] as const;
 

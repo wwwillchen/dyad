@@ -12,6 +12,7 @@ const CHAT_ID = 42;
 const mocks = vi.hoisted(() => ({
   controllerSend: vi.fn(),
   showError: vi.fn(),
+  idleState: { type: "idle" } as const,
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -20,7 +21,11 @@ vi.mock("@tanstack/react-router", () => ({
 
 vi.mock("@/chat_stream/ChatStreamProvider", () => ({
   useChatStreamManager: () => ({
-    ensure: () => ({ send: mocks.controllerSend }),
+    ensure: () => ({
+      send: mocks.controllerSend,
+      getSnapshot: () => mocks.idleState,
+      subscribe: () => () => {},
+    }),
   }),
 }));
 
@@ -243,6 +248,28 @@ describe("useStreamChat cancelStream", () => {
 
     expect(mocks.controllerSend).toHaveBeenCalledExactlyOnceWith({
       type: "cancel",
+    });
+  });
+});
+
+describe("useStreamChat external errors", () => {
+  beforeEach(() => {
+    mocks.controllerSend.mockReset();
+  });
+
+  it("routes consent failures through the stream machine", () => {
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useStreamChat(), {
+      wrapper: Wrapper,
+    });
+
+    act(() => {
+      result.current.setError("Approval failed");
+    });
+
+    expect(mocks.controllerSend).toHaveBeenCalledExactlyOnceWith({
+      type: "external-error",
+      error: "Approval failed",
     });
   });
 });

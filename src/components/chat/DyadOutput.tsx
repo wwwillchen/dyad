@@ -1,8 +1,10 @@
 import React, { useState } from "react";
 import { AlertTriangle, XCircle, Sparkles } from "lucide-react";
 import { useAtomValue } from "jotai";
-import { selectedChatIdAtom, isStreamingByIdAtom } from "@/atoms/chatAtoms";
+import { selectedChatIdAtom } from "@/atoms/chatAtoms";
 import { useStreamChat } from "@/hooks/useStreamChat";
+import { useChatStreamState } from "@/hooks/useChatStream";
+import { isStreamActive } from "@/chat_stream/transition";
 import { CopyErrorMessage } from "@/components/CopyErrorMessage";
 import {
   DyadCard,
@@ -25,10 +27,10 @@ export const DyadOutput: React.FC<DyadOutputProps> = ({
 }) => {
   const [isContentVisible, setIsContentVisible] = useState(false);
   const selectedChatId = useAtomValue(selectedChatIdAtom);
-  const isStreamingById = useAtomValue(isStreamingByIdAtom);
-  const isStreaming = selectedChatId
-    ? (isStreamingById.get(selectedChatId) ?? false)
-    : false;
+  const streamState = useChatStreamState(selectedChatId ?? undefined) ?? {
+    type: "idle",
+  };
+  const isStreaming = isStreamActive(streamState);
   const { streamMessage } = useStreamChat();
 
   // If the type is not warning, it is an error (in case LLM gives a weird "type")

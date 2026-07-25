@@ -1,8 +1,6 @@
 import { createStore } from "jotai";
 import { describe, expect, it, vi } from "vitest";
 
-import { isStreamingByIdAtom } from "@/atoms/chatAtoms";
-
 import {
   createPlanHandoffCommandRunner,
   type PlanHandoffDeps,
@@ -11,12 +9,36 @@ import type { HandoffEvent } from "./state";
 
 /**
  * Exercises the real `watch-stream-idle` / `unwatch-stream-idle` adapter
- * against a vanilla Jotai store: the watcher must emit at most once, dispose
+ * against a fake chat-stream facade: the watcher must emit at most once, dispose
  * itself when it fires, and be fully disposed by `unwatch-stream-idle` so a
  * superseded handoff cannot leak a subscription or emit later.
  */
 function setup() {
   const store = createStore();
+  const streamingChatIds = new Set<number>();
+  const idleWatchers = new Map<number, Set<() => void>>();
+  const watchIdle = (chatId: number, callback: () => void) => {
+    let active = true;
+    const deliver = () => {
+      if (!active) return;
+      active = false;
+      queueMicrotask(callback);
+    };
+    if (!streamingChatIds.has(chatId)) {
+      deliver();
+    } else {
+      let watchers = idleWatchers.get(chatId);
+      if (!watchers) {
+        watchers = new Set();
+        idleWatchers.set(chatId, watchers);
+      }
+      watchers.add(deliver);
+    }
+    return () => {
+      active = false;
+      idleWatchers.get(chatId)?.delete(deliver);
+    };
+  };
   const deps: PlanHandoffDeps = {
     store,
     getPlanData: vi.fn(),
@@ -24,7 +46,11 @@ function setup() {
       invalidateQueries: vi.fn(),
     } as unknown as PlanHandoffDeps["queryClient"],
     navigate: vi.fn(),
-    chatStream: { submit: vi.fn() },
+    chatStream: {
+      isIdle: (chatId) => !streamingChatIds.has(chatId),
+      watchIdle,
+      submit: vi.fn(),
+    },
   };
   const run = createPlanHandoffCommandRunner(() => deps);
   const events: HandoffEvent[] = [];
@@ -32,11 +58,14 @@ function setup() {
     events.push(event);
   };
   const setStreaming = (chatId: number, value: boolean) => {
-    store.set(isStreamingByIdAtom, (prev) => {
-      const next = new Map(prev);
-      next.set(chatId, value);
-      return next;
-    });
+    if (value) {
+      streamingChatIds.add(chatId);
+      return;
+    }
+    streamingChatIds.delete(chatId);
+    const watchers = [...(idleWatchers.get(chatId) ?? [])];
+    idleWatchers.delete(chatId);
+    for (const watcher of watchers) watcher();
   };
   return { run, deps, events, emit, setStreaming };
 }
@@ -66,9 +95,12 @@ describe("plan handoff commands — stream idle watcher", () => {
     expect(events).toContainEqual({ type: "IMPLEMENTATION_STARTED" });
   });
 
-  it("emits immediately when the stream is already idle", async () => {
+  it("emits asynchronously when the stream is already idle", async () => {
     const { run, events, emit } = setup();
-    await run({ type: "watch-stream-idle", chatId: 7 }, emit);
+    const pending = run({ type: "watch-stream-idle", chatId: 7 }, emit);
+    expect(events).toEqual([]);
+    await pending;
+    await Promise.resolve();
     expect(events).toEqual([{ type: "STREAM_BECAME_IDLE", chatId: 7 }]);
   });
 
@@ -80,11 +112,13 @@ describe("plan handoff commands — stream idle watcher", () => {
     expect(events).toEqual([]);
 
     setStreaming(7, false);
+    await Promise.resolve();
     expect(events).toEqual([{ type: "STREAM_BECAME_IDLE", chatId: 7 }]);
 
     // The watcher disposed itself: later idle flips emit nothing.
     setStreaming(7, true);
     setStreaming(7, false);
+    await Promise.resolve();
     expect(events).toHaveLength(1);
   });
 
@@ -96,6 +130,7 @@ describe("plan handoff commands — stream idle watcher", () => {
     await run({ type: "unwatch-stream-idle", chatId: 7 }, emit);
 
     setStreaming(7, false);
+    await Promise.resolve();
     expect(events).toEqual([]);
   });
 
@@ -107,6 +142,7 @@ describe("plan handoff commands — stream idle watcher", () => {
     await run({ type: "watch-stream-idle", chatId: 7 }, emit);
 
     setStreaming(7, false);
+    await Promise.resolve();
     expect(events).toEqual([{ type: "STREAM_BECAME_IDLE", chatId: 7 }]);
   });
 
@@ -117,9 +153,11 @@ describe("plan handoff commands — stream idle watcher", () => {
     await run({ type: "watch-stream-idle", chatId: 7 }, emit);
     setStreaming(8, true);
     setStreaming(8, false);
+    await Promise.resolve();
     expect(events).toEqual([]);
 
     setStreaming(7, false);
+    await Promise.resolve();
     expect(events).toEqual([{ type: "STREAM_BECAME_IDLE", chatId: 7 }]);
   });
 
@@ -132,6 +170,7 @@ describe("plan handoff commands — stream idle watcher", () => {
     run.dispose?.();
     await run({ type: "watch-stream-idle", chatId: 7 }, emit);
     setStreaming(7, false);
+    await Promise.resolve();
 
     expect(events).toEqual([]);
   });

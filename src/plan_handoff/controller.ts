@@ -8,9 +8,8 @@ import {
 
 /**
  * Executes one command and may emit follow-up events via `emit`. Emission may
- * be synchronous (e.g. `watch-stream-idle` when the stream is already idle)
- * or arbitrarily later (e.g. `wait`). The production implementation lives in
- * `commands.ts`; tests substitute fakes.
+ * happen immediately after an await or arbitrarily later (e.g. `wait`). The
+ * production implementation lives in `commands.ts`; tests substitute fakes.
  */
 export interface HandoffCommandRunner {
   (
