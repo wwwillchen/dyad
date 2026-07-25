@@ -211,6 +211,13 @@ When creating hooks/components that call IPC handlers:
   a rejected bootstrap can leave later payloads buffered forever. Pending
   delivery queues must also retain the interest/generation key so replacement
   can discard superseded payloads before sending its bootstrap.
+- Contract-declared query invalidation runs only through typed handler wrappers.
+  Legacy handlers registered through `createLoggedHandler`/`handle(...)` must
+  publish after their authoritative mutation explicitly or migrate to a typed
+  contract. When the origin renderer installs only some mutation scopes
+  locally, carry the exact handled scopes with the invalidation event: peers
+  invalidate every scope, while the origin skips only equivalent local data
+  and still receives its unhandled scopes.
 - Wrap reads in `useQuery`, using keys from `queryKeys` factory (see above), async `queryFn` that calls the relevant domain client (e.g., `appClient.getApp(...)`) or unified `ipc` namespace, and conditionally use `enabled`/`initialData`/`meta` as needed.
 - Wrap writes in `useMutation`; validate inputs locally, call the domain client, and invalidate related queries on success. Use shared utilities (e.g., toast helpers) in `onError`.
 - When a mutation changes fields exposed by both `apps.detail(...)` and `apps.all` (for example linking or unlinking a GitHub repository), invalidate both query families. Refreshing only the detail query can leave parent pages that derive conditional UI from the apps list stale.
