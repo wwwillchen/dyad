@@ -126,6 +126,25 @@ describe("ChatStreamManager", () => {
       invocationRef: ref(3),
       error: "boom",
     });
+
+    controller.send({
+      type: "submit",
+      request: { chatId: CHAT_ID, prompt: "external error" },
+    });
+    controller.send({
+      type: "stream-ended",
+      invocationRef: ref(4),
+      response: { chatId: CHAT_ID, updatedFiles: false },
+    });
+    controller.send({
+      type: "external-error",
+      error: "consent failed while finalizing",
+    });
+    controller.send({
+      type: "finalize-complete",
+      invocationRef: ref(4),
+      ok: true,
+    });
     await flush();
 
     expect(listener.mock.calls.map(([event]) => event)).toEqual([
@@ -137,6 +156,7 @@ describe("ChatStreamManager", () => {
       },
       { chatId: CHAT_ID, invocationRef: ref(2), outcome: "cancelled" },
       { chatId: CHAT_ID, invocationRef: ref(3), outcome: "errored" },
+      { chatId: CHAT_ID, invocationRef: ref(4), outcome: "errored" },
     ]);
     expect(secondListener.mock.calls).toEqual(listener.mock.calls);
 

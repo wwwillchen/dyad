@@ -498,7 +498,7 @@ describe("external errors during an active stream", () => {
     }
   });
 
-  it("retains a failure reported during finalization without suppressing queue dispatch", () => {
+  it("retains a failure reported during finalization and suppresses queue dispatch", () => {
     let result = step(STATE_FACTORIES.finalizing(), {
       type: "external-error",
       error: "consent failed while finalizing",
@@ -517,9 +517,7 @@ describe("external errors during an active stream", () => {
       type: "errored",
       error: "consent failed while finalizing",
     });
-    expect(commandsOf(result)).toEqual([
-      { type: "dispatch-next-queued", invocationRef: ref(4) },
-    ]);
+    expect(commandsOf(result)).toEqual([]);
   });
 
   it("lets a later transport error supersede a pending external error", () => {

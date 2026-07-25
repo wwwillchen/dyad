@@ -276,7 +276,12 @@ export class ChatStreamManager {
       finished = {
         chatId,
         invocationRef: previous.invocationRef,
-        outcome: previous.wasCancelled ? "cancelled" : "completed",
+        outcome:
+          state.type === "errored"
+            ? "errored"
+            : previous.wasCancelled
+              ? "cancelled"
+              : "completed",
         ...(previous.chatSummary === undefined
           ? {}
           : { chatSummary: previous.chatSummary }),

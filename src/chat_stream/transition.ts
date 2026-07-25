@@ -505,7 +505,10 @@ export function transition(
           };
         case "finalize-complete": {
           if (isStale(state, event)) return ignore(state, "stale-stream-id");
-          const shouldDispatch = event.ok && !state.wasCancelled;
+          const shouldDispatch =
+            event.ok &&
+            !state.wasCancelled &&
+            state.pendingExternalError === undefined;
           return {
             kind: "applied",
             state:
