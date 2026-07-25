@@ -18,4 +18,10 @@ export function registerUserInputHandlers(): void {
     rememberUserInputSubscriber(event.sender);
     return userInputRegistry.getPending();
   });
+  createTypedHandler(
+    userInputContracts.rejectFollowUp,
+    async (_event, { requestId }) => {
+      await userInputRegistry.followUpRejected(requestId);
+    },
+  );
 }

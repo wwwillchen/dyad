@@ -84,7 +84,8 @@ export type UserInputOutcome =
   | "timed-out"
   | "swept"
   | "superseded"
-  | "dispatched";
+  | "dispatched"
+  | "rejected";
 
 export type UserInputState =
   | { status: "idle" }
@@ -131,7 +132,8 @@ export type UserInputEvent =
   | { type: "timed-out"; requestId: string }
   | { type: "chat-swept"; chatId: number }
   | { type: "stream-finished"; chatId: number }
-  | { type: "follow-up-dispatched"; requestId: string };
+  | { type: "follow-up-dispatched"; requestId: string }
+  | { type: "follow-up-rejected"; requestId: string };
 
 export function isLiveUserInputState(
   state: UserInputState,

@@ -58,6 +58,19 @@ Background and before/after examples of why this pattern exists:
 - Machine-generated queued work must not be editable or removable (including
   through bulk-clear paths) unless removal explicitly settles or rejects the
   owning machine request; otherwise reload can resurrect abandoned work.
+- Settle memory-owned requests on every destructive entity path, including
+  parent-row cascade deletion, bulk deletion, and full reset—not only direct
+  deletion of the child entity the request references.
+- Model user-initiated owner rejection as a typed non-error facade outcome.
+  Rejecting the transport promise routes successful cancellation through
+  generic failure toasts/retry logic and can incorrectly acknowledge dispatch.
+- If queue removal awaits owner settlement, atomically claim/remove the
+  invocation-time items before the await so the queue driver cannot start
+  them. Restore failed owners, preserve items enqueued during the await, and
+  surface settlement errors without aborting the whole clear.
+- When a callback's direct caller owns rollback or restoration, settlement
+  failure must reject that callback itself. Rejecting only a separate outer
+  promise hides the failure from the component responsible for compensation.
 - Do not persist machine-generated queue entries when their authority or
   acceptance callbacks are memory-only. Let the live authoritative registry
   rehydrate and re-enqueue them; a full restart must not restore orphan shells.

@@ -68,6 +68,7 @@ const EVENTS: UserInputEvent[] = [
   },
   { type: "stream-finished", chatId: descriptor.chatId },
   { type: "follow-up-dispatched", requestId: descriptor.requestId },
+  { type: "follow-up-rejected", requestId: descriptor.requestId },
   {
     type: "human-decided",
     requestId: followUpDescriptor.requestId,

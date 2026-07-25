@@ -19,7 +19,12 @@ function setup() {
       run: (command) => recording.run(command, () => undefined),
     },
   });
-  return { registry, clock, recording, broadcast };
+  return {
+    registry,
+    clock,
+    recording,
+    broadcast,
+  };
 }
 
 describe("user-input registry", () => {
@@ -68,6 +73,56 @@ describe("user-input registry", () => {
           command.type === "broadcast-settled" && command.outcome === "swept",
       ),
     ).toHaveLength(2);
+  });
+
+  it("settles a due follow-up when its chat is deleted", async () => {
+    const { registry, broadcast } = setup();
+    const requestId = registry.request({
+      kind: "integration",
+      chatId: 9,
+      provider: "supabase",
+      classifier: "none",
+      followUpPrompt: "Continue after integration",
+    });
+    const park = registry.park(requestId);
+    await registry.respond(requestId, {
+      kind: "integration",
+      completed: true,
+      provider: "supabase",
+    });
+    await park;
+    registry.streamFinished(9);
+
+    await registry.settleChat(9);
+
+    expect(registry.getPending()).toEqual([]);
+    expect(broadcast).toHaveBeenCalledWith("user-input:settled", {
+      requestId,
+      outcome: "swept",
+    });
+  });
+
+  it("settles live follow-ups across all chats before a full reset", async () => {
+    const { registry, broadcast } = setup();
+    const requestIds = [4, 9].map((chatId) =>
+      registry.request({
+        kind: "integration",
+        chatId,
+        provider: "supabase",
+        classifier: "none",
+        followUpPrompt: `Continue chat ${chatId}`,
+      }),
+    );
+
+    await registry.settleAll();
+
+    expect(registry.getPending()).toEqual([]);
+    for (const requestId of requestIds) {
+      expect(broadcast).toHaveBeenCalledWith("user-input:settled", {
+        requestId,
+        outcome: "swept",
+      });
+    }
   });
 
   it("maps human and classifier resolutions into park values", async () => {
@@ -184,9 +239,27 @@ describe("user-input registry", () => {
       ),
     ).toHaveLength(1);
     await registry.followUpDispatched(requestId);
-    await expect(registry.followUpDispatched(requestId)).rejects.toMatchObject({
-      kind: "not_found",
+    expect(registry.getPending()).toEqual([]);
+  });
+
+  it("treats rejection after dispatch as an idempotent no-op", async () => {
+    const { registry } = setup();
+    const requestId = registry.request({
+      kind: "integration",
+      chatId: 4,
+      provider: "supabase",
+      classifier: "none",
+      followUpPrompt: "continue",
     });
+    await registry.respond(requestId, {
+      kind: "integration",
+      provider: "supabase",
+      completed: true,
+    });
+    registry.streamFinished(4);
+    await registry.followUpDispatched(requestId);
+
+    await expect(registry.followUpRejected(requestId)).resolves.toBeUndefined();
   });
 
   it("never makes an armed continuation due after the chat is swept", async () => {
@@ -217,6 +290,38 @@ describe("user-input registry", () => {
       requestId,
       outcome: "swept",
     });
+  });
+
+  it("keeps a due follow-up retryable while sweeping other chat inputs", async () => {
+    const { registry } = setup();
+    const followUp = registry.request({
+      kind: "integration",
+      chatId: 18,
+      provider: "neon",
+      classifier: "none",
+      followUpPrompt: "continue",
+    });
+    const consent = registry.request({
+      kind: "agent-consent",
+      chatId: 18,
+      toolName: "read_file",
+      classifier: "none",
+    });
+    await registry.respond(followUp, {
+      kind: "integration",
+      provider: "neon",
+      completed: true,
+    });
+    registry.streamFinished(18);
+    registry.sweepChat(18);
+
+    expect(registry.getPending()).toEqual([
+      expect.objectContaining({
+        status: "due",
+        descriptor: expect.objectContaining({ requestId: followUp }),
+      }),
+    ]);
+    await expect(registry.park(consent)).resolves.toBeNull();
   });
 
   it("settles an incomplete integration response without arming a follow-up", async () => {

@@ -5,26 +5,28 @@ import {
   getPersistableQueueItems,
 } from "./useQueuePersistence";
 
-function queuedItem(
-  id: string,
-  userInputRequestId?: string,
-): QueuedMessageItem {
+function queuedItem(id: string, requestId?: string): QueuedMessageItem {
   return {
     id,
     prompt: id,
     selectedComponents: [],
-    userInputRequestId,
+    owner: requestId ? { kind: "user-input-follow-up", requestId } : undefined,
   };
 }
 
 describe("findRestorableQueueItems", () => {
-  it("drops machine-owned continuations during hydration", () => {
+  it("drops callback-less machine continuations after a full restart", () => {
     const persisted = [
       queuedItem("persisted", "integration:1"),
+      {
+        id: "legacy-persisted",
+        prompt: "legacy",
+        userInputRequestId: "integration:legacy",
+      },
       queuedItem("ordinary"),
     ];
 
-    expect(findRestorableQueueItems(persisted, [])).toEqual([persisted[1]]);
+    expect(findRestorableQueueItems(persisted, [])).toEqual([persisted[2]]);
   });
 
   it("deduplicates ordinary prompts by queue item id", () => {

@@ -99,6 +99,7 @@ const OutcomeSchema = z.enum([
   "swept",
   "superseded",
   "dispatched",
+  "rejected",
 ]);
 
 export const userInputContracts = {
@@ -114,6 +115,11 @@ export const userInputContracts = {
     channel: "user-input:get-pending",
     input: z.void(),
     output: z.array(PendingSnapshotSchema),
+  }),
+  rejectFollowUp: defineContract({
+    channel: "user-input:reject-follow-up",
+    input: z.object({ requestId: z.string(), reason: z.string() }),
+    output: z.void(),
   }),
 } as const;
 

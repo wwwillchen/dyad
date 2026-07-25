@@ -69,7 +69,7 @@ describe("chat stream command adapter instances", () => {
     });
   });
 
-  it("reports machine follow-up acceptance only after main confirms its durable request id", async () => {
+  it("reports machine follow-up acceptance only after main confirms its request id", async () => {
     const onAccepted = vi.fn();
     const deps = {
       store: createStore(),
@@ -96,7 +96,10 @@ describe("chat stream command adapter instances", () => {
         chatId: 9,
         appId: 4,
         prompt: "continue",
-        userInputRequestId: "integration:durable",
+        owner: {
+          kind: "user-input-follow-up",
+          requestId: "integration:durable",
+        },
         onAccepted,
       },
       emit: vi.fn(),

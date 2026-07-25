@@ -267,7 +267,8 @@ export function createProductionChatStreamCommands(
           : queryClient.getQueryData<Chat>(queryKeys.chats.detail({ chatId }));
 
       const setMessagesById = makeSetMessagesById(store);
-      let userInputAccepted = request.userInputRequestId === undefined;
+      const userInputRequestId = request.owner?.requestId;
+      let userInputAccepted = userInputRequestId === undefined;
       ipc.chatStream.start(
         {
           chatId,
@@ -282,7 +283,7 @@ export function createProductionChatStreamCommands(
               : (request.requestedChatMode ??
                 cachedChat?.chatMode ??
                 undefined),
-          userInputRequestId: request.userInputRequestId,
+          userInputRequestId,
         },
         {
           onChunk: (chunk) => {
@@ -298,8 +299,8 @@ export function createProductionChatStreamCommands(
             } = chunk;
 
             if (
-              request.userInputRequestId &&
-              acceptedUserInputRequestId === request.userInputRequestId &&
+              userInputRequestId &&
+              acceptedUserInputRequestId === userInputRequestId &&
               !userInputAccepted
             ) {
               userInputAccepted = true;
@@ -365,9 +366,21 @@ export function createProductionChatStreamCommands(
           },
           onEnd: (response) => {
             if (!userInputAccepted) {
-              request.onAcceptanceError?.(
-                new Error("Follow-up stream ended before durable acceptance"),
-              );
+              if (response.wasCancelled) {
+                void Promise.resolve(
+                  request.onAcceptanceRejected?.(
+                    "cancelled during follow-up execution",
+                  ),
+                ).catch((error) => {
+                  request.onAcceptanceError?.(
+                    error instanceof Error ? error : new Error(String(error)),
+                  );
+                });
+              } else {
+                request.onAcceptanceError?.(
+                  new Error("Follow-up stream ended before acceptance"),
+                );
+              }
             }
             emit({ type: "stream-ended", invocationRef, response });
           },
@@ -404,16 +417,19 @@ export function createProductionChatStreamCommands(
         redo: request.redo,
         appId: request.appId,
         requestedChatMode: request.requestedChatMode,
-        userInputRequestId: request.userInputRequestId,
+        owner: request.owner,
         onAccepted: request.onAccepted,
         onAcceptanceError: request.onAcceptanceError,
+        onAcceptanceRejected: request.onAcceptanceRejected,
       };
       store.set(queuedMessagesByIdAtom, (prev) => {
         const next = new Map(prev);
         const existing = prev.get(chatId) ?? [];
-        if (request.userInputRequestId) {
+        if (request.owner) {
           const duplicateIndex = existing.findIndex(
-            (item) => item.userInputRequestId === request.userInputRequestId,
+            (item) =>
+              item.owner?.kind === request.owner?.kind &&
+              item.owner?.requestId === request.owner?.requestId,
           );
           if (duplicateIndex >= 0) {
             const updated = [...existing];
@@ -421,6 +437,7 @@ export function createProductionChatStreamCommands(
               ...updated[duplicateIndex],
               onAccepted: request.onAccepted,
               onAcceptanceError: request.onAcceptanceError,
+              onAcceptanceRejected: request.onAcceptanceRejected,
             };
             next.set(chatId, updated);
             return next;
@@ -616,7 +633,6 @@ export function createProductionChatStreamCommands(
         showWarningMessage(warningMessage, targetAppId);
       }
       console.error(`[CHAT] Stream error for ${chatId}:`, error);
-      request.onAcceptanceError?.(new Error(error));
       store.set(chatErrorByIdAtom, (prev) => {
         const next = new Map(prev);
         next.set(chatId, error);
@@ -688,9 +704,10 @@ export function createProductionChatStreamCommands(
             messageToSend.requestedChatMode !== undefined
               ? messageToSend.requestedChatMode
               : chatMode,
-          userInputRequestId: messageToSend.userInputRequestId,
+          owner: messageToSend.owner,
           onAccepted: messageToSend.onAccepted,
           onAcceptanceError: messageToSend.onAcceptanceError,
+          onAcceptanceRejected: messageToSend.onAcceptanceRejected,
         },
       });
     },

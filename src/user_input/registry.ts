@@ -64,9 +64,12 @@ export interface UserInputRegistry {
     approved: boolean,
     reason?: string,
   ): Promise<boolean>;
-  sweepChat(chatId: number): void;
+  sweepChat(chatId: number, exceptRequestId?: string): void;
+  settleChat(chatId: number): Promise<void>;
+  settleAll(): Promise<void>;
   streamFinished(chatId: number): void;
   followUpDispatched(requestId: string): Promise<void>;
+  followUpRejected(requestId: string): Promise<void>;
   getPending(): PendingUserInputSnapshot[];
   dispose(): void;
 }
@@ -355,10 +358,33 @@ export function createUserInputRegistry(deps: {
       });
     },
 
-    sweepChat(chatId) {
+    sweepChat(chatId, exceptRequestId) {
       for (const requestId of chatIndex.get(chatId) ?? []) {
+        if (requestId === exceptRequestId) continue;
+        const state = states.get(requestId);
+        if (state?.status === "due") continue;
         dispatchWithoutWaiting(requestId, { type: "chat-swept", chatId });
       }
+    },
+
+    async settleChat(chatId) {
+      await Promise.all(
+        Array.from(chatIndex.get(chatId) ?? [], (requestId) =>
+          dispatch(requestId, { type: "chat-swept", chatId }),
+        ),
+      );
+    },
+
+    async settleAll() {
+      await Promise.all(
+        Array.from(chatIndex.keys(), (chatId) =>
+          Promise.all(
+            Array.from(chatIndex.get(chatId) ?? [], (requestId) =>
+              dispatch(requestId, { type: "chat-swept", chatId }),
+            ),
+          ),
+        ),
+      );
     },
 
     streamFinished(chatId) {
@@ -375,6 +401,23 @@ export function createUserInputRegistry(deps: {
       if (!applied) {
         throw new DyadError(
           `No due user-input request: ${requestId}`,
+          DyadErrorKind.NotFound,
+        );
+      }
+    },
+
+    async followUpRejected(requestId) {
+      const existing = states.get(requestId);
+      if (existing?.status === "settled") {
+        return;
+      }
+      const applied = await dispatch(requestId, {
+        type: "follow-up-rejected",
+        requestId,
+      });
+      if (!applied) {
+        throw new DyadError(
+          `No live user-input follow-up: ${requestId}`,
           DyadErrorKind.NotFound,
         );
       }

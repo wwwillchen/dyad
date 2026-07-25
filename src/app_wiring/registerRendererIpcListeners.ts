@@ -6,7 +6,10 @@ import type { ChatStreamManager } from "@/chat_stream/manager";
 import { ipc as defaultIpc, type TelemetryEventPayload } from "@/ipc/types";
 import { queryKeys } from "@/lib/queryKeys";
 import { showError } from "@/lib/toast";
-import { getUserInputProjectionAdapter } from "@/user_input/projection";
+import {
+  getUserInputProjectionAdapter,
+  type UserInputChatStreamFacade,
+} from "@/user_input/projection";
 
 export type RendererIpcClient = typeof defaultIpc;
 type JotaiStore = ReturnType<typeof createStore>;
@@ -19,6 +22,46 @@ export interface RegisterRendererIpcListenersOptions {
   onTelemetryEvent?: (payload: TelemetryEventPayload) => void;
 }
 
+export function createUserInputChatStreamFacade(
+  ipcClient: Pick<RendererIpcClient, "userInput">,
+  chatStreamManager: ChatStreamManager,
+): UserInputChatStreamFacade {
+  return {
+    submit: ({ requestId, ...request }) =>
+      new Promise<{ accepted: boolean }>((resolve, reject) => {
+        let completed = false;
+        chatStreamManager.ensure(request.chatId).send({
+          type: "submit",
+          request: {
+            ...request,
+            owner: { kind: "user-input-follow-up", requestId },
+            onAccepted: () => {
+              if (completed) return;
+              completed = true;
+              resolve({ accepted: true });
+            },
+            onAcceptanceError: (error) => {
+              if (completed) return;
+              completed = true;
+              reject(error);
+            },
+            onAcceptanceRejected: async (reason) => {
+              if (completed) return;
+              completed = true;
+              try {
+                await ipcClient.userInput.rejectFollowUp({ requestId, reason });
+                resolve({ accepted: false });
+              } catch (error) {
+                reject(error);
+                throw error;
+              }
+            },
+          },
+        });
+      }),
+  };
+}
+
 export function registerRendererIpcListeners({
   ipcClient,
   store,
@@ -28,29 +71,10 @@ export function registerRendererIpcListeners({
 }: RegisterRendererIpcListenersOptions): () => void {
   const unsubscribes: Array<() => void> = [];
 
-  const userInputChatStream = {
-    submit: ({
-      requestId,
-      ...request
-    }: {
-      requestId: string;
-      chatId: number;
-      prompt: string;
-      selectedComponents: [];
-      requestedChatMode: "local-agent";
-    }) =>
-      new Promise<void>((resolve, reject) => {
-        chatStreamManager.ensure(request.chatId).send({
-          type: "submit",
-          request: {
-            ...request,
-            userInputRequestId: requestId,
-            onAccepted: resolve,
-            onAcceptanceError: reject,
-          },
-        });
-      }),
-  };
+  const userInputChatStream = createUserInputChatStreamFacade(
+    ipcClient,
+    chatStreamManager,
+  );
 
   unsubscribes.push(
     getUserInputProjectionAdapter({

@@ -1086,7 +1086,7 @@ ${componentSnippet}
       assertChatModeCompatibleWithModel(storedSettings, selectedChatMode);
 
       // Accept the user message and latch an implicit chat's first mode in one
-      // synchronous transaction. This keeps the durable idempotency marker and
+      // synchronous transaction. This keeps the idempotent message insert and
       // the mode latch atomic. The conditional update also arbitrates
       // concurrent first turns; a loser reloads and uses the winner below.
       const acceptedTurn = acceptChatTurn(db, {
@@ -1102,7 +1102,7 @@ ${componentSnippet}
 
       if (acceptedTurn.userMessageId === null) {
         // A renderer replayed a continuation after main had already accepted
-        // the same durable idempotency key. Confirm acceptance without
+        // the same idempotency key. Confirm acceptance without
         // inserting another user message or starting another model turn. The
         // transaction above also repairs a still-null first-turn mode.
         replayedAcceptedFollowUp = true;
@@ -2352,7 +2352,9 @@ This conversation includes one or more image attachments. When the user uploads 
         } else if (!activeStreams.has(req.chatId)) {
           // Errors and cancellation sweep pending user inputs; only successful
           // natural completion can arm a follow-up dispatch.
-          userInputRegistry.sweepChat(req.chatId);
+          // A memory-owned follow-up stays due on dispatch failure. Sweeping
+          // it here would prevent renderer focus/remount from retrying it.
+          userInputRegistry.sweepChat(req.chatId, req.userInputRequestId);
         }
       }
 

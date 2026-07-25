@@ -221,6 +221,10 @@ export function transition(
       return state.status === "due"
         ? settle(descriptor, "dispatched", null)
         : ignore(state, "follow-up-not-due");
+    case "follow-up-rejected":
+      return state.status === "due"
+        ? settle(descriptor, "rejected", null)
+        : ignore(state, "follow-up-not-due");
     default: {
       const exhaustive: never = event;
       return unreachable(exhaustive);

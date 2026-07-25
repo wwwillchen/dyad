@@ -29,7 +29,8 @@ type UserInputOutcome =
   | "timed-out"
   | "swept"
   | "superseded"
-  | "dispatched";
+  | "dispatched"
+  | "rejected";
 
 const MAX_SETTLED_TOMBSTONES = 1_000;
 const QUESTIONNAIRE_CONFIRMATION_MS = 2_000;
@@ -84,7 +85,7 @@ export interface UserInputChatStreamFacade {
     prompt: string;
     selectedComponents: [];
     requestedChatMode: "local-agent";
-  }): void | Promise<void>;
+  }): { accepted: boolean } | Promise<{ accepted: boolean }>;
 }
 
 export interface UserInputProjectionAdapter {
@@ -250,13 +251,14 @@ export function getUserInputProjectionAdapter({
 
     dispatchingFollowUps.add(requestId);
     try {
-      await chatStream.submit({
+      const result = await chatStream.submit({
         requestId,
         chatId: request.descriptor.chatId,
         prompt: request.followUpPrompt,
         selectedComponents: [],
         requestedChatMode: "local-agent",
       });
+      if (!result.accepted) return;
       await ipcClient.userInput.respond({
         requestId,
         response: { kind: "follow-up-dispatched" },
@@ -272,7 +274,9 @@ export function getUserInputProjectionAdapter({
     for (const [requestId, request] of store.get(
       writableUserInputRequestsAtom,
     )) {
-      if (request.status === "due") void dispatchDueFollowUp(requestId);
+      if (request.status === "due") {
+        void dispatchDueFollowUp(requestId);
+      }
     }
   };
 
