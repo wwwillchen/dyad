@@ -14,6 +14,7 @@ import {
   AppRunProducerEventSchema,
   AppRunRemoteSnapshotSchema,
   AppRunWireEventSchema,
+  appRunKey,
   projectAppRunRemoteSnapshot,
   type AppRunIntentEvent,
   type AppRunProducerEvent,
@@ -79,15 +80,25 @@ const producerEvents = [
     startedAt: 200,
     operation: "rebuild",
   },
-  { type: "PROCESS_SPAWNED", invocationRef },
+  {
+    type: "PROCESS_SPAWNED",
+    operationId: "request:spawned",
+    invocationRef,
+  },
   {
     type: "PROCESS_FAILED",
+    operationId: "request:failed",
     invocationRef,
     error: { message: "spawn failed" },
   },
-  { type: "PROCESS_STOPPED", invocationRef },
+  {
+    type: "PROCESS_STOPPED",
+    operationId: "request:stopped",
+    invocationRef,
+  },
   {
     type: "PROCESS_STOP_FAILED",
+    operationId: "request:stop-failed",
     invocationRef,
     error: { message: "stop failed" },
   },
@@ -110,6 +121,16 @@ describe("app-run transport codecs", () => {
   it("round-trips the app key", () => {
     const key = { appId: APP_ID };
     expect(roundTrip(AppRunKeySchema, key)).toEqual(key);
+  });
+
+  it("does not intern untrusted decoded keys before authorization", () => {
+    const firstDecoded = AppRunKeySchema.parse({ appId: APP_ID });
+    const secondDecoded = AppRunKeySchema.parse({ appId: APP_ID });
+    const localCanonical = appRunKey(APP_ID);
+
+    expect(firstDecoded).not.toBe(secondDecoded);
+    expect(firstDecoded).not.toBe(localCanonical);
+    expect(appRunKey(APP_ID)).toBe(localCanonical);
   });
 
   it.each(intentEvents)("round-trips intent $type", (event) => {
@@ -136,6 +157,46 @@ describe("app-run transport codecs", () => {
     const snapshot = projectAppRunRemoteSnapshot(APP_ID, 7, state);
 
     expect(roundTrip(AppRunRemoteSnapshotSchema, snapshot)).toEqual(snapshot);
+  });
+
+  it("projects an admitted exit that errored RunState cannot represent", () => {
+    expect(
+      projectAppRunRemoteSnapshot(
+        APP_ID,
+        3,
+        {
+          type: "errored",
+          appId: APP_ID,
+          invocationRef,
+          error: { message: "readiness timed out" },
+        },
+        0,
+        null,
+        { exitCode: 1, timestamp: 300 },
+      ),
+    ).toMatchObject({
+      phase: "errored",
+      exit: { exitCode: 1, timestamp: 300 },
+    });
+  });
+
+  it("prefers a later admitted exit over the first stopped-state exit", () => {
+    expect(
+      projectAppRunRemoteSnapshot(
+        APP_ID,
+        4,
+        {
+          type: "stopped",
+          appId: APP_ID,
+          invocationRef,
+          exitCode: 1,
+          timestamp: 200,
+        },
+        0,
+        null,
+        { exitCode: 2, timestamp: 300 },
+      ).exit,
+    ).toEqual({ exitCode: 2, timestamp: 300 });
   });
 
   it("preserves an early proxy URL until spawn settlement", () => {

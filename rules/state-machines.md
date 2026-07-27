@@ -99,6 +99,11 @@ Background and before/after examples of why this pattern exists:
   and bound snapshot envelopes before delivery. Use a
   structured-clone-compatible byte measurement; JSON sizing is not
   wire-compatible with values such as `bigint`.
+- When a remote machine uses an object key, canonicalize it through the same
+  interner used by main-process producers only after subscription authorization
+  succeeds, then pass that canonical key to `ActorHost`. Its actor map is
+  identity-keyed, but interning inside an untrusted wire decoder lets rejected
+  entity IDs grow a process-lifetime cache.
 - Remote authorization hooks use `DyadErrorKind.Auth` for expected access
   denial. Convert only that explicit classification to an unauthorized receipt;
   propagate unexpected hook failures so telemetry can distinguish dependency
@@ -112,6 +117,10 @@ Background and before/after examples of why this pattern exists:
 - Settle memory-owned requests on every destructive entity path, including
   parent-row cascade deletion, bulk deletion, and full reset—not only direct
   deletion of the child entity the request references.
+- Register an in-memory request's disposal rejector before its first
+  asynchronous admission await, and remove it in `finally`. Registering only
+  before the terminal subscription leaves an admission-to-subscription race
+  where owner disposal can strand the request forever.
 - Model user-initiated owner rejection as a typed non-error facade outcome.
   Rejecting the transport promise routes successful cancellation through
   generic failure toasts/retry logic and can incorrectly acknowledge dispatch.
@@ -122,6 +131,10 @@ Background and before/after examples of why this pattern exists:
 - When a callback's direct caller owns rollback or restoration, settlement
   failure must reject that callback itself. Rejecting only a separate outer
   promise hides the failure from the component responsible for compensation.
+- When changing a lifecycle facade from projecting failures in state to
+  rejecting its returned promise, audit every event-handler and automatic
+  fire-and-forget caller. Attach an explicit rejection consumer there while
+  preserving rejection for callers that await the operation for sequencing.
 - Do not persist machine-generated queue entries when their authority or
   acceptance callbacks are memory-only. Let the live authoritative registry
   rehydrate and re-enqueue them; a full restart must not restore orphan shells.
@@ -218,6 +231,9 @@ Background and before/after examples of why this pattern exists:
 - When a cross-owner facade defers keyed delivery to a microtask, entity
   disposal must invalidate both queued and future deliveries for that key.
   Otherwise the deferred callback can recreate a controller after deletion.
+- Producer callbacks that arrive after entity disposal must use a non-creating
+  actor lookup. Never route late output through `ensure()`, which can recreate
+  retained authority for a deleted entity.
 - A keyed ownership replacement must adopt the incoming cleanup before running
   the previous cleanup. Otherwise a throwing unsubscribe/cancel can orphan the
   already-acquired replacement resource.
@@ -299,6 +315,21 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   the user's input while the operation runs and after failure. Close dialogs
   and clear forms only on authoritative settlement; dispatch itself is not
   proof that the mutation succeeded.
+- A remote dispatch receipt proves transport admission, not runtime completion.
+  When callers sequence work on the outcome, project a bounded,
+  operation-correlated settlement acknowledgment. Superseded completions must
+  settle their original waiters without advancing the current lifecycle.
+  Keep the request correlation ID separate from a reused runtime invocation
+  identity (for example, an idempotent ensure-running request targeting an
+  existing process), and subscribe before the final settlement recheck so a
+  completion cannot land between the initial read and listener registration.
+  Track every in-flight request, not only the latest: a reused invocation can
+  be superseded before its producer settles, but its original waiter must
+  still complete. A producer sink captured for one invocation must also ignore
+  or overwrite any conflicting invocation identity supplied by its payload.
+- Keep transport revisions separate from semantic presentation epochs. A
+  revision may advance for bookkeeping-only transitions, while a reload token
+  must advance exactly once for each user-visible remount.
 - When an epoch keys a mounted resource, capture props such as an iframe `src`
   from the epoch-changing snapshot. Do not let later same-epoch state updates
   rewrite identity-defining DOM attributes and trigger an implicit reload.

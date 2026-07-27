@@ -233,7 +233,9 @@ export class RemoteMachineTransport {
 
     let entry = existingEntry;
     if (!entry) {
-      const canonicalKey = this.actorKeys.get(address) ?? key;
+      const authorizedKey =
+        definition.remote.canonicalizeKeyAfterAuthorization?.(key) ?? key;
+      const canonicalKey = this.actorKeys.get(address) ?? authorizedKey;
       const encodedKey = this.encodeKey(definition, canonicalKey);
       let actor: HostedActorRef<unknown, unknown, string>;
       try {
@@ -542,6 +544,7 @@ export class RemoteMachineTransport {
     const projected = entry.definition.remote.projectSnapshot(
       entry.actor.getSnapshot(),
       entry.key,
+      metadata,
     );
     const parsed = entry.definition.remote.snapshotCodec.safeParse(projected);
     if (!parsed.success) {

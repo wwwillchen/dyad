@@ -128,10 +128,20 @@ export interface RemoteMachineContract<
   readonly protocolVersion: number;
   readonly keyCodec: z.ZodType<Key>;
   readonly encodeKey: (key: Key) => unknown;
+  /**
+   * Optionally replace an authorized decoded key with the host's canonical
+   * identity key. This runs only after subscribe authorization succeeds, so
+   * untrusted wire keys cannot populate process-lifetime identity caches.
+   */
+  readonly canonicalizeKeyAfterAuthorization?: (key: Key) => Key;
   readonly eventCodec: z.ZodType<Event>;
   readonly snapshotCodec: z.ZodType<RemoteState>;
   readonly keyToString: (key: Key) => string;
-  readonly projectSnapshot: (state: State, key: Key) => RemoteState;
+  readonly projectSnapshot: (
+    state: State,
+    key: Key,
+    metadata: ActorRuntimeMetadata,
+  ) => RemoteState;
   /**
    * Explicit non-authoritative renderer view used before bootstrap, after
    * disposal, and while the transport is unavailable.
@@ -166,6 +176,7 @@ export interface DistributedMachineDefinition<
   readonly transition: (
     state: State,
     event: Event,
+    key: Key,
   ) => TransitionResult<State, Command, Reason>;
   readonly createScheduler: (key: Key) => CommandScheduler<Command>;
   readonly createCommandRunner: (

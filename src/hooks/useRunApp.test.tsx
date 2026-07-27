@@ -4,10 +4,12 @@ import type { PropsWithChildren } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import {
+  runAppLifecycleInBackground,
   useAppOutputSubscription,
   useRebuildAppAfterPnpmInstall,
   useRunApp,
 } from "@/hooks/useRunApp";
+import { useAppRunState } from "@/hooks/useAppRun";
 import { AppRunProvider } from "@/app_run/AppRunProvider";
 import { selectAppExit, selectAppUrl } from "@/app_run/selectors";
 import { AppRunManager } from "@/app_run/manager";
@@ -139,6 +141,20 @@ function makeWrapper(appId: number) {
     },
   };
 }
+
+describe("useAppRunState", () => {
+  it("does not subscribe to a real app when no app is selected", () => {
+    const { manager, Wrapper } = makeWrapper(1);
+    const subscribe = vi.spyOn(manager, "subscribeKey");
+
+    const { result } = renderHook(() => useAppRunState(null), {
+      wrapper: Wrapper,
+    });
+
+    expect(result.current.phase).toBe("idle");
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+});
 
 describe("useAppOutputSubscription", () => {
   beforeEach(() => {
@@ -881,5 +897,24 @@ describe("useAppOutputSubscription", () => {
       removeNodeModules: false,
       recreateSandbox: false,
     });
+  });
+});
+
+describe("runAppLifecycleInBackground", () => {
+  it("handles lifecycle rejection without changing awaited dispatch semantics", async () => {
+    const error = new Error("spawn failed");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    runAppLifecycleInBackground("start", Promise.reject(error));
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        "[app-run] Failed to start app:",
+        error,
+      );
+    });
+
+    consoleError.mockRestore();
   });
 });

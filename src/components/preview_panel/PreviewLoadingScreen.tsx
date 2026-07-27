@@ -13,10 +13,9 @@ import type { ConsoleEntry } from "@/ipc/types";
 import type { AppExit } from "@/app_run/selectors";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { selectedChatIdAtom } from "@/atoms/chatAtoms";
-import { useRunApp } from "@/hooks/useRunApp";
+import { runAppLifecycleInBackground, useRunApp } from "@/hooks/useRunApp";
 import { useAppExit, useAppRunState } from "@/hooks/useAppRun";
 import { useStreamChat } from "@/hooks/useStreamChat";
-import { projectRunState } from "@/app_run/transition";
 import { cn } from "@/lib/utils";
 import { useConsoleEntries } from "@/preview_console/hooks";
 
@@ -159,7 +158,7 @@ export function PreviewLoadingScreen({
   const consoleEntries = useConsoleEntries(selectedAppId);
   const runState = useAppRunState(selectedAppId);
   const previewAppExit = useAppExit(selectedAppId);
-  const previewRunStartedAt = projectRunState(runState)?.startedAt ?? null;
+  const previewRunStartedAt = runState.startedAt;
   const selectedChatId = useAtomValue(selectedChatIdAtom);
   const { streamMessage, isStreaming } = useStreamChat();
   const { restartApp } = useRunApp();
@@ -253,7 +252,10 @@ export function PreviewLoadingScreen({
   };
 
   const handleRebuild = () => {
-    void restartApp({ removeNodeModules: true });
+    runAppLifecycleInBackground(
+      "rebuild",
+      restartApp({ removeNodeModules: true }),
+    );
   };
 
   const handleFixAllErrors = () => {

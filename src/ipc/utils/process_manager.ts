@@ -12,6 +12,7 @@ import {
 import { readSettings } from "../../main/settings";
 import type { AppRunInvocationRef } from "@/app_run/state";
 import type { AppRuntimeOutput } from "@/ipc/types/app_runtime";
+import { killProcessTreeSync } from "./kill_process_tree_sync";
 
 const logger = log.scope("process_manager");
 
@@ -419,15 +420,14 @@ export function stopAllAppsSync(): void {
       logger.info(`Sent docker stop for app ${appId} (${containerName})`);
     } else if (appInfo.process?.pid) {
       const pid = appInfo.process.pid;
-      // treeKill sends SIGTERM synchronously
-      treeKill(pid, "SIGTERM", (err: Error | undefined) => {
-        if (err) {
-          logger.warn(
-            `tree-kill error for app ${appId} (PID ${pid}): ${err.message}`,
-          );
-        }
-      });
-      logger.info(`Sent SIGTERM to app ${appId} (PID ${pid})`);
+      if (killProcessTreeSync(pid)) {
+        logger.info(`Sent SIGTERM to app ${appId} (PID ${pid})`);
+      } else {
+        logger.warn(
+          `Failed to synchronously terminate app ${appId} (PID ${pid}) during quit`,
+        );
+        continue;
+      }
     }
     runningApps.delete(appId);
   }

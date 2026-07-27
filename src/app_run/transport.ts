@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { RuntimeMode2Schema } from "@/lib/schemas";
+import { DyadErrorKind } from "@/errors/dyad_error";
 import type { RunState } from "./state";
 import { APP_RUN_INVOCATION_KIND } from "./state";
 
@@ -13,11 +14,26 @@ const expectedRevisionSchema = z.number().int().nonnegative();
  * This schema is intentionally independent from the generic actor transport:
  * it is the per-definition authorization/routing key that C1.3 will register.
  */
+const appRunKeys = new Map<number, { appId: number }>();
+
+export function appRunKey(appId: number): { appId: number } {
+  let key = appRunKeys.get(appId);
+  if (!key) {
+    key = Object.freeze({ appId });
+    appRunKeys.set(appId, key);
+  }
+  return key;
+}
+
 export const AppRunKeySchema = z
   .object({
     appId: z.number().int().positive(),
   })
-  .strict();
+  .strict()
+  // Wire decoding must not populate the process-lifetime canonical-key cache:
+  // authorization happens after decoding, so invalid entity IDs could
+  // otherwise grow the cache without bound.
+  .transform(({ appId }) => Object.freeze({ appId }));
 export type AppRunKey = z.infer<typeof AppRunKeySchema>;
 
 export const AppRunInvocationRefSchema = z
@@ -58,6 +74,7 @@ const runErrorSchema = z
     z
       .object({
         message: z.string(),
+        kind: z.enum(DyadErrorKind).optional(),
       })
       .strict(),
   );
@@ -165,6 +182,7 @@ const externalRestartStartedSchema = z
 const processSpawnedSchema = z
   .object({
     type: z.literal("PROCESS_SPAWNED"),
+    operationId: operationIdSchema,
     invocationRef: AppRunInvocationRefSchema,
   })
   .strict();
@@ -172,14 +190,17 @@ const processSpawnedSchema = z
 const processFailedSchema = z
   .object({
     type: z.literal("PROCESS_FAILED"),
+    operationId: operationIdSchema,
     invocationRef: AppRunInvocationRefSchema,
     error: runErrorSchema,
+    runtimeMayBeLive: z.boolean().optional(),
   })
   .strict();
 
 const processStoppedSchema = z
   .object({
     type: z.literal("PROCESS_STOPPED"),
+    operationId: operationIdSchema,
     invocationRef: AppRunInvocationRefSchema,
   })
   .strict();
@@ -187,6 +208,7 @@ const processStoppedSchema = z
 const processStopFailedSchema = z
   .object({
     type: z.literal("PROCESS_STOP_FAILED"),
+    operationId: operationIdSchema,
     invocationRef: AppRunInvocationRefSchema,
     error: runErrorSchema,
   })
@@ -291,6 +313,7 @@ export const AppRunRemoteSnapshotSchema = z
   .object({
     appId: z.number().int().positive(),
     revision: expectedRevisionSchema,
+    previewReloadEpoch: expectedRevisionSchema,
     phase: z.enum([
       "idle",
       "starting",
@@ -309,6 +332,15 @@ export const AppRunRemoteSnapshotSchema = z
     exit: appRunExitSchema.nullable(),
     capabilities: appRunCapabilitiesSchema,
     invocationRef: AppRunInvocationRefSchema.nullable(),
+    lastSettlement: z
+      .object({
+        operationId: operationIdSchema,
+        kind: z.enum(["run", "stop"]),
+        outcome: z.enum(["succeeded", "failed"]),
+        error: runErrorSchema.optional(),
+      })
+      .strict()
+      .nullable(),
   })
   .strict();
 export type AppRunRemoteSnapshot = z.infer<typeof AppRunRemoteSnapshotSchema>;
@@ -321,6 +353,9 @@ export function projectAppRunRemoteSnapshot(
   appId: number,
   revision: number,
   state: RunState,
+  previewReloadEpoch = 0,
+  lastSettlement: AppRunRemoteSnapshot["lastSettlement"] = null,
+  observedExit: AppRunRemoteSnapshot["exit"] = null,
 ): AppRunRemoteSnapshot {
   if (
     state.type !== "idle" &&
@@ -332,14 +367,16 @@ export function projectAppRunRemoteSnapshot(
   const base = {
     appId,
     revision,
+    previewReloadEpoch,
     phase: state.type,
     operation: null,
     startedAt: null,
     url: null,
     operationError: null,
-    exit: null,
+    exit: observedExit,
     capabilities: selectRemoteCapabilities(state),
     invocationRef: state.type === "idle" ? null : state.invocationRef,
+    lastSettlement,
   } satisfies AppRunRemoteSnapshot;
 
   switch (state.type) {
@@ -361,12 +398,13 @@ export function projectAppRunRemoteSnapshot(
       return {
         ...base,
         exit:
-          state.timestamp === null
+          observedExit ??
+          (state.timestamp === null
             ? null
             : {
                 exitCode: state.exitCode,
                 timestamp: state.timestamp,
-              },
+              }),
       };
     case "errored":
       return { ...base, operationError: state.error };
