@@ -134,6 +134,8 @@ import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalid
 import { entityDisposalBus } from "@/window_infrastructure/main/entity_disposal_bus";
 import { appRunActorService } from "../services/app_run_actor_service";
 import { githubOpsActorService } from "../services/github_ops_actor_service";
+import { imageGenerationActorService } from "../services/image_generation_actor_service";
+import { imageGenerationService } from "../services/image_generation_service";
 import { githubOpsService } from "../services/github_ops_service";
 
 const logger = log.scope("app_handlers");
@@ -383,6 +385,7 @@ async function deleteAppById(
   options: DeleteAppByIdOptions = {},
 ): Promise<void> {
   githubOpsService.beginAppDeletion(appId);
+  imageGenerationService.beginAppDeletion(appId);
   try {
     return await withLock(appId, async () => {
       const app = await db.query.apps.findFirst({
@@ -392,6 +395,7 @@ async function deleteAppById(
       if (!app) {
         if (options.allowMissing && options.knownAppPath) {
           await githubOpsActorService.disposeApp(appId);
+          await imageGenerationActorService.disposeApp(appId);
           await appRunActorService.disposeApp(appId);
           appRuntimeService.cleanup(appId);
           await removeAppFiles(appId, options.knownAppPath);
@@ -401,6 +405,7 @@ async function deleteAppById(
       }
 
       await githubOpsActorService.disposeApp(appId);
+      await imageGenerationActorService.disposeApp(appId);
       if (runningApps.has(appId)) {
         const appInfo = runningApps.get(appId)!;
         try {
@@ -457,6 +462,7 @@ async function deleteAppById(
       }
     });
   } finally {
+    imageGenerationService.endAppDeletion(appId);
     githubOpsService.endAppDeletion(appId);
   }
 }
@@ -1391,6 +1397,7 @@ export function registerAppHandlers() {
 
   createTypedHandler(systemContracts.resetAll, async () => {
     githubOpsService.beginReset();
+    imageGenerationService.beginReset();
     try {
       logger.log("start: resetting all apps and settings.");
       appRuntimeService.cleanupAll();
@@ -1411,6 +1418,8 @@ export function registerAppHandlers() {
       logger.log("all app run actors disposed.");
       await githubOpsActorService.disposeAllApps();
       logger.log("all GitHub operation actors disposed.");
+      await imageGenerationActorService.disposeAllApps();
+      logger.log("all image generation actors disposed.");
       // Determine the paths of all apps in the database so that we can delete them.
       // We do the deletion last, so technically this is a TOCTOU race, but
       // it allows us to do the deletion last after removing the database
@@ -1466,6 +1475,7 @@ export function registerAppHandlers() {
       logger.log("all app files removed.");
       logger.log("reset all complete.");
     } finally {
+      imageGenerationService.endReset();
       githubOpsService.endReset();
     }
   });

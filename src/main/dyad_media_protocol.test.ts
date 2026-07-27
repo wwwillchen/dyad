@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildDyadMediaUrlForApp,
   buildDyadMediaThumbnailUrl,
   buildDyadMediaUrl,
 } from "../lib/dyadMediaUrl";
@@ -84,7 +85,9 @@ describe("dyad-media thumbnail protocol", () => {
     });
     const handler = createDyadMediaProtocolHandler({
       cacheRoot,
-      resolveAppPath: (value) => value,
+      resolveAppPath: (value) =>
+        value === "app-id" ? path.join(root, "app-id") : value,
+      resolveAppId: async (appId) => (appId === 7 ? appPath : null),
       fetchFile,
       createThumbnailFromPath,
     });
@@ -96,6 +99,33 @@ describe("dyad-media thumbnail protocol", () => {
     await fs.writeFile(sourcePath, pngData);
     return sourcePath;
   }
+
+  it("resolves opaque app IDs without exposing the app path in the URL", async () => {
+    const sourcePath = await writeImage();
+    const realSourcePath = await fs.realpath(sourcePath);
+    const { handler, fetchFile } = makeHandler();
+    const url = buildDyadMediaUrlForApp(7, "image.png");
+
+    expect(url).not.toContain(encodeURIComponent(appPath));
+    await expect(handler(new Request(url))).resolves.toMatchObject({
+      status: 200,
+    });
+    expect(fetchFile).toHaveBeenCalledWith(pathToFileURL(realSourcePath).href);
+  });
+
+  it("preserves legacy media URLs for an app folder named app-id", async () => {
+    const legacyMediaPath = path.join(root, "app-id", ".dyad", "media");
+    await fs.mkdir(legacyMediaPath, { recursive: true });
+    const sourcePath = path.join(legacyMediaPath, "legacy.png");
+    await fs.writeFile(sourcePath, pngData);
+    const realSourcePath = await fs.realpath(sourcePath);
+    const { handler, fetchFile } = makeHandler();
+
+    await expect(
+      handler(new Request(buildDyadMediaUrl("app-id", "legacy.png"))),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(fetchFile).toHaveBeenCalledWith(pathToFileURL(realSourcePath).href);
+  });
 
   it("serves originals only when a thumbnail was not requested", async () => {
     const sourcePath = await writeImage();

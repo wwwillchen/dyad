@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   ImageIcon,
   Box,
@@ -72,6 +72,8 @@ export function ImageGeneratorDialog({
   const [prompt, setPrompt] = useState("");
   const [themeMode, setThemeMode] = useState<ImageThemeMode>("plain");
   const [targetAppId, setTargetAppId] = useState<number | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submissionAttemptRef = useRef(0);
 
   const { apps } = useLoadApps();
   const { start } = useGenerateImage();
@@ -86,16 +88,33 @@ export function ImageGeneratorDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  useEffect(() => {
+    if (!open) {
+      submissionAttemptRef.current += 1;
+      setIsSubmitting(false);
+    }
+  }, [open]);
+
+  useEffect(
+    () => () => {
+      submissionAttemptRef.current += 1;
+    },
+    [],
+  );
+
   const effectiveTargetAppId =
     targetAppId ?? (apps.length === 1 ? apps[0].id : null);
 
-  const handleGenerate = () => {
-    if (!prompt.trim() || effectiveTargetAppId === null) return;
+  const handleGenerate = async () => {
+    if (isSubmitting || !prompt.trim() || effectiveTargetAppId === null) return;
 
     const targetApp = apps.find((a) => a.id === effectiveTargetAppId);
     if (!targetApp) return;
 
-    start({
+    const attempt = submissionAttemptRef.current + 1;
+    submissionAttemptRef.current = attempt;
+    setIsSubmitting(true);
+    const jobId = await start({
       prompt: prompt.trim(),
       themeMode,
       targetAppId: effectiveTargetAppId,
@@ -103,12 +122,15 @@ export function ImageGeneratorDialog({
       source,
     });
 
-    // Auto-close dialog immediately after starting generation
-    handleOpenChange(false);
+    if (submissionAttemptRef.current !== attempt) return;
+    setIsSubmitting(false);
+    if (jobId) handleOpenChange(false);
   };
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
+      submissionAttemptRef.current += 1;
+      setIsSubmitting(false);
       setPrompt("");
       setThemeMode("plain");
       setTargetAppId(null);
@@ -231,9 +253,11 @@ export function ImageGeneratorDialog({
             ) : null}
             <Button
               onClick={handleGenerate}
-              disabled={!prompt.trim() || effectiveTargetAppId === null}
+              disabled={
+                isSubmitting || !prompt.trim() || effectiveTargetAppId === null
+              }
             >
-              Generate
+              {isSubmitting ? "Starting..." : "Generate"}
             </Button>
           </div>
         </DialogFooter>

@@ -20,10 +20,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useImageGenerationJobs } from "@/image_generation/hooks";
 import type {
-  ImageGenerationJob,
+  ImageGenerationJobView,
   ImageGenerationStatus,
 } from "@/image_generation/state";
-import { buildDyadMediaUrl } from "@/lib/dyadMediaUrl";
+import { buildDyadMediaUrlForApp } from "@/lib/dyadMediaUrl";
 import { useGenerateImage } from "@/hooks/useGenerateImage";
 import { ImageLightbox } from "@/components/chat/ImageLightbox";
 
@@ -103,7 +103,7 @@ function RelativeTime({ timestamp }: { timestamp: number }) {
   return <span className="text-xs text-muted-foreground">{label}</span>;
 }
 
-function ImageGenerationCard({ job }: { job: ImageGenerationJob }) {
+function ImageGenerationCard({ job }: { job: ImageGenerationJobView }) {
   const [expanded, setExpanded] = useState(false);
   const { cancel } = useGenerateImage();
   const [imgError, setImgError] = useState(false);
@@ -168,8 +168,8 @@ function ImageGenerationCard({ job }: { job: ImageGenerationJob }) {
                   onClick={() => setLightboxOpen(true)}
                 >
                   <img
-                    src={buildDyadMediaUrl(
-                      job.result.appPath,
+                    src={buildDyadMediaUrlForApp(
+                      job.result.appId,
                       job.result.fileName,
                     )}
                     alt="Generated image"
@@ -221,8 +221,8 @@ function ImageGenerationCard({ job }: { job: ImageGenerationJob }) {
         job.result &&
         createPortal(
           <ImageLightbox
-            imageUrl={buildDyadMediaUrl(
-              job.result.appPath,
+            imageUrl={buildDyadMediaUrlForApp(
+              job.result.appId,
               job.result.fileName,
             )}
             alt={job.prompt}

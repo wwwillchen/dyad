@@ -1,13 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { X, Loader2, Plus, AlertCircle, RotateCcw } from "lucide-react";
 import { dismissedImageGenerationJobIdsAtom } from "@/atoms/imageGenerationAtoms";
 import { useChatImageGenerationJobs } from "@/image_generation/hooks";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { useGenerateImage } from "@/hooks/useGenerateImage";
-import { buildDyadMediaUrl } from "@/lib/dyadMediaUrl";
+import { buildDyadMediaUrlForApp } from "@/lib/dyadMediaUrl";
 import { ImageLightbox } from "./ImageLightbox";
-import type { ImageGenerationJob } from "@/image_generation/state";
+import type { ImageGenerationJobView } from "@/image_generation/state";
 
 interface ChatImageGenerationStripProps {
   onGenerateImage: () => void;
@@ -22,8 +22,12 @@ export function ChatImageGenerationStrip({
   const [dismissedJobIds, setDismissedJobIds] = useAtom(
     dismissedImageGenerationJobIdsAtom,
   );
-  const [lightboxJob, setLightboxJob] = useState<ImageGenerationJob | null>(
+  const [lightboxJob, setLightboxJob] = useState<ImageGenerationJobView | null>(
     null,
+  );
+  const retryingJobIdsRef = useRef(new Set<string>());
+  const [retryingJobIds, setRetryingJobIds] = useState<Set<string>>(
+    () => new Set(),
   );
 
   // Prune stale dismissed IDs that no longer correspond to active jobs
@@ -55,15 +59,25 @@ export function ChatImageGenerationStrip({
     setDismissedJobIds((prev: Set<string>) => new Set(prev).add(jobId));
   };
 
-  const handleRetry = (job: ImageGenerationJob) => {
-    setDismissedJobIds((prev: Set<string>) => new Set(prev).add(job.id));
-    start({
-      prompt: job.prompt,
-      themeMode: job.themeMode,
-      targetAppId: job.targetAppId,
-      targetAppName: job.targetAppName,
-      source: job.source,
-    });
+  const handleRetry = async (job: ImageGenerationJobView) => {
+    if (retryingJobIdsRef.current.has(job.id)) return;
+    retryingJobIdsRef.current.add(job.id);
+    setRetryingJobIds(new Set(retryingJobIdsRef.current));
+    try {
+      const replacementJobId = await start({
+        prompt: job.prompt,
+        themeMode: job.themeMode,
+        targetAppId: job.targetAppId,
+        targetAppName: job.targetAppName,
+        source: job.source,
+      });
+      if (replacementJobId) {
+        setDismissedJobIds((prev: Set<string>) => new Set(prev).add(job.id));
+      }
+    } finally {
+      retryingJobIdsRef.current.delete(job.id);
+      setRetryingJobIds(new Set(retryingJobIdsRef.current));
+    }
   };
 
   const handleCancel = (jobId: string) => {
@@ -120,12 +134,17 @@ export function ChatImageGenerationStrip({
                   </span>
                 </div>
                 <button
-                  onClick={() => handleRetry(job)}
+                  onClick={() => void handleRetry(job)}
+                  disabled={retryingJobIds.has(job.id)}
                   className="hover:bg-muted-foreground/20 rounded-full p-1.5 shrink-0"
                   aria-label="Retry generation"
                   title="Retry"
                 >
-                  <RotateCcw size={12} />
+                  {retryingJobIds.has(job.id) ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <RotateCcw size={12} />
+                  )}
                 </button>
                 <button
                   onClick={() => handleDismiss(job.id)}
@@ -139,8 +158,8 @@ export function ChatImageGenerationStrip({
               <>
                 {job.result && (
                   <img
-                    src={buildDyadMediaUrl(
-                      job.result.appPath,
+                    src={buildDyadMediaUrlForApp(
+                      job.result.appId,
                       job.result.fileName,
                     )}
                     alt={job.prompt}
@@ -179,12 +198,15 @@ export function ChatImageGenerationStrip({
 
       {lightboxJob?.result && (
         <ImageLightbox
-          imageUrl={buildDyadMediaUrl(
-            lightboxJob.result.appPath,
+          imageUrl={buildDyadMediaUrlForApp(
+            lightboxJob.result.appId,
             lightboxJob.result.fileName,
           )}
           alt={lightboxJob.prompt}
-          filePath={lightboxJob.result.filePath}
+          mediaFile={{
+            appId: lightboxJob.result.appId,
+            fileName: lightboxJob.result.fileName,
+          }}
           onClose={() => setLightboxJob(null)}
         />
       )}
