@@ -136,6 +136,35 @@ async function writeState(
 // Electron app means an in-memory chain is enough; SQLite doesn't give
 // us row-level locking.
 const stateLocks = new Map<number, Promise<unknown>>();
+const writeAuthorityGenerations = new Map<number, number>();
+
+export interface McpOAuthWriteAuthority {
+  serverId: number;
+  generation: number;
+}
+
+/**
+ * Replaces the server's prior OAuth write authority synchronously. Providers
+ * still re-check the generation inside the per-server write lock, so queued
+ * work from a cancelled flow cannot commit after a row mutation.
+ */
+export function issueMcpOAuthWriteAuthority(
+  serverId: number,
+): McpOAuthWriteAuthority {
+  const generation = (writeAuthorityGenerations.get(serverId) ?? 0) + 1;
+  writeAuthorityGenerations.set(serverId, generation);
+  return { serverId, generation };
+}
+
+/** Captures the current epoch without replacing another provider's authority. */
+export function captureMcpOAuthWriteAuthority(
+  serverId: number,
+): McpOAuthWriteAuthority {
+  return {
+    serverId,
+    generation: writeAuthorityGenerations.get(serverId) ?? 0,
+  };
+}
 
 async function withStateLock<T>(
   serverId: number,
@@ -149,6 +178,18 @@ async function withStateLock<T>(
     next.catch(() => undefined),
   );
   return next;
+}
+
+export async function revokeMcpOAuthWriteAuthority(
+  serverId: number,
+): Promise<void> {
+  writeAuthorityGenerations.set(
+    serverId,
+    (writeAuthorityGenerations.get(serverId) ?? 0) + 1,
+  );
+  // Join the per-server queue so every write that began under the revoked
+  // authority has either committed before this barrier or observed staleness.
+  await withStateLock(serverId, async () => undefined);
 }
 
 interface ProviderConfig {
@@ -171,6 +212,7 @@ interface ProviderConfig {
   // of opening a browser, since no listener is running to catch the
   // redirect.
   allowInteractive?: boolean;
+  writeAuthority?: McpOAuthWriteAuthority;
 }
 
 export class DyadOAuthClientProvider implements OAuthClientProvider {
@@ -181,6 +223,7 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   private readonly preregisteredClientSecret: string | undefined;
   private readonly flowState: string | undefined;
   private readonly allowInteractive: boolean;
+  private readonly writeAuthority: McpOAuthWriteAuthority | undefined;
   // Client info kept in memory. The SDK calls `addClientAuthentication`
   // without awaiting it, so that method can't do an async DB read --
   // it uses this instead. Set by `clientInformation()` and
@@ -204,6 +247,17 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     this.preregisteredClientSecret = config.preregisteredClientSecret;
     this.flowState = config.flowState;
     this.allowInteractive = config.allowInteractive ?? false;
+    this.writeAuthority =
+      config.writeAuthority ?? captureMcpOAuthWriteAuthority(config.serverId);
+  }
+
+  private canWrite(): boolean {
+    return (
+      !this.aborted &&
+      this.writeAuthority?.serverId === this.serverId &&
+      (writeAuthorityGenerations.get(this.serverId) ?? 0) ===
+        this.writeAuthority.generation
+    );
   }
 
   // Marks this provider's flow as superseded. After this returns, the
@@ -245,9 +299,9 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
   }
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
-    if (this.aborted) return;
+    if (!this.canWrite()) return;
     await withStateLock(this.serverId, async () => {
-      if (this.aborted) return;
+      if (!this.canWrite()) return;
       const state = await readState(this.serverId);
       // Servers that don't rotate refresh tokens omit `refresh_token`
       // from the response; carry the previous one forward so the SDK
@@ -280,7 +334,7 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
         };
         // Skip the seed write if this flow has been superseded; a
         // fresh flow will reseed on its own first read.
-        if (!this.aborted) {
+        if (this.canWrite()) {
           await writeState(this.serverId, {
             ...state,
             clientInformation: seeded,
@@ -305,9 +359,9 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     // can't overwrite an in-flight Connect's client_id between
     // /authorize and /token.
     if (!this.allowInteractive) return;
-    if (this.aborted) return;
+    if (!this.canWrite()) return;
     await withStateLock(this.serverId, async () => {
-      if (this.aborted) return;
+      if (!this.canWrite()) return;
       const state = await readState(this.serverId);
       state.clientInformation = clientInformation;
       await writeState(this.serverId, state);
@@ -467,9 +521,9 @@ export class DyadOAuthClientProvider implements OAuthClientProvider {
     // only so a background path can't drop DCR client info on the
     // floor.
     if (scope === "all" && !this.allowInteractive) return;
-    if (this.aborted) return;
+    if (!this.canWrite()) return;
     await withStateLock(this.serverId, async () => {
-      if (this.aborted) return;
+      if (!this.canWrite()) return;
       const state = await readState(this.serverId);
       delete state.tokens;
       if (scope === "all") {

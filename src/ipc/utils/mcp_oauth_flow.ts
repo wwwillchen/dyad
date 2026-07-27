@@ -12,6 +12,8 @@ import { mcpServers } from "../../db/schema";
 import {
   DyadOAuthClientProvider,
   decryptFromString,
+  issueMcpOAuthWriteAuthority,
+  revokeMcpOAuthWriteAuthority,
 } from "./mcp_oauth_provider";
 import { DEFAULT_OAUTH_CALLBACK_PORT } from "../types/mcp";
 import { mcpManager } from "./mcp_manager";
@@ -22,9 +24,36 @@ import {
   type McpOAuthListenerRequest,
 } from "@/mcp_oauth/registry";
 import { systemClock, uuidIdSource } from "@/state_machines/clock";
+import { publishQueryInvalidations } from "./query_invalidation_delivery";
 
 const logger = log.scope("mcp_oauth_flow");
 const LOOPBACK_BIND_HOSTS = ["127.0.0.1", "::1"] as const;
+const mutatingServers = new Set<number>();
+const serverMutationBarriers = new Map<number, Promise<unknown>>();
+const oauthRequestReceipts = new Map<
+  string,
+  {
+    serverId: number;
+    promise: Promise<{ success: boolean; error: string | null }>;
+    pending: boolean;
+  }
+>();
+const latestOAuthRequestGeneration = new Map<number, number>();
+const OAUTH_REQUEST_RECEIPT_LIMIT = 128;
+let oauthShuttingDown = false;
+
+function compactOAuthRequestReceipts(): void {
+  let settledCount = [...oauthRequestReceipts.values()].filter(
+    (receipt) => !receipt.pending,
+  ).length;
+  if (settledCount <= OAUTH_REQUEST_RECEIPT_LIMIT) return;
+  for (const [messageId, receipt] of oauthRequestReceipts) {
+    if (receipt.pending) continue;
+    oauthRequestReceipts.delete(messageId);
+    settledCount -= 1;
+    if (settledCount <= OAUTH_REQUEST_RECEIPT_LIMIT) break;
+  }
+}
 
 function escapeHtml(value: string): string {
   return value.replace(
@@ -170,6 +199,7 @@ function bindCallbackListener(
       const code = url.searchParams.get("code") ?? undefined;
       const error = url.searchParams.get("error") ?? undefined;
       const claim = request.onCallback({
+        invocationRef: request.invocationRef,
         state: url.searchParams.get("state"),
         code,
         error,
@@ -274,22 +304,128 @@ const mcpOAuthRegistry = createMcpOAuthRegistry({
   clock: systemClock,
   ids: uuidIdSource,
   bindListener: bindCallbackListener,
+  onSettled: (serverId) => {
+    // Issuing an interactive authority invalidates any cached background
+    // provider for this server. Rebuild it after every terminal outcome,
+    // including cancellation/failure, so later refreshes capture the current
+    // epoch instead of remaining permanently fenced.
+    void mcpManager.dispose(serverId).catch(() => {});
+    publishQueryInvalidations([
+      { family: "mcp-servers" },
+      { family: "mcp-tools", serverId },
+    ]);
+  },
 });
 
 interface RunOAuthFlowParams {
   serverId: number;
+  /** Required by IPC; optional only for direct main-process callers/tests. */
+  rendererMessageId?: string;
   callbackPort?: number;
 }
 
 /** Preserve the IPC-facing `{success, error}` contract. */
-export async function runOAuthFlow(
+export function runOAuthFlow(
   params: RunOAuthFlowParams,
 ): Promise<{ success: boolean; error: string | null }> {
+  const rendererMessageId =
+    params.rendererMessageId ?? `main:${globalThis.crypto.randomUUID()}`;
+  const existingReceipt = oauthRequestReceipts.get(rendererMessageId);
+  if (existingReceipt) {
+    return existingReceipt.serverId === params.serverId
+      ? existingReceipt.promise
+      : Promise.resolve({
+          success: false,
+          error: "OAuth retry message ID was reused for a different server.",
+        });
+  }
+  if (oauthShuttingDown) {
+    return Promise.resolve({
+      success: false,
+      error: "OAuth is shutting down.",
+    });
+  }
+  const pendingReceiptCount = [...oauthRequestReceipts.values()].filter(
+    (receipt) => receipt.pending,
+  ).length;
+  if (pendingReceiptCount >= OAUTH_REQUEST_RECEIPT_LIMIT) {
+    const promise = Promise.resolve({
+      success: false,
+      error:
+        "Too many OAuth requests are already pending; finish or cancel one and retry.",
+    });
+    oauthRequestReceipts.set(rendererMessageId, {
+      serverId: params.serverId,
+      promise,
+      pending: false,
+    });
+    compactOAuthRequestReceipts();
+    return promise;
+  }
+  const generation =
+    (latestOAuthRequestGeneration.get(params.serverId) ?? 0) + 1;
+  latestOAuthRequestGeneration.set(params.serverId, generation);
+  const promise = prepareAndRunOAuthFlow(
+    { ...params, rendererMessageId },
+    generation,
+  );
+  oauthRequestReceipts.set(rendererMessageId, {
+    serverId: params.serverId,
+    promise,
+    pending: true,
+  });
+  void promise.then(
+    () => settleOAuthRequestReceipt(rendererMessageId, promise),
+    () => settleOAuthRequestReceipt(rendererMessageId, promise),
+  );
+  return promise;
+}
+
+function settleOAuthRequestReceipt(
+  rendererMessageId: string,
+  promise: Promise<{ success: boolean; error: string | null }>,
+): void {
+  const receipt = oauthRequestReceipts.get(rendererMessageId);
+  if (receipt?.promise !== promise || !receipt.pending) return;
+  oauthRequestReceipts.delete(rendererMessageId);
+  oauthRequestReceipts.set(rendererMessageId, {
+    ...receipt,
+    pending: false,
+  });
+  compactOAuthRequestReceipts();
+}
+
+async function prepareAndRunOAuthFlow(
+  params: RunOAuthFlowParams & { rendererMessageId: string },
+  generation: number,
+): Promise<{ success: boolean; error: string | null }> {
+  if (oauthShuttingDown || mutatingServers.has(params.serverId)) {
+    return {
+      success: false,
+      error: oauthShuttingDown
+        ? "OAuth is shutting down."
+        : "MCP server configuration is changing; retry OAuth in a moment.",
+    };
+  }
   const rows = await db
     .select()
     .from(mcpServers)
     .where(eq(mcpServers.id, params.serverId));
   const server = rows[0];
+  if (
+    oauthShuttingDown ||
+    mutatingServers.has(params.serverId) ||
+    latestOAuthRequestGeneration.get(params.serverId) !== generation
+  ) {
+    return {
+      success: false,
+      error: oauthShuttingDown
+        ? "OAuth is shutting down."
+        : latestOAuthRequestGeneration.get(params.serverId) !== generation
+          ? "OAuth flow superseded by a newer Connect attempt."
+          : "MCP server configuration is changing; retry OAuth in a moment.",
+    };
+  }
   if (!server) {
     return {
       success: false,
@@ -319,6 +455,7 @@ export async function runOAuthFlow(
     ? decryptFromString(server.oauthClientSecret) || undefined
     : undefined;
   const expectedState = generateState();
+  const writeAuthority = issueMcpOAuthWriteAuthority(server.id);
   const provider = new DyadOAuthClientProvider({
     serverId: server.id,
     callbackPort,
@@ -327,12 +464,14 @@ export async function runOAuthFlow(
     preregisteredClientSecret: decryptedClientSecret,
     flowState: expectedState,
     allowInteractive: true,
+    writeAuthority,
   });
 
   let silentlyAuthorized = false;
   const result = await mcpOAuthRegistry.connect({
     port: callbackPort,
     serverId: server.id,
+    rendererMessageId: params.rendererMessageId,
     expectedState,
     authorize: async (authorizationCode) => {
       const authResult = await auth(provider, {
@@ -362,21 +501,82 @@ export async function runOAuthFlow(
 export async function disconnectOAuth(
   serverId: number,
 ): Promise<{ success: boolean }> {
-  const rows = await db
-    .select({ id: mcpServers.id })
-    .from(mcpServers)
-    .where(eq(mcpServers.id, serverId));
-  if (!rows[0]) {
-    throw new DyadError(
-      `MCP server not found: ${serverId}`,
-      DyadErrorKind.NotFound,
-    );
-  }
-  const provider = new DyadOAuthClientProvider({
+  return withMcpOAuthServerMutation(
     serverId,
-    allowInteractive: true,
+    "OAuth flow cancelled because the server was disconnected.",
+    async () => {
+      const rows = await db
+        .select({ id: mcpServers.id })
+        .from(mcpServers)
+        .where(eq(mcpServers.id, serverId));
+      if (!rows[0]) {
+        throw new DyadError(
+          `MCP server not found: ${serverId}`,
+          DyadErrorKind.NotFound,
+        );
+      }
+      const provider = new DyadOAuthClientProvider({
+        serverId,
+        allowInteractive: true,
+      });
+      await provider.invalidateCredentials("all");
+      void mcpManager.dispose(serverId).catch(() => {});
+      return { success: true };
+    },
+  );
+}
+
+/**
+ * Revoke a server flow before any deletion or OAuth-relevant row mutation.
+ * Registry cancellation aborts provider work and settles the renderer waiter;
+ * the authority barrier then fences writes that were already queued.
+ */
+export async function cancelMcpOAuthForServer(
+  serverId: number,
+  reason: string,
+): Promise<void> {
+  await mcpOAuthRegistry.cancelServer(serverId, reason);
+  await revokeMcpOAuthWriteAuthority(serverId);
+}
+
+export function withMcpOAuthServerMutation<T>(
+  serverId: number,
+  reason: string,
+  mutate: () => Promise<T>,
+): Promise<T> {
+  // Fence both active flows and preparations that are currently awaiting the
+  // row read. Keep the admission fence raised across an entire queued
+  // mutation chain; only the last barrier for this server may lower it.
+  mutatingServers.add(serverId);
+  latestOAuthRequestGeneration.set(
+    serverId,
+    (latestOAuthRequestGeneration.get(serverId) ?? 0) + 1,
+  );
+  const previous =
+    serverMutationBarriers.get(serverId)?.catch(() => undefined) ??
+    Promise.resolve();
+  const operation = previous.then(async () => {
+    await cancelMcpOAuthForServer(serverId, reason);
+    return await mutate();
   });
-  await provider.invalidateCredentials("all");
-  void mcpManager.dispose(serverId).catch(() => {});
-  return { success: true };
+  serverMutationBarriers.set(serverId, operation);
+  const clearBarrier = () => {
+    if (serverMutationBarriers.get(serverId) === operation) {
+      serverMutationBarriers.delete(serverId);
+      mutatingServers.delete(serverId);
+    }
+  };
+  void operation.then(clearBarrier, clearBarrier);
+  return operation;
+}
+
+export async function disposeMcpOAuthForShutdown(): Promise<void> {
+  oauthShuttingDown = true;
+  const pendingPreparations = [...oauthRequestReceipts.values()]
+    .filter((receipt) => receipt.pending)
+    .map((receipt) => receipt.promise);
+  await Promise.all([
+    mcpOAuthRegistry.dispose(),
+    Promise.allSettled(pendingPreparations),
+  ]);
 }
