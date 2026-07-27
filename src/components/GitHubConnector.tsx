@@ -32,8 +32,8 @@ import { GithubBranchManager } from "@/components/GithubBranchManager";
 import { useResolveMergeConflictsWithAI } from "@/hooks/useResolveMergeConflictsWithAI";
 import { slugifyAppPath } from "@/shared/slugify";
 import {
+  isAppliedGithubOpsReceipt,
   useGithubOps,
-  useRegisterGithubConflictResolution,
 } from "@/github_ops/useGithubOps";
 import {
   acknowledgeConnectionFlow,
@@ -85,7 +85,15 @@ function ConnectedGitHubConnector({
   app,
 }: ConnectedGitHubConnectorProps) {
   const [showForceDialog, setShowForceDialog] = useState(false);
-  const { projection, send } = useGithubOps(appId);
+  const {
+    projection,
+    connection,
+    send,
+    dispatchWithErrorFeedback,
+    dispatchConflictResolutionStarted,
+    dispatchConflictResolutionCancelled,
+    conflictResolutionClaimed,
+  } = useGithubOps(appId);
   const {
     banner,
     capabilities: {
@@ -111,22 +119,34 @@ function ConnectedGitHubConnector({
     runningOperation,
   } = projection;
 
-  const clearResolvedConflicts = useCallback(
-    () => send({ type: "CONFLICTS", files: [] }),
-    [send],
-  );
   const { resolveFilesWithAI, isResolving } = useResolveMergeConflictsWithAI({
     appId,
     conflicts,
-    onStartResolving: clearResolvedConflicts,
+    onStartResolving: dispatchConflictResolutionStarted,
+    onStartFailed: dispatchConflictResolutionCancelled,
   });
-  useRegisterGithubConflictResolution(appId, resolveFilesWithAI);
+
+  const startConflictResolution = useCallback(async () => {
+    const receipt = await dispatchWithErrorFeedback({
+      type: "RESOLVE_WITH_AI_STARTED",
+    });
+    if (isAppliedGithubOpsReceipt(receipt)) {
+      await resolveFilesWithAI(conflicts);
+    }
+  }, [conflicts, dispatchWithErrorFeedback, resolveFilesWithAI]);
 
   const isDisconnecting = runningOperation?.type === "disconnect";
   const isRebaseActionPending = isOperationInFlight || !!rebaseAction;
 
   return (
     <div className="w-full" data-testid="github-connected-repo">
+      {connection !== "ready" && (
+        <p className="mb-2 text-sm text-muted-foreground">
+          {connection === "connecting"
+            ? "Loading repository status…"
+            : "Repository controls are temporarily unavailable."}
+        </p>
+      )}
       <p>Connected to GitHub Repo:</p>
       <a
         onClick={(e) => {
@@ -304,10 +324,19 @@ function ConnectedGitHubConnector({
           </p>
           <div className="flex gap-2">
             <Button
-              onClick={() => send({ type: "RESOLVE_WITH_AI_STARTED" })}
-              disabled={!canResolveConflicts || isCancellingSync || isResolving}
+              onClick={() => void startConflictResolution()}
+              disabled={
+                !canResolveConflicts ||
+                conflictResolutionClaimed ||
+                isCancellingSync ||
+                isResolving
+              }
             >
-              {isResolving ? "Resolving..." : "Resolve merge conflicts with AI"}
+              {isResolving
+                ? "Resolving..."
+                : conflictResolutionClaimed
+                  ? "Conflict resolution starting..."
+                  : "Resolve merge conflicts with AI"}
             </Button>
             <Button
               variant="outline"
@@ -396,7 +425,7 @@ export function UnconnectedGitHubConnector({
   expanded,
   linkedRepo,
 }: UnconnectedGitHubConnectorProps) {
-  const { projection, send } = useGithubOps(appId, {
+  const { projection, send, connection } = useGithubOps(appId, {
     reconcileOnMount: linkedRepo !== undefined,
   });
   const { canConnectRepository } = projection.capabilities;
@@ -764,6 +793,13 @@ export function UnconnectedGitHubConnector({
 
   return (
     <div className="w-full" data-testid="github-setup-repo">
+      {connection !== "ready" && (
+        <p className="px-4 pt-2 text-sm text-muted-foreground">
+          {connection === "connecting"
+            ? "Loading GitHub controls…"
+            : "GitHub controls are temporarily unavailable."}
+        </p>
+      )}
       {/* Collapsible Header */}
       <button
         type="button"

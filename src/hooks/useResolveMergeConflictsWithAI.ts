@@ -12,7 +12,8 @@ import { useLoadApp } from "@/hooks/useLoadApp";
 interface UseResolveMergeConflictsWithAIProps {
   appId: number;
   conflicts: readonly string[];
-  onStartResolving?: () => void;
+  onStartResolving?: () => void | Promise<void>;
+  onStartFailed?: () => void | Promise<void>;
 }
 
 /**
@@ -23,6 +24,7 @@ export function useResolveMergeConflictsWithAI({
   appId,
   conflicts,
   onStartResolving,
+  onStartFailed,
 }: UseResolveMergeConflictsWithAIProps) {
   const setSelectedChatId = useSetAtom(selectedChatIdAtom);
   const setSelectedAppId = useSetAtom(selectedAppIdAtom);
@@ -56,8 +58,22 @@ export function useResolveMergeConflictsWithAI({
           appId,
           initialChatMode: "build",
         });
-        // Clear conflicts state after successful chat creation
-        onStartResolving?.();
+        try {
+          // Clear conflicts state after successful chat creation.
+          await onStartResolving?.();
+        } catch (error) {
+          // The claim can expire while durable chat creation is in flight.
+          // Remove the chat if main does not accept the corresponding start.
+          try {
+            await ipc.chat.deleteChat(newChatId);
+          } catch (deleteError) {
+            console.error(
+              "Failed to delete unused conflict-resolution chat:",
+              deleteError,
+            );
+          }
+          throw error;
+        }
 
         // Build the prompt for resolving all conflicts
         const fileList = requestedConflicts.map((f) => `- ${f}`).join("\n");
@@ -92,6 +108,14 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
           },
         });
       } catch (error: unknown) {
+        try {
+          await onStartFailed?.();
+        } catch (rollbackError) {
+          console.error(
+            "Failed to release conflict-resolution claim:",
+            rollbackError,
+          );
+        }
         showError(
           error instanceof Error
             ? error.message
@@ -104,6 +128,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
     [
       appId,
       onStartResolving,
+      onStartFailed,
       setSelectedChatId,
       setSelectedAppId,
       navigate,

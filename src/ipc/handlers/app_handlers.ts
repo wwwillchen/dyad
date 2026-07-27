@@ -133,6 +133,8 @@ import { readAppFileForEditor } from "../utils/bounded_text_file";
 import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 import { entityDisposalBus } from "@/window_infrastructure/main/entity_disposal_bus";
 import { appRunActorService } from "../services/app_run_actor_service";
+import { githubOpsActorService } from "../services/github_ops_actor_service";
+import { githubOpsService } from "../services/github_ops_service";
 
 const logger = log.scope("app_handlers");
 const handle = createLoggedHandler(logger);
@@ -380,74 +382,83 @@ async function deleteAppById(
   appId: number,
   options: DeleteAppByIdOptions = {},
 ): Promise<void> {
-  return withLock(appId, async () => {
-    const app = await db.query.apps.findFirst({
-      where: eq(apps.id, appId),
-    });
+  githubOpsService.beginAppDeletion(appId);
+  try {
+    return await withLock(appId, async () => {
+      const app = await db.query.apps.findFirst({
+        where: eq(apps.id, appId),
+      });
 
-    if (!app) {
-      if (options.allowMissing && options.knownAppPath) {
-        await appRunActorService.disposeApp(appId);
-        appRuntimeService.cleanup(appId);
-        await removeAppFiles(appId, options.knownAppPath);
-        return;
-      }
-      throw new DyadError("App not found", DyadErrorKind.NotFound);
-    }
-
-    if (runningApps.has(appId)) {
-      const appInfo = runningApps.get(appId)!;
-      try {
-        logger.log(`Stopping app ${appId} before deletion.`);
-        await stopAppByInfo(appId, appInfo);
-      } catch (error: any) {
-        logger.error(`Error stopping app ${appId} before deletion:`, error);
-        // Continue with deletion even if stopping fails
-      }
-    }
-    await appRunActorService.disposeApp(appId);
-
-    // Clear logs for this app to prevent memory leak
-    appRuntimeService.clearRuntimeLogs(appId);
-    getPtySessionManager().killForApp(appId);
-
-    try {
-      const appChats = await db
-        .select({ id: chats.id })
-        .from(chats)
-        .where(eq(chats.appId, appId));
-      await Promise.all(
-        appChats.map(({ id: chatId }) => userInputRegistry.settleChat(chatId)),
-      );
-      await db.delete(apps).where(eq(apps.id, appId));
-      // Note: Associated chats will cascade delete
-      if (options.publishDisposal !== false) {
-        for (const { id: chatId } of appChats) {
-          entityDisposalBus.publish({ kind: "chat", id: chatId });
+      if (!app) {
+        if (options.allowMissing && options.knownAppPath) {
+          await githubOpsActorService.disposeApp(appId);
+          await appRunActorService.disposeApp(appId);
+          appRuntimeService.cleanup(appId);
+          await removeAppFiles(appId, options.knownAppPath);
+          return;
         }
-        entityDisposalBus.publish({ kind: "app", id: appId });
+        throw new DyadError("App not found", DyadErrorKind.NotFound);
       }
-    } catch (error: any) {
-      logger.error(`Error deleting app ${appId} from database:`, error);
-      throw new DyadError(
-        `Failed to delete app from database: ${error.message}`,
-        DyadErrorKind.External,
-      );
-    }
 
-    appRuntimeService.cleanup(appId);
-    try {
-      await removeAppFiles(appId, getDyadAppPath(app.path));
-    } catch (error) {
-      // Database deletion is the authoritative state transition. A failed
-      // best-effort filesystem cleanup must not make renderers treat the
-      // already-deleted app as retryable or suppress contract invalidations.
-      logger.warn(
-        `App ${appId} was deleted, but its files require manual cleanup`,
-        error,
-      );
-    }
-  });
+      await githubOpsActorService.disposeApp(appId);
+      if (runningApps.has(appId)) {
+        const appInfo = runningApps.get(appId)!;
+        try {
+          logger.log(`Stopping app ${appId} before deletion.`);
+          await stopAppByInfo(appId, appInfo);
+        } catch (error: any) {
+          logger.error(`Error stopping app ${appId} before deletion:`, error);
+          // Continue with deletion even if stopping fails
+        }
+      }
+      await appRunActorService.disposeApp(appId);
+
+      // Clear logs for this app to prevent memory leak
+      appRuntimeService.clearRuntimeLogs(appId);
+      getPtySessionManager().killForApp(appId);
+
+      try {
+        const appChats = await db
+          .select({ id: chats.id })
+          .from(chats)
+          .where(eq(chats.appId, appId));
+        await Promise.all(
+          appChats.map(({ id: chatId }) =>
+            userInputRegistry.settleChat(chatId),
+          ),
+        );
+        await db.delete(apps).where(eq(apps.id, appId));
+        // Note: Associated chats will cascade delete
+        if (options.publishDisposal !== false) {
+          for (const { id: chatId } of appChats) {
+            entityDisposalBus.publish({ kind: "chat", id: chatId });
+          }
+          entityDisposalBus.publish({ kind: "app", id: appId });
+        }
+      } catch (error: any) {
+        logger.error(`Error deleting app ${appId} from database:`, error);
+        throw new DyadError(
+          `Failed to delete app from database: ${error.message}`,
+          DyadErrorKind.External,
+        );
+      }
+
+      appRuntimeService.cleanup(appId);
+      try {
+        await removeAppFiles(appId, getDyadAppPath(app.path));
+      } catch (error) {
+        // Database deletion is the authoritative state transition. A failed
+        // best-effort filesystem cleanup must not make renderers treat the
+        // already-deleted app as retryable or suppress contract invalidations.
+        logger.warn(
+          `App ${appId} was deleted, but its files require manual cleanup`,
+          error,
+        );
+      }
+    });
+  } finally {
+    githubOpsService.endAppDeletion(appId);
+  }
 }
 
 export function registerAppHandlers() {
@@ -1379,77 +1390,84 @@ export function registerAppHandlers() {
   });
 
   createTypedHandler(systemContracts.resetAll, async () => {
-    logger.log("start: resetting all apps and settings.");
-    appRuntimeService.cleanupAll();
-    // Stop all running apps first
-    logger.log("stopping all running apps...");
-    const runningAppIds = Array.from(runningApps.keys());
-    for (const appId of runningAppIds) {
-      try {
-        const appInfo = runningApps.get(appId)!;
-        await stopAppByInfo(appId, appInfo);
-      } catch (error) {
-        logger.error(`Error stopping app ${appId} during reset:`, error);
-        // Continue with reset even if stopping fails
+    githubOpsService.beginReset();
+    try {
+      logger.log("start: resetting all apps and settings.");
+      appRuntimeService.cleanupAll();
+      // Stop all running apps first
+      logger.log("stopping all running apps...");
+      const runningAppIds = Array.from(runningApps.keys());
+      for (const appId of runningAppIds) {
+        try {
+          const appInfo = runningApps.get(appId)!;
+          await stopAppByInfo(appId, appInfo);
+        } catch (error) {
+          logger.error(`Error stopping app ${appId} during reset:`, error);
+          // Continue with reset even if stopping fails
+        }
       }
-    }
-    logger.log("all running apps stopped.");
-    await appRunActorService.disposeAllApps();
-    logger.log("all app run actors disposed.");
-    // Determine the paths of all apps in the database so that we can delete them.
-    // We do the deletion last, so technically this is a TOCTOU race, but
-    // it allows us to do the deletion last after removing the database
-    const allAppPaths = await db.select({ appPath: apps.path }).from(apps);
-    // To resolve app paths later
-    const basePath = getDyadAppsBaseDirectory();
-    logger.log("deleting database...");
-    await userInputRegistry.settleAll();
-    // 1. Drop the database by closing the singleton and deleting SQLite files
-    const dbFilePaths = getDatabaseFilePaths();
-    closeDatabase();
-    for (const dbFilePath of dbFilePaths) {
-      if (fs.existsSync(dbFilePath)) {
-        await fsPromises.unlink(dbFilePath);
-        logger.log(`Database file deleted: ${dbFilePath}`);
+      logger.log("all running apps stopped.");
+      await appRunActorService.disposeAllApps();
+      logger.log("all app run actors disposed.");
+      await githubOpsActorService.disposeAllApps();
+      logger.log("all GitHub operation actors disposed.");
+      // Determine the paths of all apps in the database so that we can delete them.
+      // We do the deletion last, so technically this is a TOCTOU race, but
+      // it allows us to do the deletion last after removing the database
+      const allAppPaths = await db.select({ appPath: apps.path }).from(apps);
+      // To resolve app paths later
+      const basePath = getDyadAppsBaseDirectory();
+      logger.log("deleting database...");
+      await userInputRegistry.settleAll();
+      // 1. Drop the database by closing the singleton and deleting SQLite files
+      const dbFilePaths = getDatabaseFilePaths();
+      closeDatabase();
+      for (const dbFilePath of dbFilePaths) {
+        if (fs.existsSync(dbFilePath)) {
+          await fsPromises.unlink(dbFilePath);
+          logger.log(`Database file deleted: ${dbFilePath}`);
+        }
       }
-    }
-    logger.log("database deleted.");
-    logger.log("deleting settings...");
-    // 2. Remove settings
-    const userDataPath = getUserDataPath();
-    const settingsPath = path.join(userDataPath, "user-settings.json");
+      logger.log("database deleted.");
+      logger.log("deleting settings...");
+      // 2. Remove settings
+      const userDataPath = getUserDataPath();
+      const settingsPath = path.join(userDataPath, "user-settings.json");
 
-    if (fs.existsSync(settingsPath)) {
-      await fsPromises.unlink(settingsPath);
-      logger.log(`Settings file deleted: ${settingsPath}`);
+      if (fs.existsSync(settingsPath)) {
+        await fsPromises.unlink(settingsPath);
+        logger.log(`Settings file deleted: ${settingsPath}`);
+      }
+      // Reset base directory cache to default, because settings are gone anyway
+      invalidateDyadAppsBaseDirectoryCache();
+      logger.log("settings deleted.");
+      // 3. Remove all app files recursively
+      // Doing this last because it's the most time-consuming and the least important
+      // in terms of resetting the app state.
+      logger.log("removing all app files...");
+      // Delete any app paths that were in the database before we deleted it
+      for (const { appPath } of allAppPaths) {
+        // We don't rely on getDyadAppPath here because we've already cleared the settings
+        const resolvedAppPath = path.isAbsolute(appPath)
+          ? appPath
+          : path.join(basePath, appPath);
+        await fsPromises.rm(resolvedAppPath, {
+          recursive: true,
+          force: true,
+        });
+      }
+      const dyadAppPath = getDefaultDyadAppsDirectory();
+      // Delete the default `dyad-apps` folder, even if the user no longer uses it
+      if (fs.existsSync(dyadAppPath)) {
+        await fsPromises.rm(dyadAppPath, { recursive: true, force: true });
+        // Recreate the base directory
+        await fsPromises.mkdir(dyadAppPath, { recursive: true });
+      }
+      logger.log("all app files removed.");
+      logger.log("reset all complete.");
+    } finally {
+      githubOpsService.endReset();
     }
-    // Reset base directory cache to default, because settings are gone anyway
-    invalidateDyadAppsBaseDirectoryCache();
-    logger.log("settings deleted.");
-    // 3. Remove all app files recursively
-    // Doing this last because it's the most time-consuming and the least important
-    // in terms of resetting the app state.
-    logger.log("removing all app files...");
-    // Delete any app paths that were in the database before we deleted it
-    for (const { appPath } of allAppPaths) {
-      // We don't rely on getDyadAppPath here because we've already cleared the settings
-      const resolvedAppPath = path.isAbsolute(appPath)
-        ? appPath
-        : path.join(basePath, appPath);
-      await fsPromises.rm(resolvedAppPath, {
-        recursive: true,
-        force: true,
-      });
-    }
-    const dyadAppPath = getDefaultDyadAppsDirectory();
-    // Delete the default `dyad-apps` folder, even if the user no longer uses it
-    if (fs.existsSync(dyadAppPath)) {
-      await fsPromises.rm(dyadAppPath, { recursive: true, force: true });
-      // Recreate the base directory
-      await fsPromises.mkdir(dyadAppPath, { recursive: true });
-    }
-    logger.log("all app files removed.");
-    logger.log("reset all complete.");
   });
 
   createTypedHandler(systemContracts.getAppVersion, async () => {

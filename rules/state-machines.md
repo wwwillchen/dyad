@@ -152,6 +152,9 @@ Background and before/after examples of why this pattern exists:
 - Command runners convert expected failures into events. A runner throw is a
   programming error: log it and keep the service usable; never wedge a queue or
   silently rewrite state.
+- When a generation token suppresses superseded async probe results, apply the
+  same token check to rejection handling. A stale failure must not emit a
+  toast, settle newer state, or trigger recovery for the replacement probe.
 - When a resume event can come from a global watcher as well as explicit UI
   senders, validate the captured payload in the transition. Caller-only guards
   can be bypassed after navigation or another asynchronous detour.
@@ -327,6 +330,17 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   be superseded before its producer settles, but its original waiter must
   still complete. A producer sink captured for one invocation must also ignore
   or overwrite any conflicting invocation identity supplied by its payload.
+- A first-response-wins renderer handoff needs a correlated claim, not a
+  boolean. Matching follow-ups may be revision-stale only when the opaque claim
+  ID is validated by the host. Unrelated reconciliation must not release the
+  claim, and renderer loss needs an owner signal or bounded actor-owned expiry.
+  Clear claimant-local identity in `finally` when a matching settlement
+  dispatch fails, because actor expiry cannot clear renderer memory. If the
+  claimant creates a durable resource before host acknowledgement, delete it
+  when acknowledgement fails or the claim expires.
+- An unavailable/bootstrap remote snapshot is not authoritative idle state.
+  Gate every actor-backed capability on a ready connection and defer recovery
+  dispatches until subscription bootstrap has completed.
 - Keep transport revisions separate from semantic presentation epochs. A
   revision may advance for bookkeeping-only transitions, while a reload token
   must advance exactly once for each user-visible remount.
@@ -349,6 +363,10 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
 - Define merge/replacement semantics for events received during hydration.
   On teardown, flush the latest accepted snapshot through a transport that is
   safe for the lifecycle boundary (for example, one-way IPC during pagehide).
+- Entity deletion must fence new command admission before waiting for the
+  entity lock. Recheck the fence inside the lock, stop actor admission before
+  unrelated awaited cleanup, and make actor disposal flush every admitted
+  command before database or filesystem deletion.
 
 ## Query keys and recorded decisions
 
@@ -373,8 +391,10 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   controller's real snapshot. Disposal assertions compare with the snapshot
   captured immediately before disposal; never normalize or fabricate snapshots
   to make them pass.
-- Normalize discovered file paths to `/` before asserting literal repository
-  paths; `path.relative()` returns `\` on Windows CI.
+- Normalize discovered file paths to `/` and sort filesystem-derived
+  inventories before asserting literal repository paths. `path.relative()`
+  returns `\` on Windows CI, and directory enumeration order differs by
+  filesystem and case-sensitivity.
 - `driveTransitionMatrix` remains available for hand-enumerated totality
   tests; new machines may instead use `exploreReachableStates` when a finite
   event generator can discover the reachable graph. Existing bespoke suites
@@ -387,6 +407,12 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   expected ignore reason.
 - `boundaries.test.ts` enforces kernel purity and machine-to-machine isolation;
   add new machine directories to its inventory when they are introduced.
+- Keep host-only distributed-machine definitions outside shared machine
+  directories (for example, under `src/ipc/services/` for a main-owned actor).
+  Shared machine directories are scanned as renderer-reachable code and may
+  not import IPC, Electron, or WindowRegistry internals. Add every intentional
+  distributed-machine consumer to the exact inventory in
+  `src/distributed_machines/boundaries.test.ts`.
 - Keep remote transport test doubles behind an existing domain test-support
   facade. Renderer and hybrid harnesses may consume that facade, but must not
   widen the allowlist of production modules that import transport internals.

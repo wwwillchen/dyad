@@ -14,16 +14,23 @@ const CHAT_ID = 42;
 
 const mocks = vi.hoisted(() => ({
   createChat: vi.fn(),
+  deleteChat: vi.fn(),
   controllerSend: vi.fn(),
   invalidateChats: vi.fn(),
   navigate: vi.fn(),
+  onStartFailed: vi.fn(),
   onStartResolving: vi.fn(),
   refreshApp: vi.fn(),
   showError: vi.fn(),
 }));
 
 vi.mock("@/ipc/types", () => ({
-  ipc: { chat: { createChat: mocks.createChat } },
+  ipc: {
+    chat: {
+      createChat: mocks.createChat,
+      deleteChat: mocks.deleteChat,
+    },
+  },
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -58,6 +65,7 @@ describe("useResolveMergeConflictsWithAI", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.createChat.mockResolvedValue(CHAT_ID);
+    mocks.deleteChat.mockResolvedValue(undefined);
     mocks.refreshApp.mockResolvedValue(undefined);
   });
 
@@ -126,6 +134,7 @@ describe("useResolveMergeConflictsWithAI", () => {
         useResolveMergeConflictsWithAI({
           appId: APP_ID,
           conflicts: ["src/one.ts"],
+          onStartFailed: mocks.onStartFailed,
         }),
       { wrapper: Wrapper },
     );
@@ -147,7 +156,33 @@ describe("useResolveMergeConflictsWithAI", () => {
 
     expect(result.current.isResolving).toBe(false);
     expect(mocks.showError).toHaveBeenCalledExactlyOnceWith("create failed");
+    expect(mocks.onStartFailed).toHaveBeenCalledOnce();
     expect(mocks.controllerSend).not.toHaveBeenCalled();
+  });
+
+  it("releases the claim when main rejects conflict-resolution start", async () => {
+    mocks.onStartResolving.mockRejectedValueOnce(new Error("claim expired"));
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(
+      () =>
+        useResolveMergeConflictsWithAI({
+          appId: APP_ID,
+          conflicts: ["src/one.ts"],
+          onStartResolving: mocks.onStartResolving,
+          onStartFailed: mocks.onStartFailed,
+        }),
+      { wrapper: Wrapper },
+    );
+
+    await act(async () => {
+      await result.current.resolveWithAI();
+    });
+
+    expect(mocks.onStartFailed).toHaveBeenCalledOnce();
+    expect(mocks.deleteChat).toHaveBeenCalledExactlyOnceWith(CHAT_ID);
+    expect(mocks.showError).toHaveBeenCalledExactlyOnceWith("claim expired");
+    expect(mocks.controllerSend).not.toHaveBeenCalled();
+    expect(result.current.isResolving).toBe(false);
   });
 
   it("uses conflicts supplied by the machine runner instead of the render closure", async () => {

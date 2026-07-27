@@ -41,14 +41,22 @@ describe("distributed machine boundaries", () => {
       .filter((file) =>
         fs.readFileSync(file, "utf8").includes("@/distributed_machines"),
       )
-      .map((file) => path.relative(SOURCE_ROOT, file).replaceAll("\\", "/"));
+      .map((file) => path.relative(SOURCE_ROOT, file).replaceAll("\\", "/"))
+      // Filesystem enumeration order differs across operating systems.
+      // Sort with JavaScript's platform-independent UTF-16 ordering before
+      // comparing the inventory.
+      .sort();
 
     expect(offenders).toEqual([
       "app_run/client_definition.ts",
       "app_run/definition.ts",
       "app_run/remote_manager.ts",
+      "github_ops/GithubOpsProvider.tsx",
+      "github_ops/client_definition.ts",
+      "github_ops/useGithubOps.ts",
       "ipc/handlers/distributed_machine_handlers.ts",
       "ipc/services/distributed_machine_host.ts",
+      "ipc/services/github_ops_definition.ts",
     ]);
   });
 });
