@@ -71,8 +71,6 @@ import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import {
   attachmentsAtom,
   chatInputValuesByIdAtom,
-  queuePausedByIdAtom,
-  queuedMessagesByIdAtom,
   selectedChatIdAtom,
 } from "@/atoms/chatAtoms";
 import { selectedComponentsPreviewAtom } from "@/atoms/previewAtoms";
@@ -113,8 +111,8 @@ import {
 } from "@/app_run/AppRunRemoteProvider";
 import { TestAppRunRemoteConnection } from "@/app_run/testing";
 import { PlanHandoffProvider } from "@/plan_handoff/PlanHandoffProvider";
-import { ChatStreamManager } from "@/chat_stream/manager";
-import { selectStreamError } from "@/chat_stream/transition";
+import { ChatStreamRemoteManager } from "@/chat_stream/remote_manager";
+import { hasSessionChatQueue } from "@/chat_stream/persistence";
 import { ChatStreamProvider } from "@/chat_stream/ChatStreamProvider";
 import {
   EntityDisposalProvider,
@@ -330,8 +328,8 @@ export interface HybridChatHarness extends ChatFlowHarness {
   setPlanAcceptInNewChat: (chatId: number, value: boolean) => void;
   getPlanAcceptInNewChat: (chatId: number) => boolean | undefined;
 
-  /** Seed/read the four transient maps owned by ChatStreamManager. */
-  seedChatStreamResidue: (chatId: number) => void;
+  /** Seed/read representative main-owned stream residue. */
+  seedChatStreamResidue: (chatId: number) => Promise<void>;
   hasChatStreamResidue: (chatId: number) => boolean;
 
   /** Seed/read representative app-scoped preview and test runtime state. */
@@ -368,6 +366,7 @@ export interface HybridChatHarness extends ChatFlowHarness {
    * scenario expects Send to stay disabled, e.g. while a proposal is pending.
    */
   setChatInputValue: (text: string, opts?: MountOptions) => void;
+  getChatInputValue: (chatId: number) => string;
 
   /**
    * Seed the real ChatInput attachment atom with browser File objects, matching
@@ -549,7 +548,7 @@ function HybridAppEventWiring({
 }: {
   store: JotaiStore;
   queryClient: QueryClient;
-  chatStreamManager: ChatStreamManager;
+  chatStreamManager: ChatStreamRemoteManager;
 }) {
   const entityDisposal = useEntityDisposal();
   useEffect(
@@ -668,8 +667,8 @@ export async function setupHybridChatHarness(
     let activeStore: JotaiStore | undefined;
     let activeQueryClient: QueryClient | undefined;
     const queryClients: QueryClient[] = [];
-    const chatStreamManagers: ChatStreamManager[] = [];
-    let activeChatStreamManager: ChatStreamManager | undefined;
+    const chatStreamManagers: ChatStreamRemoteManager[] = [];
+    let activeChatStreamManager: ChatStreamRemoteManager | undefined;
     let activePreviewIframeManager: PreviewIframeManager | undefined;
     const assertNoMissingChannels = options.assertNoMissingChannels ?? true;
 
@@ -722,7 +721,7 @@ export async function setupHybridChatHarness(
       const appId = opts.appId ?? nodeHarness.appId;
       const route = opts.route ?? "/chat";
       const store = createStore();
-      const chatStreamManager = new ChatStreamManager(store);
+      const chatStreamManager = new ChatStreamRemoteManager(store);
       const firstPromptClock = createFakeClock();
       const firstPromptIdSource = createSequentialIdSource();
       chatStreamManagers.push(chatStreamManager);
@@ -733,22 +732,6 @@ export async function setupHybridChatHarness(
       store.set(selectedAppIdAtom, appId);
       store.set(selectedChatIdAtom, route === "/chat" ? chatId : null);
 
-      const planHandoffChatStream = {
-        isIdle: (targetChatId: number) =>
-          chatStreamManager.isIdle(targetChatId),
-        watchIdle: (targetChatId: number, callback: () => void) =>
-          chatStreamManager.watchIdle(targetChatId, callback),
-        submit: (request: {
-          chatId: number;
-          prompt: string;
-          selectedComponents: [];
-          requestedChatMode: "local-agent";
-        }) =>
-          chatStreamManager.ensure(request.chatId).send({
-            type: "submit",
-            request,
-          }),
-      };
       const firstPromptChatStream = {
         submit: (request: {
           prompt: string;
@@ -774,7 +757,7 @@ export async function setupHybridChatHarness(
           idSource={firstPromptIdSource}
           settleDelayMs={0}
         >
-          <PlanHandoffProvider chatStream={planHandoffChatStream}>
+          <PlanHandoffProvider>
             <div data-testid="hybrid-surface-root">
               {opts.wireAppEvents !== false && <HybridAppShellHooks />}
               {opts.withTitleBar && <TitleBar />}
@@ -1093,30 +1076,14 @@ export async function setupHybridChatHarness(
     const getPlanAcceptInNewChat = (chatId: number) =>
       getActiveStore().get(planAcceptInNewChatByChatIdAtom).get(chatId);
 
-    const seedChatStreamResidue = (chatId: number) => {
-      const store = getActiveStore();
+    const seedChatStreamResidue = async (chatId: number) => {
       const manager = activeChatStreamManager;
       if (!manager) throw new Error("Chat stream manager is not mounted");
-      act(() => {
-        store.set(queuedMessagesByIdAtom, new Map([[chatId, []]]));
-        store.set(queuePausedByIdAtom, new Map([[chatId, true]]));
-        manager.ensure(chatId).send({
-          type: "external-error",
-          error: "seeded",
-        });
-      });
+      await manager.dispatchQueueEvent(chatId, { type: "PAUSE_QUEUE" });
     };
 
-    const hasChatStreamResidue = (chatId: number) => {
-      const store = getActiveStore();
-      const manager = activeChatStreamManager;
-      if (!manager) throw new Error("Chat stream manager is not mounted");
-      return (
-        store.get(queuedMessagesByIdAtom).has(chatId) ||
-        store.get(queuePausedByIdAtom).has(chatId) ||
-        selectStreamError(manager.ensure(chatId).getSnapshot()) !== null
-      );
-    };
+    const hasChatStreamResidue = (chatId: number) =>
+      hasSessionChatQueue(chatId);
 
     const seedAppRuntimeResidue = (appId: number) => {
       const store = getActiveStore();
@@ -1236,6 +1203,8 @@ export async function setupHybridChatHarness(
         store.set(chatInputValuesByIdAtom, next);
       });
     };
+    const getChatInputValue = (chatId: number) =>
+      getActiveStore().get(chatInputValuesByIdAtom).get(chatId) ?? "";
 
     const typeInChat = async (
       text: string,
@@ -1709,6 +1678,7 @@ export async function setupHybridChatHarness(
       confirmDialog,
       setSwitch,
       setChatInputValue: seedChatInput,
+      getChatInputValue,
       setChatAttachments,
       setSelectedComponents,
       typeInChat,

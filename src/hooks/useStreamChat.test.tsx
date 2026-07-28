@@ -1,9 +1,12 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { createStore, Provider } from "jotai";
+import { Provider } from "jotai";
 import type { PropsWithChildren } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { queuedMessagesByIdAtom } from "@/atoms/chatAtoms";
 import { useStreamChat } from "./useStreamChat";
+import {
+  CHAT_PROMPT_LENGTH_LIMIT_MESSAGE,
+  MAX_CHAT_PROMPT_CHARS,
+} from "@/shared/chatAttachmentLimits";
 
 const CHAT_ID = 42;
 
@@ -16,13 +19,23 @@ const mocks = vi.hoisted(() => ({
       phase: "idle",
       capabilities: { canCancel: false },
       error: null,
+      queue: [],
+      queuePaused: false,
+      queueRevision: 7,
     },
   } as {
     current: {
       phase: string;
       capabilities: { canCancel: boolean };
       error: string | null;
-      queueRevision?: number;
+      queue: Array<{
+        itemId: string;
+        prompt: string;
+        attachments?: [];
+        selectedComponents?: [];
+      }>;
+      queuePaused: boolean;
+      queueRevision: number;
     };
   },
 }));
@@ -47,21 +60,14 @@ vi.mock("@/lib/toast", () => ({
 }));
 
 function makeWrapper() {
-  const store = createStore();
   const Wrapper = ({ children }: PropsWithChildren) => (
-    <Provider store={store}>{children}</Provider>
+    <Provider>{children}</Provider>
   );
-  return { store, Wrapper };
+  return { Wrapper };
 }
 
 describe("useStreamChat main-owned queue", () => {
   beforeEach(() => {
-    mocks.streamState.current = {
-      phase: "idle",
-      capabilities: { canCancel: false },
-      error: null,
-      queueRevision: 7,
-    };
     mocks.send.mockReset();
     mocks.dispatchQueueEvent.mockReset();
     mocks.dispatchQueueEvent.mockResolvedValue(undefined);
@@ -69,14 +75,13 @@ describe("useStreamChat main-owned queue", () => {
   });
 
   it("submits queue requests to the actor without writing renderer state", () => {
-    const { store, Wrapper } = makeWrapper();
+    const { Wrapper } = makeWrapper();
     const { result } = renderHook(() => useStreamChat(), { wrapper: Wrapper });
 
     expect(
       result.current.queueMessage({ prompt: "queued during render lag" }),
     ).toBe(true);
 
-    expect(store.get(queuedMessagesByIdAtom).has(CHAT_ID)).toBe(false);
     expect(mocks.send).toHaveBeenCalledExactlyOnceWith({
       type: "submit",
       request: {
@@ -87,19 +92,11 @@ describe("useStreamChat main-owned queue", () => {
   });
 
   it("routes edit, remove, reorder, and clear through revisioned actor intents", async () => {
-    const { store, Wrapper } = makeWrapper();
-    store.set(
-      queuedMessagesByIdAtom,
-      new Map([
-        [
-          CHAT_ID,
-          [
-            { id: "first", prompt: "First" },
-            { id: "second", prompt: "Second" },
-          ],
-        ],
-      ]),
-    );
+    const { Wrapper } = makeWrapper();
+    mocks.streamState.current.queue = [
+      { itemId: "first", prompt: "First" },
+      { itemId: "second", prompt: "Second" },
+    ];
     const { result } = renderHook(() => useStreamChat(), { wrapper: Wrapper });
 
     act(() => {
@@ -150,6 +147,56 @@ describe("useStreamChat main-owned queue", () => {
     );
   });
 
+  it("uses the rendered queue revision for pause and resume mutations", () => {
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useStreamChat(), { wrapper: Wrapper });
+
+    act(() => {
+      result.current.pauseQueue();
+      result.current.clearPauseOnly();
+      result.current.resumeQueue();
+    });
+
+    expect(mocks.dispatchQueueEvent).toHaveBeenNthCalledWith(
+      1,
+      CHAT_ID,
+      { type: "PAUSE_QUEUE" },
+      7,
+    );
+    expect(mocks.dispatchQueueEvent).toHaveBeenNthCalledWith(
+      2,
+      CHAT_ID,
+      { type: "RESUME_QUEUE" },
+      7,
+    );
+    expect(mocks.dispatchQueueEvent).toHaveBeenNthCalledWith(
+      3,
+      CHAT_ID,
+      { type: "RESUME_QUEUE" },
+      7,
+    );
+  });
+
+  it("rejects oversized prompts before submitting them to the actor", async () => {
+    const onSettled = vi.fn();
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useStreamChat(), { wrapper: Wrapper });
+
+    await act(() =>
+      result.current.streamMessage({
+        chatId: CHAT_ID,
+        prompt: "a".repeat(MAX_CHAT_PROMPT_CHARS + 1),
+        onSettled,
+      }),
+    );
+
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.showError).toHaveBeenCalledExactlyOnceWith(
+      CHAT_PROMPT_LENGTH_LIMIT_MESSAGE,
+    );
+    expect(onSettled).toHaveBeenCalledExactlyOnceWith({ success: false });
+  });
+
   it("surfaces authoritative queue rejection", async () => {
     const rejection = new Error("queue revision changed");
     mocks.dispatchQueueEvent.mockRejectedValueOnce(rejection);
@@ -162,6 +209,21 @@ describe("useStreamChat main-owned queue", () => {
 
     expect(mocks.showError).toHaveBeenCalledWith(rejection);
   });
+
+  it("does not rebuild queued attachments when the queue is unchanged", () => {
+    const { Wrapper } = makeWrapper();
+    mocks.streamState.current.queue = [
+      { itemId: "with-attachment", prompt: "Inspect", attachments: [] },
+    ];
+    const { result, rerender } = renderHook(() => useStreamChat(), {
+      wrapper: Wrapper,
+    });
+    const firstProjection = result.current.queuedMessages;
+
+    rerender();
+
+    expect(result.current.queuedMessages).toBe(firstProjection);
+  });
 });
 
 describe("useStreamChat lifecycle intents", () => {
@@ -171,6 +233,9 @@ describe("useStreamChat lifecycle intents", () => {
       phase: "streaming",
       capabilities: { canCancel: true },
       error: null,
+      queue: [],
+      queuePaused: false,
+      queueRevision: 7,
     };
   });
 
@@ -187,6 +252,9 @@ describe("useStreamChat lifecycle intents", () => {
       phase: "cancelling",
       capabilities: { canCancel: false },
       error: null,
+      queue: [],
+      queuePaused: false,
+      queueRevision: 7,
     };
     rerender();
     act(() => result.current.cancelStream());

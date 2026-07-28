@@ -3,7 +3,14 @@ const MEBIBYTE = 1024 * 1024;
 export const MAX_CHAT_ATTACHMENTS = 10;
 export const MAX_CHAT_ATTACHMENT_BYTES = 10 * MEBIBYTE;
 export const MAX_CHAT_ATTACHMENTS_TOTAL_BYTES = 25 * MEBIBYTE;
+export const MAX_CHAT_PROMPT_CHARS = MEBIBYTE;
+export const MAX_CHAT_ERROR_CHARS = 64 * 1024;
+export const MAX_CHAT_WIRE_ID_CHARS = 256;
+export const MAX_CHAT_COMPONENT_SELECTIONS = 256;
+export const MAX_CHAT_COMPONENT_FIELD_CHARS = 4 * 1024;
 export const CHAT_ATTACHMENT_COUNT_LIMIT_MESSAGE = `You can attach up to ${MAX_CHAT_ATTACHMENTS} files at a time.`;
+export const CHAT_PROMPT_LENGTH_LIMIT_MESSAGE =
+  "Your message is too long. Chat prompts must be 1 MiB or shorter.";
 
 const BASE64_MARKER = ";base64,";
 const MAX_DATA_URL_PREFIX_CHARS = 1024;

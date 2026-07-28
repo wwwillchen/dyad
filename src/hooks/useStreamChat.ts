@@ -1,23 +1,20 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import type { ComponentSelection, FileAttachment } from "@/ipc/types";
-import { useAtomValue } from "jotai";
-import {
-  queuedMessagesByIdAtom,
-  queuePausedByIdAtom,
-  type QueuedMessageItem,
-} from "@/atoms/chatAtoms";
+import type { QueuedMessageItem } from "@/atoms/chatAtoms";
 import type { Chat } from "@/ipc/types";
 import { useChatStreamManager } from "@/chat_stream/ChatStreamProvider";
 import type { StreamSettledResult } from "@/chat_stream/state";
 import { useChatStreamState } from "@/hooks/useChatStream";
-import {
-  isStreamActive,
-  selectIsCancellationSettling,
-} from "@/chat_stream/transition";
+import { isStreamActive } from "@/chat_stream/transition";
 import { showError } from "@/lib/toast";
 import { useSearch } from "@tanstack/react-router";
-import { validateChatAttachmentFiles } from "@/shared/chatAttachmentLimits";
+import {
+  CHAT_PROMPT_LENGTH_LIMIT_MESSAGE,
+  MAX_CHAT_PROMPT_CHARS,
+  validateChatAttachmentFiles,
+} from "@/shared/chatAttachmentLimits";
 import { convertFileAttachmentsToChatAttachments } from "@/lib/chatAttachmentConversion";
+import { chatAttachmentToFileAttachment } from "@/lib/attachment_conversion";
 
 export function getRandomNumberId() {
   return Math.floor(Math.random() * 1_000_000_000_000_000);
@@ -34,8 +31,6 @@ export function getRandomNumberId() {
 export function useStreamChat({
   hasChatId = true,
 }: { hasChatId?: boolean } = {}) {
-  const queuedMessagesById = useAtomValue(queuedMessagesByIdAtom);
-  const queuePausedById = useAtomValue(queuePausedByIdAtom);
   const chatStreamManager = useChatStreamManager();
 
   let chatId: number | undefined;
@@ -44,10 +39,22 @@ export function useStreamChat({
     chatId = id;
   }
   const streamState = useChatStreamState(chatId);
-  const queueRevision =
-    streamState && "queueRevision" in streamState
-      ? streamState.queueRevision
-      : undefined;
+  const queueRevision = streamState?.queueRevision;
+  const queuedMessages = useMemo<QueuedMessageItem[]>(
+    () =>
+      streamState?.queue.map((entry) => ({
+        id: entry.itemId,
+        prompt: entry.prompt,
+        attachments: entry.attachments?.map(chatAttachmentToFileAttachment),
+        selectedComponents: entry.selectedComponents,
+        redo: entry.redo,
+        appId: entry.appId,
+        requestedChatMode: entry.requestedChatMode,
+        editable: entry.editable,
+        removable: entry.removable,
+      })) ?? [],
+    [streamState?.queue],
+  );
 
   const streamMessage = useCallback(
     async ({
@@ -75,6 +82,12 @@ export function useStreamChat({
         (!prompt.trim() && (!attachments || attachments.length === 0)) ||
         !chatId
       ) {
+        return;
+      }
+
+      if (prompt.length > MAX_CHAT_PROMPT_CHARS) {
+        showError(CHAT_PROMPT_LENGTH_LIMIT_MESSAGE);
+        onSettled?.({ success: false });
         return;
       }
 
@@ -113,9 +126,7 @@ export function useStreamChat({
     if (
       chatId === undefined ||
       !streamState ||
-      ("capabilities" in streamState
-        ? !streamState.capabilities.canCancel
-        : !isStreamActive(streamState))
+      !streamState.capabilities.canCancel
     ) {
       return;
     }
@@ -127,6 +138,10 @@ export function useStreamChat({
   const queueMessage = useCallback(
     (message: Omit<QueuedMessageItem, "id">): boolean => {
       if (chatId === undefined) return false;
+      if (message.prompt.length > MAX_CHAT_PROMPT_CHARS) {
+        showError(CHAT_PROMPT_LENGTH_LIMIT_MESSAGE);
+        return false;
+      }
       chatStreamManager.ensure(chatId).send({
         type: "submit",
         request: { ...message, chatId },
@@ -144,9 +159,14 @@ export function useStreamChat({
       >,
     ) => {
       if (chatId === undefined) return;
-      const current = queuedMessagesById
-        .get(chatId)
-        ?.find((message) => message.id === id);
+      if (
+        updates.prompt !== undefined &&
+        updates.prompt.length > MAX_CHAT_PROMPT_CHARS
+      ) {
+        showError(CHAT_PROMPT_LENGTH_LIMIT_MESSAGE);
+        return;
+      }
+      const current = queuedMessages.find((message) => message.id === id);
       if (!current) return;
       void convertFileAttachmentsToChatAttachments(
         updates.attachments ?? current.attachments ?? [],
@@ -167,7 +187,7 @@ export function useStreamChat({
         )
         .catch(showError);
     },
-    [chatId, chatStreamManager, queueRevision, queuedMessagesById],
+    [chatId, chatStreamManager, queueRevision, queuedMessages],
   );
 
   const removeQueuedMessage = useCallback(
@@ -192,7 +212,7 @@ export function useStreamChat({
   const reorderQueuedMessages = useCallback(
     (fromIndex: number, toIndex: number) => {
       if (chatId === undefined) return;
-      const itemId = queuedMessagesById.get(chatId)?.[fromIndex]?.id;
+      const itemId = queuedMessages[fromIndex]?.id;
       if (!itemId) return;
       void chatStreamManager
         .dispatchQueueEvent(
@@ -206,7 +226,7 @@ export function useStreamChat({
         )
         .catch(showError);
     },
-    [chatId, chatStreamManager, queueRevision, queuedMessagesById],
+    [chatId, chatStreamManager, queueRevision, queuedMessages],
   );
 
   const clearAllQueuedMessages = useCallback(async () => {
@@ -233,12 +253,9 @@ export function useStreamChat({
         : false,
     isCancellationSettling:
       hasChatId && chatId !== undefined
-        ? !!streamState &&
-          ("phase" in streamState
-            ? streamState.phase === "cancelling" ||
-              (streamState.phase === "finalizing" &&
-                streamState.lastCompletion?.outcome === "cancelled")
-            : selectIsCancellationSettling(streamState))
+        ? streamState?.phase === "cancelling" ||
+          (streamState?.phase === "finalizing" &&
+            streamState.lastCompletion?.outcome === "cancelled")
         : false,
     error:
       hasChatId && chatId !== undefined && streamState && "error" in streamState
@@ -252,10 +269,7 @@ export function useStreamChat({
       });
     },
     // Multi-message queue support
-    queuedMessages:
-      hasChatId && chatId !== undefined
-        ? (queuedMessagesById.get(chatId) ?? [])
-        : [],
+    queuedMessages: hasChatId && chatId !== undefined ? queuedMessages : [],
     queueMessage,
     updateQueuedMessage,
     removeQueuedMessage,
@@ -263,7 +277,7 @@ export function useStreamChat({
     clearAllQueuedMessages,
     isPaused:
       hasChatId && chatId !== undefined
-        ? (queuePausedById.get(chatId) ?? false)
+        ? (streamState?.queuePaused ?? false)
         : false,
     pauseQueue: useCallback(() => {
       if (chatId === undefined) return;
