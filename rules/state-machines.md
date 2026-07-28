@@ -426,6 +426,14 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   example, detaching Git HEAD), force and await persistence of the exact
   committed checkpoint before starting it. Observer error isolation must not
   allow the side effect to run after that checkpoint fails.
+- A checkpoint immediately before a destructive step means that step may have
+  started. Restart reconciliation must not infer "not started" from one
+  unchanged external fact such as Git HEAD; validate every relevant identity
+  and mutable surface (for example branch, HEAD, and user-visible index/tree),
+  and classify failure from the last effect boundary that may have crossed.
+- A durable `completed` checkpoint must follow every authoritative effect, not
+  just the primary one. If a workflow mutates Git and then SQLite, persist an
+  explicit post-Git/next-database step until the database mutation finishes.
 - Define merge/replacement semantics for events received during hydration.
   On teardown, flush the latest accepted snapshot through a transport that is
   safe for the lifecycle boundary (for example, one-way IPC during pagehide).

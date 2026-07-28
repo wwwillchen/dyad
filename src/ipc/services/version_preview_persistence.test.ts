@@ -55,7 +55,7 @@ describe("version preview persistence", () => {
   });
 
   it("retains whether an interrupted restore began on the live branch", () => {
-    versionPreviewPersistence.checkpoint(7, {
+    const restoring = {
       type: "restoring",
       session: {
         ...session,
@@ -63,12 +63,43 @@ describe("version preview persistence", () => {
         checkedOutVersionId: null,
       },
       fallback: "closed",
+    } as const;
+    versionPreviewPersistence.checkpointRestore(7, restoring, {
+      preRestoreHead: "live-head",
+      preRestoreBranch: "main",
+      targetHead: "abc123",
+      nextStep: "soft-reset",
     });
 
     expect(versionPreviewPersistence.load(7)).toMatchObject({
       type: "restoring",
       fallback: "closed",
       session: { originBranch: null, checkedOutVersionId: null },
+      restoreRecovery: {
+        preRestoreHead: "live-head",
+        preRestoreBranch: "main",
+        targetHead: "abc123",
+        nextStep: "soft-reset",
+      },
+    });
+  });
+
+  it("keeps the previous safe snapshot until restore facts are checkpointed", () => {
+    versionPreviewPersistence.checkpoint(7, {
+      type: "previewing",
+      session,
+    });
+
+    versionPreviewPersistence.schedule(7, {
+      type: "restoring",
+      session,
+      fallback: "previewing",
+    });
+    versionPreviewPersistence.flush(7);
+
+    expect(versionPreviewPersistence.load(7)).toMatchObject({
+      type: "previewing",
+      session: { checkedOutVersionId: "abc123" },
     });
   });
 

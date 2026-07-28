@@ -64,6 +64,7 @@ import {
   beginAppChatActorMutation,
   waitForAppChatActorsIdle,
 } from "@/ipc/services/chat_actor_service";
+import type { RestoreRecovery } from "@/version_preview/state";
 
 const logger = log.scope("version_handlers");
 
@@ -74,10 +75,12 @@ type RestoreToMessageParams = z.infer<typeof RestoreToMessageParamsSchema>;
 interface VersionPreviewHandlerBridge {
   revertVersion?: (
     params: RevertVersionParams,
+    onRestoreProgress?: (progress: RestoreRecovery) => void,
   ) => Promise<VersionCommandResult>;
   restoreToMessage?: (
     params: RestoreToMessageParams,
     sender?: SafeSender,
+    onRestoreProgress?: (progress: RestoreRecovery) => void,
   ) => Promise<VersionCommandResult>;
   checkoutVersion?: (
     params: CheckoutVersionParams,
@@ -92,17 +95,28 @@ const versionPreviewHandlerBridge: VersionPreviewHandlerBridge = {};
  * tests execute exactly the same mutation cores during the atomic migration.
  */
 export const versionPreviewHandlerService = {
-  revertVersion(params: RevertVersionParams) {
+  revertVersion(
+    params: RevertVersionParams,
+    onRestoreProgress?: (progress: RestoreRecovery) => void,
+  ) {
     if (!versionPreviewHandlerBridge.revertVersion) {
       throw new Error("Version handlers are not registered");
     }
-    return versionPreviewHandlerBridge.revertVersion(params);
+    return versionPreviewHandlerBridge.revertVersion(params, onRestoreProgress);
   },
-  restoreToMessage(params: RestoreToMessageParams, sender?: SafeSender) {
+  restoreToMessage(
+    params: RestoreToMessageParams,
+    sender?: SafeSender,
+    onRestoreProgress?: (progress: RestoreRecovery) => void,
+  ) {
     if (!versionPreviewHandlerBridge.restoreToMessage) {
       throw new Error("Version handlers are not registered");
     }
-    return versionPreviewHandlerBridge.restoreToMessage(params, sender);
+    return versionPreviewHandlerBridge.restoreToMessage(
+      params,
+      sender,
+      onRestoreProgress,
+    );
   },
   checkoutVersion(params: CheckoutVersionParams) {
     if (!versionPreviewHandlerBridge.checkoutVersion) {
@@ -406,6 +420,7 @@ async function revertCodebaseToVersion({
   previousVersionId,
   targetBranchName,
   preserveDirtyTree = false,
+  onRestoreProgress,
 }: {
   appId: number;
   app: typeof apps.$inferSelect;
@@ -413,7 +428,15 @@ async function revertCodebaseToVersion({
   previousVersionId: string;
   targetBranchName?: string;
   preserveDirtyTree?: boolean;
-}): Promise<{ successMessage: string; warningMessage: string }> {
+  onRestoreProgress?: (progress: RestoreRecovery) => void;
+}): Promise<{
+  successMessage: string;
+  warningMessage: string;
+  restoreCompletion: Extract<
+    RestoreRecovery,
+    { repositoryOutcome: "target-applied" }
+  > & { nextStep: "chat-mutation" };
+}> {
   let successMessage = "Restored version";
   let warningMessage = "";
 
@@ -422,6 +445,20 @@ async function revertCodebaseToVersion({
       appPath,
       targetBranchName,
     });
+  const restoreFacts = {
+    preRestoreHead: currentCommitHash,
+    preRestoreBranch: targetBranchName ?? currentBranch,
+    targetHead: previousVersionId,
+  } as const;
+  const checkpointGitStep = (
+    nextStep:
+      | "preparing"
+      | "preserve-dirty-tree"
+      | "checkout-branch"
+      | "hard-reset"
+      | "soft-reset"
+      | "commit",
+  ) => onRestoreProgress?.({ ...restoreFacts, nextStep });
   // Detached HEAD (e.g. the Version pane has a historical version checked out)
   // has no branch to anchor the revert commit to. Callers that legitimately
   // operate while detached (the Version-pane restore) pass an explicit
@@ -460,6 +497,7 @@ async function revertCodebaseToVersion({
         (preservedUserVisibleFiles ? ` (${preservedUserVisibleFiles})` : "") +
         ". Dyad-managed runtime files may also be included in the checkpoint.",
     );
+    checkpointGitStep("preserve-dirty-tree");
     await gitAddAll({ path: appPath });
     const checkpointCommit = await gitCommit({
       path: appPath,
@@ -471,6 +509,7 @@ async function revertCodebaseToVersion({
     }
   }
 
+  checkpointGitStep("checkout-branch");
   await gitCheckout({
     path: appPath,
     ref: revertRef,
@@ -484,8 +523,10 @@ async function revertCodebaseToVersion({
     const hasStagedCheckpointChanges = await gitStageToRevert({
       path: appPath,
       targetOid: detachedCheckpointCommit,
+      onBeforeReset: ({ nextStep }) => checkpointGitStep(nextStep),
     });
     if (hasStagedCheckpointChanges) {
+      checkpointGitStep("commit");
       await gitCommit({
         path: appPath,
         message:
@@ -505,8 +546,10 @@ async function revertCodebaseToVersion({
   const hasStagedRevertChanges = await gitStageToRevert({
     path: appPath,
     targetOid: previousVersionId,
+    onBeforeReset: ({ nextStep }) => checkpointGitStep(nextStep),
   });
   if (hasStagedRevertChanges) {
+    checkpointGitStep("commit");
     await gitCommit({
       path: appPath,
       message: `Reverted all changes back to version ${previousVersionId}`,
@@ -658,7 +701,15 @@ async function revertCodebaseToVersion({
   }
   await syncCloudSandboxSnapshotBestEffort(appId);
 
-  return { successMessage, warningMessage };
+  const restoreCompletion = {
+    ...restoreFacts,
+    completedHead: await getCurrentCommitHash({ path: appPath }),
+    repositoryOutcome: "target-applied",
+    nextStep: "chat-mutation",
+  } as const;
+  onRestoreProgress?.(restoreCompletion);
+
+  return { successMessage, warningMessage, restoreCompletion };
 }
 
 export function registerVersionHandlers() {
@@ -840,6 +891,7 @@ export function registerVersionHandlers() {
   const revertVersionHandler = async (
     _: Electron.IpcMainInvokeEvent,
     params: RevertVersionParams,
+    onRestoreProgress?: (progress: RestoreRecovery) => void,
   ) => {
     const {
       appId,
@@ -872,13 +924,15 @@ export function registerVersionHandlers() {
         }
       }
 
-      const { successMessage, warningMessage } = await revertCodebaseToVersion({
-        appId,
-        app,
-        appPath,
-        previousVersionId,
-        targetBranchName,
-      });
+      const { successMessage, warningMessage, restoreCompletion } =
+        await revertCodebaseToVersion({
+          appId,
+          app,
+          appPath,
+          previousVersionId,
+          targetBranchName,
+          onRestoreProgress,
+        });
 
       let affectedChatId: number | null = null;
 
@@ -945,6 +999,10 @@ export function registerVersionHandlers() {
         }
       }
 
+      onRestoreProgress?.({
+        ...restoreCompletion,
+        nextStep: "completed",
+      });
       return versionCommandResult({
         notification: warningMessage
           ? { kind: "warning", message: warningMessage }
@@ -954,15 +1012,17 @@ export function registerVersionHandlers() {
       });
     });
   };
-  versionPreviewHandlerBridge.revertVersion = (params) =>
+  versionPreviewHandlerBridge.revertVersion = (params, onRestoreProgress) =>
     revertVersionHandler(
       undefined as unknown as Electron.IpcMainInvokeEvent,
       params,
+      onRestoreProgress,
     );
 
   const restoreToMessageHandler = async (
     event: Electron.IpcMainInvokeEvent,
     params: RestoreToMessageParams,
+    onRestoreProgress?: (progress: RestoreRecovery) => void,
   ) => {
     const {
       appId,
@@ -1242,6 +1302,12 @@ export function registerVersionHandlers() {
         let successMessage = "Forked the chat into a new chat.";
         let warningMessage = "";
 
+        let restoreCompletion:
+          | (Extract<
+              RestoreRecovery,
+              { repositoryOutcome: "target-applied" }
+            > & { nextStep: "chat-mutation" })
+          | undefined;
         if (restoreCodebase && latestTargetCommitHash) {
           const result = await revertCodebaseToVersion({
             appId,
@@ -1250,9 +1316,11 @@ export function registerVersionHandlers() {
             previousVersionId: latestTargetCommitHash,
             targetBranchName,
             preserveDirtyTree,
+            onRestoreProgress,
           });
           successMessage = result.successMessage;
           warningMessage = result.warningMessage;
+          restoreCompletion = result.restoreCompletion;
         }
 
         // Carry over the original chat's title so the forked chat is tied to
@@ -1335,6 +1403,12 @@ export function registerVersionHandlers() {
         // the chat insert. better-sqlite3 transactions are synchronous, so the
         // callback uses the sync query API (`.get()`/`.run()`) rather than
         // `await`.
+        if (!restoreCodebase) {
+          onRestoreProgress?.({
+            repositoryOutcome: "unchanged",
+            nextStep: "chat-mutation",
+          });
+        }
         const newChat = db.transaction((tx) => {
           const createdChat = tx
             .insert(chats)
@@ -1388,6 +1462,14 @@ export function registerVersionHandlers() {
           return createdChat;
         });
 
+        onRestoreProgress?.(
+          restoreCompletion
+            ? { ...restoreCompletion, nextStep: "completed" }
+            : {
+                repositoryOutcome: "unchanged",
+                nextStep: "completed",
+              },
+        );
         return versionCommandResult({
           repositoryOutcome: restoreCodebase ? "target-applied" : "unchanged",
           notification: warningMessage
@@ -1407,10 +1489,15 @@ export function registerVersionHandlers() {
       releaseActorAdmissionBlock?.();
     }
   };
-  versionPreviewHandlerBridge.restoreToMessage = (params, sender) =>
+  versionPreviewHandlerBridge.restoreToMessage = (
+    params,
+    sender,
+    onRestoreProgress,
+  ) =>
     restoreToMessageHandler(
       { sender } as unknown as Electron.IpcMainInvokeEvent,
       params,
+      onRestoreProgress,
     );
 
   const checkoutVersionHandler = async (

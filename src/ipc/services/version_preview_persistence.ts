@@ -7,6 +7,7 @@ import {
   type BranchSwitchFallback,
   type PreviewSession,
   type PreviewState,
+  type RestoreRecovery,
 } from "@/version_preview/state";
 
 const persistedSessionSchema = z
@@ -51,6 +52,40 @@ const persistedFallbackSchema = z.discriminatedUnion("type", [
     .strict(),
 ]);
 
+const restoreRecoverySchema = z.union([
+  z
+    .object({
+      preRestoreHead: z.string().min(1),
+      preRestoreBranch: z.string().min(1).nullable(),
+      targetHead: z.string().min(1).nullable(),
+      nextStep: z.enum([
+        "preparing",
+        "preserve-dirty-tree",
+        "checkout-branch",
+        "hard-reset",
+        "soft-reset",
+        "commit",
+      ]),
+    })
+    .strict(),
+  z
+    .object({
+      preRestoreHead: z.string().min(1),
+      preRestoreBranch: z.string().min(1).nullable(),
+      targetHead: z.string().min(1),
+      completedHead: z.string().min(1),
+      repositoryOutcome: z.literal("target-applied"),
+      nextStep: z.enum(["chat-mutation", "completed"]),
+    })
+    .strict(),
+  z
+    .object({
+      repositoryOutcome: z.literal("unchanged"),
+      nextStep: z.enum(["chat-mutation", "completed"]),
+    })
+    .strict(),
+]);
+
 const persistedStateSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -66,6 +101,7 @@ const persistedStateSchema = z.discriminatedUnion("type", [
       type: z.literal("restoring"),
       session: persistedSessionSchema,
       fallback: z.enum(["closed", "browsing", "previewing"]),
+      restoreRecovery: restoreRecoverySchema.optional(),
     })
     .strict(),
   z
@@ -86,11 +122,19 @@ const persistedStateSchema = z.discriminatedUnion("type", [
       error: z.object({ message: z.string() }).strict(),
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("restore-recovery-required"),
+      session: persistedSessionSchema,
+      error: z.object({ message: z.string() }).strict(),
+      restoreRecovery: restoreRecoverySchema.optional(),
+    })
+    .strict(),
 ]);
 
 const persistedSchema = z
   .object({
-    version: z.literal(2),
+    version: z.union([z.literal(2), z.literal(3)]),
     state: persistedStateSchema,
   })
   .strict();
@@ -207,6 +251,12 @@ class VersionPreviewPersistence {
   }
 
   schedule(appId: number, state: PreviewState): void {
+    // A restore is not durable until its first operation-specific checkpoint
+    // records the repository facts needed for restart reconciliation. Keep the
+    // previous safe snapshot during this short preparation window.
+    if (state.type === "restoring" && !state.restoreRecovery) {
+      return;
+    }
     this.pending.set(appId, state);
     if (this.flushScheduled) return;
     this.flushScheduled = true;
@@ -231,6 +281,17 @@ class VersionPreviewPersistence {
       this.errors.set(appId, error);
       throw error;
     }
+  }
+
+  checkpointRestore(
+    appId: number,
+    state: PreviewState,
+    restoreRecovery: RestoreRecovery,
+  ): void {
+    if (state.type !== "restoring") {
+      throw new Error("Restore recovery checkpoint requires restoring state");
+    }
+    this.checkpoint(appId, { ...state, restoreRecovery });
   }
 
   flush(appId: number): void {
@@ -286,7 +347,7 @@ class VersionPreviewPersistence {
     const temp = `${target}.tmp`;
     fs.writeFileSync(
       temp,
-      JSON.stringify({ version: 2, state: persistedState }),
+      JSON.stringify({ version: 3, state: persistedState }),
       "utf8",
     );
     fs.renameSync(temp, target);
