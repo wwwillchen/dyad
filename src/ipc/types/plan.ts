@@ -24,6 +24,15 @@ export const PlanExitSchema = z.object({
 
 export type PlanExitPayload = z.infer<typeof PlanExitSchema>;
 
+export const PlanHandoffPresentationSchema = z
+  .object({
+    handoffId: z.string().min(1),
+    sourceChatId: z.number().int().positive(),
+    targetChatId: z.number().int().positive(),
+    appId: z.number().int().positive(),
+  })
+  .strict();
+
 export const PlanSchema = z.object({
   id: z.string(),
   appId: z.number(),
@@ -31,9 +40,9 @@ export const PlanSchema = z.object({
   title: z.string(),
   summary: z.string().nullable(),
   content: z.string(),
-  // "draft" while the user is still reviewing the plan, "accepted" once they
-  // choose to implement it. Legacy plans without a status are treated as
-  // "accepted".
+  // "draft" while the user is reviewing and "accepted" only after
+  // implementation admission commits. Legacy plans without a status are
+  // treated as accepted.
   status: z.enum(["draft", "accepted"]),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -72,6 +81,10 @@ export const planEvents = {
   exit: defineEvent({
     channel: "plan:exit",
     payload: PlanExitSchema,
+  }),
+  handoffPresentation: defineEvent({
+    channel: "plan:handoff-presentation",
+    payload: PlanHandoffPresentationSchema,
   }),
 } as const;
 

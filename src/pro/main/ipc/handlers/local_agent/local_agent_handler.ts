@@ -570,7 +570,10 @@ export async function handleLocalAgentStream(
       where: eq(chats.id, req.chatId),
       with: {
         messages: {
-          orderBy: (messages, { asc }) => [asc(messages.createdAt)],
+          orderBy: (messages, { asc }) => [
+            asc(messages.createdAt),
+            asc(messages.id),
+          ],
         },
         app: true,
       },
@@ -747,6 +750,7 @@ export async function handleLocalAgentStream(
       appPath,
       referencedApps: referencedAppsMap,
       chatId: chat.id,
+      planAcceptInNewChat: req.planAcceptInNewChat,
       supabaseProjectId: chat.app.supabaseProjectId,
       supabaseOrganizationSlug: chat.app.supabaseOrganizationSlug,
       neonProjectId: chat.app.neonProjectId,

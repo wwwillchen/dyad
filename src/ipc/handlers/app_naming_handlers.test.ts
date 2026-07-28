@@ -5,7 +5,7 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 
 import { DyadErrorKind } from "@/errors/dyad_error";
-import { apps } from "@/db/schema";
+import { apps, chats } from "@/db/schema";
 import {
   type HandlerTestHarness,
   setupHandlerTestHarness,
@@ -27,6 +27,8 @@ const createFromTemplateMock = vi.hoisted(() =>
     await fs.promises.writeFile(path.join(fullAppPath, "index.ts"), "// app");
   }),
 );
+const deletionOrder = vi.hoisted(() => [] as string[]);
+const settleChatActorsForDeletionMock = vi.hoisted(() => vi.fn());
 
 vi.mock("electron", () => ({
   ipcMain: {
@@ -80,6 +82,32 @@ vi.mock("@/ipc/handlers/chat_mode_resolution", () => ({
   getInitialChatModeForNewChat: vi.fn(async () => "build"),
 }));
 
+vi.mock("@/ipc/services/chat_actor_deletion_service", () => ({
+  beginChatActorDeletion: vi.fn(() => () => undefined),
+  waitForChatActorIdle: vi.fn(async () => {
+    deletionOrder.push("quiesce-actors");
+  }),
+  settleChatActorsForDeletion: settleChatActorsForDeletionMock,
+}));
+
+settleChatActorsForDeletionMock.mockImplementation(async () => {
+  deletionOrder.push("settle-actors");
+});
+
+vi.mock("@/ipc/handlers/chat_stream_handlers", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/ipc/handlers/chat_stream_handlers")
+    >();
+  return {
+    ...actual,
+    blockNewStreamsForApp: vi.fn(() => {
+      deletionOrder.push("barrier");
+      return () => deletionOrder.push("release");
+    }),
+  };
+});
+
 import { registerAppHandlers } from "./app_handlers";
 import { registerImportHandlers } from "./import_handlers";
 import { firstPromptCreationRegistry } from "../services/first_prompt_creation_service";
@@ -121,6 +149,8 @@ describe("app naming handlers", () => {
     fs.rmSync(TEMP_BASE, { recursive: true, force: true });
     fs.mkdirSync(TEMP_BASE, { recursive: true });
     harness = setupHandlerTestHarness();
+    deletionOrder.length = 0;
+    settleChatActorsForDeletionMock.mockClear();
     createFromTemplateMock.mockClear();
     registerAppHandlers();
     registerImportHandlers();
@@ -295,6 +325,27 @@ describe("app naming handlers", () => {
           withHistory: false,
         }),
       ).rejects.toMatchObject({ kind: DyadErrorKind.Conflict });
+    });
+  });
+
+  describe("delete-app", () => {
+    it("quiesces chat actors before deletion and disposes them after commit", async () => {
+      const appId = seedAppWithFolder("Delete Me", "delete-me");
+      harness.db.insert(chats).values({ appId }).run();
+      settleChatActorsForDeletionMock.mockImplementationOnce(async () => {
+        expect(getAppRow(appId)).toBeUndefined();
+        deletionOrder.push("settle-actors");
+      });
+
+      await harness.invokeHandler("delete-app", { appId });
+
+      expect(getAppRow(appId)).toBeUndefined();
+      expect(deletionOrder).toEqual([
+        "barrier",
+        "quiesce-actors",
+        "settle-actors",
+        "release",
+      ]);
     });
   });
 

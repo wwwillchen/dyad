@@ -79,6 +79,10 @@ export const QueryInvalidationScopeSchema = z.discriminatedUnion("family", [
   z.object({ family: z.literal("chats") }),
   z.object({ family: z.literal("app-collections") }),
   z.object({ family: z.literal("media") }),
+  z.object({ family: z.literal("token-count") }),
+  z.object({ family: z.literal("user-budget") }),
+  z.object({ family: z.literal("free-agent-quota") }),
+  z.object({ family: z.literal("free-model-quota") }),
   z.object({
     family: z.literal("app"),
     appId: z.number().int().positive(),
@@ -93,6 +97,10 @@ export const QueryInvalidationScopeSchema = z.discriminatedUnion("family", [
   }),
   z.object({
     family: z.literal("problems"),
+    appId: z.number().int().positive().optional(),
+  }),
+  z.object({
+    family: z.literal("uncommitted-files"),
     appId: z.number().int().positive().optional(),
   }),
   z.object({
@@ -168,6 +176,7 @@ export function queryInvalidationScopeKey(
     case "versions":
     case "branches":
     case "problems":
+    case "uncommitted-files":
       return `${scope.family}:${scope.appId ?? "*"}`;
     case "chat":
       return `${scope.family}:${scope.chatId}`;

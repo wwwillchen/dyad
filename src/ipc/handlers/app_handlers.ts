@@ -137,6 +137,13 @@ import { githubOpsActorService } from "../services/github_ops_actor_service";
 import { imageGenerationActorService } from "../services/image_generation_actor_service";
 import { imageGenerationService } from "../services/image_generation_service";
 import { githubOpsService } from "../services/github_ops_service";
+import {
+  beginChatActorDeletion,
+  settleChatActorsForDeletion,
+  waitForChatActorIdle,
+} from "@/ipc/services/chat_actor_deletion_service";
+import { blockNewStreamsForApp } from "./chat_stream_handlers";
+import { beginAppChatDeletion } from "@/ipc/services/app_chat_creation_fence";
 
 const logger = log.scope("app_handlers");
 const handle = createLoggedHandler(logger);
@@ -384,28 +391,39 @@ async function deleteAppById(
   appId: number,
   options: DeleteAppByIdOptions = {},
 ): Promise<void> {
+  const releaseStreamAdmissionBlock = blockNewStreamsForApp(appId);
   githubOpsService.beginAppDeletion(appId);
   imageGenerationService.beginAppDeletion(appId);
+  const releaseChatCreation = beginAppChatDeletion(appId);
+  const releaseChatActorAdmission: (() => void)[] = [];
   try {
-    return await withLock(appId, async () => {
+    // Actor cancellation can wait for an in-flight stream to finish writes
+    // under this app's lock. Drain before taking the lock, while the admission
+    // barrier prevents another turn from entering behind us.
+    const appChats = await withLock(appId, () =>
+      db.select({ id: chats.id }).from(chats).where(eq(chats.appId, appId)),
+    );
+    releaseChatActorAdmission.push(
+      ...appChats.map(({ id: chatId }) => beginChatActorDeletion(chatId)),
+    );
+    await Promise.all(
+      appChats.map(({ id: chatId }) =>
+        waitForChatActorIdle(chatId, { cancelActive: true }),
+      ),
+    );
+
+    const appPath = await withLock(appId, async () => {
       const app = await db.query.apps.findFirst({
         where: eq(apps.id, appId),
       });
 
       if (!app) {
         if (options.allowMissing && options.knownAppPath) {
-          await githubOpsActorService.disposeApp(appId);
-          await imageGenerationActorService.disposeApp(appId);
-          await appRunActorService.disposeApp(appId);
-          appRuntimeService.cleanup(appId);
-          await removeAppFiles(appId, options.knownAppPath);
-          return;
+          return options.knownAppPath;
         }
         throw new DyadError("App not found", DyadErrorKind.NotFound);
       }
 
-      await githubOpsActorService.disposeApp(appId);
-      await imageGenerationActorService.disposeApp(appId);
       if (runningApps.has(appId)) {
         const appInfo = runningApps.get(appId)!;
         try {
@@ -416,22 +434,8 @@ async function deleteAppById(
           // Continue with deletion even if stopping fails
         }
       }
-      await appRunActorService.disposeApp(appId);
-
-      // Clear logs for this app to prevent memory leak
-      appRuntimeService.clearRuntimeLogs(appId);
-      getPtySessionManager().killForApp(appId);
 
       try {
-        const appChats = await db
-          .select({ id: chats.id })
-          .from(chats)
-          .where(eq(chats.appId, appId));
-        await Promise.all(
-          appChats.map(({ id: chatId }) =>
-            userInputRegistry.settleChat(chatId),
-          ),
-        );
         await db.delete(apps).where(eq(apps.id, appId));
         // Note: Associated chats will cascade delete
         if (options.publishDisposal !== false) {
@@ -447,23 +451,46 @@ async function deleteAppById(
           DyadErrorKind.External,
         );
       }
+      return getDyadAppPath(app.path);
+    });
 
-      appRuntimeService.cleanup(appId);
-      try {
-        await removeAppFiles(appId, getDyadAppPath(app.path));
-      } catch (error) {
-        // Database deletion is the authoritative state transition. A failed
-        // best-effort filesystem cleanup must not make renderers treat the
-        // already-deleted app as retryable or suppress contract invalidations.
+    const actorCleanup = await Promise.allSettled([
+      githubOpsActorService.disposeApp(appId),
+      imageGenerationActorService.disposeApp(appId),
+      appRunActorService.disposeApp(appId),
+      ...appChats.map(({ id: chatId }) => userInputRegistry.settleChat(chatId)),
+      ...appChats.map(({ id: chatId }) => settleChatActorsForDeletion(chatId)),
+    ]);
+    for (const result of actorCleanup) {
+      if (result.status === "rejected") {
         logger.warn(
-          `App ${appId} was deleted, but its files require manual cleanup`,
-          error,
+          `Post-deletion actor cleanup failed for app ${appId}`,
+          result.reason,
         );
       }
-    });
+    }
+
+    // Clear logs for this app to prevent memory leak
+    appRuntimeService.clearRuntimeLogs(appId);
+    getPtySessionManager().killForApp(appId);
+    appRuntimeService.cleanup(appId);
+    try {
+      await removeAppFiles(appId, appPath);
+    } catch (error) {
+      // Database deletion is the authoritative state transition. A failed
+      // best-effort filesystem cleanup must not make renderers treat the
+      // already-deleted app as retryable or suppress contract invalidations.
+      logger.warn(
+        `App ${appId} was deleted, but its files require manual cleanup`,
+        error,
+      );
+    }
   } finally {
+    for (const release of releaseChatActorAdmission) release();
+    releaseChatCreation();
     imageGenerationService.endAppDeletion(appId);
     githubOpsService.endAppDeletion(appId);
+    releaseStreamAdmissionBlock();
   }
 }
 

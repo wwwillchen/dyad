@@ -3,8 +3,14 @@ import { and, eq, isNull } from "drizzle-orm";
 
 import * as schema from "@/db/schema";
 import { chats, messages } from "@/db/schema";
+import {
+  ensureIntentRecord,
+  getAcceptedMessageId,
+  markIntentAccepted,
+} from "@/chat_stream/persistence";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import type { ChatMode, StoredChatMode } from "@/lib/schemas";
+import type { SerializableChatTurnIntent } from "@/chat_stream/transport";
 
 type ChatTurnDatabase = Pick<
   BetterSQLite3Database<typeof schema>,
@@ -17,6 +23,8 @@ export interface AcceptChatTurnInput {
   selectedChatMode: ChatMode;
   content: string;
   userInputRequestId?: string;
+  chatTurnIntentId?: string;
+  chatTurnIntent?: SerializableChatTurnIntent;
 }
 
 export interface AcceptedChatTurn {
@@ -28,18 +36,29 @@ export function acceptChatTurn(
   database: ChatTurnDatabase,
   input: AcceptChatTurnInput,
 ): AcceptedChatTurn {
-  return database.transaction((tx) => {
-    const insertedUserMessage = tx
-      .insert(messages)
-      .values({
-        chatId: input.chatId,
-        role: "user",
-        content: input.content,
-        userInputRequestId: input.userInputRequestId,
-      })
-      .onConflictDoNothing({
-        target: [messages.chatId, messages.userInputRequestId],
-      })
+  if (input.chatTurnIntent) {
+    ensureIntentRecord(input.chatTurnIntent);
+  }
+  if (
+    input.chatTurnIntentId &&
+    getAcceptedMessageId(input.chatTurnIntentId) !== undefined
+  ) {
+    return { userMessageId: null, authoritativeChatMode: null };
+  }
+  const accepted = database.transaction((tx) => {
+    const insert = tx.insert(messages).values({
+      chatId: input.chatId,
+      role: "user",
+      content: input.content,
+      userInputRequestId: input.userInputRequestId,
+    });
+    const insertedUserMessage = (
+      input.userInputRequestId
+        ? insert.onConflictDoNothing({
+            target: [messages.chatId, messages.userInputRequestId],
+          })
+        : insert
+    )
       .returning({ id: messages.id })
       .get();
 
@@ -88,4 +107,8 @@ export function acceptChatTurn(
       authoritativeChatMode: winningChat.chatMode,
     };
   });
+  if (accepted.userMessageId !== null && input.chatTurnIntentId) {
+    markIntentAccepted(input.chatTurnIntentId, accepted.userMessageId);
+  }
+  return accepted;
 }

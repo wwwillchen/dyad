@@ -14,6 +14,14 @@ export function queryKeysForInvalidationScope(
       return [queryKeys.appCollections.all];
     case "media":
       return [queryKeys.media.all];
+    case "token-count":
+      return [queryKeys.tokenCount.all];
+    case "user-budget":
+      return [queryKeys.userBudget.info];
+    case "free-agent-quota":
+      return [queryKeys.freeAgentQuota.status];
+    case "free-model-quota":
+      return [queryKeys.freeModelQuota.status];
     case "app":
       return [queryKeys.apps.detail({ appId: scope.appId })];
     case "versions":
@@ -33,6 +41,12 @@ export function queryKeysForInvalidationScope(
         scope.appId === undefined
           ? queryKeys.problems.all
           : queryKeys.problems.byApp({ appId: scope.appId }),
+      ];
+    case "uncommitted-files":
+      return [
+        scope.appId === undefined
+          ? queryKeys.uncommittedFiles.all
+          : queryKeys.uncommittedFiles.byApp({ appId: scope.appId }),
       ];
     case "chat":
       return [queryKeys.chats.detail({ chatId: scope.chatId })];

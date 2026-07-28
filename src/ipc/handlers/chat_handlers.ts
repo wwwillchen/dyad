@@ -22,35 +22,49 @@ import {
 import { createChatForApp } from "../utils/chat_creation_utils";
 import { firstPromptCreationRegistry } from "../services/first_prompt_creation_service";
 import { userInputRegistry } from "@/user_input/main";
+import {
+  beginChatActorMutation,
+  settleChatActorsForDeletion,
+} from "@/ipc/services/chat_actor_deletion_service";
+import { waitForChatActorIdle } from "@/ipc/services/chat_actor_service";
 
 const logger = log.scope("chat_handlers");
 
 async function mutateChatAfterDrainingStreams({
   chatId,
   sender,
+  beforeLock,
   mutation,
 }: {
   chatId: number;
   sender: WebContents;
+  beforeLock?: () => Promise<void>;
   mutation: () => Promise<void>;
 }): Promise<void> {
-  const chat = await db.query.chats.findFirst({
-    columns: { appId: true },
-    where: eq(chats.id, chatId),
-  });
-  if (!chat) {
-    return;
-  }
-
-  const releaseStreamAdmissionBlock = blockNewStreamsForChat(chatId);
+  const releaseActorAdmissionBlock = beginChatActorMutation(chatId);
   try {
-    // Drain outside the app lock: an aborted stream may need the same lock to
-    // finish a file write. The admission block closes the gap between draining
-    // and mutating so another stream cannot enter the chat in between.
-    await cancelActiveStreamsForChat(chatId, sender);
-    await withLock(chat.appId, mutation);
+    const chat = await db.query.chats.findFirst({
+      columns: { appId: true },
+      where: eq(chats.id, chatId),
+    });
+    if (!chat) {
+      return;
+    }
+
+    const releaseStreamAdmissionBlock = blockNewStreamsForChat(chatId);
+    try {
+      await beforeLock?.();
+      // Drain outside the app lock: an aborted stream may need the same lock to
+      // finish a file write. The admission blocks close the gaps before and
+      // after draining so another turn cannot enter around the mutation.
+      await waitForChatActorIdle(chatId, { cancelActive: true });
+      await cancelActiveStreamsForChat(chatId, sender);
+      await withLock(chat.appId, mutation);
+    } finally {
+      releaseStreamAdmissionBlock();
+    }
   } finally {
-    releaseStreamAdmissionBlock();
+    releaseActorAdmissionBlock();
   }
 }
 
@@ -105,7 +119,10 @@ export function registerChatHandlers() {
       with: {
         messages: {
           columns: rendererMessageColumns,
-          orderBy: (messages, { asc }) => [asc(messages.createdAt)],
+          orderBy: (messages, { asc }) => [
+            asc(messages.createdAt),
+            asc(messages.id),
+          ],
         },
       },
     });
@@ -189,8 +206,11 @@ export function registerChatHandlers() {
     await mutateChatAfterDrainingStreams({
       chatId,
       sender: event.sender,
-      mutation: async () => {
+      beforeLock: async () => {
         await userInputRegistry.settleChat(chatId);
+        await settleChatActorsForDeletion(chatId);
+      },
+      mutation: async () => {
         await db.delete(chats).where(eq(chats.id, chatId));
         entityDisposalBus.publish({ kind: "chat", id: chatId });
       },

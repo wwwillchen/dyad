@@ -8,6 +8,8 @@ import { readSettings, writeSettings } from "../main/settings";
 import { systemClock, uuidIdSource } from "../state_machines/clock";
 import { safeSend } from "../ipc/utils/safe_sender";
 import { createUserInputRegistry } from "./registry";
+import type { UserInputCommand } from "./commands";
+import { dispatchDueFollowUp } from "./follow_up_dispatch";
 
 const subscribers = new Set<WebContents>();
 const logger = log.scope("user_input");
@@ -25,6 +27,30 @@ function broadcast(channel: string, payload: unknown): void {
     if (!window.isDestroyed()) targets.add(window.webContents);
   }
   for (const target of targets) safeSend(target, channel, payload);
+}
+
+async function dispatchDueFollowUpInMain(
+  command: Extract<UserInputCommand, { type: "broadcast-follow-up-due" }>,
+): Promise<void> {
+  const { dispatchUserInputFollowUp, waitForChatActorIdle } =
+    await import("@/ipc/services/chat_actor_service");
+  const isStillDue = () =>
+    userInputRegistry
+      .getPending()
+      .some(
+        (pending) =>
+          pending.status === "due" &&
+          pending.descriptor.requestId === command.requestId,
+      );
+  await dispatchDueFollowUp(command, {
+    isStillDue,
+    waitForChatActorIdle,
+    dispatchUserInputFollowUp,
+    followUpDispatched: (requestId) =>
+      userInputRegistry.followUpDispatched(requestId),
+    followUpRejected: (requestId) =>
+      userInputRegistry.followUpRejected(requestId),
+  });
 }
 
 export const userInputRegistry = createUserInputRegistry({
@@ -78,6 +104,12 @@ export const userInputRegistry = createUserInputRegistry({
         },
       });
     }
+  },
+  commandRunner: {
+    run(command) {
+      if (command.type !== "broadcast-follow-up-due") return;
+      return dispatchDueFollowUpInMain(command);
+    },
   },
   onCommandError(command, error) {
     logger.error(`User-input command failed: ${command.type}`, error);

@@ -98,7 +98,9 @@ Background and before/after examples of why this pattern exists:
   envelope before its codec runs, including subscribe/unsubscribe addresses,
   and bound snapshot envelopes before delivery. Use a
   structured-clone-compatible byte measurement; JSON sizing is not
-  wire-compatible with values such as `bigint`.
+  wire-compatible with values such as `bigint`. When an existing domain payload
+  legitimately exceeds the shared default, declare a bounded per-machine
+  ceiling and enforce aggregate projected state below its snapshot ceiling.
 - When a remote machine uses an object key, canonicalize it through the same
   interner used by main-process producers only after subscription authorization
   succeeds, then pass that canonical key to `ActorHost`. Its actor map is
@@ -117,6 +119,9 @@ Background and before/after examples of why this pattern exists:
 - Settle memory-owned requests on every destructive entity path, including
   parent-row cascade deletion, bulk deletion, and full reset—not only direct
   deletion of the child entity the request references.
+- Before parent deletion snapshots child entities for settlement, fence new
+  child creation and serialize the snapshot with each child's final insertion.
+  Otherwise a late child can evade cleanup and disappear through the cascade.
 - Register an in-memory request's disposal rejector before its first
   asynchronous admission await, and remove it in `finally`. Registering only
   before the terminal subscription leaves an admission-to-subscription race
@@ -124,10 +129,11 @@ Background and before/after examples of why this pattern exists:
 - Model user-initiated owner rejection as a typed non-error facade outcome.
   Rejecting the transport promise routes successful cancellation through
   generic failure toasts/retry logic and can incorrectly acknowledge dispatch.
-- If queue removal awaits owner settlement, atomically claim/remove the
-  invocation-time items before the await so the queue driver cannot start
-  them. Restore failed owners, preserve items enqueued during the await, and
-  surface settlement errors without aborting the whole clear.
+- If queue removal awaits owner settlement, first validate the optimistic
+  revision and atomically claim/remove the invocation-time items so a rejected
+  mutation has no external effect and the queue driver cannot start them.
+  Restore failed owners, preserve items enqueued during the await, and surface
+  settlement errors without aborting the whole clear.
 - When a callback's direct caller owns rollback or restoration, settlement
   failure must reject that callback itself. Rejecting only a separate outer
   promise hides the failure from the component responsible for compensation.
@@ -167,6 +173,10 @@ Background and before/after examples of why this pattern exists:
   transition that leaves the watched state, plus disposal cleanup.
 - In a cancelling state, finalize on every non-stale terminal event. Reject
   staleness by identity; never infer event provenance from arrival order.
+- When destructive cleanup sends a cancellation terminal through an IPC sender
+  other than the actor's observer, also settle the authoritative actor with the
+  same correlated cancelled terminal; a silent handler return must not be
+  synthesized as successful completion.
 - Compensation on abort rolls back only what the aborted operation touched.
 - When a multi-step side effect can fail partway through, retain the exact
   completed/next step in the failure state. Retrying from the start can repeat
@@ -259,6 +269,9 @@ Background and before/after examples of why this pattern exists:
 - Correlation identity and durable idempotency identity are separate contracts.
   Name which property each boundary relies on even when a protocol deliberately
   uses the same value for both.
+- Do not include main-injected sender metadata in a renderer-computed immutable
+  payload hash. Bind and validate that metadata separately during authorization,
+  or compute the authoritative hash only after main supplies it.
 - When a machine becomes the sole scheduler for a queue, every legacy enqueue
   path must poke the machine or enqueue through it.
 
@@ -354,6 +367,20 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
 - If retries may replace an input payload, carry operation facts established
   by earlier transitions (such as create-vs-update) explicitly in state. Do not
   re-derive UI or analytics semantics from the replacement payload.
+- A remote renderer adapter must preserve the legacy terminal side-effect
+  contract as well as lifecycle state: query invalidations, authoritative
+  message refresh, preview-open policy, reload/capture requests, and settlement
+  callbacks all belong in the completion projection.
+- When seeding a retained-completion cursor from bootstrap, skip only receipts
+  that have no matching local in-flight request. A matching receipt must take
+  the normal completion path or its waiter and terminal side effects are lost.
+- Main-owned work must report terminal settlement through a main-owned observer
+  or return path. Renderer delivery is best-effort: a destroyed `WebContents`
+  can make `safeSend` a no-op and must not strand the authoritative actor.
+- `useSyncExternalStore` snapshots must be referentially stable between store
+  changes. If an adapter overlays optimistic admission on a remote snapshot,
+  cache the projected object by base snapshot and operation identity instead of
+  allocating a new object from every `getSnapshot()` call.
 
 ## Persistence and hydration
 

@@ -527,6 +527,9 @@ export const needsFreshPlanChatAtom = atom<boolean>(false);
 export interface QueuedMessageItem {
   id: string; // UUID for stable identification during reordering/editing
   prompt: string;
+  /** Main-owned entries expose only the mutations their owner can settle. */
+  editable?: boolean;
+  removable?: boolean;
   attachments?: FileAttachment[];
   selectedComponents?: ComponentSelection[];
   // Extra stream-request fields preserved when the chat stream machine queues
@@ -537,6 +540,7 @@ export interface QueuedMessageItem {
   redo?: boolean;
   appId?: number;
   requestedChatMode?: Chat["chatMode"] | null;
+  planAcceptInNewChat?: boolean;
   owner?: import("@/state_machines/handoff_types").UserInputFollowUpQueueOwner;
   /** Legacy persisted marker; never written by current queue code. */
   userInputRequestId?: string;

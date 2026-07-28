@@ -12,7 +12,9 @@ export type PlanStatus = "draft" | "accepted";
  * treated as `accepted`, since they were only ever written on acceptance.
  */
 export function normalizePlanStatus(raw: string | undefined): PlanStatus {
-  return raw === "draft" ? "draft" : "accepted";
+  // `admitting` was briefly written by pre-release builds. It was not durable
+  // proof of chat-turn acceptance, so recover it as a retryable draft.
+  return raw === "draft" || raw === "admitting" ? "draft" : "accepted";
 }
 
 export function planDirForAppPath(appPath: string): string {
@@ -29,13 +31,29 @@ export function planSlugForChat(chatId: number): string {
   return slug;
 }
 
+export async function readPlanFromDisk(params: {
+  appPath: string;
+  chatId: number;
+}): Promise<{ title: string; summary?: string; content: string }> {
+  const filePath = path.join(
+    planDirForAppPath(params.appPath),
+    `${planSlugForChat(params.chatId)}.md`,
+  );
+  const { meta, content } = parsePlanFile(
+    await fs.promises.readFile(filePath, "utf-8"),
+  );
+  return {
+    title: meta.title ?? "",
+    ...(meta.summary ? { summary: meta.summary } : {}),
+    content,
+  };
+}
+
 /**
  * Upserts the plan file for a chat under `.dyad/plans/`. Returns the plan slug.
  *
- * Used both when a plan is first drafted (`status: "draft"`, best-effort) and
- * when it is accepted (`status: "accepted"`). Preserves the original
- * `createdAt` when a file already exists so promotion to accepted doesn't reset
- * it.
+ * Used when a plan is drafted and accepted. Preserves the original `createdAt`
+ * when a file already exists so status promotion doesn't reset it.
  */
 export async function savePlanToDisk(params: {
   appPath: string;

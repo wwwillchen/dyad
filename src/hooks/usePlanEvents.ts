@@ -1,16 +1,13 @@
 import { useEffect } from "react";
 import { useSetAtom } from "jotai";
+import { useNavigate } from "@tanstack/react-router";
 import {
   planAcceptInNewChatByChatIdAtom,
   planStateAtom,
 } from "@/atoms/planAtoms";
 import { previewModeAtom } from "@/atoms/appAtoms";
-import {
-  planEventClient,
-  type PlanUpdatePayload,
-  type PlanExitPayload,
-} from "@/ipc/types/plan";
-import { usePlanHandoff } from "@/plan_handoff/usePlanHandoff";
+import { selectedChatIdAtom } from "@/atoms/chatAtoms";
+import { planEventClient, type PlanUpdatePayload } from "@/ipc/types/plan";
 
 /**
  * Hook to handle plan mode IPC events.
@@ -23,7 +20,8 @@ export function usePlanEvents() {
   const setPlanState = useSetAtom(planStateAtom);
   const setPlanAcceptInNewChat = useSetAtom(planAcceptInNewChatByChatIdAtom);
   const setPreviewMode = useSetAtom(previewModeAtom);
-  const { acceptPlan } = usePlanHandoff();
+  const setSelectedChatId = useSetAtom(selectedChatIdAtom);
+  const navigate = useNavigate();
 
   useEffect(() => {
     // Handle plan updates
@@ -58,16 +56,37 @@ export function usePlanEvents() {
       },
     );
 
-    // Handle plan exit (transition to implementation): feed the state machine.
-    const unsubscribeExit = planEventClient.onExit(
-      (payload: PlanExitPayload) => {
-        acceptPlan(payload);
+    const unsubscribeExit = planEventClient.onExit((payload) => {
+      // Main has already admitted the handoff. This compatibility event only
+      // clears the renderer-local button choice used to form that intent.
+      setPlanAcceptInNewChat((prev) => {
+        if (!prev.has(payload.chatId)) return prev;
+        const next = new Map(prev);
+        next.delete(payload.chatId);
+        return next;
+      });
+    });
+    const unsubscribePresentation = planEventClient.onHandoffPresentation(
+      (payload) => {
+        setPreviewMode("preview");
+        setSelectedChatId(payload.targetChatId);
+        void navigate({
+          to: "/chat",
+          search: { id: payload.targetChatId, appId: payload.appId },
+        });
       },
     );
 
     return () => {
       unsubscribeUpdate();
       unsubscribeExit();
+      unsubscribePresentation();
     };
-  }, [setPlanState, setPlanAcceptInNewChat, setPreviewMode, acceptPlan]);
+  }, [
+    setPlanState,
+    setPlanAcceptInNewChat,
+    setPreviewMode,
+    setSelectedChatId,
+    navigate,
+  ]);
 }
