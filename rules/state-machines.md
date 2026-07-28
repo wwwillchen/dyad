@@ -353,7 +353,36 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   when acknowledgement fails or the claim expires.
 - An unavailable/bootstrap remote snapshot is not authoritative idle state.
   Gate every actor-backed capability on a ready connection and defer recovery
-  dispatches until subscription bootstrap has completed.
+  dispatches until subscription bootstrap has completed. Cleanup dispatched
+  while navigating away must temporarily retain the old actor, resync stale
+  revisions, and retry with the same stable operation identity; losing an exit
+  intent can leave the external resource under hidden retained ownership.
+- When window-local presentation controls a shared external lifecycle, track
+  explicit per-window interest in main and clean up only when the last owner
+  explicitly releases it. Window destruction should drop stale interest without
+  triggering cleanup when the actor is designed to survive renderer reloads.
+- A safe remote projection contains only domain facts needed by consumers.
+  Keep window-local presentation fields out of the authoritative snapshot and
+  route one-shot toast/navigation outcomes to the initiating window. Publish
+  durable query scopes separately so every attached window converges. At the
+  renderer boundary, explicitly recombine the local presentation snapshot with
+  every remote lifecycle state, including transient command states; otherwise a
+  correct domain transition can silently reset the visible pane or selection.
+- Apply presentation for a remotely adjudicated selection only after an
+  applied receipt, and serialize rapid selections through resync. Suppressing
+  an earlier accepted presentation merely because a later stale dispatch is
+  pending can leave the UI disagreeing with the external resource.
+- Treat an operation ID's initiating window as a first-writer ownership claim.
+  A duplicate intent from another window must not overwrite that routing entry,
+  even if the duplicate transition will later be ignored.
+- Authorization can run before revision admission. Keep any presentation
+  ownership recorded there tentative and expire it unless an applied
+  transition confirms the claim; rejected stale dispatches never reach actor
+  observers and otherwise leak bounded routing capacity.
+- Do not hide local presentation for a cleanup intent until main accepts the
+  exit (or already reports a safe terminal state). Resync and retry stale
+  cleanup receipts with one operation ID so a hidden pane cannot mask retained
+  external ownership.
 - Keep transport revisions separate from semantic presentation epochs. A
   revision may advance for bookkeeping-only transitions, while a reload token
   must advance exactly once for each user-visible remount.
@@ -387,6 +416,10 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
 - Model hydration explicitly when persisted state gates machine behavior.
   Persist through an adapter-owned, debounced command using a versioned zod
   schema; do not let components write snapshots independently.
+- When a side effect can make recovery state externally observable (for
+  example, detaching Git HEAD), force and await persistence of the exact
+  committed checkpoint before starting it. Observer error isolation must not
+  allow the side effect to run after that checkpoint fails.
 - Define merge/replacement semantics for events received during hydration.
   On teardown, flush the latest accepted snapshot through a transport that is
   safe for the lifecycle boundary (for example, one-way IPC during pagehide).
@@ -394,6 +427,14 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   entity lock. Recheck the fence inside the lock, stop actor admission before
   unrelated awaited cleanup, and make actor disposal flush every admitted
   command before database or filesystem deletion.
+- Deletion settlement tracks the full command-runner continuation, including
+  post-handler lifecycle work and the terminal event that may synchronously
+  enqueue compensation. Waiting only for the low-level handler promise can
+  dispose the actor before its compensating command exists.
+- A persisted main-owned recovery actor must reconcile its domain facts with
+  the external resource before accepting new mutations after restart. Treat
+  matching origin state as closed and detached/divergent state as explicit
+  recovery; never serialize command handles or renderer presentation state.
 
 ## Query keys and recorded decisions
 

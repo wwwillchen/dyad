@@ -57,6 +57,7 @@ describe("distributed machine boundaries", () => {
       "github_ops/GithubOpsProvider.tsx",
       "github_ops/client_definition.ts",
       "github_ops/useGithubOps.ts",
+      "hooks/useVersionPreview.ts",
       "image_generation/hooks.ts",
       "image_generation/transport.ts",
       "ipc/handlers/distributed_machine_handlers.ts",
@@ -64,9 +65,13 @@ describe("distributed machine boundaries", () => {
       "ipc/services/distributed_machine_host.ts",
       "ipc/services/github_ops_definition.ts",
       "ipc/services/image_generation_definition.ts",
+      "ipc/services/version_preview_actor_service.ts",
+      "ipc/services/version_preview_definition.ts",
       "plan_handoff/definition.ts",
       "plan_handoff/remote_manager.ts",
       "plan_handoff/transport.ts",
+      "version_preview/VersionPreviewProvider.tsx",
+      "version_preview/client_definition.ts",
     ]);
   });
 });
