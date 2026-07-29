@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { RequestId } from "@/distributed_machines/request_identity";
 import type { InvocationRef } from "@/state_machines/invocation_ref";
 import { SafeGitRefSchema } from "@/shared/git_refs";
 import type {
@@ -128,6 +129,18 @@ const currentChatMessageIdSchema = z
 export const VersionPreviewIntentEventSchema = z.discriminatedUnion("type", [
   z
     .object({
+      type: z.literal("ACQUIRE_WINDOW_INTEREST"),
+      operationId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("RESTORE_WINDOW_INTEREST"),
+      operationId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("CLOSE"),
       operationId: z.string().min(1),
     })
@@ -243,13 +256,35 @@ export type VersionPreviewProducerEvent =
       invocationRef: VersionPreviewInvocationRef;
     };
 
+export type VersionPreviewAdmittedIntent = VersionPreviewIntentEvent & {
+  readonly requestId?: RequestId;
+  readonly windowSessionId: string;
+};
+
+export type VersionPreviewCorrelatedProducerEvent =
+  VersionPreviewProducerEvent & {
+    readonly requestId?: RequestId;
+    readonly operation?: import("./operations").VersionPreviewOperationKind;
+  };
+
+export type VersionPreviewActorEvent =
+  | VersionPreviewAdmittedIntent
+  | VersionPreviewCorrelatedProducerEvent
+  | {
+      readonly type: "WINDOW_INTEREST_DISPOSED";
+      readonly windowSessionId: string;
+    };
+
 export type VersionPreviewWireEvent =
   | VersionPreviewIntentEvent
   | VersionPreviewProducerEvent;
 
 export interface VersionPreviewSettlement {
   readonly operationId: string;
+  readonly requestId?: string;
+  readonly operation?: import("./operations").VersionPreviewOperationKind;
   readonly outcome: "succeeded" | "failed";
+  readonly cleanupStarted?: boolean;
   readonly error?: PreviewError;
 }
 
@@ -257,6 +292,8 @@ export interface VersionPreviewActorState {
   readonly state: PreviewState;
   readonly activeInvocationRef: VersionPreviewInvocationRef | null;
   readonly lastSettlement: VersionPreviewSettlement | null;
+  /** Volatile presentation ownership. It is intentionally never persisted. */
+  readonly windowInterestSessionIds?: readonly string[];
 }
 
 const previewErrorSchema = z.object({ message: z.string() }).strict();
@@ -359,7 +396,20 @@ export const VersionPreviewRemoteSnapshotSchema = z
     lastSettlement: z
       .object({
         operationId: z.string(),
+        requestId: z.string().optional(),
+        operation: z
+          .enum([
+            "close",
+            "switch-app",
+            "select-version",
+            "switch-branch",
+            "restore",
+            "restore-to-message",
+            "retry-return",
+          ])
+          .optional(),
         outcome: z.enum(["succeeded", "failed"]),
+        cleanupStarted: z.boolean().optional(),
         error: previewErrorSchema.optional(),
       })
       .strict()
@@ -380,7 +430,15 @@ export function projectVersionPreviewRemoteSnapshot(
     revision,
     state: stripWindowPresentation(actorState.state),
     activeInvocationRef: actorState.activeInvocationRef,
-    lastSettlement: actorState.lastSettlement,
+    lastSettlement:
+      actorState.lastSettlement === null
+        ? null
+        : {
+            ...actorState.lastSettlement,
+            operation:
+              actorState.lastSettlement.operation ??
+              ("select-version" as const),
+          },
   };
 }
 
@@ -439,6 +497,9 @@ export function toPreviewDomainEvent(
   event: VersionPreviewWireEvent,
 ): PreviewEvent {
   switch (event.type) {
+    case "ACQUIRE_WINDOW_INTEREST":
+    case "RESTORE_WINDOW_INTEREST":
+      throw new Error(`${event.type} is handled by the hosted actor`);
     case "RECONCILE_REQUESTED":
     case "RECONCILED":
       throw new Error(`${event.type} is handled by the hosted actor`);

@@ -23,10 +23,11 @@ export function registerVersionPreviewWindowInterestHandlers(): void {
         throw new DyadError("App not found", DyadErrorKind.NotFound);
       }
       if (event.sender.isDestroyed()) return { acquired: false };
+      const windowSessionId = windowRegistry.ensureRegistered(event.sender);
       return {
-        acquired: versionPreviewActorService.acquireWindowInterest(
+        acquired: await versionPreviewActorService.acquireWindowInterest(
           appId,
-          event.sender.id,
+          windowSessionId,
         ),
       };
     },
@@ -45,10 +46,11 @@ export function registerVersionPreviewWindowInterestHandlers(): void {
         throw new DyadError("App not found", DyadErrorKind.NotFound);
       }
       if (event.sender.isDestroyed()) return { acquired: false };
+      const windowSessionId = windowRegistry.ensureRegistered(event.sender);
       return {
-        acquired: versionPreviewActorService.restoreWindowInterest(
+        acquired: await versionPreviewActorService.restoreWindowInterest(
           appId,
-          event.sender.id,
+          windowSessionId,
         ),
       };
     },
@@ -59,9 +61,8 @@ export function registerVersionPreviewWindowInterestHandlers(): void {
     async (event, { appId, operationId, exit }) => {
       const windowSessionId = windowRegistry.ensureRegistered(event.sender);
       return {
-        cleanupStarted: versionPreviewActorService.releaseWindowInterest({
+        cleanupStarted: await versionPreviewActorService.releaseWindowInterest({
           appId,
-          webContentsId: event.sender.id,
           windowSessionId,
           operationId,
           exit,

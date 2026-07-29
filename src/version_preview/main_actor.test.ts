@@ -32,6 +32,9 @@ const presentation = vi.hoisted(() => ({
   originEndpointFor: vi.fn(),
   forget: vi.fn(),
   confirm: vi.fn(),
+  settle: vi.fn(),
+  releaseApp: vi.fn(),
+  releaseWindow: vi.fn(),
 }));
 const invalidations = vi.hoisted(() => ({ publish: vi.fn() }));
 const appRun = vi.hoisted(() => ({
@@ -97,6 +100,8 @@ async function flush() {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+let harnessRequestSequence = 0;
+
 function createHarness() {
   const clock = createFakeClock();
   const host = new ActorHost({
@@ -138,6 +143,30 @@ function createHarness() {
     versionPreviewClientDefinition,
     versionPreviewKey(7),
   );
+  for (const actor of [actorA, actorB]) {
+    const dispatch = actor.dispatch;
+    (actor as { dispatch: typeof actor.dispatch }).dispatch = (
+      event,
+      options,
+    ) => {
+      const request = ++harnessRequestSequence;
+      const view = actor.getView();
+      return dispatch(event, {
+        ...options,
+        expected:
+          view.snapshot.kind === "available"
+            ? view.snapshot.observedRevision
+            : undefined,
+        requestIdentity: {
+          requestId: `version-preview-test-request:${request}` as never,
+          messageId: `version-preview-test-message:${request}` as never,
+          idempotencyKey:
+            `version-preview-test-idempotency:${request}` as never,
+          windowSessionId: "renderer-test",
+        },
+      });
+    };
+  }
   const releaseA = actorA.subscribe(() => undefined);
   const releaseB = actorB.subscribe(() => undefined);
   return {
@@ -146,6 +175,7 @@ function createHarness() {
     clientA,
     clientB,
     connectionA,
+    connectionB,
     errors,
     host,
     releaseA,
@@ -226,6 +256,46 @@ describe("version_preview main actor", () => {
     expect(presentation.forget).toHaveBeenCalledWith("preview-1");
 
     harness.releaseB();
+    harness.clientB.dispose();
+    harness.transport.dispose();
+  });
+
+  it("drops only the destroyed window generation's volatile interest", async () => {
+    const harness = createHarness();
+    await harness.actorA.resync();
+    await harness.actorB.resync();
+
+    await harness.actorA.dispatch({
+      type: "ACQUIRE_WINDOW_INTEREST",
+      operationId: "interest-a",
+    });
+    await harness.actorB.dispatch({
+      type: "ACQUIRE_WINDOW_INTEREST",
+      operationId: "interest-b",
+    });
+
+    const actor = harness.host.peek<any, any, any>(
+      versionPreviewDefinition.id,
+      versionPreviewKey(7),
+    );
+    expect(actor?.getSnapshot().windowInterestSessionIds).toEqual([
+      harness.connectionA.sessionId,
+      harness.connectionB.sessionId,
+    ]);
+
+    harness.connectionA.disconnect();
+    await flush();
+
+    expect(actor?.getSnapshot().windowInterestSessionIds).toEqual([
+      harness.connectionB.sessionId,
+    ]);
+    expect(harness.transport.inspectSubscriptions()).toEqual([
+      expect.objectContaining({ totalReferences: 1 }),
+    ]);
+
+    harness.releaseA();
+    harness.releaseB();
+    harness.clientA.dispose();
     harness.clientB.dispose();
     harness.transport.dispose();
   });
@@ -334,10 +404,12 @@ describe("version_preview main actor", () => {
       () => new Promise(() => undefined),
     );
     const routes = new Set<string>();
-    presentation.recordInitiator.mockImplementation((operationId: string) => {
-      if (routes.size >= 256) throw new Error("routing capacity exhausted");
-      routes.add(operationId);
-    });
+    presentation.recordInitiator.mockImplementation(
+      (_appId: number, operationId: string) => {
+        if (routes.size >= 256) throw new Error("routing capacity exhausted");
+        routes.add(operationId);
+      },
+    );
     presentation.forget.mockImplementation((operationId: string) => {
       routes.delete(operationId);
     });

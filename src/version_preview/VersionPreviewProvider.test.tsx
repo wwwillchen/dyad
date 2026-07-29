@@ -28,11 +28,26 @@ const actor = {
       activeInvocationRef: null,
       lastSettlement: null,
     },
+    connection: "ready" as const,
+    snapshot: {
+      kind: "available" as const,
+      observedRevision: {
+        kind: "actor" as const,
+        actorInstanceId: "version-preview-test-actor",
+        revision: 0,
+      },
+    },
   }),
   subscribe: (listener: () => void) => {
     actorListeners.add(listener);
     return () => actorListeners.delete(listener);
   },
+  subscribeOperationOutcome: vi.fn(() => () => undefined),
+  retain: vi.fn(() => ({
+    ready: Promise.resolve(),
+    refresh: vi.fn(async () => undefined),
+    release: vi.fn(),
+  })),
 };
 
 const toastError = vi.hoisted(() => vi.fn());
@@ -77,6 +92,7 @@ vi.mock("@/distributed_machines/react", async (importOriginal) => ({
     state: actor.getView().state,
     projection: actor.getView().state,
     connection: "ready",
+    snapshot: actor.getView().snapshot,
     dispatch: actor.dispatch,
   }),
 }));

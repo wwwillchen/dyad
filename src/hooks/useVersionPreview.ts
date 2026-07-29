@@ -3,6 +3,7 @@ import {
   useDistributedMachine,
   useRemoteMachineClient,
 } from "@/distributed_machines/react";
+import { useMachineMutation } from "@/distributed_machines/use_machine_mutation";
 import { showError } from "@/lib/toast";
 import {
   CLOSED_STATE,
@@ -21,6 +22,9 @@ import {
   versionPreviewKey,
   type VersionPreviewIntentEvent,
 } from "@/version_preview/transport";
+import { useVersionPreviewRequestActor } from "@/version_preview/request_actor";
+import type { VersionPreviewOperationOutcome } from "@/version_preview/operations";
+import type { PreparedRequestSettlement } from "@/distributed_machines/prepared_request";
 
 const NULL_APP_ID = 0;
 
@@ -93,6 +97,48 @@ export function useVersionPreview(appId: number | null): {
   const client = useRemoteMachineClient();
   const actor = client.actor(versionPreviewClientDefinition, key);
   const remote = useDistributedMachine(versionPreviewClientDefinition, key);
+  const requestActor = useVersionPreviewRequestActor(routedAppId);
+  const mutation = useMachineMutation<
+    {
+      readonly event: PreviewEvent;
+      readonly operationId: string;
+      readonly onAdmitted: () => void;
+    },
+    import("@/version_preview/request_actor").VersionPreviewAdmission,
+    VersionPreviewOperationOutcome,
+    import("@/version_preview/request_actor").VersionPreviewRefusal,
+    { readonly message: string }
+  >({
+    connection: remote.connection,
+    snapshot: remote.snapshot ?? { kind: "unavailable" },
+    request: (input, observedRevision) => {
+      const intent = toIntent(input.event, input.operationId);
+      if (!intent) {
+        throw new Error(`${input.event.type} is presentation-only`);
+      }
+      const prepared = requestActor.request({
+        intent,
+        observed: observedRevision,
+      });
+      void prepared.admission.then((admission) => {
+        if (admission.kind === "admitted") input.onAdmitted();
+      });
+      return prepared;
+    },
+    classifyOutcome: (outcome) => {
+      switch (outcome.kind) {
+        case "succeeded":
+          return { kind: "succeeded" };
+        case "cancelled":
+          return outcome.reason === "superseded"
+            ? { kind: "superseded" }
+            : { kind: "cancelled" };
+        case "failed":
+          return { kind: "failed", error: outcome.error };
+      }
+    },
+    requestOwnership: "parallel",
+  });
   const presentation = useSyncExternalStore(
     useCallback(
       (listener) => presentationStore.subscribe(routedAppId, listener),
@@ -110,14 +156,14 @@ export function useVersionPreview(appId: number | null): {
   const isPaneVisible =
     appId !== null && presentationStore.isPaneVisible(appId);
 
-  const dispatchNow = useCallback(
+  const requestPreview = useCallback(
     async (
       event: PreviewEvent,
-      waitForSettlement: boolean,
+      _waitForSettlement: boolean,
       selectionEpoch?: number,
     ): Promise<void> => {
       if (appId === null) return;
-      const isCleanup = event.type === "CLOSE";
+      const isCleanup = event.type === "CLOSE" || event.type === "APP_CHANGED";
       const releaseSelectionInterest = async (id: string) => {
         for (let attempt = 0; attempt < 3; attempt += 1) {
           try {
@@ -148,63 +194,61 @@ export function useVersionPreview(appId: number | null): {
           return;
         }
       }
-      if (event.type !== "SELECT_VERSION" && !isCleanup) {
-        presentationStore.send(appId, event);
-      }
       const id = operationId();
       const intent = toIntent(event, id);
       if (!intent) return;
 
-      let unsubscribe: () => void = () => undefined;
-      const settlement = waitForSettlement
-        ? new Promise<void>((resolve, reject) => {
-            const inspect = () => {
-              const result = actor.getView().state.lastSettlement;
-              if (result?.operationId !== id) return;
-              unsubscribe();
-              if (result.outcome === "succeeded") {
-                resolve();
-              } else {
-                reject(
-                  new Error(
-                    result.error?.message ?? "Version operation failed",
-                  ),
-                );
-              }
-            };
-            unsubscribe = actor.subscribe(inspect);
-            inspect();
-          })
-        : Promise.resolve();
       try {
         if (isCleanup) {
-          const releaseResult = await windowInterest.release(appId, id, {
-            type: "close",
-          });
+          const releaseResult = await windowInterest.release(
+            appId,
+            id,
+            event.type === "APP_CHANGED"
+              ? { type: "switch-app", nextAppId: event.nextAppId }
+              : { type: "close" },
+          );
           presentationStore.send(appId, event);
-          if (!releaseResult.cleanupStarted) {
-            unsubscribe();
-            return;
-          }
-          if (actor.getView().state.state.type === "closed") {
-            unsubscribe();
-            return;
-          }
-          await settlement;
+          if (!releaseResult.cleanupStarted) return;
           return;
         }
-        const receipt = await actor.dispatch(intent);
-        if (receipt.kind === "applied") {
-          if (event.type === "SELECT_VERSION") {
-            selectionAccepted = true;
+        let resolveAdmission!: () => void;
+        const admitted = new Promise<void>((resolve) => {
+          resolveAdmission = resolve;
+        });
+        const completion = mutation.mutate({
+          event,
+          operationId: id,
+          onAdmitted: () => {
+            if (event.type === "SELECT_VERSION") {
+              selectionAccepted = true;
+            }
             presentationStore.send(appId, event);
+            resolveAdmission();
+          },
+        });
+        if (!_waitForSettlement) {
+          const early = await Promise.race([
+            admitted.then(() => null),
+            completion,
+          ]);
+          if (early === null) return;
+          if (
+            early.kind === "completed" &&
+            early.outcome.kind === "succeeded"
+          ) {
+            return;
           }
-          await settlement;
+          throw settlementError(early);
+        }
+        const settlement = await completion;
+        if (
+          settlement.kind === "completed" &&
+          settlement.outcome.kind === "succeeded"
+        ) {
           return;
         }
-        throw new Error("The version operation was not accepted");
+        throw settlementError(settlement);
       } catch (error) {
-        unsubscribe();
         if (
           event.type === "SELECT_VERSION" &&
           acquiredSelectionInterest &&
@@ -215,12 +259,12 @@ export function useVersionPreview(appId: number | null): {
         throw error;
       }
     },
-    [actor, appId, presentationStore, windowInterest],
+    [appId, mutation, presentationStore, windowInterest],
   );
   const dispatch = useCallback(
     (event: PreviewEvent, waitForSettlement: boolean): Promise<void> => {
       if (event.type !== "SELECT_VERSION") {
-        return dispatchNow(event, waitForSettlement);
+        return requestPreview(event, waitForSettlement);
       }
       const selectionEpoch = windowInterest.selectionEpoch(
         appId ?? NULL_APP_ID,
@@ -235,12 +279,12 @@ export function useVersionPreview(appId: number | null): {
           ) {
             return;
           }
-          await dispatchNow(event, waitForSettlement, selectionEpoch);
+          await requestPreview(event, waitForSettlement, selectionEpoch);
         });
       selectionQueue.current = operation.catch(() => undefined);
       return operation;
     },
-    [actor, appId, dispatchNow, windowInterest],
+    [actor, appId, requestPreview, windowInterest],
   );
   const send = useCallback(
     (event: PreviewEvent) => {
@@ -276,4 +320,27 @@ export function useVersionPreview(appId: number | null): {
     send,
     sendAndWaitForMutation,
   };
+}
+
+function settlementError(
+  settlement: PreparedRequestSettlement<
+    VersionPreviewOperationOutcome,
+    import("@/version_preview/request_actor").VersionPreviewRefusal
+  >,
+): Error {
+  if (settlement.kind === "not-admitted") {
+    return new Error(
+      `The version operation was not accepted: ${settlement.refusal ?? settlement.reason}`,
+    );
+  }
+  if (settlement.kind === "detached") {
+    return new Error("The version operation detached before completion");
+  }
+  if (settlement.outcome.kind === "failed") {
+    return new Error(settlement.outcome.error.message);
+  }
+  if (settlement.outcome.kind === "cancelled") {
+    return new Error(`The version operation was ${settlement.outcome.reason}`);
+  }
+  return new Error("The version operation did not complete");
 }
