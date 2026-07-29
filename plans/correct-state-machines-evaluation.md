@@ -45,11 +45,14 @@ The post-migration inventories are:
   capability or the exact legacy compatibility capability for chat stream,
   GitHub operations, plan handoff, and version preview.
 - The semantic AST inventory separates framework internals, migrated safe
-  adapters, unrelated queues, and unsafe compatibility. New definitions,
-  callsites, renames, and deletions fail exact inventory tests.
+  adapters, unrelated queues, and unsafe compatibility. Definitions and
+  production capabilities are exact symbol inventories. Implementation
+  boundaries use exact file ownership plus boundary counts, so additions,
+  deletions, and file moves fail without coupling enforcement to private
+  function or class names.
 - Every unsafe compatibility group records machine, exact file, mechanism,
-  rationale, and removal owner. No app-run or image-generation entry is in the
-  unsafe compatibility inventory.
+  expected boundary count, rationale, and removal owner. No app-run or
+  image-generation entry is in the unsafe compatibility inventory.
 - The reusable framework-mechanism suite covers duplicate coalescing/replay,
   conflicting identity reuse, exactly-once terminal settlement, bounded replay
   with pinned unresolved work, tracked producer drain, destructive
@@ -77,8 +80,8 @@ Unsafe production compatibility remains only in these unmigrated owners:
 | plan handoff      | `src/plan_handoff/definition.ts`, `src/plan_handoff/remote_manager.ts`, `src/ipc/services/plan_handoff_service.ts`                                                                                                                                                                                     | protocol-v1 widening and raw dispatch/enqueue                                                    | Conditional follow-up B/C |
 | user input        | `src/user_input/read_model.ts`                                                                                                                                                                                                                                                                         | independent subscription ownership                                                               | Conditional follow-up C   |
 
-The executable source of truth, including every exact semantic boundary, is
-`compatibilityBoundaryInventory` in
+The executable source of truth, including every exact compatibility owner and
+its expected mechanism count, is `compatibilityBoundaryInventory` in
 `src/distributed_machines/boundary_inventory.test_support.ts`.
 
 Migrated adapters are separately pinned:

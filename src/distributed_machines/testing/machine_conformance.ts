@@ -371,7 +371,15 @@ export function formatContractReport(
     };
     readonly conformance: MachineConformance;
   }[],
-  unsafeEscapeHatches: Readonly<Record<string, readonly string[]>>,
+  unsafeEscapeHatches: Readonly<
+    Record<
+      string,
+      readonly (
+        | string
+        | { readonly exactFile: string; readonly expectedCount: number }
+      )[]
+    >
+  >,
 ): string {
   const formatRevision = (
     revision: RemoteIntentPolicy["observedRevision"],
@@ -420,9 +428,21 @@ export function formatContractReport(
         ...exclusions,
       ].join("\n");
     });
-  const summarizeLocations = (locations: readonly string[]): string[] => {
+  const summarizeLocations = (
+    locations: readonly (
+      | string
+      | { readonly exactFile: string; readonly expectedCount: number }
+    )[],
+  ): string[] => {
     const counts = new Map<string, number>();
     for (const location of locations) {
+      if (typeof location !== "string") {
+        counts.set(
+          location.exactFile,
+          (counts.get(location.exactFile) ?? 0) + location.expectedCount,
+        );
+        continue;
+      }
       const sourcePath = location.includes("::")
         ? location.slice(0, location.indexOf("::"))
         : location.replace(/:\d+:\d+$/, "");

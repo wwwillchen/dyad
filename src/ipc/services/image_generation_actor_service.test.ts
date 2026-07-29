@@ -19,7 +19,12 @@ const operations = vi.hoisted(() => ({
   createPublisher: vi.fn(),
   releaseApp: vi.fn(),
   releaseActor: vi.fn(),
-  remoteContract: vi.fn(() => undefined),
+  remoteContract: vi.fn(() => ({
+    prepare: vi.fn(() => undefined),
+    ignoredOutcome: vi.fn(),
+    receipt: vi.fn(),
+    releaseManager: vi.fn(),
+  })),
   settleActor: vi.fn(),
 }));
 

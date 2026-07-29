@@ -3,11 +3,12 @@ import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import {
-  actorEnsureInventory,
+  type BoundaryOwnership,
   compatibilityBoundaryInventory,
   completionAwareDispatchOrEnqueueInventory,
   distributedDefinitionInventory,
   frameworkOwnedBoundaryInventory,
+  migratedActorEnsureInventory,
   migratedSurfaceBoundaryInventory,
   migratedStatefulOwnerInventory,
   nonRemoteDispatchOrEnqueueInventory,
@@ -126,6 +127,50 @@ function assertInventory(
       .join("\n");
     throw new Error(
       `${label} inventory changed.\nDiscovered semantic boundaries:\n${diagnostics}`,
+      { cause: error },
+    );
+  }
+}
+
+function summarizeOwnership(
+  boundaries: readonly SemanticBoundary[],
+): BoundaryOwnership[] {
+  const counts = new Map<string, number>();
+  for (const boundary of boundaries) {
+    const exactFile = boundary.key.split("::", 1)[0];
+    counts.set(exactFile, (counts.get(exactFile) ?? 0) + 1);
+  }
+  return [...counts]
+    .map(([exactFile, expectedCount]) => ({ exactFile, expectedCount }))
+    .sort((left, right) => left.exactFile.localeCompare(right.exactFile));
+}
+
+function assertOwnershipInventory(
+  label: string,
+  actual: readonly SemanticBoundary[],
+  expected: readonly BoundaryOwnership[],
+): void {
+  const actualOwnership = summarizeOwnership(actual);
+  const expectedOwnership = summarizeOwnership(
+    expected.flatMap(({ exactFile, expectedCount }) =>
+      Array.from({ length: expectedCount }, (_, index) => ({
+        key: `${exactFile}::expected-${index}`,
+        location: exactFile,
+      })),
+    ),
+  );
+  try {
+    expect(actualOwnership).toEqual(expectedOwnership);
+  } catch (error) {
+    const diagnostics = actual
+      .map(({ key, location }) => `  ${key} @ ${location}`)
+      .join("\n");
+    throw new Error(
+      `${label} ownership inventory changed.\nExpected ownership:\n${expectedOwnership
+        .map(
+          ({ exactFile, expectedCount }) => `  ${exactFile}: ${expectedCount}`,
+        )
+        .join("\n")}\nDiscovered semantic boundaries:\n${diagnostics}`,
       { cause: error },
     );
   }
@@ -901,7 +946,7 @@ describe("semantic boundary inventory helpers", () => {
     );
   });
 
-  it("changes when a boundary moves to another owner", () => {
+  it("keeps ownership stable when a boundary moves to another function", () => {
     const first = dispatchBoundaries(
       fixtureSource("function first(){ remote.dispatch(event); }"),
       "fixture.ts",
@@ -910,23 +955,26 @@ describe("semantic boundary inventory helpers", () => {
       fixtureSource("function second(){ remote.dispatch(event); }"),
       "fixture.ts",
     );
-    expect(first.map(({ key }) => key)).not.toEqual(
-      second.map(({ key }) => key),
-    );
+    expect(summarizeOwnership(first)).toEqual(summarizeOwnership(second));
   });
 
-  it("changes on same-file replacement with a different boundary", () => {
-    const dispatch = dispatchBoundaries(
-      fixtureSource("function send(){ remote.dispatch(event); }"),
+  it("changes ownership count when another boundary is added", () => {
+    const one = dispatchBoundaries(
+      fixtureSource("function send(){ remote.dispatch(first); }"),
       "fixture.ts",
     );
-    const enqueue = dispatchBoundaries(
-      fixtureSource("function send(){ actor.enqueue(event); }"),
+    const two = dispatchBoundaries(
+      fixtureSource(
+        "function send(){ remote.dispatch(first); remote.dispatch(second); }",
+      ),
       "fixture.ts",
     );
-    expect(dispatch.map(({ key }) => key)).not.toEqual(
-      enqueue.map(({ key }) => key),
-    );
+    expect(summarizeOwnership(one)).toEqual([
+      { exactFile: "fixture.ts", expectedCount: 1 },
+    ]);
+    expect(summarizeOwnership(two)).toEqual([
+      { exactFile: "fixture.ts", expectedCount: 2 },
+    ]);
   });
 
   it("ignores comments and strings but finds computed and destructured access", () => {
@@ -1092,7 +1140,7 @@ describe("progressive distributed-machine inventories", () => {
   }, 20_000);
 
   it("pins renderer-schema-to-internal-event widening casts", () => {
-    assertInventory(
+    assertOwnershipInventory(
       "widening casts",
       collectProduction(wideningCastBoundaries),
       [
@@ -1104,7 +1152,7 @@ describe("progressive distributed-machine inventories", () => {
 
   it("pins raw, completion-aware, and unrelated dispatch/enqueue access separately", () => {
     const actual = collectProduction(dispatchBoundaries);
-    assertInventory(
+    assertOwnershipInventory(
       "dispatch/enqueue access",
       actual,
       [
@@ -1118,7 +1166,7 @@ describe("progressive distributed-machine inventories", () => {
   }, 20_000);
 
   it("pins bespoke waiter registries and owning APIs", () => {
-    assertInventory(
+    assertOwnershipInventory(
       "bespoke waiters",
       collectProduction((sourceFile, sourcePath) =>
         namedSurfaceBoundaries(sourceFile, sourcePath, WAITER_SURFACES),
@@ -1128,7 +1176,7 @@ describe("progressive distributed-machine inventories", () => {
   }, 20_000);
 
   it("pins independent subscription/ref-count declarations and owning APIs", () => {
-    assertInventory(
+    assertOwnershipInventory(
       "subscription/ref-count",
       collectProduction((sourceFile, sourcePath) =>
         namedSurfaceBoundaries(sourceFile, sourcePath, SUBSCRIPTION_SURFACES),
@@ -1141,7 +1189,7 @@ describe("progressive distributed-machine inventories", () => {
   }, 20_000);
 
   it("pins deletion/reset fence declarations and owning APIs", () => {
-    assertInventory(
+    assertOwnershipInventory(
       "deletion/reset fences",
       collectProduction((sourceFile, sourcePath) =>
         namedSurfaceBoundaries(sourceFile, sourcePath, FENCE_SURFACES),
@@ -1154,7 +1202,7 @@ describe("progressive distributed-machine inventories", () => {
   }, 20_000);
 
   it("pins initiator/routing map declarations and owning APIs", () => {
-    assertInventory(
+    assertOwnershipInventory(
       "initiator/routing maps",
       collectProduction((sourceFile, sourcePath) =>
         namedSurfaceBoundaries(sourceFile, sourcePath, ROUTING_SURFACES),
@@ -1166,16 +1214,18 @@ describe("progressive distributed-machine inventories", () => {
     );
   }, 20_000);
 
-  it("pins every direct actor-host ensure call", () => {
-    assertInventory(
-      "actor ensure",
-      collectProduction(actorEnsureBoundaries),
-      actorEnsureInventory,
+  it("pins actor creation capability use on migrated surfaces", () => {
+    assertOwnershipInventory(
+      "migrated actor ensure",
+      collectProduction(actorEnsureBoundaries).filter(({ key }) =>
+        isMigratedSurfacePath(key.split("::", 1)[0]),
+      ),
+      migratedActorEnsureInventory,
     );
   }, 20_000);
 
   it("pins all stateful collection owners on migrated surfaces", () => {
-    assertInventory(
+    assertOwnershipInventory(
       "migrated stateful owners",
       collectProduction(migratedStatefulOwnerBoundaries),
       migratedStatefulOwnerInventory,
@@ -1191,36 +1241,33 @@ describe("progressive distributed-machine inventories", () => {
     const unsafe = Object.values(unsafeEscapeHatchInventory).flat();
     expect(
       unsafe.filter(
-        (entry) =>
-          entry.startsWith("app_run/") ||
-          entry.startsWith("hooks/useRunApp") ||
-          entry.startsWith("image_generation/") ||
-          entry.startsWith("hooks/useGenerateImage") ||
-          entry.startsWith("ipc/services/app_run") ||
-          entry.startsWith("ipc/services/image_generation"),
+        ({ exactFile }) =>
+          exactFile.startsWith("app_run/") ||
+          exactFile.startsWith("hooks/useRunApp") ||
+          exactFile.startsWith("image_generation/") ||
+          exactFile.startsWith("hooks/useGenerateImage") ||
+          exactFile.startsWith("ipc/services/app_run") ||
+          exactFile.startsWith("ipc/services/image_generation"),
       ),
     ).toEqual([]);
   });
 
   it("requires exact ownership metadata for every compatibility boundary", () => {
-    const actual = compatibilityBoundaryInventory.flatMap((entry) => {
+    const actual = compatibilityBoundaryInventory.map((entry) => {
       expect(entry.machine.trim()).not.toBe("");
       expect(entry.exactFile.trim()).not.toBe("");
       expect(entry.why.trim()).not.toBe("");
       expect(entry.removalOwner.trim()).not.toBe("");
-      expect(entry.boundaries.length).toBeGreaterThan(0);
-      for (const boundary of entry.boundaries) {
-        expect(boundary.startsWith(`${entry.exactFile}::`)).toBe(true);
-        expect(
-          unsafeEscapeHatchInventory[entry.mechanism],
-          `${entry.machine}:${entry.exactFile}:${entry.mechanism}`,
-        ).toContain(boundary);
-      }
-      return entry.boundaries;
+      expect(entry.expectedCount).toBeGreaterThan(0);
+      expect(
+        unsafeEscapeHatchInventory[entry.mechanism],
+        `${entry.machine}:${entry.exactFile}:${entry.mechanism}`,
+      ).toContain(entry);
+      return `${entry.machine}:${entry.exactFile}:${entry.mechanism}`;
     });
-    expect([...new Set(actual)].sort()).toEqual([...actual].sort());
-    expect(actual.sort()).toEqual(
-      Object.values(unsafeEscapeHatchInventory).flat().sort(),
+    expect([...new Set(actual)]).toEqual(actual);
+    expect(Object.values(unsafeEscapeHatchInventory).flat()).toHaveLength(
+      compatibilityBoundaryInventory.length,
     );
   });
 });
