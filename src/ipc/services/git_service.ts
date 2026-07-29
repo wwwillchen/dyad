@@ -1,11 +1,26 @@
+import log from "electron-log";
+
 import {
   ensureGitLineEndingPolicy,
   gitAdd,
   gitAddAll,
   gitCommit,
   gitInit,
+  gitRemove,
   hasStagedChanges,
 } from "../utils/git_utils";
+
+const logger = log.scope("git_service");
+
+/** Why a removal couldn't be committed, or null when it was. */
+export type RemoveFileUncommittedReason = "untracked" | "commit-failed";
+
+export interface RemoveFileAndCommitResult {
+  /** The commit hash, or null when nothing was committed. */
+  commitHash: string | null;
+  /** Null when the deletion was committed. */
+  uncommittedReason: RemoveFileUncommittedReason | null;
+}
 
 /**
  * Intent-level facade over the low-level primitives in `git_utils.ts`.
@@ -114,6 +129,59 @@ export class GitService {
       return null;
     }
     return gitCommit({ path, message });
+  }
+
+  /**
+   * Removes a file from the working tree and the index, then commits only that
+   * deletion, leaving any other staged or unstaged changes alone.
+   *
+   * `git rm` deletes the file from disk *and* stages the removal in a single
+   * operation, so callers should not unlink the file first: doing so opens a
+   * window where a concurrent write could recreate the path and have it deleted
+   * by the later `git rm -f`.
+   *
+   * Callers use this for deletions the user shouldn't have to review as an
+   * uncommitted change. It is best-effort by design: an untracked file (nothing
+   * for `git rm` to do), a non-repo folder, or a state that forbids partial
+   * commits (mid-merge) must not turn into a failed delete. The returned
+   * `uncommittedReason` says which of those happened, so callers can tell the
+   * user whether the deletion is recoverable:
+   * - `"untracked"`: git removed nothing, and the file is still on disk for the
+   *   caller to delete. There is no history to restore from.
+   * - `"commit-failed"`: the removal is staged (and the file is gone from disk),
+   *   so it's recoverable through the normal uncommitted-changes flow.
+   */
+  async removeFileAndCommit({
+    path,
+    filepath,
+    message,
+  }: {
+    path: string;
+    filepath: string;
+    message: string;
+  }): Promise<RemoveFileAndCommitResult> {
+    try {
+      await gitRemove({ path, filepath });
+    } catch (error) {
+      logger.warn(
+        `Couldn't git-remove '${filepath}' (likely untracked):`,
+        error,
+      );
+      return { commitHash: null, uncommittedReason: "untracked" };
+    }
+    try {
+      // Path-scoped so this commit contains the deletion and nothing else.
+      const commitHash = await gitCommit({ path, message, paths: [filepath] });
+      return { commitHash, uncommittedReason: null };
+    } catch (error) {
+      // The removal is still staged, so the user can review or restore it
+      // through the normal uncommitted-changes flow.
+      logger.warn(
+        `Staged deletion of '${filepath}' but couldn't commit it:`,
+        error,
+      );
+      return { commitHash: null, uncommittedReason: "commit-failed" };
+    }
   }
 }
 

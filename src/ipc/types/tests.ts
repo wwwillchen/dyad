@@ -189,6 +189,30 @@ export const GetTestScreenshotResultSchema = z.object({
   dataUrl: z.string().nullable(),
 });
 
+export const DeleteAppTestParamsSchema = z.object({
+  appId: z.number(),
+  /** Spec path relative to the app root, e.g. "e2e-tests/signup.spec.ts". */
+  testFile: z.string(),
+});
+
+export const DeleteAppTestResultSchema = z.object({
+  /** The normalized spec path that was deleted. */
+  file: z.string(),
+  /**
+   * Whether the deletion was committed to git. False when the file was
+   * untracked (or the commit otherwise failed), meaning the deletion isn't in
+   * version history to restore from.
+   */
+  committed: z.boolean(),
+  /**
+   * Why the deletion wasn't committed, or null when it was. "untracked" means
+   * git had nothing to record, so the file is gone for good; "commit-failed"
+   * means the removal is staged and still recoverable from pending changes.
+   * The two need different recovery guidance in the UI.
+   */
+  uncommittedReason: z.enum(["untracked", "commit-failed"]).nullable(),
+});
+
 // =============================================================================
 // Legacy test migration (`tests/` -> `e2e-tests/`)
 // =============================================================================
@@ -276,6 +300,12 @@ export const testsContracts = {
     channel: "tests:screenshot",
     input: GetTestScreenshotParamsSchema,
     output: GetTestScreenshotResultSchema,
+  }),
+
+  deleteAppTest: defineContract({
+    channel: "tests:delete",
+    input: DeleteAppTestParamsSchema,
+    output: DeleteAppTestResultSchema,
   }),
 
   detectLegacyTests: defineContract({

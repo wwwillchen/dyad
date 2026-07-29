@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   gitAdd: vi.fn(),
   gitAddAll: vi.fn(),
   gitCommit: vi.fn(async () => "commit-hash"),
+  gitRemove: vi.fn(),
   hasStagedChanges: vi.fn(async () => true),
 }));
 
@@ -144,5 +145,65 @@ describe("GitService", () => {
     expect(callOrder).toEqual(["gitAdd", "hasStagedChanges"]);
     expect(hash).toBeNull();
     expect(mocks.gitCommit).not.toHaveBeenCalled();
+  });
+
+  it("removeFileAndCommit commits only the removed path", async () => {
+    const result = await service.removeFileAndCommit({
+      path: "/repo",
+      filepath: "e2e-tests/a.spec.ts",
+      message: "msg",
+    });
+
+    expect(callOrder).toEqual(["gitRemove", "gitCommit"]);
+    expect(mocks.gitRemove).toHaveBeenCalledWith({
+      path: "/repo",
+      filepath: "e2e-tests/a.spec.ts",
+    });
+    // Scoped to the one path, so unrelated staged changes stay uncommitted.
+    expect(mocks.gitCommit).toHaveBeenCalledWith({
+      path: "/repo",
+      message: "msg",
+      paths: ["e2e-tests/a.spec.ts"],
+    });
+    expect(result).toEqual({
+      commitHash: "commit-hash",
+      uncommittedReason: null,
+    });
+  });
+
+  it("removeFileAndCommit reports an untracked file without committing", async () => {
+    mocks.gitRemove.mockRejectedValueOnce(new Error("did not match any files"));
+
+    const result = await service.removeFileAndCommit({
+      path: "/repo",
+      filepath: "e2e-tests/untracked.spec.ts",
+      message: "msg",
+    });
+
+    // Distinct from a failed commit: nothing was removed or staged, so the
+    // caller still owns deleting the file and can't promise a way back.
+    expect(result).toEqual({
+      commitHash: null,
+      uncommittedReason: "untracked",
+    });
+    expect(mocks.gitCommit).not.toHaveBeenCalled();
+  });
+
+  it("removeFileAndCommit reports a failed commit, leaving it staged", async () => {
+    mocks.gitCommit.mockRejectedValueOnce(
+      new Error("cannot do a partial commit during a merge"),
+    );
+
+    const result = await service.removeFileAndCommit({
+      path: "/repo",
+      filepath: "e2e-tests/a.spec.ts",
+      message: "msg",
+    });
+
+    expect(result).toEqual({
+      commitHash: null,
+      uncommittedReason: "commit-failed",
+    });
+    expect(mocks.gitRemove).toHaveBeenCalled();
   });
 });

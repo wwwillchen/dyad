@@ -1,6 +1,14 @@
 import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   FlaskConical,
   Play,
@@ -18,10 +26,13 @@ import {
   EyeOff,
   Zap,
   ShieldCheck,
+  Code,
+  Trash2,
 } from "lucide-react";
-import { selectedAppIdAtom } from "@/atoms/appAtoms";
+import { previewModeAtom, selectedAppIdAtom } from "@/atoms/appAtoms";
 import { selectedChatIdAtom } from "@/atoms/chatAtoms";
 import { useCurrentAppUrl } from "@/hooks/useAppRun";
+import { selectedFileAtom, stagedDiffFileAtom } from "@/atoms/viewAtoms";
 import {
   applyTestRunFinishedAtom,
   applyTestRunStartedAtom,
@@ -35,6 +46,7 @@ import {
 } from "@/atoms/testRuntimeAtoms";
 import type { TestCase, TestCaseResult, FileAttachment } from "@/ipc/types";
 import { ipc } from "@/ipc/types";
+import { useDeleteAppTest } from "@/hooks/useDeleteAppTest";
 import { useLoadApp } from "@/hooks/useLoadApp";
 import { runAppLifecycleInBackground, useRunApp } from "@/hooks/useRunApp";
 import { useSetTestingEnabled } from "@/hooks/useSetTestingEnabled";
@@ -42,6 +54,16 @@ import { useSettings } from "@/hooks/useSettings";
 import { useStreamChat } from "@/hooks/useStreamChat";
 import { useStreamFinished } from "@/chat_stream/ChatStreamProvider";
 import { useChatMode } from "@/hooks/useChatMode";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { AgentModeRequiredDialog } from "./AgentModeRequiredDialog";
 import { MigrateTestsBanner } from "./MigrateTestsBanner";
 import { queryKeys } from "@/lib/queryKeys";
@@ -200,6 +222,95 @@ function RunButton({
   );
 }
 
+/**
+ * Row action rendered as an icon only, revealed on hover/focus like RunButton
+ * so a row's chrome stays quiet until the user reaches for it.
+ */
+function IconRowButton({
+  onClick,
+  label,
+  title,
+  disabled,
+  danger,
+  testId,
+  children,
+}: {
+  onClick: () => void;
+  label: string;
+  title: string;
+  disabled?: boolean;
+  danger?: boolean;
+  testId?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={title}
+      data-testid={testId}
+      className={cn(
+        "flex items-center p-1 rounded-md transition-all cursor-pointer shrink-0",
+        danger
+          ? "text-gray-700 dark:text-gray-300 hover:bg-red-100 hover:text-red-700 dark:hover:bg-red-900/40 dark:hover:text-red-300"
+          : "text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700",
+        "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+        disabled && "opacity-40 cursor-not-allowed",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function OpenInEditorButton({
+  onClick,
+  label,
+}: {
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <IconRowButton
+      onClick={onClick}
+      label={label}
+      title="Open in the code editor"
+    >
+      {/* Same icon as the toolbar's code-view button, so the row action reads
+          as "switch to code" rather than "open elsewhere". */}
+      <Code size={13} />
+    </IconRowButton>
+  );
+}
+
+function DeleteButton({
+  onClick,
+  label,
+  disabled,
+}: {
+  onClick: () => void;
+  label: string;
+  disabled: boolean;
+}) {
+  return (
+    <IconRowButton
+      onClick={onClick}
+      label={label}
+      title={
+        disabled
+          ? "Can't delete a test file while tests are running"
+          : "Delete this test file"
+      }
+      disabled={disabled}
+      danger
+      testId="delete-test-file-button"
+    >
+      <Trash2 size={13} />
+    </IconRowButton>
+  );
+}
+
 function FixButton({ onClick, label }: { onClick: () => void; label: string }) {
   return (
     <button
@@ -232,6 +343,7 @@ interface TestCaseRowProps {
   /** Last child under its file — draws an "└" elbow instead of "├". */
   isLast: boolean;
   onRun: () => void;
+  onOpenInEditor: () => void;
   onAskAiToFix: AskAiToFix;
 }
 
@@ -244,6 +356,7 @@ function TestCaseRow({
   disabled,
   isLast,
   onRun,
+  onOpenInEditor,
   onAskAiToFix,
 }: TestCaseRowProps) {
   const [expanded, setExpanded] = useState(false);
@@ -321,6 +434,10 @@ function TestCaseRow({
           disabled={disabled}
           label={`Run test: ${testCase.title}`}
         />
+        <OpenInEditorButton
+          onClick={onOpenInEditor}
+          label={`Open test in code editor: ${testCase.title}`}
+        />
       </div>
       {expanded && canExpand && (
         <div className="relative px-3 pb-3 pl-14">
@@ -351,8 +468,16 @@ interface FileRowProps {
   status: TestStatus;
   result: RuntimeTestResult | undefined;
   disabled: boolean;
+  /**
+   * Deleting mutates the spec on disk, so it's blocked while a run is in
+   * flight — separate from `disabled`, which also covers "dev server down"
+   * (a state that only stops runs).
+   */
+  deleteDisabled: boolean;
   onRunFile: () => void;
   onRunCase: (line: number) => void;
+  onOpenInEditor: (line?: number) => void;
+  onDelete: () => void;
   caseStatus: (testCase: TestCase) => TestStatus;
   caseResult: (testCase: TestCase) => TestCaseResult | undefined;
   onAskAiToFix: AskAiToFix;
@@ -365,8 +490,11 @@ function FileRow({
   status,
   result,
   disabled,
+  deleteDisabled,
   onRunFile,
   onRunCase,
+  onOpenInEditor,
+  onDelete,
   caseStatus,
   caseResult,
   onAskAiToFix,
@@ -447,6 +575,15 @@ function FileRow({
           disabled={disabled}
           label={`Run all tests in: ${fileName}`}
         />
+        <OpenInEditorButton
+          onClick={() => onOpenInEditor()}
+          label={`Open in code editor: ${fileName}`}
+        />
+        <DeleteButton
+          onClick={onDelete}
+          disabled={deleteDisabled}
+          label={`Delete test file: ${fileName}`}
+        />
       </div>
       {expanded && hasTests && (
         <div className="bg-(--background-darkest)/30">
@@ -461,6 +598,7 @@ function FileRow({
               disabled={disabled}
               isLast={index === tests.length - 1}
               onRun={() => onRunCase(testCase.line)}
+              onOpenInEditor={() => onOpenInEditor(testCase.line)}
               onAskAiToFix={onAskAiToFix}
             />
           ))}
@@ -477,6 +615,9 @@ export function TestsPanel() {
   const appUrl = useCurrentAppUrl(selectedAppId);
   const setSpecs = useSetAtom(setTestSpecsForAppAtom);
   const setRunState = useSetAtom(setTestRunStateForAppAtom);
+  const setPreviewMode = useSetAtom(previewModeAtom);
+  const setSelectedFile = useSetAtom(selectedFileAtom);
+  const setStagedDiffFile = useSetAtom(stagedDiffFileAtom);
   // For lazy, subscription-free reads of the streamed output (askAiToFix runs
   // long after the chunks arrive; subscribing would re-render the whole panel
   // on every flush and defeat the point of the separate output atom).
@@ -487,6 +628,7 @@ export function TestsPanel() {
   const { runApp } = useRunApp();
   const { setTestingEnabled, isLoading: isTogglingTesting } =
     useSetTestingEnabled();
+  const { deleteTestAsync, isDeleting } = useDeleteAppTest();
   const { streamMessage, isStreaming } = useStreamChat();
   const { effectiveMode } = useChatMode(chatId);
   const isAgentMode = effectiveMode === "local-agent";
@@ -801,6 +943,74 @@ export function TestsPanel() {
     if (selectedAppId == null) return;
     setTestingEnabled({ appId: selectedAppId, enabled: false });
   }, [selectedAppId, setTestingEnabled]);
+
+  // Swap the preview panel over to the code editor with the spec selected —
+  // at the test's own line when the user opened a specific test case.
+  const openInEditor = useCallback(
+    (file: string, line?: number) => {
+      // CodeView renders a staged-file diff in preference to the selected file,
+      // so a diff left open from the commit menu would swallow this request.
+      setStagedDiffFile(null);
+      setSelectedFile({ path: file, line: line ?? null });
+      setPreviewMode("code");
+    },
+    [setSelectedFile, setPreviewMode, setStagedDiffFile],
+  );
+
+  // The spec file awaiting delete confirmation, tagged with the app it came
+  // from. Only data is stored (never a callback), so Delete always runs through
+  // the latest handler.
+  const [pendingDelete, setPendingDelete] = useState<{
+    appId: number;
+    file: string;
+  } | null>(null);
+
+  const confirmDelete = useCallback(async () => {
+    // No deletes while a run is in flight — the backend serializes on the same
+    // per-app lock, but re-check here so a run that started after the dialog
+    // opened can't slip a delete through the confirmation window.
+    if (pendingDelete == null || isRunning) return;
+    // Delete against the app the confirmation was opened for, never whichever
+    // app happens to be selected now: this panel stays mounted across app
+    // switches, so the selection can have moved to a different app with a
+    // same-named spec while the dialog was open.
+    const { appId, file } = pendingDelete;
+    if (appId !== selectedAppId) {
+      setPendingDelete(null);
+      return;
+    }
+    try {
+      await deleteTestAsync({ appId, testFile: file });
+    } catch {
+      // Already surfaced as an error toast by the mutation; keep the panel as
+      // it is so the user can retry.
+      return;
+    } finally {
+      setPendingDelete(null);
+    }
+    // Drop the deleted spec's run result so a later run's counts and the
+    // output drawer don't keep reporting a file that no longer exists.
+    setRunState({
+      appId,
+      update: (prev) => {
+        if (!(file in prev.results)) return prev;
+        const { [file]: _removed, ...results } = prev.results;
+        return { ...prev, results };
+      },
+    });
+  }, [deleteTestAsync, isRunning, pendingDelete, selectedAppId, setRunState]);
+
+  // If a run starts while the delete confirmation is open, close it — deleting
+  // a spec out from under an in-flight run isn't allowed.
+  useEffect(() => {
+    if (isRunning) setPendingDelete(null);
+  }, [isRunning]);
+
+  // Switching apps invalidates the pending confirmation: the dialog names a
+  // spec in the app the user just left.
+  useEffect(() => {
+    setPendingDelete(null);
+  }, [selectedAppId]);
   const toggleOutput = useCallback(() => {
     setOutputOpen((v) => !v);
   }, []);
@@ -1176,8 +1386,13 @@ export function TestsPanel() {
                 status={fileStatus(spec.file)}
                 result={runState.results[spec.file]}
                 disabled={isRunning || !devServerRunning}
+                deleteDisabled={isRunning || isDeleting}
                 onRunFile={() => runTests(spec.file)}
                 onRunCase={(line) => runTests(spec.file, line)}
+                onOpenInEditor={(line) => openInEditor(spec.file, line)}
+                onDelete={() =>
+                  setPendingDelete({ appId: selectedAppId, file: spec.file })
+                }
                 caseStatus={(testCase) => caseStatus(spec.file, testCase)}
                 caseResult={(testCase) => caseResult(spec.file, testCase)}
                 onAskAiToFix={askAiToFix}
@@ -1188,6 +1403,17 @@ export function TestsPanel() {
       </div>
 
       <OutputDrawer open={outputOpen} onToggle={toggleOutput} />
+
+      <DeleteTestFileDialog
+        file={pendingDelete?.file ?? null}
+        testCount={
+          specs.find((s) => s.file === pendingDelete?.file)?.tests.length ?? 0
+        }
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        onConfirm={confirmDelete}
+      />
 
       <AgentModeRequiredDialog
         open={agentModeDialog !== null}
@@ -1207,6 +1433,54 @@ export function TestsPanel() {
         }}
       />
     </div>
+  );
+}
+
+/**
+ * Confirmation for deleting a spec file. Deleting removes the file from disk
+ * and commits that deletion (so it's recoverable from version history), which
+ * is worth a confirm — especially since the row also carries the count of
+ * tests that go with it.
+ */
+function DeleteTestFileDialog({
+  file,
+  testCount,
+  onOpenChange,
+  onConfirm,
+}: {
+  file: string | null;
+  testCount: number;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  const fileName = file ? (file.split("/").pop() ?? file) : "";
+  return (
+    <AlertDialog open={file !== null} onOpenChange={onOpenChange}>
+      <AlertDialogContent data-testid="delete-test-file-dialog">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete {fileName}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {testCount > 0
+              ? `This deletes the file and the ${testCount} ${
+                  testCount === 1 ? "test" : "tests"
+                } in it. `
+              : "This deletes the test file. "}
+            If it's tracked in git, the deletion is committed on its own so you
+            can restore it from version history.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={onConfirm}
+            data-testid="confirm-delete-test-file"
+            className="bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700"
+          >
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 

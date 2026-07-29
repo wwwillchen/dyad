@@ -4,7 +4,10 @@ import {
   type HandlerContext,
   setHandlerContextForTesting,
 } from "@/ipc/handlers/handler_context";
-import type { GitService } from "@/ipc/services/git_service";
+import type {
+  GitService,
+  RemoveFileAndCommitResult,
+} from "@/ipc/services/git_service";
 import { DEFAULT_SETTINGS } from "@/main/settings";
 import type { UserSettings } from "@/lib/schemas";
 import { createInMemoryTestDb, type TestDb } from "./test_db";
@@ -62,6 +65,17 @@ export class FakeGitService implements GitService {
 
   async stageFile(args: { path: string; filepath: string }): Promise<void> {
     this.calls.push({ method: "stageFile", args });
+  }
+
+  async removeFileAndCommit(args: {
+    path: string;
+    filepath: string;
+    message: string;
+  }): Promise<RemoveFileAndCommitResult> {
+    return {
+      commitHash: this.record("removeFileAndCommit", args),
+      uncommittedReason: null,
+    };
   }
 }
 
