@@ -95,6 +95,7 @@ import {
 } from "./pro/main/ipc/handlers/local_agent/chat_search_indexer";
 import { cleanupOldMediaFiles } from "./ipc/utils/media_cleanup";
 import { scrubGithubTokenFromRemotes } from "./ipc/utils/git_remote_token_scrub";
+import { encryptStoredMcpSecrets } from "./ipc/utils/mcp_secret_encryption";
 import fs from "fs";
 import { gitAddSafeDirectory } from "./ipc/utils/git_utils";
 import {
@@ -427,6 +428,12 @@ export async function onReady() {
 
   // Remove GitHub tokens that older versions embedded in git remote URLs
   scrubGithubTokenFromRemotes();
+
+  // Encrypt MCP headers and env vars that are still stored as
+  // plaintext. Awaited so no MCP read can see a row the pass is about
+  // to correct. It returns rather than throwing on failure, and does
+  // no work at all once there are no plaintext values left.
+  await encryptStoredMcpSecrets();
 
   const settings = await readEffectiveSettings();
 

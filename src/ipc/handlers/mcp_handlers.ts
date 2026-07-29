@@ -13,10 +13,12 @@ import {
   runOAuthFlow,
   withMcpOAuthServerMutation,
 } from "../utils/mcp_oauth_flow";
+import { oauthStateHasTokens } from "../utils/mcp_oauth_provider";
 import {
+  encryptSecretMap,
   encryptToString,
-  oauthStateHasTokens,
-} from "../utils/mcp_oauth_provider";
+  readServerSecretMap,
+} from "../utils/secret_storage";
 import {
   mcpContracts,
   DEFAULT_OAUTH_CALLBACK_PORT,
@@ -84,17 +86,50 @@ function parseJsonField<T>(
   }
 }
 
+// Parse a secret map that arrived as a JSON string. The schema allows
+// a raw string for these fields, so the values have to be checked
+// here: a map holding anything but strings encrypts fine and then
+// fails to read back, leaving the secret stuck as unreadable.
+function parseSecretMapField(
+  value: Record<string, string> | string | null | undefined,
+  field: string,
+): Record<string, string> | null {
+  const parsed =
+    typeof value === "string"
+      ? parseJsonField<unknown>(value, field)
+      : (value ?? null);
+  if (parsed === null) return null;
+  if (
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    !Object.values(parsed).every((v) => typeof v === "string")
+  ) {
+    throw new DyadError(
+      `"${field}" must be an object of string values.`,
+      DyadErrorKind.Validation,
+    );
+  }
+  return parsed as Record<string, string>;
+}
+
 // Convert a DB row into the shape sent to the UI. Drops the encrypted
 // `oauthState` / `oauthClientSecret`; sends `oauthConnected` instead.
 function toMcpServer(dbServer: typeof mcpServers.$inferSelect): McpServer {
+  const env = readServerSecretMap(dbServer.envEncrypted, dbServer.envJson);
+  const headers = readServerSecretMap(
+    dbServer.headersEncrypted,
+    dbServer.headersJson,
+  );
   return {
     id: dbServer.id,
     name: dbServer.name,
     transport: dbServer.transport as McpTransport,
     command: dbServer.command,
     args: dbServer.args,
-    envJson: dbServer.envJson,
-    headersJson: dbServer.headersJson,
+    envJson: env.status === "ok" ? env.value : null,
+    headersJson: headers.status === "ok" ? headers.value : null,
+    envUnreadable: env.status === "unreadable",
+    headersUnreadable: headers.status === "unreadable",
     url: dbServer.url,
     enabled: dbServer.enabled,
     oauthEnabled: dbServer.oauthEnabled,
@@ -198,7 +233,8 @@ export function registerMcpHandlers() {
               transport: "stdio" as const,
               command: entry.command,
               args: entry.args,
-              envJson: entry.env ?? null,
+              envJson: null,
+              envEncrypted: encryptSecretMap(entry.env),
               enabled: !needsSetup,
               catalogSlug: entry.slug,
             }
@@ -206,7 +242,8 @@ export function registerMcpHandlers() {
               name: entry.name,
               transport: "http" as const,
               url: entry.url,
-              headersJson: entry.headers ?? null,
+              headersJson: null,
+              headersEncrypted: encryptSecretMap(entry.headers),
               enabled: !needsSetup,
               oauthEnabled: entry.oauth != null,
               oauthScope: entry.oauth?.scope ?? null,
@@ -255,16 +292,8 @@ export function registerMcpHandlers() {
       typeof args === "string"
         ? parseJsonField<string[]>(args, "args")
         : (args ?? null);
-    // Handle envJson: can be string (JSON), object, or null/undefined
-    const parsedEnvJson =
-      typeof envJson === "string"
-        ? parseJsonField<Record<string, string>>(envJson, "envJson")
-        : (envJson ?? null);
-    // Handle headersJson: can be string (JSON), object, or null/undefined
-    const parsedHeadersJson =
-      typeof headersJson === "string"
-        ? parseJsonField<Record<string, string>>(headersJson, "headersJson")
-        : (headersJson ?? null);
+    const parsedEnvJson = parseSecretMapField(envJson, "envJson");
+    const parsedHeadersJson = parseSecretMapField(headersJson, "headersJson");
     const result = await db
       .insert(mcpServers)
       .values({
@@ -272,8 +301,12 @@ export function registerMcpHandlers() {
         transport,
         command: command || null,
         args: parsedArgs,
-        envJson: parsedEnvJson,
-        headersJson: parsedHeadersJson,
+        // Secrets are written to the encrypted columns only. The
+        // plaintext columns stay NULL so nothing new lands there.
+        envJson: null,
+        envEncrypted: encryptSecretMap(parsedEnvJson),
+        headersJson: null,
+        headersEncrypted: encryptSecretMap(parsedHeadersJson),
         url: url || null,
         enabled: !!enabled,
         // OAuth only applies to HTTP transport.
@@ -302,19 +335,21 @@ export function registerMcpHandlers() {
     if (params.command !== undefined) update.command = params.command;
     if (params.args !== undefined)
       update.args = parseJsonField<string[]>(params.args, "args");
-    if (params.envJson !== undefined)
-      update.envJson =
-        typeof params.envJson === "string"
-          ? parseJsonField<Record<string, string>>(params.envJson, "envJson")
-          : (params.envJson ?? null);
-    if (params.headersJson !== undefined)
-      update.headersJson =
-        typeof params.headersJson === "string"
-          ? parseJsonField<Record<string, string>>(
-              params.headersJson,
-              "headersJson",
-            )
-          : (params.headersJson ?? null);
+    // Editing a secret clears the plaintext column rather than
+    // updating it, so the row can never hold a superseded value that
+    // a build reading the plaintext column would still use.
+    if (params.envJson !== undefined) {
+      update.envEncrypted = encryptSecretMap(
+        parseSecretMapField(params.envJson, "envJson"),
+      );
+      update.envJson = null;
+    }
+    if (params.headersJson !== undefined) {
+      update.headersEncrypted = encryptSecretMap(
+        parseSecretMapField(params.headersJson, "headersJson"),
+      );
+      update.headersJson = null;
+    }
     if (params.url !== undefined) update.url = params.url;
     if (params.enabled !== undefined) update.enabled = !!params.enabled;
     if (params.oauthEnabled !== undefined) {

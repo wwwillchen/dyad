@@ -16,7 +16,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useMcp } from "@/hooks/useMcp";
 import { useMcpCatalog } from "@/hooks/useMcpCatalog";
 import type { McpToolConsent } from "@/ipc/types";
+import { useOauthStorageEncrypted } from "./AddPluginDialog";
 import { CatalogBadge } from "./CatalogBadge";
+import { OauthPlaintextStorageAlert } from "./OauthPlaintextStorageAlert";
 import { KeyValueEditor, arrayToJsonObject } from "./KeyValueEditor";
 import { PluginSetupSection } from "./PluginSetupSection";
 import { serverNeedsSetup } from "./pluginSetup";
@@ -29,6 +31,23 @@ const FEEDBACK_TITLES: Record<ConnectFeedback["kind"], string> = {
   discovery_failed: "Server doesn't support OAuth",
   credentials: "Authentication failed",
 };
+
+// Shown in place of an editable list when the stored values can't be
+// decrypted. Editing is locked because the list would render empty and
+// saving it would overwrite the real values.
+function UnreadableSecretsNotice() {
+  return (
+    <Alert variant="destructive" className="mb-3">
+      <AlertTitle>Saved values can't be read</AlertTitle>
+      <AlertDescription>
+        These values are stored encrypted and could not be decrypted, usually
+        because the OS keyring is unavailable. Editing is disabled so the saved
+        values aren't overwritten. Restore the keyring and reopen this page, or
+        delete and re-add the plugin to enter them again.
+      </AlertDescription>
+    </Alert>
+  );
+}
 
 export function PluginDetailPage({ serverId }: { serverId: number }) {
   const navigate = useNavigate();
@@ -57,6 +76,11 @@ export function PluginDetailPage({ serverId }: { serverId: number }) {
   // The server's catalog entry supplies the declared setup fields. It's a
   // cached read that returns nothing for manually-added servers.
   const catalogQuery = useMcpCatalog();
+
+  // The plugins list only warns once a server already holds a secret,
+  // so the warning has to appear here too: this is where the first one
+  // gets entered.
+  const oauthStorageEncrypted = useOauthStorageEncrypted();
 
   const s = servers.find((srv) => srv.id === serverId);
 
@@ -106,6 +130,24 @@ export function PluginDetailPage({ serverId }: { serverId: number }) {
   // catalog can't strand an already-configured server.
   const setupPending = !!s.catalogSlug && catalogQuery.isLoading && !s.enabled;
   const setupIncomplete = needsSetup || setupPending;
+  // Setup rebuilds a map from the stored values before writing it, so
+  // it is only unsafe for a map it will actually touch. An entry with
+  // OAuth-only inputs writes neither.
+  const setupBlockedByUnreadable =
+    (s.headersUnreadable && setupInputs.some((i) => i.kind === "header")) ||
+    (s.envUnreadable && setupInputs.some((i) => i.kind === "env"));
+  // Setup is where a catalog plugin's first credential gets typed, so
+  // it needs the same no-keyring warning the editors carry. Saving an
+  // OAuth server also starts its connect flow, which stores tokens, so
+  // that counts even when the form only asks for a public client id.
+  const setupPersistsSecret =
+    s.oauthEnabled ||
+    setupInputs.some(
+      (i) =>
+        i.kind === "header" ||
+        i.kind === "env" ||
+        i.kind === "oauthClientSecret",
+    );
 
   const onSetToolConsent = async (
     toolName: string,
@@ -232,7 +274,20 @@ export function PluginDetailPage({ serverId }: { serverId: number }) {
             </div>
           )}
 
-          {needsSetup && (
+          {/* Setup builds its update from the stored maps, which read
+              as empty while a secret can't be decrypted. Saving would
+              drop every value the entry doesn't declare, so show the
+              notice instead of the form. */}
+          {needsSetup && setupBlockedByUnreadable && (
+            <UnreadableSecretsNotice />
+          )}
+
+          {needsSetup &&
+            !setupBlockedByUnreadable &&
+            setupPersistsSecret &&
+            oauthStorageEncrypted === false && <OauthPlaintextStorageAlert />}
+
+          {needsSetup && !setupBlockedByUnreadable && (
             // Keyed by server so switching between two setup-needing
             // servers starts each from its own blank fields, never
             // carrying one server's typed credentials into another.
@@ -262,10 +317,14 @@ export function PluginDetailPage({ serverId }: { serverId: number }) {
               <div className="text-sm font-medium mb-2">
                 Environment Variables
               </div>
+              {oauthStorageEncrypted === false && (
+                <OauthPlaintextStorageAlert />
+              )}
+              {s.envUnreadable && <UnreadableSecretsNotice />}
               <KeyValueEditor
                 id={s.id}
                 json={s.envJson}
-                disabled={!s.enabled}
+                disabled={!s.enabled || s.envUnreadable}
                 isSaving={isUpdatingServer}
                 onSave={async (pairs) => {
                   await updateServer({
@@ -279,10 +338,14 @@ export function PluginDetailPage({ serverId }: { serverId: number }) {
           {!setupIncomplete && s.transport === "http" && (
             <div className="mt-6">
               <div className="text-sm font-medium mb-2">Headers</div>
+              {oauthStorageEncrypted === false && (
+                <OauthPlaintextStorageAlert />
+              )}
+              {s.headersUnreadable && <UnreadableSecretsNotice />}
               <KeyValueEditor
                 id={s.id}
                 json={s.headersJson}
-                disabled={!s.enabled}
+                disabled={!s.enabled || s.headersUnreadable}
                 isSaving={isUpdatingServer}
                 itemLabel="Header"
                 onSave={async (pairs) => {
