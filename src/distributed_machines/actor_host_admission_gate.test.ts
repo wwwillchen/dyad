@@ -169,6 +169,23 @@ describe("ActorHost keyed admission integration", () => {
     await host.dispose();
   });
 
+  it("advances a captured sink across sequential construction-time emissions", async () => {
+    const definition = machine({
+      id: "sequential-construction-output",
+      createObserver(context) {
+        const sink = context.captureSink();
+        sink.send({ type: "WORK" });
+        sink.send({ type: "PRODUCER" });
+        return {};
+      },
+    });
+    const { host } = harness(definition);
+    const actor = host.localRef(definition, "one");
+
+    expect(actor.getSnapshot().events).toEqual(["WORK", "PRODUCER"]);
+    await host.dispose();
+  });
+
   it("fails closed when a legacy command runner hands off detached work", async () => {
     const detached = deferred();
     const definition = machine({

@@ -199,6 +199,10 @@ interface HostedActorAdmission<Event> {
   ): Promise<Result>;
 }
 
+interface CapturedSinkState {
+  expectedActor: ActorRuntimeMetadata;
+}
+
 class HostedActor<
   Key,
   State,
@@ -222,7 +226,7 @@ class HostedActor<
   private readonly bufferedEvents: {
     readonly event: Event;
     readonly generation?: KeyedAdmissionGeneration;
-    readonly expectedActor?: ActorRuntimeMetadata;
+    readonly sinkState?: CapturedSinkState;
   }[] = [];
   private readonly pendingContinuations: EventContinuation[] = [];
   private currentContinuation: EventContinuation | undefined;
@@ -475,7 +479,7 @@ class HostedActor<
     generation: KeyedAdmissionGeneration = this.admission.capture(),
   ): ActorEventSink<Event> {
     const actor = this.getMetadata();
-    let expectedActor = actor;
+    const sinkState: CapturedSinkState = { expectedActor: actor };
     return Object.freeze({
       actor,
       admissionGeneration: generation,
@@ -487,16 +491,17 @@ class HostedActor<
           this.bufferedEvents.push({
             event,
             generation,
-            expectedActor,
+            sinkState,
           });
           return;
         }
         const advanceExpectedActor = (settled?: ActorRuntimeMetadata) => {
           if (
-            settled?.actorInstanceId === expectedActor.actorInstanceId &&
-            settled.snapshotRevision >= expectedActor.snapshotRevision
+            settled?.actorInstanceId ===
+              sinkState.expectedActor.actorInstanceId &&
+            settled.snapshotRevision >= sinkState.expectedActor.snapshotRevision
           ) {
-            expectedActor = settled;
+            sinkState.expectedActor = settled;
           }
         };
         const ticket = this.enqueueWithAdmission(
@@ -504,7 +509,7 @@ class HostedActor<
           undefined,
           generation,
           true,
-          expectedActor,
+          sinkState.expectedActor,
           advanceExpectedActor,
         );
         // The dispatcher normally settles synchronously. The Promise path also
@@ -624,12 +629,24 @@ class HostedActor<
     const bufferedEvents = this.bufferedEvents.splice(0);
     for (const buffered of bufferedEvents) {
       if (buffered.generation) {
+        const advanceExpectedActor = (settled: ActorRuntimeMetadata) => {
+          if (
+            buffered.sinkState &&
+            settled.actorInstanceId ===
+              buffered.sinkState.expectedActor.actorInstanceId &&
+            settled.snapshotRevision >=
+              buffered.sinkState.expectedActor.snapshotRevision
+          ) {
+            buffered.sinkState.expectedActor = settled;
+          }
+        };
         void this.enqueueWithAdmission(
           buffered.event,
           undefined,
           buffered.generation,
           true,
-          buffered.expectedActor,
+          buffered.sinkState?.expectedActor,
+          advanceExpectedActor,
         );
       } else {
         void this.enqueue(buffered.event);

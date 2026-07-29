@@ -568,4 +568,7 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
 - A revision-bound producer sink that supports sequential emissions must
   advance its expected revision in the dispatcher's synchronous settlement
   callback. Updating only from `ticket.settled.then(...)` is too late when an
-  async command continuation resumes before that Promise reaction.
+  async command continuation resumes before that Promise reaction. Events
+  buffered during synchronous construction must retain the same mutable
+  per-sink revision cursor so activation can advance the sequence after each
+  replayed event.
