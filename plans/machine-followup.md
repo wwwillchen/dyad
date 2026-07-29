@@ -1,318 +1,414 @@
-# State-Machine Convention and Micro-Kernel Follow-Up
+# Distributed State-Machine Migration Follow-Up
 
 ## Status
 
-Proposed follow-up to `plans/better-state-machine.md`. That plan refactors the
-version-preview machine; this one addresses what PRs #3968 (plan handoff),
-#3969 (app run), and #3970 (connection flow) revealed: the codebase now has
-four hand-rolled state machines in the same pattern, with verbatim-level
-mechanical duplication and early signs of drift.
+Proposed follow-up to `plans/correct-state-machines.md` and the PR9 evaluation.
 
-Decision recorded here (from review): **extract only the invariant
-micro-kernel and codify the convention in a doc. Do not build a generic
-controller, and do not adopt XState.** Four machines produced four distinct,
-load-bearing concurrency models — FIFO queue (plan handoff), runId epochs
-(app run), flowId correlation (connection flow), per-command-class rules
-(version preview). A generic controller would be a policy framework larger
-than the ~100–200-line controllers it replaces. The convention and the
-lifecycle plumbing are generic; the controllers are not.
+PR9 correctly records that the original MVP GO criteria were not met. This
+follow-up does not rewrite that evidence. It records a new rollout decision:
+the team accepts the three bounded image-generation lifecycle and compatibility
+risks as backlog work and will continue migrating the remaining distributed
+domains because the pilots materially improved admission, settlement,
+late-producer, renderer-ownership, and auditability guarantees.
 
-## Goals
+The accepted image-generation risks are:
 
-1. Codify the state-machine convention in a rules doc so drift is caught at
-   review time, and deliberate divergences are recorded as decisions.
-2. Extract the micro-kernel: the pieces literally identical across all four
-   machines (keyed lifecycle host, snapshot/subscription store, transition
-   types, React binding, test kit).
-3. Migrate the renderer machines' registries to the host: version preview
-   (via the main plan), plan handoff, and app run.
-4. Backport the best refinement any machine invented — #3970's ignore
-   reasons and ignored-event telemetry — into the shared types.
+1. App deletion fences the singleton image actor and therefore temporarily
+   affects unrelated apps.
+2. Provider cancellation and disposed settlement occur before the database
+   deletion commits and cannot be reversed after an aborted commit.
+3. Presentation is dropped when the initiating window closes rather than
+   falling back to another suitable window.
 
-## Non-goals
+These issues should remain visible and tested, but they do not block the
+migration sequence below.
 
-- A generic controller, command executor, or pluggable
-  execution/staleness policy. Concurrency models stay per-machine.
-- XState or any statechart framework. Revisit only if a machine needs
-  hierarchy, parallel regions, or spawned actor trees.
-- Touching `connection_flow`'s main-process registry. It is already the
-  right shape (injected timers/ids/broadcast, no module globals, no React).
-  Only its shared _types_ participate here.
-- Changing any machine's transition semantics or user-visible behavior.
-  Every migration in this plan is mechanical and behavior-preserving.
-- Blocking or retrofitting PRs #3968/#3969/#3970. They land as they are.
+## Objective
 
-## Current state: four machines
+Migrate the remaining distributed-machine domains to the safe framework path:
 
-|                 | version_preview                                | plan_handoff (#3968)           | app_run (#3969)                                  | connection_flow (#3970)                   |
-| --------------- | ---------------------------------------------- | ------------------------------ | ------------------------------------------------ | ----------------------------------------- |
-| Process         | renderer                                       | renderer                       | renderer                                         | main                                      |
-| Keyed by        | appId                                          | chatId                         | appId, per Jotai store                           | provider                                  |
-| Execution model | parallel dispatch, per-command rules           | strict FIFO drain loop         | serial per app, settlement-as-events             | registry derives effects from transitions |
-| Staleness       | epoch on read command; mutations never dropped | none (matrix handles re-entry) | runId epoch, stale events dropped pre-transition | flowId correlation in domain events       |
-| Registry        | module globals (replaced by main plan)         | per-chat map in hook           | module-global `WeakMap<store, Map<appId>>`       | injected-dependency class in main         |
+- GitHub operations;
+- version preview;
+- plan handoff;
+- chat stream and its owned queues;
+- user-input subscription ownership; and
+- app/chat creation and deletion admission.
 
-Identical in all four: pure `transition(state, event)` with `ignore()` and
-exhaustive `never` checks; listener-`Set` + `getSnapshot` +
-notify-on-reference-change (~15–20 lines each); a lazy keyed registry
-(~30–50 lines each); a `useSyncExternalStore` binding; totality-style
-transition tests.
+For every migrated domain:
 
-Drift already visible:
+- ordinary renderer components use a domain façade rather than raw dispatch;
+- remote intent and trusted internal event boundaries are explicit;
+- completion-aware mutations use prepared admission and authoritative
+  settlement;
+- subscriptions use leases rather than independent reference counting;
+- creation and destructive lifecycle operations use keyed admission;
+- late external output uses captured non-creating sinks;
+- compatibility behavior remains behind an explicit adapter until removal; and
+- the domain's exact compatibility inventory entries are deleted as the unsafe
+  mechanisms disappear.
 
-- #3969 solves test isolation with a `WeakMap` keyed by Jotai store; the
-  version-preview plan solves the identical problem with a provider-owned
-  host. Two competing lifecycle patterns landing the same week.
-- #3968's controllers have no `dispose()` and live forever per chat;
-  version preview treats disposal as a first-class invariant.
-- #3970 invented ignore reasons plus `onIgnoredEvent` telemetry; the other
-  three machines have nothing equivalent.
-- #3970 has no command channel (effects derive from state changes in the
-  registry); the other three treat commands-as-data as the core discipline.
-  Nobody decided that divergence.
-- A throwing command runner is handled three ways: mapped to a failure
-  event (version preview), logged and drained past (plan handoff), written
-  to an error atom (app run).
+The program optimizes for correctness, consistency, and reviewability. Production
+line-count reduction is not a rollout gate.
 
-## Deliverable 1: convention doc
+## Migration rules
 
-Add `rules/state-machines.md` (follow the existing `rules/` organization; if
-none fits, place under `docs/` and link from `AGENTS.md`). Keep it short
-enough to be read in review. Contents:
+### Preserve public behavior
 
-### Required structure
+Keep protocol v1, public IPC endpoints, renderer hook and manager methods,
+dialogs, error presentation, and existing promise façades compatible. Use
+adapters so a domain can migrate internally without requiring a coordinated
+renderer/main-process cutover.
 
-- File layout per machine: `state.ts` (types only), `transition.ts` (pure),
-  `controller.ts` (or a main-process registry), `commands.ts` (adapter),
-  plus a hook binding for renderer machines.
-- `state.ts`/`transition.ts` are pure and dependency-free: no React,
-  Electron, Jotai, TanStack Query, zod, timers, `Date`, or randomness. This
-  is what lets types travel between renderer and main.
-- Transitions are total over the state × event matrix, with exhaustive
-  `switch` + `never` checks and explicit `ignore(state, reason)` so
-  deliberate no-ops are distinguishable from omissions.
+No migration should require a database migration unless its durable checkpoint
+work explicitly needs one and receives a separate schema review.
 
-### Invariants
+### Keep the contracts layered
 
-- No transition returns a value-equal state with a new reference; no
-  snapshot changes reference without changing value. (One-shot effects are
-  commands, never identity signaling — the version-preview recovery lesson.)
-- Snapshots are immutable and reference-stable; subscribers are notified
-  only on reference change.
-- Commands are data; execution lives in the controller/adapter. A machine
-  that deviates (as #3970 does, deriving effects from transitions in its
-  registry) must say so and why in its module header.
-- Command runners convert expected failures into events. A runner that
-  throws is a programming error: log it and keep the machine serviceable;
-  never let it wedge the queue or silently rewrite state.
-- Controllers are disposable, and something owns calling dispose (provider
-  unmount, app/chat deletion). No module-global mutable controller
-  collections; lifecycle is owned by a provider or an explicitly
-  constructed host/registry.
+Do not require irrelevant capabilities from simple or purely local machines.
+Each migrated remote definition declares only the applicable contracts:
 
-### Documented degrees of freedom
+- remote intent versus trusted internal event;
+- key and intent relationship;
+- authorization and typed refusal;
+- retry and idempotency policy;
+- admission-only versus tracked completion;
+- observed-revision policy;
+- lifecycle and retention;
+- wire and snapshot budgets; and
+- applicable conformance tiers and explicit exclusions.
 
-- The concurrency/staleness model is per-machine and load-bearing. Each
-  machine documents its model in its `state.ts` or `controller.ts` header:
-  what executes serially vs in parallel, what can be dropped as stale, and
-  what must never be dropped.
-- Main-process machines use an injected-dependency registry (#3970 is the
-  reference example); renderer machines use the shared keyed host.
+Long-running streams and fire-and-observe commands are not automatically
+tracked-completion mutations. Completion policy follows the user-visible
+authority of the operation.
 
-### Test requirements
+### Migrate one ownership seam at a time
 
-- Totality/invariant tests over the transition matrix.
-- Reference-stability assertions.
-- Fakes for command runners; no machine test may require a global reset
-  helper.
+Avoid combining remote-intent conversion, persistence, presentation routing,
+queue ownership, and destructive lifecycle changes in one large PR. Each PR
+must have one authoritative ownership change and a rollback boundary.
 
-## Deliverable 2: micro-kernel in `src/state_machines/`
+### Let concrete duplication justify new primitives
 
-Only what is identical across all four machines. Hard constraint, enforced
-by review and a lint boundary if available: **no imports from any domain,
-Jotai, TanStack Query, IPC, or toast code.** `react.ts` is the only file
-that may import React.
+Use the existing framework primitives first:
 
-- `types.ts` — `TransitionResult<State, Command>`,
-  `ignore(state, reason?)`, an `IgnoreReason`-style tag type (adopting
-  #3970's refinement), and a `TransitionObserver` telemetry interface
-  (generalizing `version_preview/debug.ts` and #3970's `onIgnoredEvent`):
-  hooks for applied transitions and ignored events.
-- `snapshot_store.ts` — `SnapshotStore<S>`: listener set, `getSnapshot`,
-  `setState` with notify-on-reference-change, `subscribe`, `dispose`.
-  Controllers embed it (composition); it is not a base class and carries no
-  transition or command semantics.
-- `keyed_host.ts` — `KeyedControllerHost<K, C>` exactly as specified in
-  `plans/better-state-machine.md`: lazy creation, per-key and any-key
-  subscriptions, disposal of one key or the whole host.
-- `react.ts` — `useKeyedController(host, key, selectSnapshot)` over
-  `useSyncExternalStore` with stable snapshot identity, plus the smaller
-  `useControllerSnapshot(controller)` binding for non-keyed use (usable by
-  `useConnectionFlow`'s renderer projection if trivial).
-- `testing.ts` — totality driver (run every event against every reachable
-  state, assert a result), reference-stability assertion helper, and a
-  recording fake command-runner harness.
+- `actor.request()`;
+- `PreparedRequest`;
+- `OperationRegistry`;
+- prepared dispatch;
+- `RemoteSubscriptionLease`;
+- `KeyedAdmissionGate`;
+- captured non-creating producer sinks; and
+- `useMachineMutation`.
 
-### Interface-freeze checklist
+Add a shared route, checkpoint, or queue abstraction only when at least two
+concrete domain implementations establish the common contract. Do not recreate
+a monolithic `MachineSpec` or generic domain controller.
 
-Before exporting the host as the shared primitive, validate its contract
-against all four machines — on paper, not by migrating them first:
+## Phase 1 — Operation presentation ownership
 
-- Keys are generic: `number` (appId, chatId) and `string` (provider).
-- Construction is React-free; a provider owns it in the renderer, a plain
-  module owns nothing (no global hosts).
-- The controller contract is only `{ getSnapshot, subscribe, dispose }`.
-  The host must not constrain domain surfaces beyond that: app_run's
-  `dispatch()`-returns-promise and `onStateChange` projection, plan
-  handoff's `send`, and version preview's event API all remain
-  controller-owned.
-- Controllers lacking `dispose` (#3968) get one added during migration;
-  the host requires it.
+Add a narrow, main-process-only `OperationRouteRegistry`.
 
-## Deliverable 3: migrations
+Required behavior:
 
-Each migration is its own PR, after the corresponding feature PR lands, and
-is behavior-preserving under the tests those PRs already added.
+- routes are keyed by operation identity, not request message ID, idempotency
+  identity, actor revision, or domain revision;
+- the first valid writer owns an unresolved route;
+- unresolved routes are pinned and cannot be evicted;
+- admission is refused when bounded capacity cannot accept another unresolved
+  route;
+- terminal operation publication and settlement release the route;
+- a stale release cannot remove a replacement generation;
+- terminal route retention is bounded; and
+- each domain declares what happens when the initiating window disappears:
+  drop, route to another window showing the entity, or use a focused-window
+  fallback.
 
-### version_preview
+Do not add scheduler- or observer-timed cleanup. Route lifetime follows the
+authoritative operation lifetime.
 
-Covered by `plans/better-state-machine.md` Phase 1. Coordination rule: the
-kernel files above are the canonical versions; that plan's Phase 1 consumes
-them rather than defining a parallel copy. If this plan lands second, move
-its extracted pieces here without API change.
+Initial consumers are GitHub operations and version preview. Image generation
+may adopt the registry later to resolve its missing fallback, but that is not a
+prerequisite for the remaining migrations.
 
-### plan_handoff (#3968)
+## Phase 2 — GitHub operations
 
-- Replace the per-chat controller map inside `usePlanHandoff.ts` with a
-  provider- or module-explicit `KeyedControllerHost<number, HandoffController>`.
-- Add `dispose()` to the handoff controller; chat deletion disposes its
-  controller, mirroring app deletion in version preview.
-- Embed `SnapshotStore` in place of the hand-rolled listener set.
-- Adopt shared `TransitionResult`/`ignore` types; behavior unchanged.
+GitHub operations are the next migration because they resemble the
+image-generation request model without streaming or checkpoint recovery.
 
-### app_run (#3969)
+### Definition and transport
 
-- Replace the module-global `WeakMap<store, Map<appId, controller>>` in
-  `src/app_run/registry.ts` with a provider-owned host constructed with the
-  Jotai store — the WeakMap exists only to isolate test stores, which
-  provider ownership solves directly.
-- Keep `useRunApp`'s public API and the `onStateChange` atom projection
-  exactly as landed; only lifecycle ownership moves.
-- Embed `SnapshotStore`; adopt shared transition types.
+- Convert `githubOpsDefinition` to
+  `defineFrameworkCoveredRemoteMachine`.
+- Define explicit renderer remote intents and trusted internal outcomes.
+- Preserve protocol-v1 codecs and public IPC methods.
+- Keep message ID, request ID, idempotency identity, invocation reference, and
+  actor/domain revisions distinct.
 
-### connection_flow (#3970)
+### Renderer and settlement
 
-- Untouched except: adopt the shared `ignore`/`IgnoreReason` and
-  `TransitionObserver` types from `types.ts` (it is the origin of the
-  pattern), and optionally bind its renderer projection through
-  `useControllerSnapshot`. Its main-process registry stays as is.
+- Replace raw dispatch in `useGithubOps` with a domain façade backed by
+  `actor.request()`.
+- Use `useMachineMutation` for completion-aware mutations.
+- Register the operation before IPC/authorization and settle it from the
+  authoritative actor outcome.
+- Represent refusal, cancellation, supersession, and disposal as typed
+  non-error outcomes where applicable.
+- Preserve conflict-resolution dialogs and their current public behavior.
 
-## Deliverable 4: backports
+### Lifecycle and presentation
 
-- Add ignore reasons and a `TransitionObserver` wire-up to the
-  version_preview, plan_handoff, and app_run transitions. Mechanical:
-  `ignore(state)` → `ignore(state, "reason")`, observer plumbed where
-  `debug.ts` logging exists today. No transition semantics change.
+- Replace deletion and reset counters with an app-keyed
+  `KeyedAdmissionGate`.
+- Fence creation and dispatch during destructive lifecycle operations.
+- Route operation presentation through `OperationRouteRegistry`.
+- Ensure late Git/provider output is captured through a non-creating sink.
 
-## Sequencing
+### Exit
 
-### Phase 0: unblock and annotate (now)
+- Remove the GitHub legacy production-manifest capability.
+- Delete every GitHub entry from `compatibilityBoundaryInventory`.
+- Add focused tests for duplicate admission, identity conflict, cancellation,
+  stale outcomes, deletion/reset fencing, window loss, disposal, and zero owned
+  resources.
 
-- Land #3968, #3969, #3970 without kernel changes.
-- Leave two PR comments before APIs ossify: on #3969, that
-  `getAppRunController(store, appId)`'s WeakMap-by-store is the
-  module-global lifecycle pattern being eliminated and a provider-owned
-  host migration is expected; on #3968, that chat deletion should dispose
-  its controller.
+## Phase 3 — Version preview
 
-### Phase 1: convention doc
+Split version preview into volatile lifecycle and durable-effect PRs.
 
-- Write `rules/state-machines.md`. Does not wait on any code; this is the
-  cheapest drift-stopper and informs review of everything below.
+### Phase 3A — Volatile lifecycle
 
-### Phase 2: kernel
+- Convert `versionPreviewDefinition` to the framework-covered constructor.
+- Replace the bespoke renderer waiter and raw dispatch with prepared requests,
+  authoritative settlement, and a domain façade.
+- Replace window-interest reference counting with
+  `RemoteSubscriptionLease`.
+- Replace deletion/reset counters with keyed admission.
+- Move confirmation and error routing to `OperationRouteRegistry`.
+- Preserve the focused recovery behavior and existing persistence format.
 
-- Add `src/state_machines/` files with their tests, validated against the
-  interface-freeze checklist.
-- Coordinate with `plans/better-state-machine.md` Phase 1 so exactly one
-  canonical copy of the host exists.
+Exit Phase 3A by removing the version-preview compatibility entries for raw
+dispatch, bespoke waiters, window-interest maps, presentation maps, and
+deletion/reset counters. Persistence-related compatibility may remain exact and
+explicit until Phase 3B.
 
-### Phase 3: migrations
+### Phase 3B — Checkpoint before external effect
 
-- plan_handoff, then app_run (separate PRs; order chosen by merge order of
-  the feature PRs). Each is registry/lifecycle-only, verified by the
-  feature's existing tests plus new disposal tests.
+Pilot the durable checkpoint recipe on version preview:
 
-### Phase 4: backports
+1. Commit the exact phase and next external step.
+2. Durably flush the checkpoint.
+3. Start the Git or filesystem mutation.
+4. On restart, reconcile persisted facts against the actual Git state.
+5. Block new mutation during hydration and reconciliation.
+6. Suppress the external effect if the checkpoint cannot be written.
 
-- Ignore reasons + telemetry across the three renderer machines; #3970
-  types adoption.
+The guarantee is checkpoint ordering and explicit recovery, not exactly-once
+external effects or generic compensation. Any new database or file journal gets
+its own schema and migration review.
 
-## Risks and mitigations
+## Phase 4 — Plan handoff
 
-### Freezing the host API too early
+Migrate plan handoff after the version-preview volatile lifecycle establishes
+the remote-intent and checkpoint recipes.
 
-The checklist above is validated against all four machines before the host
-is exported. If a fifth machine appears mid-plan, it validates the contract
-too — it does not expand it.
+### Transport and settlement
 
-### Churning freshly landed PRs
+- Convert `planHandoffDefinition` to the framework-covered constructor.
+- Replace renderer raw dispatch and main-process raw enqueue with a prepared
+  domain façade.
+- Keep `startPlanHandoffFromMain` as a compatible composition root.
+- Track operations for which callers await authoritative handoff acceptance or
+  failure; keep observational commands admission-only.
+- Settle refusal, replacement, cancellation, and disposal explicitly.
 
-Migrations touch only lifecycle/registry code, not transitions, commands,
-or public hook APIs. The feature PRs' own tests are the characterization
-suite; a migration PR that has to modify a transition test is out of scope
-by definition.
+### Lifecycle and durability
 
-### Convention doc bit-rot
+- Key admission by the owning app/chat identity.
+- Fence deletion and replacement against new handoff work.
+- Capture late external-owner output without actor creation.
+- Apply the checkpoint-before-effect recipe only after the volatile migration
+  is stable.
 
-Keep it to invariants and decisions, not tutorials. Link it from the repo
-rules/AGENTS index so review agents and humans load it. New-machine PRs are
-expected to cite deviations against it explicitly.
+### Exit
 
-### Two plans, one kernel
+- Remove the plan-handoff legacy production-manifest capability.
+- Delete its widening-cast and raw-dispatch compatibility entries.
+- Add focused tests for renderer and main-originated admission, replacement,
+  recovery, deletion, stale outcomes, and resource release.
 
-`plans/better-state-machine.md` specs `KeyedControllerHost` and the React
-adapter; this plan adds `SnapshotStore`, shared types, and the test kit
-around the same files. Whichever lands first creates `src/state_machines/`;
-the other consumes it unchanged. Any API disagreement is resolved in favor
-of the interface-freeze checklist here, since it is validated against all
-four machines rather than one.
+## Phase 5 — Chat, user input, and owned queues
 
-## Verification
+Chat is last because streaming, queue ownership, user-input follow-ups,
+subscriptions, replacement, and destructive deletion interact. Split this work
+into independently reviewable PRs.
 
-Per phase, narrowest first, then the standard pre-commit checks:
+### Phase 5A — Subscription and lifecycle infrastructure
+
+- Replace chat remote-manager subscription reference counting with
+  `RemoteSubscriptionLease`.
+- Replace user-input read-model subscription ownership with leases.
+- Replace app/chat creation counters and chat deletion counters with keyed
+  admission gates.
+- Key admission at the narrowest real ownership boundary so deleting one chat
+  or app does not fence unrelated work.
+- Capture process/provider/stream output in non-creating producer sinks.
+- Verify that old actor output cannot target a replacement generation.
+
+### Phase 5B — Chat remote intents
+
+- Convert `chatStreamDefinition` to the framework-covered constructor.
+- Separate renderer intents from trusted stream, tool, and provider events.
+- Replace raw remote-manager dispatch with a domain façade.
+- Use prepared admission for submission, cancellation, retry, and queue
+  mutations.
+- Use tracked completion only where the user awaits an authoritative terminal
+  result. Streaming observation and durable queue admission retain their own
+  explicit policies.
+- Preserve the current chat manager and renderer APIs during migration.
+
+### Phase 5C — Chat/plan owned queue
+
+Add a narrow shared queue abstraction only if chat and plan handoff still show
+the same concrete lifecycle:
+
+- validate and compare-and-swap the owning revision;
+- claim invocation-time items before external-owner settlement;
+- declare durable versus ephemeral replay explicitly;
+- settle rejected, replaced, cancelled, superseded, and disposed items;
+- retain unresolved work while bounding terminal entries;
+- release large terminal payloads; and
+- keep scheduling and replacement policy domain-owned.
+
+Add composition simulations spanning chat streaming, queued prompts, user-input
+follow-ups, plan handoff, renderer reconnect, and destructive deletion.
+
+### Exit
+
+- Remove chat stream's legacy production-manifest capability.
+- Delete chat, user-input, app/chat creation, and deletion entries from the
+  compatibility inventory as their owners migrate.
+- Preserve any genuinely domain-specific queue mechanism in a named,
+  exact compatibility entry until Phase 5C removes it.
+
+## Phase 6 — Final enforcement
+
+After all six distributed definitions are framework-covered:
+
+- remove `defineLegacyRemoteMachineCompatibility`;
+- remove the legacy definition inventory;
+- restrict generic remote-manifest construction to tests and named framework
+  composition roots;
+- deny raw production remote dispatch outside exact internal adapters;
+- deny external-producer access to creating actor APIs;
+- require new production distributed definitions to use the
+  framework-covered constructor;
+- keep exact inventories for any remaining protocol-v1 internal adapters; and
+- backfill the applicable shared conformance tiers for every migrated domain.
+
+Generated renderer bindings, an actor-host representation rewrite, a graphical
+inspector, and property-based expansion remain optional. Consider them only
+when later migrations demonstrate concrete leverage.
+
+## Per-domain completion criteria
+
+A migration is complete when:
+
+1. Public IPC endpoints, renderer methods, protocol v1, and visible behavior
+   remain compatible or have an explicitly approved product change.
+2. Ordinary renderer components have no raw remote dispatch or direct framework
+   internals.
+3. Every accepted tracked operation settles exactly once during its declared
+   host lifetime.
+4. Admission-only operations do not claim authoritative completion.
+5. Authorization refusal, cancellation, supersession, and disposal have typed
+   semantics.
+6. Duplicate admission coalesces or replays, while conflicting identity reuse
+   is rejected.
+7. Deletion/reset fences new work, drains tracked continuations, and rejects
+   stale fence handles.
+8. Late timers, processes, providers, and old actors cannot create or target a
+   replacement actor.
+9. Relevant prepared requests, operations, receipts, leases, fences,
+   continuations, timers, sinks, actors, routes, terminal payloads, listeners,
+   and renderer request owners reach zero or their declared bounded retention.
+10. The domain's obsolete exact compatibility entries are removed rather than
+    renamed or wildcarded.
+11. Focused tests cover retry, duplicate, stale response, reconnect, unmount,
+    deletion/reset, actor replacement, and disposal races applicable to the
+    domain.
+12. The PR documents its rollback boundary and any deliberately retained
+    compatibility mechanism.
+
+## Verification strategy
+
+Use the narrowest test capable of proving each behavior:
+
+- pure transition and identity behavior: unit tests;
+- renderer façade plus IPC/actor behavior: Vitest integration tests;
+- packaged Electron, native dialogs, Lexical/Monaco, or real window behavior:
+  focused Playwright tests after rebuilding;
+- shared admission, settlement, lifecycle, producer, and resource scenarios:
+  reusable conformance suites parameterized by the domain façade.
+
+Every migration PR should run:
 
 ```sh
-npm test -- src/state_machines/
-npm test -- src/plan_handoff/
-npm test -- src/app_run/
-npm test -- src/connection_flow/
-npm test -- src/version_preview/
+npm test -- <targeted test files>
 npm run fmt
 npm run lint
 npm run ts
-npm run build
 ```
 
-Migration PRs must show `git diff --stat` free of transition/command file
-changes (types-import lines excepted) and pass the feature's existing test
-suites unmodified except for added disposal coverage.
+If application behavior requires E2E coverage:
 
-## Definition of done
+```sh
+npm run build
+npm run e2e -- <targeted test>
+```
 
-- `rules/state-machines.md` exists, records the invariants and the
-  per-machine degrees of freedom, and is linked from the rules index.
-- `src/state_machines/` contains the host, snapshot store, shared types
-  with ignore reasons and transition observer, React bindings, and test
-  kit — with zero domain imports.
-- No renderer machine owns a module-global controller collection: version
-  preview (via its own plan), plan handoff, and app run all run on
-  provider-owned hosts; every controller is disposable and disposed.
-- connection_flow shares the transition types; its main-process registry is
-  unchanged.
-- All ignored transitions across the four machines carry reasons and are
-  observable through the shared telemetry interface.
-- No generic controller, execution policy, or statechart framework was
-  introduced; each machine's concurrency model is documented in place.
-- All four machines' existing test suites pass unmodified through the
-  migrations, plus new disposal and host tests.
+Do not weaken an inventory or conformance assertion to make a migration pass.
+Classify retained behavior explicitly and remove the entry in the PR that
+replaces it.
+
+## Proposed PR sequence
+
+1. Main-only operation route registry.
+2. GitHub operations migration.
+3. Version-preview volatile lifecycle migration.
+4. Version-preview checkpoint-before-effect.
+5. Plan-handoff volatile lifecycle migration.
+6. Plan-handoff checkpoint/recovery, if required by its external effect.
+7. Chat and user-input leases plus keyed creation/deletion admission.
+8. Chat remote-intent and settlement migration.
+9. Chat/plan owned-queue protocol, only if concrete duplication remains.
+10. Final compatibility removal and production enforcement.
+
+Each PR removes only the compatibility entries it demonstrably replaces.
+
+## Accepted backlog and guardrails
+
+The three image-generation issues remain named regression tests and backlog
+items. Future domains should not copy them:
+
+- choose actor and gate keys at the narrowest ownership scope;
+- do not publish irreversible terminal outcomes before a fallible destructive
+  commit unless compensation is available; and
+- declare presentation fallback behavior when operation ownership outlives a
+  window.
+
+The framework's settlement is in-process and bounded. This plan makes no
+crash-safe exactly-once claim. Durable checkpoints, where added, provide
+ordering and recovery evidence rather than magical external-effect
+transactions.
+
+## Product principles
+
+- **Transparent over magical:** keep admission, external effects, recovery,
+  destructive commits, and presentation ownership explicit and observable.
+- **Backend-flexible:** trusted provider/Git/process outcomes enter through
+  domain adapters; framework contracts do not assume one provider.
+- **Intuitive but power-user friendly:** preserve familiar renderer hooks and
+  dialogs while moving concurrency authority behind typed domain façades.
+- **Delightful:** authoritative completion should drive accurate progress,
+  success, cancellation, and failure presentation without duplicate or stale
+  UI.
