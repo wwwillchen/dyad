@@ -1,0 +1,305 @@
+import { describe, expect, it } from "vitest";
+import {
+  createFakeClock,
+  createSequentialIdSource,
+} from "@/state_machines/testing";
+import { change } from "@/state_machines/types";
+import {
+  ActorAdmissionError,
+  ActorHost,
+  type ActorDisposedEvent,
+  type ActorHostError,
+} from "./actor_host";
+import type {
+  ActorEventSink,
+  DistributedMachineDefinition,
+  MachineHostContext,
+} from "./definition";
+
+type Event =
+  | { readonly type: "WORK" }
+  | { readonly type: "CLEANUP" }
+  | { readonly type: "COMMAND" }
+  | { readonly type: "COMMAND_DONE" }
+  | { readonly type: "TIMER" }
+  | { readonly type: "PRODUCER" };
+type Command = { readonly type: "WAIT" };
+type State = { readonly events: readonly Event["type"][] };
+type Reason = "ignored";
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function isSettled(promise: Promise<unknown>): Promise<boolean> {
+  let settled = false;
+  void promise.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  return settled;
+}
+
+function machine(options: {
+  readonly id: string;
+  readonly runCommand?: (
+    context: MachineHostContext<string, State, Event>,
+    emit: (event: Event) => void,
+  ) => void | Promise<void>;
+  readonly createObserver?: DistributedMachineDefinition<
+    string,
+    string,
+    State,
+    Event,
+    Command,
+    Reason
+  >["createObserver"];
+  readonly onDisposed?: () => void | Promise<void>;
+}): DistributedMachineDefinition<
+  string,
+  string,
+  State,
+  Event,
+  Command,
+  Reason
+> {
+  return {
+    id: options.id,
+    host: "main",
+    initialState: () => ({ events: [] }),
+    transition(state, event) {
+      const next = { events: [...state.events, event.type] };
+      return event.type === "COMMAND"
+        ? change(next, [{ type: "WAIT" }])
+        : change(next);
+    },
+    createScheduler: () => ({
+      schedule(batch, execute) {
+        for (const command of batch.commands) void execute(command);
+      },
+    }),
+    createCommandRunner: (context) => (_command, emit) =>
+      options.runCommand?.(context, emit),
+    createObserver: options.createObserver,
+    lifecycle: {
+      subscriptionCreates: true,
+      dispatchCreates: true,
+      idleEviction: { kind: "retain" },
+      terminalRetention: { kind: "retain" },
+      entityDeletion: "dispose",
+      rendererOwnership: "host",
+      survivesRendererReload: true,
+      restartPersistence: "ephemeral",
+      flushOnShutdown: true,
+      onDisposed: options.onDisposed,
+    },
+  };
+}
+
+function harness(
+  definition: ReturnType<typeof machine>,
+  errors: ActorHostError[] = [],
+) {
+  const clock = createFakeClock();
+  const host = new ActorHost({
+    placement: "main",
+    clock,
+    ids: createSequentialIdSource(),
+    reportError: (error) => errors.push(error),
+  });
+  host.register(definition);
+  return { clock, host };
+}
+
+describe("ActorHost keyed admission integration", () => {
+  it("rejects output captured for an old revision of the same actor", async () => {
+    let context!: MachineHostContext<string, State, Event>;
+    const definition = machine({
+      id: "revision-bound-sink",
+      runCommand(commandContext) {
+        context = commandContext;
+      },
+    });
+    const { host } = harness(definition);
+    const actor = host.localRef(definition, "one");
+    actor.send({ type: "COMMAND" });
+    const sink = context.captureSink();
+    actor.send({ type: "WORK" });
+    sink.send({ type: "PRODUCER" });
+
+    expect(actor.getSnapshot().events).toEqual(["COMMAND", "WORK"]);
+    await host.dispose();
+  });
+
+  it("gates local, command, timer, producer, and creation ingress through one fence", async () => {
+    const command = deferred();
+    let context!: MachineHostContext<string, State, Event>;
+    let producer!: ActorEventSink<Event>;
+    const definition = machine({
+      id: "all-ingress",
+      async runCommand(commandContext, emit) {
+        context = commandContext;
+        await command.promise;
+        emit({ type: "COMMAND_DONE" });
+      },
+    });
+    const { clock, host } = harness(definition);
+    const actor = host.localRef(definition, "one");
+    context = undefined as unknown as typeof context;
+    actor.send({ type: "COMMAND" });
+    producer = context.captureSink();
+    context.timers.replace(
+      "watchdog",
+      "token",
+      10,
+      () => ({ type: "TIMER" }),
+      context.captureSink().send,
+    );
+
+    const fence = host.beginFence(definition, {
+      key: "one",
+      allowDuringDrain: (event) =>
+        event.type === "CLEANUP" || event.type === "COMMAND_DONE",
+    });
+    expect(host.inspectAdmission(definition.id, "one").phase).toBe("draining");
+    const other = host.localRef(definition, "two");
+    other.send({ type: "WORK" });
+    expect(other.getSnapshot().events).toEqual(["WORK"]);
+
+    const ordinary = host.dispatch(definition, "one", {
+      type: "WORK",
+    } as Event);
+    await expect(ordinary.settled).resolves.toMatchObject({
+      kind: "failed",
+      stage: "before-admission",
+      error: expect.objectContaining({ code: "key-fenced" }),
+    });
+    await expect(
+      host.dispatch(definition, "one", { type: "CLEANUP" } as Event).settled,
+    ).resolves.toMatchObject({ kind: "applied" });
+
+    const sealing = fence.seal();
+    expect(await isSettled(sealing)).toBe(false);
+    command.resolve();
+    await sealing;
+    expect(actor.getSnapshot().events).toEqual([
+      "COMMAND",
+      "CLEANUP",
+      "COMMAND_DONE",
+    ]);
+
+    actor.send({ type: "WORK" });
+    producer.send({ type: "PRODUCER" });
+    clock.advanceBy(10);
+    await expect(
+      host.dispatch(definition, "one", { type: "CLEANUP" } as Event).settled,
+    ).resolves.toMatchObject({ kind: "failed" });
+    expect(actor.getSnapshot().events).toEqual([
+      "COMMAND",
+      "CLEANUP",
+      "COMMAND_DONE",
+    ]);
+
+    fence.commit();
+    expect(host.inspectAdmission(definition.id, "one").phase).toBe("committed");
+    await host.disposeKey(definition.id, "one");
+    expect(() => host.localRef(definition, "one")).toThrow(ActorAdmissionError);
+
+    fence.release();
+    const replacement = host.localRef(definition, "one");
+    producer.send({ type: "PRODUCER" });
+    expect(replacement.getSnapshot().events).toEqual([]);
+    await host.dispose();
+  });
+
+  it("does not admit an actor whose construction crosses fence publication", async () => {
+    const cleanup = deferred();
+    const disposed: ActorDisposedEvent[] = [];
+    const errors: ActorHostError[] = [];
+    let host!: ActorHost;
+    let fence!: ReturnType<ActorHost["beginFence"]>;
+    let definition!: ReturnType<typeof machine>;
+    definition = machine({
+      id: "construction-race",
+      createObserver(context) {
+        context.send({ type: "WORK" });
+        fence = host.beginFence(definition, {
+          key: context.key,
+          allowDuringDrain: () => false,
+        });
+        return {};
+      },
+      onDisposed: () => cleanup.promise,
+    });
+    ({ host } = harness(definition, errors));
+    host.onActorDisposed((event) => disposed.push(event));
+
+    expect(() => host.localRef(definition, "one")).toThrow(
+      expect.objectContaining({ code: "stale-admission-generation" }),
+    );
+    expect(host.peek(definition.id, "one")).toBeUndefined();
+    const sealing = fence.seal();
+    expect(await isSettled(sealing)).toBe(false);
+
+    cleanup.resolve();
+    await sealing;
+    expect(disposed).toHaveLength(1);
+    expect(disposed[0]?.snapshot).toEqual({ events: [] });
+    expect(errors).toEqual([]);
+    expect(fence.abort()).toBe(true);
+    expect(host.inspectAdmission(definition.id, "one").phase).toBe("open");
+    await host.dispose();
+  });
+
+  it("composes host disposal and cleanup failure without leaking a live fence", async () => {
+    const errors: ActorHostError[] = [];
+    const definition = machine({
+      id: "fenced-host-disposal",
+      onDisposed() {
+        throw new Error("synthetic cleanup failure");
+      },
+    });
+    const { host } = harness(definition, errors);
+    host.localRef(definition, "one");
+    const fence = host.beginFence(definition, {
+      key: "one",
+      allowDuringDrain: () => false,
+    });
+    await fence.seal();
+
+    await expect(host.dispose()).rejects.toThrow("ActorHost disposal failed");
+    expect(fence.abort()).toBe(false);
+    expect(fence.commit()).toBe(false);
+    expect(fence.release()).toBe(false);
+  });
+
+  it("keeps a keyed fence authoritative across machine disposal", async () => {
+    const definition = machine({ id: "fenced-machine-disposal" });
+    const { host } = harness(definition);
+    host.localRef(definition, "one");
+    const fence = host.beginFence(definition, {
+      key: "one",
+      allowDuringDrain: () => false,
+    });
+
+    await host.disposeMachine(definition.id);
+    expect(() => host.localRef(definition, "one")).toThrow(
+      expect.objectContaining({ code: "key-fenced" }),
+    );
+    expect(fence.abort()).toBe(true);
+    expect(host.localRef(definition, "one").getSnapshot()).toEqual({
+      events: [],
+    });
+    await host.dispose();
+  });
+});

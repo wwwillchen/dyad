@@ -1492,6 +1492,46 @@ describe("remote machine transport", () => {
     expect(host.peek(machine.id, "actor")).toBeUndefined();
   });
 
+  it("rejects a prepared subscribe when a keyed fence publishes during authorization", async () => {
+    let releaseAuthorization!: () => void;
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const authorization = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        async authorizeSubscribe(
+          context: Parameters<typeof base.remoteIntent.authorizeSubscribe>[0],
+        ) {
+          authorizationStarted();
+          await authorization;
+          return base.remoteIntent.authorizeSubscribe(context);
+        },
+      },
+    };
+    const { duplex, host } = createHarness({ machine });
+    const renderer = duplex.connect();
+    const pending = renderer.subscribe(address());
+    await started;
+    const fence = host.beginFence(machine, {
+      key: "actor",
+      allowDuringDrain: () => false,
+    });
+    releaseAuthorization();
+
+    await expect(pending).rejects.toThrow(
+      "lifecycle changed during subscription authorization",
+    );
+    expect(host.peek(machine.id, "actor")).toBeUndefined();
+    expect(fence.abort()).toBe(true);
+  });
+
   it("prevents pending and future admissions after transport disposal", async () => {
     let releaseAuthorization!: () => void;
     let authorizationStarted!: () => void;
@@ -1623,6 +1663,50 @@ describe("remote machine transport", () => {
       reason: "stale-actor",
     });
     expect(replacement.getSnapshot()).toMatchObject({ value: 0 });
+  });
+
+  it("rejects a prepared dispatch when a keyed fence publishes during authorization", async () => {
+    let releaseAuthorization!: () => void;
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const authorization = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        async authorizeDispatch(
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
+        ) {
+          authorizationStarted();
+          await authorization;
+          return base.remoteIntent.authorizeDispatch(context);
+        },
+      },
+    };
+    const { duplex, host } = createHarness({ machine });
+    const renderer = duplex.connect();
+    await renderer.subscribe(address());
+    const pending = renderer.dispatch(dispatch({ type: "INCREMENT" }));
+    await started;
+    const fence = host.beginFence(machine, {
+      key: "actor",
+      allowDuringDrain: () => false,
+    });
+    releaseAuthorization();
+
+    await expect(pending).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "host-disposing",
+    });
+    expect(host.peek(machine.id, "actor")?.getSnapshot()).toMatchObject({
+      value: 0,
+    });
+    expect(fence.abort()).toBe(true);
   });
 
   it("rejects when revision changes during async authorization", async () => {

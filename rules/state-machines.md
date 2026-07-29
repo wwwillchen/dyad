@@ -546,3 +546,11 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   one-shot entity IDs cannot accumulate forever, and maintain a global
   insertion-order index instead of scanning every key on each production
   trace event.
+- Capturing keyed admission before authorization must not allocate permanent
+  per-key gate metadata. Use a shared open generation (or explicitly release
+  the capture) so rejected, attacker-controlled keys cannot grow a
+  process-lifetime map.
+- When a fence snapshots work admitted before publication, settlement must
+  remove that work from the current fence's drain set even though no fence
+  existed when tracking began. Test this with controlled pre-fence work; a
+  tracker that cleans up only its originally captured fence can strand sealing.

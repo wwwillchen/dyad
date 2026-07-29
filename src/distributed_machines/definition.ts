@@ -14,6 +14,7 @@ import type {
   TransitionResult,
 } from "@/state_machines/types";
 import type { RuntimeRemoteIntentContract } from "./remote_intent_contract";
+import type { KeyedAdmissionGeneration } from "./keyed_admission_gate";
 
 export type ActorInstanceId = string;
 
@@ -47,6 +48,17 @@ export interface MachineHostContext<Key, State, Event> {
    * Factory-safe: events emitted during construction are drained after the
    * dispatcher and every definition callback are installed.
    */
+  send(event: Event): void;
+  /**
+   * Captures a non-creating producer sink bound to this actor instance and the
+   * current keyed admission generation.
+   */
+  captureSink(): ActorEventSink<Event>;
+}
+
+export interface ActorEventSink<Event> {
+  readonly actor: ActorRuntimeMetadata;
+  readonly admissionGeneration: KeyedAdmissionGeneration;
   send(event: Event): void;
 }
 

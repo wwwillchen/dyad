@@ -1,7 +1,10 @@
 import {
   TransactionalDispatcher,
+  type CommandExecutor,
+  type CommandScheduler,
   type DispatchTicketOutcome,
   type DispatcherError,
+  type ReservedCommandBatch,
 } from "@/state_machines/dispatcher";
 import { TaskScope, collectDisposalError } from "@/state_machines/task_scope";
 import { TimerLeaseScope } from "@/state_machines/timer_lease";
@@ -19,9 +22,16 @@ import type {
   ActorInstanceId,
   ActorRuntimeMetadata,
   DistributedMachineDefinition,
+  ActorEventSink,
   HostedActorRef,
   MachineHostContext,
 } from "./definition";
+import {
+  KeyedAdmissionGate,
+  KeyedAdmissionGateError,
+  type FenceHandle,
+  type KeyedAdmissionGeneration,
+} from "./keyed_admission_gate";
 
 type AnyDefinition = DistributedMachineDefinition<
   string,
@@ -62,7 +72,10 @@ export class ActorAdmissionError extends Error {
       | "host-disposed"
       | "actor-disposing"
       | "actor-constructing"
-      | "machine-disposing",
+      | "machine-disposing"
+      | "key-fenced"
+      | "stale-admission-generation"
+      | "stale-actor-revision",
     message: string,
   ) {
     super(message);
@@ -106,6 +119,84 @@ interface ConstructionDisposalBarrier {
   readonly reject: (failure: unknown) => void;
 }
 
+export interface ActorHostAdmissionGeneration {
+  readonly host: number;
+  readonly machine: number;
+  readonly gate: KeyedAdmissionGeneration;
+}
+
+interface EventContinuation {
+  readonly generation: KeyedAdmissionGeneration;
+  readonly settled: Promise<void>;
+  observeBatch(commandCount: number): void;
+  observeTicket(outcome: DispatchTicketOutcome<unknown, IgnoreReason>): void;
+  observeCommandStart(): void;
+  observeCommandSettlement(): void;
+  observeSchedulerFailure(): void;
+}
+
+function createEventContinuation(
+  generation: KeyedAdmissionGeneration,
+): EventContinuation {
+  let resolve!: () => void;
+  const settled = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  let ticketSettled = false;
+  let batchObserved = false;
+  let schedulerFailed = false;
+  let expectedCommands = 0;
+  let startedCommands = 0;
+  let settledCommands = 0;
+  const reconcile = () => {
+    if (
+      ticketSettled &&
+      ((schedulerFailed && settledCommands === startedCommands) ||
+        (batchObserved && settledCommands === expectedCommands))
+    ) {
+      resolve();
+    }
+  };
+  return {
+    generation,
+    settled,
+    observeBatch(commandCount) {
+      batchObserved = true;
+      expectedCommands = commandCount;
+      reconcile();
+    },
+    observeTicket(outcome) {
+      ticketSettled = true;
+      if (outcome.kind !== "applied") batchObserved = true;
+      reconcile();
+    },
+    observeCommandStart() {
+      startedCommands += 1;
+    },
+    observeCommandSettlement() {
+      settledCommands += 1;
+      reconcile();
+    },
+    observeSchedulerFailure() {
+      schedulerFailed = true;
+      reconcile();
+    },
+  };
+}
+
+interface HostedActorAdmission<Event> {
+  capture(): KeyedAdmissionGeneration;
+  assertDispatch(
+    event: Event,
+    generation: KeyedAdmissionGeneration,
+    captured: boolean,
+  ): void;
+  track<Result>(
+    generation: KeyedAdmissionGeneration,
+    start: () => Promise<Result>,
+  ): Promise<Result>;
+}
+
 class HostedActor<
   Key,
   State,
@@ -126,7 +217,14 @@ class HostedActor<
   private revision = 0;
   private transactionSequence = 0;
   private subscriberCount = 0;
-  private readonly bufferedEvents: Event[] = [];
+  private readonly bufferedEvents: {
+    readonly event: Event;
+    readonly generation?: KeyedAdmissionGeneration;
+    readonly expectedActor?: ActorRuntimeMetadata;
+  }[] = [];
+  private readonly pendingContinuations: EventContinuation[] = [];
+  private currentContinuation: EventContinuation | undefined;
+  private startingCommandGeneration: KeyedAdmissionGeneration | undefined;
   private idleTimer: RetentionTimerLease | undefined;
   private terminalTimer: RetentionTimerLease | undefined;
   private readonly admissionStopErrors: unknown[] = [];
@@ -145,6 +243,7 @@ class HostedActor<
     >,
     readonly key: Key,
     private readonly options: ActorHostOptions,
+    private readonly admission: HostedActorAdmission<Event>,
     private readonly isAdmissionClosed: () => boolean,
     private readonly removeFromHost: (
       actor: HostedActor<Key, State, Event, Command, Reason>,
@@ -171,14 +270,16 @@ class HostedActor<
         if (dispatcher) {
           void this.enqueue(event);
         } else {
-          this.bufferedEvents.push(event);
+          this.bufferedEvents.push({ event });
         }
       },
+      captureSink: () => this.captureSink(),
     };
     try {
       const domainObserver = definition.createObserver?.(context);
       const beforeCommit = definition.createBeforeCommit?.(context);
       const runCommand = definition.createCommandRunner(context);
+      const scheduler = definition.createScheduler(key);
       const traceObserver = createTraceObserver<State, Event, Command, Reason>(
         definition.id,
         typeof key === "string" || typeof key === "number" ? key : String(key),
@@ -187,11 +288,17 @@ class HostedActor<
       dispatcher = new TransactionalDispatcher({
         initialState,
         transition: (state, event) => {
+          this.currentContinuation = this.pendingContinuations.shift();
           this.transactionSequence += 1;
           return definition.transition(state, event, key);
         },
-        scheduler: definition.createScheduler(key),
-        runCommand: (command) => runCommand(command, context.send),
+        scheduler: this.trackScheduler(scheduler),
+        runCommand: (command) => {
+          const generation =
+            this.startingCommandGeneration ?? this.admission.capture();
+          const sink = this.captureSink(generation);
+          return runCommand(command, sink.send);
+        },
         beforeCommit,
         project: (snapshot) => {
           if (snapshot !== this.lastProjectedSnapshot) {
@@ -258,8 +365,72 @@ class HostedActor<
   enqueue = (
     event: Event,
     dispatchContext?: DispatchContext,
-  ): ActorDispatchTicket<State, Reason> => {
+  ): ActorDispatchTicket<State, Reason> =>
+    this.enqueueWithAdmission(
+      event,
+      dispatchContext,
+      this.admission.capture(),
+      false,
+    );
+
+  private enqueueWithAdmission(
+    event: Event,
+    dispatchContext: DispatchContext | undefined,
+    generation: KeyedAdmissionGeneration,
+    captured: boolean,
+    expectedActor?: ActorRuntimeMetadata,
+  ): ActorDispatchTicket<State, Reason> {
+    try {
+      this.admission.assertDispatch(event, generation, captured);
+    } catch (error) {
+      if (!(error instanceof KeyedAdmissionGateError)) throw error;
+      return settledTicket({
+        kind: "failed",
+        stage: "before-admission",
+        error: new ActorAdmissionError(
+          error.code === "stale-generation"
+            ? "stale-admission-generation"
+            : "key-fenced",
+          error.message,
+        ),
+      });
+    }
+    if (
+      expectedActor &&
+      this.admission.capture() === generation &&
+      (expectedActor.actorInstanceId !== this.actorInstanceId ||
+        expectedActor.snapshotRevision !== this.getMetadata().snapshotRevision)
+    ) {
+      return settledTicket({
+        kind: "failed",
+        stage: "before-admission",
+        error: new ActorAdmissionError(
+          "stale-actor-revision",
+          `Actor ${this.definition.id} changed after the producer sink was captured`,
+        ),
+      });
+    }
     if (this.isAdmissionClosed()) this.stopAdmission();
+    const continuation = createEventContinuation(generation);
+    this.pendingContinuations.push(continuation);
+    try {
+      void this.admission
+        .track(generation, () => continuation.settled)
+        .catch((failure) => this.reportFailure(failure));
+    } catch (error) {
+      this.pendingContinuations.pop();
+      if (!(error instanceof KeyedAdmissionGateError)) throw error;
+      return settledTicket({
+        kind: "failed",
+        stage: "before-admission",
+        error: new ActorAdmissionError(
+          error.code === "stale-generation"
+            ? "stale-admission-generation"
+            : "key-fenced",
+          error.message,
+        ),
+      });
+    }
     let settledMetadata: ActorRuntimeMetadata | undefined;
     const ticket = this.dispatcher.enqueue(
       event,
@@ -270,6 +441,9 @@ class HostedActor<
     );
     void ticket.settled
       .then((outcome) => {
+        continuation.observeTicket(
+          outcome as DispatchTicketOutcome<unknown, IgnoreReason>,
+        );
         if (outcome.kind !== "disposed") this.reconcileRetention();
       })
       .catch((failure) => this.reportFailure(failure));
@@ -277,7 +451,78 @@ class HostedActor<
       settled: ticket.settled,
       getSettledMetadata: () => settledMetadata,
     };
-  };
+  }
+
+  private captureSink(
+    generation: KeyedAdmissionGeneration = this.admission.capture(),
+  ): ActorEventSink<Event> {
+    const actor = this.getMetadata();
+    return Object.freeze({
+      actor,
+      admissionGeneration: generation,
+      send: (event: Event) => {
+        const dispatcher = this.dispatcher as
+          | TransactionalDispatcher<State, Event, Command, Reason>
+          | undefined;
+        if (!dispatcher) {
+          this.bufferedEvents.push({
+            event,
+            generation,
+            expectedActor: actor,
+          });
+          return;
+        }
+        void this.enqueueWithAdmission(
+          event,
+          undefined,
+          generation,
+          true,
+          actor,
+        );
+      },
+    });
+  }
+
+  private trackScheduler(
+    scheduler: CommandScheduler<Command>,
+  ): CommandScheduler<Command> {
+    return {
+      schedule: (
+        batch: ReservedCommandBatch<Command>,
+        execute: CommandExecutor<Command>,
+      ) => {
+        const continuation = this.currentContinuation;
+        if (!continuation) return scheduler.schedule(batch, execute);
+        continuation.observeBatch(batch.commands.length);
+        const trackedExecute: CommandExecutor<Command> = async (command) => {
+          let execution: Promise<void>;
+          continuation.observeCommandStart();
+          this.startingCommandGeneration = continuation.generation;
+          try {
+            execution = execute(command);
+          } finally {
+            this.startingCommandGeneration = undefined;
+          }
+          try {
+            await execution;
+          } finally {
+            continuation.observeCommandSettlement();
+          }
+        };
+        try {
+          const scheduled = scheduler.schedule(batch, trackedExecute);
+          if (!scheduled) return;
+          return Promise.resolve(scheduled).catch((failure) => {
+            continuation.observeSchedulerFailure();
+            throw failure;
+          });
+        } catch (failure) {
+          continuation.observeSchedulerFailure();
+          throw failure;
+        }
+      },
+    };
+  }
 
   enqueueExpected(
     event: Event,
@@ -309,7 +554,19 @@ class HostedActor<
 
   activate(): void {
     const bufferedEvents = this.bufferedEvents.splice(0);
-    for (const event of bufferedEvents) void this.enqueue(event);
+    for (const buffered of bufferedEvents) {
+      if (buffered.generation) {
+        void this.enqueueWithAdmission(
+          buffered.event,
+          undefined,
+          buffered.generation,
+          true,
+          buffered.expectedActor,
+        );
+      } else {
+        void this.enqueue(buffered.event);
+      }
+    }
     try {
       this.reconcileRetention();
     } catch (failure) {
@@ -540,6 +797,10 @@ class HostedActor<
 
 export class ActorHost {
   private readonly definitions = new Map<string, AnyDefinition>();
+  private readonly admissionGates = new Map<
+    string,
+    KeyedAdmissionGate<unknown, unknown>
+  >();
   private readonly registeredDefinitions = new WeakSet<object>();
   private readonly constructing = new Map<string, Set<unknown>>();
   private readonly constructionDisposals = new Map<
@@ -608,14 +869,15 @@ export class ActorHost {
       throw new Error(`Machine ${definition.id} is already registered`);
     }
     this.definitions.set(definition.id, definition as unknown as AnyDefinition);
+    this.admissionGates.set(definition.id, new KeyedAdmissionGate());
     this.machineLifecycleGenerations.set(definition.id, 0);
     this.registeredDefinitions.add(definition);
   }
 
-  captureAdmissionGeneration(machineId: string): {
-    readonly host: number;
-    readonly machine: number;
-  } {
+  captureAdmissionGeneration(
+    machineId: string,
+    key: unknown,
+  ): ActorHostAdmissionGeneration {
     if (this.disposed) {
       throw new ActorAdmissionError("host-disposed", "ActorHost is disposed");
     }
@@ -628,21 +890,83 @@ export class ActorHost {
     return {
       host: this.hostLifecycleGeneration,
       machine: this.machineLifecycleGenerations.get(machineId) ?? 0,
+      gate: this.gate(machineId).captureGeneration(
+        this.admissionKey(this.definition(machineId), key),
+      ),
     };
   }
 
   isAdmissionGenerationCurrent(
     machineId: string,
-    generation: { readonly host: number; readonly machine: number },
+    key: unknown,
+    generation: ActorHostAdmissionGeneration,
   ): boolean {
+    const definition = this.definitions.get(machineId);
     return (
       !this.disposed &&
       !this.machineDisposals.has(machineId) &&
-      this.definitions.has(machineId) &&
+      definition !== undefined &&
       generation.host === this.hostLifecycleGeneration &&
       generation.machine ===
-        (this.machineLifecycleGenerations.get(machineId) ?? 0)
+        (this.machineLifecycleGenerations.get(machineId) ?? 0) &&
+      this.gate(machineId).isGenerationCurrent(
+        this.admissionKey(definition, key),
+        generation.gate,
+      )
     );
+  }
+
+  beginFence<
+    Id extends string,
+    Key,
+    State,
+    Event,
+    Command,
+    Reason extends IgnoreReason,
+    RemoteIntent,
+  >(
+    definition: DistributedMachineDefinition<
+      Id,
+      Key,
+      State,
+      Event,
+      Command,
+      Reason,
+      RemoteIntent
+    >,
+    options: {
+      readonly key: Key;
+      readonly allowDuringDrain: (event: NoInfer<Event>) => boolean;
+    },
+  ): FenceHandle<Key> {
+    this.assertRegistered(definition);
+    if (this.disposed) {
+      throw new ActorAdmissionError("host-disposed", "ActorHost is disposed");
+    }
+    if (this.machineDisposals.has(definition.id)) {
+      this.throwMachineDisposing(definition.id);
+    }
+    const admissionKey = this.admissionKey(definition, options.key);
+    const handle = this.gate(definition.id).beginFence({
+      key: admissionKey,
+      allowDuringDrain: options.allowDuringDrain as (event: unknown) => boolean,
+    });
+    return {
+      key: options.key,
+      generation: handle.generation,
+      seal: handle.seal,
+      commit: handle.commit,
+      abort: handle.abort,
+      release: handle.release,
+    };
+  }
+
+  inspectAdmission(
+    machineId: string,
+    key: unknown,
+  ): ReturnType<KeyedAdmissionGate<unknown, unknown>["inspect"]> {
+    const definition = this.definition(machineId);
+    return this.gate(machineId).inspect(this.admissionKey(definition, key));
   }
 
   ensure<
@@ -913,6 +1237,8 @@ export class ActorHost {
     } finally {
       this.definitions.clear();
       this.machineLifecycleGenerations.clear();
+      for (const gate of this.admissionGates.values()) gate.dispose();
+      this.admissionGates.clear();
     }
   }
 
@@ -961,6 +1287,26 @@ export class ActorHost {
         `Actor ${definition.id} is constructing`,
       );
     }
+    const admissionGate = this.gate(definition.id);
+    const admissionKey = this.admissionKey(definition, key);
+    const constructionGeneration =
+      admissionGate.captureGeneration(admissionKey);
+    try {
+      admissionGate.assertCreateAllowed(admissionKey, constructionGeneration);
+    } catch (error) {
+      this.throwGateAdmission(error);
+    }
+    let settleConstruction!: () => void;
+    const constructionSettled = new Promise<void>((resolve) => {
+      settleConstruction = resolve;
+    });
+    void admissionGate
+      .trackCaptured(
+        admissionKey,
+        constructionGeneration,
+        () => constructionSettled,
+      )
+      .catch((failure) => this.reportFailure(definition.id, key, failure));
     let constructing = this.constructing.get(definition.id);
     if (!constructing) {
       constructing = new Set();
@@ -973,6 +1319,26 @@ export class ActorHost {
         definition,
         key,
         this.options,
+        {
+          capture: () => admissionGate.captureGeneration(admissionKey),
+          assertDispatch: (event, generation, captured) => {
+            if (captured) {
+              admissionGate.assertCapturedDispatchAllowed(
+                admissionKey,
+                event,
+                generation,
+              );
+            } else {
+              admissionGate.assertDispatchAllowed(
+                admissionKey,
+                event,
+                generation,
+              );
+            }
+          },
+          track: (generation, start) =>
+            admissionGate.trackCaptured(admissionKey, generation, start),
+        },
         () =>
           this.disposed ||
           this.machineDisposals.has(definition.id) ||
@@ -1005,6 +1371,7 @@ export class ActorHost {
         );
       }
       if (keyed.size === 0) this.actors.delete(definition.id);
+      settleConstruction();
       throw error;
     } finally {
       constructing.delete(key);
@@ -1045,13 +1412,26 @@ export class ActorHost {
         );
       }
     }
+    try {
+      admissionGate.assertCreateAllowed(admissionKey, constructionGeneration);
+    } catch (error) {
+      const cleanup = actor.dispose("explicit");
+      void cleanup.then(settleConstruction, (failure) => {
+        this.reportFailure(definition.id, key, failure);
+        settleConstruction();
+      });
+      this.throwGateAdmission(error);
+    }
     if (this.disposed) {
+      settleConstruction();
       throw new ActorAdmissionError("host-disposed", "ActorHost is disposed");
     }
     if (machineConstructionDisposals) {
+      settleConstruction();
       this.throwMachineDisposing(definition.id);
     }
     if (constructionDisposal) {
+      settleConstruction();
       this.throwActorDisposing(definition.id);
     }
     keyed.set(key, actor);
@@ -1066,8 +1446,19 @@ export class ActorHost {
       actor.isDisposing() ||
       this.isConstructionDisposing(definition.id, key)
     ) {
+      settleConstruction();
       this.throwActorDisposing(definition.id);
     }
+    try {
+      admissionGate.assertCreateAllowed(admissionKey, constructionGeneration);
+    } catch (error) {
+      void actor.dispose("explicit").then(settleConstruction, (failure) => {
+        this.reportFailure(definition.id, key, failure);
+        settleConstruction();
+      });
+      this.throwGateAdmission(error);
+    }
+    settleConstruction();
     return actor;
   }
 
@@ -1083,6 +1474,34 @@ export class ActorHost {
       "machine-disposing",
       `Machine ${machineId} is disposing`,
     );
+  }
+
+  private throwGateAdmission(error: unknown): never {
+    if (!(error instanceof KeyedAdmissionGateError)) throw error;
+    throw new ActorAdmissionError(
+      error.code === "stale-generation"
+        ? "stale-admission-generation"
+        : "key-fenced",
+      error.message,
+    );
+  }
+
+  private gate(machineId: string): KeyedAdmissionGate<unknown, unknown> {
+    const gate = this.admissionGates.get(machineId);
+    if (!gate) throw new Error(`Machine ${machineId} is not registered`);
+    return gate;
+  }
+
+  private admissionKey<Key>(
+    definition: {
+      readonly remoteIntent?: { readonly keyToString: (key: Key) => string };
+      readonly remote?: { readonly keyToString: (key: Key) => string };
+    },
+    key: Key,
+  ): unknown {
+    const keyToString =
+      definition.remoteIntent?.keyToString ?? definition.remote?.keyToString;
+    return keyToString ? keyToString(key) : key;
   }
 
   private isConstructing(machineId: string, key: unknown): boolean {

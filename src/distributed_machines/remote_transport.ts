@@ -4,7 +4,11 @@ import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import type { Clock } from "@/state_machines/clock";
 import { PendingReceiptLedger } from "@/state_machines/pending_receipt_ledger";
 import type { WindowSessionId } from "@/window_infrastructure/types";
-import { ActorAdmissionError, type ActorHost } from "./actor_host";
+import {
+  ActorAdmissionError,
+  type ActorHost,
+  type ActorHostAdmissionGeneration,
+} from "./actor_host";
 import type {
   ActorRuntimeMetadata,
   HostedActorRef,
@@ -82,10 +86,7 @@ interface PreparedDispatchIdentity {
   readonly admittedEntry: SubscriptionEntry;
   readonly actor: HostedActorRef<unknown, unknown, string>;
   readonly actorMetadata: ActorRuntimeMetadata;
-  readonly lifecycleGeneration: {
-    readonly host: number;
-    readonly machine: number;
-  };
+  readonly lifecycleGeneration: ActorHostAdmissionGeneration;
   readonly windowSessionId: WindowSessionId;
   readonly fingerprint: string;
   consumed: boolean;
@@ -95,10 +96,7 @@ interface PendingSubscription {
   readonly address: string;
   readonly webContentsId: number;
   readonly countsTowardLimit: boolean;
-  readonly lifecycleGeneration: {
-    readonly host: number;
-    readonly machine: number;
-  };
+  readonly lifecycleGeneration: ActorHostAdmissionGeneration;
   cancelled: boolean;
   accountingReleased: boolean;
   promise?: Promise<MachineSnapshotEnvelope>;
@@ -250,6 +248,7 @@ export class RemoteMachineTransport {
       address,
       !alreadySubscribedBeforeAuthorization,
       definition.id,
+      key,
     );
     const prepared: PreparedSubscribe = {
       definition,
@@ -407,6 +406,7 @@ export class RemoteMachineTransport {
     if (
       !this.options.host.isAdmissionGenerationCurrent(
         prepared.definition.id,
+        prepared.decodedKey,
         prepared.pending.lifecycleGeneration,
       )
     ) {
@@ -687,6 +687,7 @@ export class RemoteMachineTransport {
       actorMetadata,
       lifecycleGeneration: this.options.host.captureAdmissionGeneration(
         definition.id,
+        admittedEntry.key,
       ),
       windowSessionId,
       fingerprint,
@@ -738,6 +739,7 @@ export class RemoteMachineTransport {
         if (
           !this.options.host.isAdmissionGenerationCurrent(
             definition.id,
+            key,
             prepared.lifecycleGeneration,
           )
         ) {
@@ -934,6 +936,7 @@ export class RemoteMachineTransport {
     if (
       !this.options.host.isAdmissionGenerationCurrent(
         definition.id,
+        key,
         prepared.lifecycleGeneration,
       )
     ) {
@@ -1348,6 +1351,7 @@ export class RemoteMachineTransport {
     address: string,
     countsTowardLimit: boolean,
     machineId: string,
+    key: unknown,
   ): PendingSubscription {
     const currentReferences = this.referencesPerWindow.get(webContentsId) ?? 0;
     const pendingReferences =
@@ -1365,8 +1369,10 @@ export class RemoteMachineTransport {
       address,
       webContentsId,
       countsTowardLimit,
-      lifecycleGeneration:
-        this.options.host.captureAdmissionGeneration(machineId),
+      lifecycleGeneration: this.options.host.captureAdmissionGeneration(
+        machineId,
+        key,
+      ),
       cancelled: false,
       accountingReleased: false,
     };
