@@ -27,6 +27,45 @@ Background and before/after examples of why this pattern exists:
   checks. Deliberate no-ops must use shared `ignore(state, reason)` so they are
   distinguishable from omissions and observable in telemetry.
 
+## Enforced distributed-machine boundaries
+
+- App-run and image generation are framework-covered surfaces. Their
+  definitions must be created with
+  `defineFrameworkCoveredRemoteMachine`; the constructor requires either a
+  native `RuntimeRemoteIntentContract` or the narrow protocol-v1 combination
+  of a declarative `RemoteIntentContract` plus `RemoteOperationContract`.
+  `createProductionRemoteMachineManifest` accepts only that capability or an
+  exact `defineLegacyRemoteMachineCompatibility` capability from the
+  production legacy-definition inventory.
+- `src/distributed_machines/boundary_inventory.test.ts` derives production
+  definitions and semantic dispatch, waiter, subscription, fence, and routing
+  boundaries from the TypeScript AST. Definitions and production manifest
+  capabilities are exact symbol inventories. Noisy implementation boundaries
+  are aggregated by exact owning file and count, so private function/class
+  renames do not create inventory churn while additions, deletions, and file
+  moves still fail review-visible tests. Do not classify a migrated adapter as
+  unsafe or widen an unsafe list to make the test pass.
+- Every unsafe compatibility entry lives in
+  `compatibilityBoundaryInventory` with its machine, exact file, mechanism,
+  expected boundary count, rationale, and conditional follow-up owner. File
+  moves, removals, and boundary-count changes require an explicit inventory
+  change. The mechanism-specific views are derived from those complete metadata
+  entries rather than from path-prefix allowlists.
+- New remote intents declare authorization, key/intent relationship, refusal
+  mapping, retry/idempotency, completion, observed revision, acceptance/input
+  disposition, and wire/snapshot budgets through
+  `defineRuntimeRemoteIntentContract` or `defineRemoteIntentContract`.
+  `defineMachineConformance` separately requires applicable tiers and explicit
+  exclusions, so purely local machines do not acquire irrelevant remote
+  capabilities.
+- Shared primitive scenarios run in
+  `testing/framework_mechanism_conformance.test.ts`; resource failures use
+  `assertNoOwnedResources` and identify the resource, owner, machine, key, and
+  generation. Do not call this cross-pilot runtime conformance unless one
+  reusable driver instantiates both domain façades and reads their inspectors.
+  Foundation and pilot review findings are exact-mapped in the corresponding
+  `*_finding_catalog.ts` files.
+
 ## Invariants
 
 - Controllers migrated to `TransactionalDispatcher` use one event transaction:
@@ -539,6 +578,10 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   markers still exist does not prevent an undeclared boundary crossing.
   Classify calls through the owning API (for example, Jotai stores and hooks),
   not an expected import directory; domain values may be local or re-exported.
+- Cache parsed TypeScript source files across semantic boundary-inventory
+  assertions. Re-parsing the full production tree for every exact inventory can
+  exceed the test timeout only under full-suite concurrency, hiding an
+  otherwise deterministic inventory result behind a load-dependent failure.
 - When adding an intentional completion-aware `dispatch` or `enqueue` framework
   path, classify it in the boundary inventory separately from raw compatibility
   escape hatches; do not widen the raw allowlist to make the inventory pass.

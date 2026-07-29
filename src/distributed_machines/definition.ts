@@ -13,7 +13,11 @@ import type {
   TransitionObserver,
   TransitionResult,
 } from "@/state_machines/types";
-import type { RuntimeRemoteIntentContract } from "./remote_intent_contract";
+import type {
+  RemoteIntentContract,
+  RemoteIntentPolicy,
+  RuntimeRemoteIntentContract,
+} from "./remote_intent_contract";
 import type { KeyedAdmissionGeneration } from "./keyed_admission_gate";
 import type {
   OperationLookupIdentity,
@@ -300,6 +304,17 @@ export interface DistributedMachineDefinition<
     Event,
     unknown
   >;
+  /**
+   * Declarative renderer-intent contract for a completion-aware protocol-v1
+   * adapter. Framework-covered definitions use this only when the runtime
+   * native remoteIntent path is not yet wire-compatible.
+   */
+  readonly remoteIntentDeclaration?: RemoteIntentContract<
+    Key,
+    Extract<RemoteIntent, { readonly type: string }>,
+    Event,
+    unknown
+  >;
   /** Optional completion-aware admission for declared request intents. */
   readonly remoteOperation?: RemoteOperationContract<
     Key,
@@ -308,6 +323,132 @@ export interface DistributedMachineDefinition<
     any,
     any
   >;
+}
+
+declare const frameworkCoveredRemoteMachine: unique symbol;
+
+export type FrameworkCoveredRemoteMachine<
+  Definition extends DistributedMachineDefinition<
+    string,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any
+  >,
+> = Definition & {
+  readonly [frameworkCoveredRemoteMachine]: true;
+};
+
+type NativeFrameworkBoundary<Key, State, Event, RemoteIntent> = {
+  readonly remote: RemoteMachineContract<Key, State, Event>;
+  readonly remoteIntent: RuntimeRemoteIntentContract<
+    Key,
+    State,
+    Extract<RemoteIntent, { readonly type: string }>,
+    Event,
+    unknown
+  >;
+};
+
+type ProtocolV1FrameworkBoundary<Key, State, Event, RemoteIntent> = {
+  readonly remote: RemoteMachineContract<Key, State, Event>;
+  readonly remoteIntentDeclaration: RemoteIntentContract<
+    Key,
+    Extract<RemoteIntent, { readonly type: string }>,
+    Event,
+    unknown
+  >;
+  readonly remoteOperation: RemoteOperationContract<
+    Key,
+    Extract<RemoteIntent, { readonly type: string }>,
+    Event,
+    any,
+    any
+  >;
+};
+
+type FrameworkBoundaryFor<
+  Definition extends DistributedMachineDefinition<
+    string,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any
+  >,
+> =
+  Definition extends DistributedMachineDefinition<
+    string,
+    infer Key,
+    infer State,
+    infer Event,
+    any,
+    any,
+    infer RemoteIntent,
+    any
+  >
+    ?
+        | NativeFrameworkBoundary<Key, State, Event, RemoteIntent>
+        | ProtocolV1FrameworkBoundary<Key, State, Event, RemoteIntent>
+    : never;
+
+/**
+ * Capability constructor for migrated distributed surfaces. It is impossible
+ * to obtain the framework-covered brand without either the native prepared
+ * remote-intent contract or the narrow completion-aware protocol-v1 adapter.
+ */
+export function defineFrameworkCoveredRemoteMachine<
+  const Definition extends DistributedMachineDefinition<
+    string,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any
+  >,
+>(
+  definition: Definition & FrameworkBoundaryFor<Definition>,
+): FrameworkCoveredRemoteMachine<Definition> {
+  const intentContract =
+    definition.remoteIntent ?? definition.remoteIntentDeclaration;
+  if (!intentContract) {
+    throw new Error(
+      `Framework-covered machine ${definition.id} has no remote intent contract`,
+    );
+  }
+  const hasTrackedCompletion = Object.values(
+    intentContract.intents as Readonly<Record<string, RemoteIntentPolicy>>,
+  ).some(
+    (policy: RemoteIntentPolicy) => policy.completion === "tracked-completion",
+  );
+  if (
+    hasTrackedCompletion &&
+    definition.remoteIntent &&
+    !definition.remoteIntent.finalizeOperation
+  ) {
+    throw new Error(
+      `Framework-covered machine ${definition.id} declares tracked completion without finalizeOperation`,
+    );
+  }
+  if (
+    hasTrackedCompletion &&
+    definition.remoteIntentDeclaration &&
+    !definition.remoteOperation
+  ) {
+    throw new Error(
+      `Framework-covered machine ${definition.id} declares tracked completion without remoteOperation`,
+    );
+  }
+  return Object.freeze(
+    definition,
+  ) as unknown as FrameworkCoveredRemoteMachine<Definition>;
 }
 
 export interface LocalActorRef<State, Event> {

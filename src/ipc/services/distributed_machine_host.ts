@@ -3,7 +3,8 @@ import { chatStreamDefinition } from "@/chat_stream/definition";
 import { planHandoffDefinition } from "@/plan_handoff/definition";
 import {
   assertRemoteProtocolV1CompatibilityInventory,
-  createRemoteMachineManifest,
+  createProductionRemoteMachineManifest,
+  defineLegacyRemoteMachineCompatibility,
 } from "@/distributed_machines/remote_manifest";
 import {
   RemoteMachineTransport,
@@ -21,16 +22,16 @@ export { remoteMachineHost };
 
 const remoteMachineDefinitions = [
   appRunDefinition,
-  chatStreamDefinition,
-  githubOpsDefinition,
+  defineLegacyRemoteMachineCompatibility(chatStreamDefinition),
+  defineLegacyRemoteMachineCompatibility(githubOpsDefinition),
   imageGenerationDefinition,
-  planHandoffDefinition,
-  versionPreviewDefinition,
+  defineLegacyRemoteMachineCompatibility(planHandoffDefinition),
+  defineLegacyRemoteMachineCompatibility(versionPreviewDefinition),
 ] as const;
 
 assertRemoteProtocolV1CompatibilityInventory(remoteMachineDefinitions);
 
-export const remoteMachineManifest = createRemoteMachineManifest(
+export const remoteMachineManifest = createProductionRemoteMachineManifest(
   remoteMachineDefinitions,
 );
 

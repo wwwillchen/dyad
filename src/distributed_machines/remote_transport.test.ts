@@ -12,6 +12,7 @@ import { ActorHost, type ActorHostError } from "./actor_host";
 import {
   assertRemoteProtocolV1CompatibilityInventory,
   createRemoteMachineManifest,
+  defineLegacyRemoteMachineCompatibility,
   REMOTE_PROTOCOL_V1_COMPATIBILITY_INVENTORY,
   type AnyRemoteMachineDefinition,
 } from "./remote_manifest";
@@ -245,6 +246,16 @@ describe("remote machine manifest", () => {
         productionLegacyDefinitions.slice(1),
       ),
     ).toThrow(`Stale: ${REMOTE_PROTOCOL_V1_COMPATIBILITY_INVENTORY[0]}`);
+  });
+
+  it("refuses to brand an unlisted legacy production definition", () => {
+    const legacy = createObjectKeyMachine();
+    expect(() =>
+      defineLegacyRemoteMachineCompatibility({
+        ...legacy,
+        id: "unlisted",
+      }),
+    ).toThrow("is not in the legacy definition inventory");
   });
 });
 

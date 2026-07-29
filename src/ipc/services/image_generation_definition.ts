@@ -2,7 +2,10 @@ import { eq } from "drizzle-orm";
 import type { z } from "zod";
 import { db } from "@/db";
 import { apps } from "@/db/schema";
-import type { DistributedMachineDefinition } from "@/distributed_machines/definition";
+import {
+  defineFrameworkCoveredRemoteMachine,
+  type DistributedMachineDefinition,
+} from "@/distributed_machines/definition";
 import { REMOTE_MACHINE_PROTOCOL_VERSION } from "@/distributed_machines/remote_protocol";
 import {
   defineCorrelatedEffectHandlers,
@@ -29,6 +32,7 @@ import {
   type ImageGenerationFailureKind,
 } from "@/image_generation/state";
 import { isTerminal, transition } from "@/image_generation/transition";
+import { imageGenerationRemoteIntentContract } from "@/image_generation/remote_intent_contract";
 import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 import { imageGenerationPresentationService } from "./image_generation_presentation_service";
 import { imageGenerationService } from "./image_generation_service";
@@ -199,7 +203,7 @@ type ImageGenerationDefinition = DistributedMachineDefinition<
   >;
 };
 
-export const imageGenerationDefinition: ImageGenerationDefinition = {
+export const imageGenerationDefinition = defineFrameworkCoveredRemoteMachine({
   id: IMAGE_GENERATION_MACHINE_ID,
   host: "main",
   initialState: (): ImageGenerationActorState => ({ jobs: [] }),
@@ -232,7 +236,7 @@ export const imageGenerationDefinition: ImageGenerationDefinition = {
     survivesRendererReload: true,
     restartPersistence: "ephemeral",
     flushOnShutdown: true,
-    isTerminal: (state) =>
+    isTerminal: (state: ImageGenerationActorState) =>
       state.jobs.length > 0 && state.jobs.every(({ job }) => isTerminal(job)),
     flush: () => imageGenerationService.cancelAndSettleAll(),
     settleWaiters: ({ metadata }) => {
@@ -272,7 +276,10 @@ export const imageGenerationDefinition: ImageGenerationDefinition = {
         intent.initiatorWindowSessionId = sender.windowSessionId;
         return;
       }
-      const job = currentState?.jobs.find(({ job }) => job.id === intent.jobId);
+      const job = currentState?.jobs.find(
+        ({ job }: ImageGenerationActorState["jobs"][number]) =>
+          job.id === intent.jobId,
+      );
       if (
         intent.activeInvocationRef.entityKey !== intent.jobId ||
         !sameImageGenerationInvocation(
@@ -300,8 +307,9 @@ export const imageGenerationDefinition: ImageGenerationDefinition = {
       }
     },
   },
+  remoteIntentDeclaration: imageGenerationRemoteIntentContract,
   remoteOperation: imageGenerationOperationService.remoteContract(),
-};
+} satisfies ImageGenerationDefinition);
 
 function assertNever(value: never): never {
   throw new Error(
