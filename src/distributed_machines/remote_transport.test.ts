@@ -56,6 +56,7 @@ async function flush(): Promise<void> {
 function createHarness(
   options: {
     machine?: AnyRemoteMachineDefinition;
+    machines?: readonly AnyRemoteMachineDefinition[];
     deduplicationRetentionMs?: number;
     maxDeduplicationEntries?: number;
     maxSubscriptionsPerWindow?: number;
@@ -75,7 +76,7 @@ function createHarness(
     reportError: (error) => errors.push(error),
   });
   const machine = options.machine ?? createRemoteTestMachine();
-  const manifest = createRemoteMachineManifest([machine]);
+  const manifest = createRemoteMachineManifest(options.machines ?? [machine]);
   const windows = new TwoWindowHarness();
   const transport = new RemoteMachineTransport({
     host,
@@ -330,7 +331,7 @@ describe("remote machine transport", () => {
         ...retryEnvelope,
         encodedEvent: { type: "IGNORE" },
       }),
-    ).resolves.toMatchObject({ kind: "applied", revision: 2 });
+    ).resolves.toMatchObject({ kind: "rejected", reason: "invalid-event" });
     expect(renderer.view(address())?.state).toEqual({ value: 2 });
 
     const nonJsonEnvelope = dispatch({
@@ -354,6 +355,45 @@ describe("remote machine transport", () => {
     });
   });
 
+  it("conflicts when one message ID changes machine, address, payload, or revision", async () => {
+    const firstMachine = createRemoteTestMachine();
+    const secondMachine = createRemoteTestMachine("remote-test-2");
+    const { duplex } = createHarness({
+      machine: firstMachine,
+      machines: [firstMachine, secondMachine],
+    });
+    const renderer = duplex.connect();
+    await renderer.subscribe(address("actor"));
+    await renderer.subscribe(address("other"));
+    await renderer.subscribe({
+      protocolVersion: REMOTE_MACHINE_PROTOCOL_VERSION,
+      machineId: secondMachine.id,
+      encodedKey: "actor",
+    });
+    const envelope = dispatch(
+      { type: "SET", value: 1 },
+      { messageId: "stable-conflict", expectedRevision: 0 },
+    );
+    await expect(renderer.dispatch(envelope)).resolves.toMatchObject({
+      kind: "applied",
+    });
+
+    const conflicts: MachineDispatchEnvelope[] = [
+      { ...envelope, machineId: secondMachine.id },
+      { ...envelope, machineId: "unknown-machine" },
+      { ...envelope, encodedKey: "other" },
+      { ...envelope, encodedEvent: { type: "SET", value: 2 } },
+      { ...envelope, expectedActorInstanceId: "different-actor-instance" },
+      { ...envelope, expectedRevision: 1 },
+    ];
+    for (const conflict of conflicts) {
+      await expect(renderer.dispatch(conflict)).resolves.toMatchObject({
+        kind: "rejected",
+        reason: "invalid-event",
+      });
+    }
+  });
+
   it("deduplicates a committed retry across renderer reconnection", async () => {
     const { duplex, host, machine } = createHarness();
     const renderer = duplex.connect();
@@ -367,6 +407,26 @@ describe("remote machine transport", () => {
     const reconnected = renderer.reconnect();
     await reconnected.subscribe(address());
     await expect(reconnected.dispatch(envelope)).resolves.toMatchObject({
+      kind: "applied",
+      revision: 1,
+    });
+    expect(host.peek(machine.id, "actor")?.getSnapshot()).toMatchObject({
+      value: 1,
+    });
+  });
+
+  it("replays a retained receipt after its subscription is released", async () => {
+    const { duplex, host, machine } = createHarness();
+    const renderer = duplex.connect();
+    await renderer.subscribe(address());
+    const envelope = dispatch({ type: "INCREMENT" });
+
+    duplex.dropNextReceipt();
+    await expect(renderer.dispatch(envelope)).rejects.toBeInstanceOf(
+      FakeTransportDisconnectedError,
+    );
+    await renderer.unsubscribe(address());
+    await expect(renderer.dispatch(envelope)).resolves.toMatchObject({
       kind: "applied",
       revision: 1,
     });
