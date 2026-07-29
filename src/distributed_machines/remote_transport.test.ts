@@ -1531,6 +1531,48 @@ describe("remote machine transport", () => {
     expect(fence.abort()).toBe(true);
   });
 
+  it("rejects a fresh window subscription while an existing actor is sealed", async () => {
+    const { duplex, host, machine, transport } = createHarness();
+    const first = duplex.connect();
+    const second = duplex.connect();
+    await first.subscribe(address());
+    const fence = host.beginFence(machine, {
+      key: "actor",
+      allowDuringDrain: () => false,
+    });
+    await fence.seal();
+
+    await expect(first.subscribe(address())).resolves.toMatchObject({
+      revision: 0,
+    });
+    await expect(second.subscribe(address())).rejects.toThrow(
+      "Remote machine subscription was refused",
+    );
+    expect(transport.inspectSubscriptions()).toEqual([
+      expect.objectContaining({
+        totalReferences: 1,
+        windows: new Map([[1, 1]]),
+      }),
+    ]);
+    expect(fence.abort()).toBe(true);
+  });
+
+  it("rejects the first remote subscription to a sealed local actor", async () => {
+    const { duplex, host, machine, transport } = createHarness();
+    host.localRef(machine, "actor");
+    const fence = host.beginFence(machine, {
+      key: "actor",
+      allowDuringDrain: () => false,
+    });
+    await fence.seal();
+
+    await expect(duplex.connect().subscribe(address())).rejects.toThrow(
+      "Remote machine subscription was refused",
+    );
+    expect(transport.inspectSubscriptions()).toEqual([]);
+    expect(fence.abort()).toBe(true);
+  });
+
   it("prevents pending and future admissions after transport disposal", async () => {
     let releaseAuthorization!: () => void;
     let authorizationStarted!: () => void;

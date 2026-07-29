@@ -134,7 +134,16 @@ export class KeyedAdmissionGate<Key, Event> {
   ): void {
     const entry = this.entries.get(key);
     this.assertCurrentGeneration(entry, generation);
-    this.assertEventAllowed(entry?.fence, event);
+    const fence = entry?.fence;
+    if (
+      fence?.phase === "draining" &&
+      this.isAllowedDuringDrain(fence, event)
+    ) {
+      this.assertFenceStillDraining(key, fence);
+      this.assertCurrentGeneration(this.entries.get(key), generation);
+      return;
+    }
+    this.throwDispatchBlocked(fence);
   }
 
   /**
@@ -153,14 +162,17 @@ export class KeyedAdmissionGate<Key, Event> {
       fence?.phase === "draining" &&
       generation === fence.previousGeneration
     ) {
-      if (this.isAllowedDuringDrain(fence, event)) return;
-      throw new KeyedAdmissionGateError(
-        "dispatch-blocked",
-        "The captured producer event is not allowed while draining",
-      );
+      if (!this.isAllowedDuringDrain(fence, event)) {
+        throw new KeyedAdmissionGateError(
+          "dispatch-blocked",
+          "The captured producer event is not allowed while draining",
+        );
+      }
+      this.assertFenceStillDraining(key, fence);
+      return;
     }
     this.assertCurrentGeneration(entry, generation);
-    this.assertEventAllowed(fence, event);
+    this.throwDispatchBlocked(fence);
   }
 
   track<Result>(key: Key, start: () => Promise<Result>): Promise<Result> {
@@ -383,17 +395,21 @@ export class KeyedAdmissionGate<Key, Event> {
     );
   }
 
-  private assertEventAllowed(
-    fence: FenceRecord<Event> | undefined,
-    event: Event,
-  ): void {
+  private throwDispatchBlocked(fence: FenceRecord<Event> | undefined): void {
     if (!fence) return;
-    if (fence.phase === "draining" && this.isAllowedDuringDrain(fence, event)) {
-      return;
-    }
     throw new KeyedAdmissionGateError(
       "dispatch-blocked",
       `Dispatch is blocked while the key is ${fence.phase}`,
+    );
+  }
+
+  private assertFenceStillDraining(key: Key, fence: FenceRecord<Event>): void {
+    if (this.entries.get(key)?.fence === fence && fence.phase === "draining") {
+      return;
+    }
+    throw new KeyedAdmissionGateError(
+      "stale-generation",
+      "The keyed admission fence changed during drain admission",
     );
   }
 

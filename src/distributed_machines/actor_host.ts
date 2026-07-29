@@ -1117,12 +1117,48 @@ export class ActorHost {
     >,
     key: Key,
   ): HostedActorRef<State, Event, Reason> {
+    const generation = this.captureAdmissionGeneration(definition.id, key);
+    return this.localRefCaptured(definition, key, generation);
+  }
+
+  /**
+   * Final synchronous admission for a newly acquired actor reference prepared
+   * across an asynchronous boundary. Existing actors are still subject to the
+   * keyed creation/reference fence.
+   */
+  localRefCaptured<
+    Id extends string,
+    Key,
+    State,
+    Event,
+    Command,
+    Reason extends IgnoreReason,
+  >(
+    definition: DistributedMachineDefinition<
+      Id,
+      Key,
+      State,
+      Event,
+      Command,
+      Reason
+    >,
+    key: Key,
+    generation: ActorHostAdmissionGeneration,
+  ): HostedActorRef<State, Event, Reason> {
     this.assertRegistered(definition);
-    if (this.disposed) {
-      throw new ActorAdmissionError("host-disposed", "ActorHost is disposed");
+    if (!this.isAdmissionGenerationCurrent(definition.id, key, generation)) {
+      throw new ActorAdmissionError(
+        "stale-admission-generation",
+        `Admission changed while acquiring ${definition.id}`,
+      );
     }
-    if (this.machineDisposals.has(definition.id)) {
-      this.throwMachineDisposing(definition.id);
+    try {
+      this.gate(definition.id).assertCreateAllowed(
+        this.admissionKey(definition, key),
+        generation.gate,
+      );
+    } catch (error) {
+      this.throwGateAdmission(error);
     }
     if (this.isConstructionDisposing(definition.id, key)) {
       this.throwActorDisposing(definition.id);
@@ -1606,9 +1642,11 @@ export class ActorHost {
     keyed.set(key, actor);
     actor.activate();
     if (this.disposed) {
+      settleConstruction();
       throw new ActorAdmissionError("host-disposed", "ActorHost is disposed");
     }
     if (this.machineDisposals.has(definition.id)) {
+      settleConstruction();
       this.throwMachineDisposing(definition.id);
     }
     if (

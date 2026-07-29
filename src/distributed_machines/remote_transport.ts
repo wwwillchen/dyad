@@ -332,14 +332,13 @@ export class RemoteMachineTransport {
           DyadErrorKind.Precondition,
         );
       }
-      prepared.consumed = true;
-
-      if (!entry) {
-        let actor: HostedActorRef<unknown, unknown, string>;
+      let admittedActor: HostedActorRef<unknown, unknown, string> | undefined;
+      if (!alreadySubscribed) {
         try {
-          actor = this.options.host.localRef(
+          admittedActor = this.options.host.localRefCaptured(
             definition,
             canonicalKey,
+            pending.lifecycleGeneration,
           ) as HostedActorRef<unknown, unknown, string>;
         } catch (error) {
           if (error instanceof ActorAdmissionError) {
@@ -351,18 +350,34 @@ export class RemoteMachineTransport {
           }
           throw error;
         }
+        if (entry && admittedActor !== entry.actor) {
+          throw new DyadError(
+            "Remote machine actor changed during subscription admission",
+            DyadErrorKind.Precondition,
+          );
+        }
+      }
+      prepared.consumed = true;
+
+      if (!entry) {
+        if (!admittedActor) {
+          throw new DyadError(
+            "Remote machine subscription admission was not retained",
+            DyadErrorKind.Precondition,
+          );
+        }
         this.actorKeys.set(address, canonicalKey);
         entry = {
           address,
           definition,
           key: canonicalKey,
           encodedKey: canonicalEncodedKey,
-          actor,
+          actor: admittedActor,
           windows: new Map(),
           unsubscribeActor: () => undefined,
         };
         this.subscriptions.set(address, entry);
-        entry.unsubscribeActor = actor.subscribe(() =>
+        entry.unsubscribeActor = admittedActor.subscribe(() =>
           this.broadcastSnapshot(entry!),
         );
       }

@@ -68,6 +68,7 @@ function machine(options: {
     Command,
     Reason
   >["createObserver"];
+  readonly onTransition?: (event: Event) => void;
   readonly onDisposed?: () => void | Promise<void>;
 }): DistributedMachineDefinition<
   string,
@@ -82,6 +83,7 @@ function machine(options: {
     host: "main",
     initialState: () => ({ events: [] }),
     transition(state, event) {
+      options.onTransition?.(event);
       const next = { events: [...state.events, event.type] };
       return event.type === "COMMAND"
         ? change(next, [{ type: "WAIT" }])
@@ -415,6 +417,40 @@ describe("ActorHost keyed admission integration", () => {
     expect(errors).toEqual([]);
     expect(fence.abort()).toBe(true);
     expect(host.inspectAdmission(definition.id, "one").phase).toBe("open");
+    await host.dispose();
+  });
+
+  it("settles construction tracking after machine-disposal reentry", async () => {
+    let host!: ActorHost;
+    let machineDisposal!: Promise<void>;
+    let definition!: ReturnType<typeof machine>;
+    definition = machine({
+      id: "construction-machine-disposal",
+      createObserver(context) {
+        context.send({ type: "WORK" });
+        return {};
+      },
+      onTransition(event) {
+        if (event.type === "WORK") {
+          machineDisposal = host.disposeMachine(definition.id);
+        }
+      },
+    });
+    ({ host } = harness(definition));
+
+    expect(() => host.localRef(definition, "one")).toThrow(
+      expect.objectContaining({ code: "machine-disposing" }),
+    );
+    await machineDisposal;
+
+    const fence = host.beginFence(definition, {
+      key: "one",
+      allowDuringDrain: () => false,
+    });
+    const sealing = fence.seal();
+    expect(await isSettled(sealing)).toBe(true);
+    await sealing;
+    expect(fence.abort()).toBe(true);
     await host.dispose();
   });
 

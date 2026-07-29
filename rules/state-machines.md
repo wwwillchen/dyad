@@ -562,6 +562,16 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   callback, not merely after asynchronous authorization. Revision policies,
   intent conversion, and similar callbacks can reenter fencing, subscription,
   or disposal code before final host admission.
+- A fresh subscription or actor-reference acquisition must assert that keyed
+  admission is open even when it retains an existing actor. Generation equality
+  alone is insufficient because work prepared after fencing captures the
+  current closed generation.
+- Revalidate fence identity and phase after invoking a drain-admission policy.
+  The policy is synchronous domain code and can reenter sealing, abort, or
+  replacement before returning.
+- Construction continuations enrolled for fencing must settle on every
+  post-activation exit, including host or machine disposal triggered by buffered
+  factory-time ingress, or a later fence can wait forever.
 - If a scheduler retains an execution callback and then throws or rejects, the
   retained callback must be invalidated. Marking the batch failed while still
   allowing that callback to run lets command side effects escape after sealing.

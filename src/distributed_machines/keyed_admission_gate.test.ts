@@ -116,6 +116,57 @@ describe("KeyedAdmissionGate", () => {
     });
   });
 
+  it("revalidates ordinary drain admission after hostile policy reentry", () => {
+    const gate = new KeyedAdmissionGate<string, Event>();
+    let first!: ReturnType<typeof gate.beginFence>;
+    first = gate.beginFence({
+      key: "one",
+      allowDuringDrain: () => {
+        expect(first.abort()).toBe(true);
+        gate.beginFence({
+          key: "one",
+          allowDuringDrain: () => false,
+        });
+        return true;
+      },
+    });
+
+    expect(() =>
+      gate.assertDispatchAllowed("one", { type: "CLEANUP" }, first.generation),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "stale-generation",
+      }),
+    );
+    expect(gate.inspect("one").phase).toBe("draining");
+  });
+
+  it("revalidates captured drain admission after hostile sealing reentry", () => {
+    const gate = new KeyedAdmissionGate<string, Event>();
+    const generation = gate.captureGeneration("one");
+    let fence!: ReturnType<typeof gate.beginFence>;
+    fence = gate.beginFence({
+      key: "one",
+      allowDuringDrain: () => {
+        void fence.seal();
+        return true;
+      },
+    });
+
+    expect(() =>
+      gate.assertCapturedDispatchAllowed(
+        "one",
+        { type: "CLEANUP" },
+        generation,
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "stale-generation",
+      }),
+    );
+    expect(gate.inspect("one").phase).toBe("sealed");
+  });
+
   it("keeps committed admission closed through cleanup and reopens on release", async () => {
     const gate = new KeyedAdmissionGate<string, Event>();
     const fence = gate.beginFence({
