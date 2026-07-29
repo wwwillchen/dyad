@@ -602,6 +602,154 @@ describe("TransactionalDispatcher", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("publishes explicit outcomes only after commit and before scheduler handoff", () => {
+    const observed: string[] = [];
+    let dispatcher!: TransactionalDispatcher<
+      TestState,
+      TestEvent,
+      TestCommand,
+      TestReason,
+      { readonly requestId: string }
+    >;
+    dispatcher = new TransactionalDispatcher({
+      initialState: { value: 0 },
+      transition: (state, event) =>
+        event.type === "SET"
+          ? change({ value: event.value }, [], [{ requestId: "request-one" }])
+          : ignore(state, "ignored"),
+      runCommand: () => undefined,
+      scheduler: {
+        schedule() {
+          observed.push(`scheduler:${dispatcher.getSnapshot().value}`);
+        },
+      },
+      observer: {
+        onTransitionApplied() {
+          observed.push(`observer:${dispatcher.getSnapshot().value}`);
+        },
+      },
+      publishOutcome() {
+        observed.push(`outcome:${dispatcher.getSnapshot().value}`);
+        dispatcher.send({ type: "IGNORE" });
+      },
+    });
+
+    dispatcher.send({ type: "SET", value: 7 });
+
+    expect(observed).toEqual(["outcome:7", "observer:7", "scheduler:7"]);
+  });
+
+  it("isolates post-commit outcome callback failures", async () => {
+    const errors: DispatcherError[] = [];
+    const dispatcher = new TransactionalDispatcher<
+      TestState,
+      TestEvent,
+      TestCommand,
+      TestReason,
+      string
+    >({
+      initialState: { value: 0 },
+      transition: (state, event) =>
+        event.type === "SET"
+          ? change({ value: event.value }, [], ["terminal"])
+          : ignore(state, "ignored"),
+      runCommand: () => undefined,
+      scheduler: independentScheduler(),
+      publishOutcome() {
+        throw new Error("presentation failed");
+      },
+      reportError: (error) => errors.push(error),
+    });
+
+    const ticket = dispatcher.enqueue({ type: "SET", value: 3 });
+
+    await expect(ticket.settled).resolves.toMatchObject({ kind: "applied" });
+    expect(dispatcher.getSnapshot()).toEqual({ value: 3 });
+    expect(errors).toMatchObject([{ stage: "outcome" }]);
+  });
+
+  it("does not schedule commands after outcome publication disposes the dispatcher", async () => {
+    const scheduler = vi.fn();
+    let dispatcher!: TransactionalDispatcher<
+      TestState,
+      TestEvent,
+      TestCommand,
+      TestReason,
+      string
+    >;
+    dispatcher = new TransactionalDispatcher({
+      initialState: { value: 0 },
+      transition: (state, event) =>
+        event.type === "SET"
+          ? change(
+              { value: event.value },
+              [{ type: "async-reject" }],
+              ["terminal"],
+            )
+          : ignore(state, "ignored"),
+      runCommand: () => undefined,
+      scheduler: { schedule: scheduler },
+      publishOutcome() {
+        dispatcher.dispose();
+      },
+    });
+
+    const ticket = dispatcher.enqueue({ type: "SET", value: 3 });
+
+    await expect(ticket.settled).resolves.toMatchObject({ kind: "applied" });
+    expect(dispatcher.getSnapshot()).toEqual({ value: 3 });
+    expect(scheduler).not.toHaveBeenCalled();
+  });
+
+  it("rejects async outcome publishers before dispatch", () => {
+    expect(
+      () =>
+        new TransactionalDispatcher<
+          TestState,
+          TestEvent,
+          TestCommand,
+          TestReason,
+          string
+        >({
+          initialState: { value: 0 },
+          transition: testTransition,
+          runCommand: () => undefined,
+          scheduler: independentScheduler(),
+          publishOutcome: async () => undefined,
+        }),
+    ).toThrow("synchronous and non-thenable");
+  });
+
+  it("reserves outcomes before hostile post-commit callbacks", () => {
+    const source = [{ requestId: "original" }];
+    const published: { readonly requestId: string }[] = [];
+    const dispatcher = new TransactionalDispatcher<
+      TestState,
+      TestEvent,
+      TestCommand,
+      TestReason,
+      { readonly requestId: string }
+    >({
+      initialState: { value: 0 },
+      transition: (state, event) =>
+        event.type === "SET"
+          ? change({ value: event.value }, [], source)
+          : ignore(state, "ignored"),
+      runCommand: () => undefined,
+      scheduler: independentScheduler(),
+      observer: {
+        onTransitionApplied() {
+          source.splice(0, 1, { requestId: "mutated" });
+        },
+      },
+      publishOutcome: (outcome) => published.push(outcome),
+    });
+
+    dispatcher.send({ type: "SET", value: 1 });
+
+    expect(published).toEqual([{ requestId: "original" }]);
+  });
+
   it("fails meaningfully against an observer-before-commit reference", async () => {
     const adapter = createConformanceAdapter();
     adapter.create = (options) => {

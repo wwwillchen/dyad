@@ -14,6 +14,7 @@ export type DispatcherErrorStage =
   | "projection"
   | "subscriber"
   | "observer"
+  | "outcome"
   | "scheduler"
   | "command"
   | "command-error-mapper";
@@ -63,6 +64,15 @@ export interface ReservedCommandBatch<Command> {
   readonly commands: readonly Command[];
 }
 
+export interface TransitionOutcomePublisher<Outcome> {
+  (outcome: Outcome): unknown;
+  /**
+   * Optional atomic publication hook. Correlated registries use this to mark
+   * every committed outcome terminal before any settlement listener reenters.
+   */
+  publishBatch?(outcomes: readonly Outcome[]): unknown;
+}
+
 export type CommandExecutor<Command> = (command: Command) => Promise<void>;
 
 /**
@@ -82,12 +92,13 @@ export interface TransactionalDispatcherOptions<
   Event,
   Command,
   Reason extends IgnoreReason = IgnoreReason,
+  Outcome = never,
 > {
   initialState: State;
   transition(
     state: State,
     event: Event,
-  ): TransitionResult<State, Command, Reason>;
+  ): TransitionResult<State, Command, Reason, Outcome>;
   runCommand(
     command: Command,
     emit: (event: Event) => void,
@@ -106,6 +117,11 @@ export interface TransactionalDispatcherOptions<
   beforeCommit?(previous: State, next: State): void;
   project?(snapshot: State): void;
   observer?: TransitionObserver<State, Event, Command, Reason>;
+  /**
+   * Publishes explicit transition outcomes after the authoritative snapshot
+   * commit. Failures are isolated and cannot roll back the transition.
+   */
+  publishOutcome?: TransitionOutcomePublisher<Outcome>;
   mapUnexpectedCommandError?(
     command: Command,
     error: unknown,
@@ -117,15 +133,16 @@ export interface TransactionalDispatcherOptions<
  * Policy-free event transaction runtime.
  *
  * Each admitted event runs transition and validation once, reserves a command
- * batch without invoking domain code, commits, projects, notifies subscribers,
- * notifies observers, and only then asks the injected scheduler to start the
- * batch. Re-entrant sends append to the same FIFO.
+ * batch without invoking domain code, commits, projects, publishes correlated
+ * outcomes, notifies subscribers and observers, and only then asks the injected
+ * scheduler to start the batch. Re-entrant sends append to the same FIFO.
  */
 export class TransactionalDispatcher<
   State,
   Event,
   Command,
   Reason extends IgnoreReason = IgnoreReason,
+  Outcome = never,
 > {
   private readonly pendingEvents: PendingDispatch<State, Event>[] = [];
   private readonly store: SnapshotStore<State>;
@@ -139,9 +156,18 @@ export class TransactionalDispatcher<
       State,
       Event,
       Command,
-      Reason
+      Reason,
+      Outcome
     >,
   ) {
+    if (
+      options.publishOutcome?.constructor.name === "AsyncFunction" ||
+      options.publishOutcome?.publishBatch?.constructor.name === "AsyncFunction"
+    ) {
+      throw new Error(
+        "Transition outcome publisher must be synchronous and non-thenable",
+      );
+    }
     this.store = new SnapshotStore(options.initialState);
   }
 
@@ -255,7 +281,7 @@ export class TransactionalDispatcher<
       settle(outcome);
     };
     const previous = this.store.getSnapshot();
-    let result: TransitionResult<State, Command, Reason>;
+    let result: TransitionResult<State, Command, Reason, Outcome>;
     try {
       result = this.options.transition(previous, event);
     } catch (error) {
@@ -284,6 +310,7 @@ export class TransactionalDispatcher<
 
     // Reservation is deliberately data-only: no scheduler or adapter code.
     const batch = this.reserve(result.commands);
+    const outcomes = Object.freeze([...(result.outcomes ?? [])]);
     try {
       this.options.beforeCommit?.(previous, result.state);
     } catch (error) {
@@ -297,12 +324,19 @@ export class TransactionalDispatcher<
     // Linearization point. Every callback below reads this committed snapshot.
     if (result.state === previous) {
       this.project(result.state);
+      this.publishOutcomes(outcomes);
     } else {
-      this.store.setState(result.state, () => this.project(result.state));
+      this.store.setState(result.state, () => {
+        this.project(result.state);
+        // SetState has committed before this callback and has not notified
+        // subscribers yet. Authoritative settlement therefore wins over
+        // teardown reentered by snapshot/observer callbacks.
+        this.publishOutcomes(outcomes);
+      });
     }
 
     this.notifyObserver(previous, event, result, dispatchContext);
-    this.startBatch(batch);
+    if (this.accepting) this.startBatch(batch);
     settleCurrent({ kind: "applied", state: this.store.getSnapshot() });
   }
 
@@ -364,7 +398,7 @@ export class TransactionalDispatcher<
   private notifyObserver(
     previous: State,
     event: Event,
-    result: TransitionResult<State, Command, Reason>,
+    result: TransitionResult<State, Command, Reason, Outcome>,
     dispatchContext?: DispatchContext,
   ): void {
     try {
@@ -386,6 +420,47 @@ export class TransactionalDispatcher<
       }
     } catch (error) {
       this.report({ stage: "observer", error });
+    }
+  }
+
+  private publishOutcomes(outcomes: readonly Outcome[]): void {
+    if (!this.options.publishOutcome) return;
+    if (this.options.publishOutcome.publishBatch) {
+      try {
+        this.rejectThenableOutcomePublication(
+          this.options.publishOutcome.publishBatch(outcomes),
+        );
+      } catch (error) {
+        this.report({ stage: "outcome", error });
+      }
+      return;
+    }
+    for (const outcome of outcomes) {
+      try {
+        this.rejectThenableOutcomePublication(
+          this.options.publishOutcome(outcome),
+        );
+      } catch (error) {
+        this.report({ stage: "outcome", error });
+      }
+    }
+  }
+
+  private rejectThenableOutcomePublication(published: unknown): void {
+    if (
+      ((typeof published === "object" && published !== null) ||
+        typeof published === "function") &&
+      "then" in published
+    ) {
+      void Promise.resolve(published).catch((error) => {
+        this.report({ stage: "outcome", error });
+      });
+      this.report({
+        stage: "outcome",
+        error: new Error(
+          "Transition outcome publisher must be synchronous and non-thenable",
+        ),
+      });
     }
   }
 

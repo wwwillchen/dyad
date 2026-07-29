@@ -31,18 +31,34 @@ Background and before/after examples of why this pattern exists:
 
 - Controllers migrated to `TransactionalDispatcher` use one event transaction:
   enqueue FIFO; run the pure transition exactly once; validate; reserve the
-  command batch without running domain code; cancel exiting state-owned leases;
-  commit the snapshot (the linearization point); update the authoritative
-  projection; notify snapshot subscribers; notify transition observers; then
-  hand the reserved batch to the injected domain scheduler. Re-entrant sends
-  from any callback append to the FIFO and run after the current transaction.
-  Ignored events skip commit, projection, subscribers, and commands, but notify
-  observers at the equivalent point in FIFO order.
+  command batch and any explicit post-commit outcome batch without running
+  domain code; cancel exiting state-owned leases; commit the snapshot (the
+  linearization point); update the authoritative projection; publish reserved
+  correlated outcomes, marking the entire correlated batch terminal before
+  invoking any settlement listener; notify snapshot subscribers and transition
+  observers; then hand the reserved commands to the injected domain scheduler.
+  Publishing authoritative outcomes before teardown-capable observers prevents
+  disposal from winning after the operation's state has already committed.
+  Re-entrant
+  callbacks may mutate transition-owned arrays, so both batches must be
+  shallow-copied before callbacks. Re-entrant sends append to the FIFO and run
+  after the current transaction. Ignored events skip commit, projection,
+  subscribers, outcomes, and commands, but notify observers at the equivalent
+  point in FIFO order.
 - The dispatcher isolates and reports projection, subscriber, observer,
   scheduler, and command failures. Adapters convert expected command failures
   to typed domain events; unexpected throws/rejections may be mapped by the
   domain and never create a universal failure event. Scheduler injection owns
   concurrency policy.
+- When a linearization boundary requires a synchronous return value, reject
+  thenables whose runtime type is either `object` or `function`; callable
+  functions can also define a `.then` property and be assimilated by `await`.
+- A callback typed to return `void` can still be implemented with an async
+  function. Validate authoritative outcome publishers as synchronous and
+  report rejected thenable results instead of relying on `try`/`catch`.
+- Recheck dispatcher admission after publishing post-commit outcomes and
+  notifying lifecycle callbacks. If reentry disposed the owner, do not hand a
+  reserved command batch to the scheduler after teardown.
 - A pre-commit lease-cancellation failure is also isolated and reported, but
   does not veto commit. Unlike pure transition and validation failures, an
   effectful cleanup hook may have partially completed; rejecting at that point
@@ -505,6 +521,9 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   markers still exist does not prevent an undeclared boundary crossing.
   Classify calls through the owning API (for example, Jotai stores and hooks),
   not an expected import directory; domain values may be local or re-exported.
+- When adding an intentional completion-aware `dispatch` or `enqueue` framework
+  path, classify it in the boundary inventory separately from raw compatibility
+  escape hatches; do not widen the raw allowlist to make the inventory pass.
 - Keep host-only distributed-machine definitions outside shared machine
   directories (for example, under `src/ipc/services/` for a main-owned actor).
   Shared machine directories are scanned as renderer-reachable code and may
@@ -562,6 +581,16 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   callback, not merely after asynchronous authorization. Revision policies,
   intent conversion, and similar callbacks can reenter fencing, subscription,
   or disposal code before final host admission.
+- Treat supersession settlement listeners as synchronous domain callbacks.
+  Revalidate after they run and roll back any replacement registration before
+  enqueue if they fence, replace, or dispose the intended actor.
+- A transport disconnect does not prove that authoritative admission failed.
+  Preserve delivery/admission ambiguity across retry and disposal; only a
+  failure classified at a definitely-pre-delivery boundary may settle as
+  `not-admitted`.
+- If terminal outcome or receipt construction throws, reject or explicitly
+  fail the exact correlated registry entry and continue bulk disposal. Never
+  leave callback-construction failures pinned as unresolved work.
 - A fresh subscription or actor-reference acquisition must assert that keyed
   admission is open even when it retains an existing actor. Generation equality
   alone is insufficient because work prepared after fencing captures the
