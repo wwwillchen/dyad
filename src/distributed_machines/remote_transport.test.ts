@@ -9,7 +9,9 @@ import { getTraceLog } from "@/state_machines/trace";
 import { change } from "@/state_machines/types";
 import { ActorHost, type ActorHostError } from "./actor_host";
 import {
+  assertRemoteProtocolV1CompatibilityInventory,
   createRemoteMachineManifest,
+  REMOTE_PROTOCOL_V1_COMPATIBILITY_INVENTORY,
   type AnyRemoteMachineDefinition,
 } from "./remote_manifest";
 import {
@@ -75,7 +77,8 @@ function createHarness(
     ids: createSequentialIdSource(),
     reportError: (error) => errors.push(error),
   });
-  const machine = options.machine ?? createRemoteTestMachine();
+  const machine: AnyRemoteMachineDefinition =
+    options.machine ?? createRemoteTestMachine();
   const manifest = createRemoteMachineManifest(options.machines ?? [machine]);
   const windows = new TwoWindowHarness();
   const transport = new RemoteMachineTransport({
@@ -128,6 +131,33 @@ function createObjectKeyMachine(
   } as AnyRemoteMachineDefinition;
 }
 
+function createNativeObjectKeyMachine(
+  authorizeSubscribe: (context: {
+    readonly key: { readonly id: string };
+  }) => { readonly kind: "allow" } | Promise<{ readonly kind: "allow" }>,
+): AnyRemoteMachineDefinition {
+  const legacy = createObjectKeyMachine();
+  const native = createRemoteTestMachine().remoteIntent;
+  return {
+    ...legacy,
+    remoteIntent: {
+      keyCodec: legacy.remote.keyCodec,
+      encodeKey: legacy.remote.encodeKey,
+      keyToString: legacy.remote.keyToString,
+      rendererIntentCodec: legacy.remote.eventCodec,
+      snapshotCodec: legacy.remote.snapshotCodec,
+      toInternalEvent: ({ intent }: { readonly intent: { type: string } }) =>
+        Object.freeze({ ...intent }),
+      authorizeSubscribe,
+      authorizeDispatch: () => ({ kind: "allow" }),
+      keyIntentRelationship: { kind: "entity-relative" },
+      intents: { INCREMENT: native.intents.INCREMENT },
+      refusalMap: native.refusalMap,
+      budgets: native.budgets,
+    },
+  } as AnyRemoteMachineDefinition;
+}
+
 const objectAddress = (): MachineAddress => ({
   protocolVersion: REMOTE_MACHINE_PROTOCOL_VERSION,
   machineId: "object-key",
@@ -168,6 +198,30 @@ describe("remote machine manifest", () => {
       ]),
     ).toThrow("Invalid remote machine identity");
   });
+
+  it("requires the production compatibility inventory to exactly match legacy definitions", () => {
+    const legacy = createObjectKeyMachine();
+    const productionLegacyDefinitions =
+      REMOTE_PROTOCOL_V1_COMPATIBILITY_INVENTORY.map((id) => ({
+        ...legacy,
+        id,
+      }));
+
+    expect(() =>
+      assertRemoteProtocolV1CompatibilityInventory(productionLegacyDefinitions),
+    ).not.toThrow();
+    expect(() =>
+      assertRemoteProtocolV1CompatibilityInventory([
+        ...productionLegacyDefinitions,
+        { ...legacy, id: "unlisted" },
+      ]),
+    ).toThrow("Unlisted: unlisted");
+    expect(() =>
+      assertRemoteProtocolV1CompatibilityInventory(
+        productionLegacyDefinitions.slice(1),
+      ),
+    ).toThrow(`Stale: ${REMOTE_PROTOCOL_V1_COMPATIBILITY_INVENTORY[0]}`);
+  });
 });
 
 describe("remote machine transport", () => {
@@ -194,10 +248,21 @@ describe("remote machine transport", () => {
     expect(second.view(address())?.state).toEqual({ value: 1 });
 
     await first.unsubscribe(address());
-    await first.unsubscribe(address());
-    await expect(
-      second.dispatch(dispatch({ type: "INCREMENT" })),
-    ).resolves.toMatchObject({ kind: "applied", revision: 2 });
+    expect(transport.inspectSubscriptions()).toEqual([
+      expect.objectContaining({
+        totalReferences: 1,
+        windows: new Map([[2, 1]]),
+      }),
+    ]);
+    const secondAfterRelease = await second.dispatch(
+      dispatch({ type: "INCREMENT" }),
+    );
+    expect(
+      secondAfterRelease.kind === "rejected"
+        ? secondAfterRelease.reason
+        : "applied",
+    ).toBe("applied");
+    expect(secondAfterRelease).toMatchObject({ kind: "applied", revision: 2 });
     expect(second.view(address())?.state).toEqual({ value: 2 });
 
     second.disconnect();
@@ -249,10 +314,10 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         authorizeSubscribe() {
-          throw expected;
+          return { kind: "deny", error: expected } as const;
         },
       },
     };
@@ -271,8 +336,8 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const subscribeMachine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         authorizeSubscribe() {
           throw subscribeFailure;
         },
@@ -285,8 +350,8 @@ describe("remote machine transport", () => {
 
     const dispatchMachine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         authorizeDispatch() {
           throw dispatchFailure;
         },
@@ -298,6 +363,175 @@ describe("remote machine transport", () => {
     await expect(
       renderer.dispatch(dispatch({ type: "INCREMENT" })),
     ).rejects.toBe(dispatchFailure);
+  });
+
+  it("propagates non-auth typed dispatch denials", async () => {
+    const expected = new DyadError(
+      "Synthetic dispatch dependency failure",
+      DyadErrorKind.Validation,
+    );
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        authorizeDispatch() {
+          return { kind: "deny", error: expected } as const;
+        },
+      },
+    };
+    const { duplex } = createHarness({ machine });
+    const renderer = duplex.connect();
+    await renderer.subscribe(address());
+
+    await expect(
+      renderer.dispatch(dispatch({ type: "INCREMENT" })),
+    ).rejects.toBe(expected);
+  });
+
+  it("rejects producer events and forged provenance at the renderer boundary", async () => {
+    const { duplex, host, machine } = createHarness();
+    const renderer = duplex.connect();
+    await renderer.subscribe(address());
+
+    await expect(
+      renderer.dispatch(dispatch({ type: "PRODUCER_INCREMENT" })),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "invalid-event",
+    });
+    await expect(
+      renderer.dispatch(
+        dispatch({
+          type: "INCREMENT",
+          sender: { windowSessionId: "forged" },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "invalid-event",
+    });
+    expect(host.peek(machine.id, "actor")?.getSnapshot()).toMatchObject({
+      value: 0,
+    });
+  });
+
+  it("creates a new immutable internal event without mutating decoded intent data", () => {
+    const machine = createRemoteTestMachine();
+    const intent = {
+      type: "START",
+      invocationRef: {
+        kind: "remote-test",
+        entityKey: "actor",
+        operationId: "operation",
+      },
+    } as const;
+    const event = machine.remoteIntent.toInternalEvent({
+      key: "actor",
+      intent,
+      sender: { windowSessionId: "main-derived-session" },
+    });
+
+    expect(event).not.toBe(intent);
+    expect(event).toEqual(intent);
+    expect(Object.isFrozen(event)).toBe(true);
+    if (event.type === "START") {
+      expect(Object.isFrozen(event.invocationRef)).toBe(true);
+    }
+    expect(intent).toEqual({
+      type: "START",
+      invocationRef: {
+        kind: "remote-test",
+        entityKey: "actor",
+        operationId: "operation",
+      },
+    });
+  });
+
+  it("keeps prepared native intents immutable across authorization", async () => {
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        authorizeDispatch(
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
+        ) {
+          Object.assign(context.intent as object, {
+            type: "PRODUCER_INCREMENT",
+          });
+          return { kind: "allow" } as const;
+        },
+      },
+    };
+    const { duplex, host } = createHarness({ machine });
+    const renderer = duplex.connect();
+    await renderer.subscribe(address());
+
+    await expect(
+      renderer.dispatch(dispatch({ type: "INCREMENT" })),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(host.peek(machine.id, "actor")?.getSnapshot()).toMatchObject({
+      value: 0,
+    });
+  });
+
+  it("keeps decoded native keys immutable across subscription authorization", async () => {
+    const machine = createNativeObjectKeyMachine(({ key }) => {
+      Object.assign(key as object, { id: "mutated" });
+      return { kind: "allow" };
+    });
+    const { duplex, transport } = createHarness({ machine });
+
+    await expect(
+      duplex.connect().subscribe(objectAddress()),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(transport.inspectSubscriptions()).toEqual([]);
+  });
+
+  it("uses native key, snapshot, and budget contracts authoritatively", async () => {
+    const base = createRemoteTestMachine();
+    const keyMachine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        keyCodec: z.literal("native-only"),
+      },
+    };
+    const keyHarness = createHarness({ machine: keyMachine });
+    await expect(
+      keyHarness.duplex.connect().subscribe(address("legacy-only")),
+    ).rejects.toMatchObject({ kind: DyadErrorKind.Validation });
+
+    const snapshotMachine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        snapshotCodec: z.object({ value: z.literal(999) }).strict(),
+      },
+    };
+    await expect(
+      createHarness({ machine: snapshotMachine })
+        .duplex.connect()
+        .subscribe(address()),
+    ).rejects.toThrow("Remote snapshot projection failed");
+
+    const budgetMachine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        budgets: { ...base.remoteIntent.budgets, intentBytes: 1 },
+      },
+    };
+    const budgetHarness = createHarness({ machine: budgetMachine });
+    const budgetRenderer = budgetHarness.duplex.connect();
+    await budgetRenderer.subscribe(address());
+    await expect(
+      budgetRenderer.dispatch(dispatch({ type: "INCREMENT" })),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "invalid-event",
+    });
   });
 
   it("deduplicates duplicate delivery and retry after a dropped receipt", async () => {
@@ -363,25 +597,37 @@ describe("remote machine transport", () => {
       machines: [firstMachine, secondMachine],
     });
     const renderer = duplex.connect();
-    await renderer.subscribe(address("actor"));
-    await renderer.subscribe(address("other"));
-    await renderer.subscribe({
+    const bootstrap = await renderer.subscribe(address("actor"));
+    const otherBootstrap = await renderer.subscribe(address("other"));
+    const secondBootstrap = await renderer.subscribe({
       protocolVersion: REMOTE_MACHINE_PROTOCOL_VERSION,
       machineId: secondMachine.id,
       encodedKey: "actor",
     });
     const envelope = dispatch(
       { type: "SET", value: 1 },
-      { messageId: "stable-conflict", expectedRevision: 0 },
+      {
+        messageId: "stable-conflict",
+        expectedActorInstanceId: bootstrap.actorInstanceId,
+        expectedRevision: 0,
+      },
     );
     await expect(renderer.dispatch(envelope)).resolves.toMatchObject({
       kind: "applied",
     });
 
     const conflicts: MachineDispatchEnvelope[] = [
-      { ...envelope, machineId: secondMachine.id },
       { ...envelope, machineId: "unknown-machine" },
-      { ...envelope, encodedKey: "other" },
+      {
+        ...envelope,
+        machineId: secondMachine.id,
+        expectedActorInstanceId: secondBootstrap.actorInstanceId,
+      },
+      {
+        ...envelope,
+        encodedKey: "other",
+        expectedActorInstanceId: otherBootstrap.actorInstanceId,
+      },
       { ...envelope, encodedEvent: { type: "SET", value: 2 } },
       { ...envelope, expectedActorInstanceId: "different-actor-instance" },
       { ...envelope, expectedRevision: 1 },
@@ -447,14 +693,14 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         async authorizeDispatch(
-          context: Parameters<typeof base.remote.authorizeDispatch>[0],
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
         ) {
           authorizationStarted();
           await gate;
-          return base.remote.authorizeDispatch(context);
+          return base.remoteIntent.authorizeDispatch(context);
         },
       },
     };
@@ -514,7 +760,15 @@ describe("remote machine transport", () => {
     });
     expect(addressHarness.transport.inspectSubscriptions()).toEqual([]);
 
-    const dispatchHarness = createHarness({ maxDispatchEnvelopeBytes: 128 });
+    const dispatchBase = createRemoteTestMachine();
+    const dispatchMachine = {
+      ...dispatchBase,
+      remoteIntent: {
+        ...dispatchBase.remoteIntent,
+        budgets: { ...dispatchBase.remoteIntent.budgets, intentBytes: 128 },
+      },
+    };
+    const dispatchHarness = createHarness({ machine: dispatchMachine });
     const renderer = dispatchHarness.duplex.connect();
     await renderer.subscribe(address());
     await expect(
@@ -535,7 +789,15 @@ describe("remote machine transport", () => {
         ?.getSnapshot(),
     ).toMatchObject({ value: 0 });
 
-    const snapshotHarness = createHarness({ maxSnapshotEnvelopeBytes: 32 });
+    const snapshotBase = createRemoteTestMachine();
+    const snapshotMachine = {
+      ...snapshotBase,
+      remoteIntent: {
+        ...snapshotBase.remoteIntent,
+        budgets: { ...snapshotBase.remoteIntent.budgets, snapshotBytes: 32 },
+      },
+    };
+    const snapshotHarness = createHarness({ machine: snapshotMachine });
     const snapshotRenderer = snapshotHarness.duplex.connect();
     await expect(snapshotRenderer.subscribe(address())).rejects.toThrow(
       "Remote snapshot exceeds the transport limit",
@@ -551,6 +813,10 @@ describe("remote machine transport", () => {
         ...base.remote,
         maxDispatchEnvelopeBytes: 2_048,
         maxSnapshotEnvelopeBytes: 2_048,
+      },
+      remoteIntent: {
+        ...base.remoteIntent,
+        budgets: { intentBytes: 2_048, snapshotBytes: 2_048 },
       },
     } as AnyRemoteMachineDefinition;
     const { duplex, host } = createHarness({
@@ -593,17 +859,17 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         async authorizeDispatch(
-          context: Parameters<typeof base.remote.authorizeDispatch>[0],
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
         ) {
           authorizationCount += 1;
           if (authorizationCount === 1) {
             authorizationStarted();
             await gate;
           }
-          return base.remote.authorizeDispatch(context);
+          return base.remoteIntent.authorizeDispatch(context);
         },
       },
     };
@@ -643,7 +909,10 @@ describe("remote machine transport", () => {
       renderer.dispatch(
         dispatch(
           { type: "SET", value: 1 },
-          { expectedRevision: bootstrap.revision },
+          {
+            expectedActorInstanceId: bootstrap.actorInstanceId,
+            expectedRevision: bootstrap.revision,
+          },
         ),
       ),
     ).resolves.toMatchObject({ kind: "applied", revision: 1 });
@@ -651,7 +920,10 @@ describe("remote machine transport", () => {
       renderer.dispatch(
         dispatch(
           { type: "SET", value: 2 },
-          { expectedRevision: bootstrap.revision },
+          {
+            expectedActorInstanceId: bootstrap.actorInstanceId,
+            expectedRevision: bootstrap.revision,
+          },
         ),
       ),
     ).resolves.toMatchObject({
@@ -683,12 +955,148 @@ describe("remote machine transport", () => {
           invocationRef: { ...invocationRef, entityKey: "other" },
         }),
       ),
-    ).resolves.toMatchObject({ kind: "rejected", reason: "unauthorized" });
+    ).resolves.toMatchObject({ kind: "rejected", reason: "invalid-event" });
     await expect(
       renderer.dispatch(
         dispatch({ type: "CANCEL", invocationRef }, { expectedRevision: 0 }),
       ),
     ).resolves.toMatchObject({ kind: "applied", revision: 3 });
+  });
+
+  it("requires paired actor revision tokens and ignores legacy revision policy for native intents", async () => {
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remote: {
+        ...base.remote,
+        revisionPolicy: () => "allow-stale" as const,
+      },
+    };
+    const { duplex } = createHarness({ machine });
+    const renderer = duplex.connect();
+    const bootstrap = await renderer.subscribe(address());
+
+    await expect(
+      renderer.dispatch(
+        dispatch(
+          { type: "SET", value: 1 },
+          { expectedRevision: bootstrap.revision },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "revision-conflict",
+    });
+
+    await renderer.dispatch(dispatch({ type: "INCREMENT" }));
+    await expect(
+      renderer.dispatch(
+        dispatch(
+          { type: "SET", value: 2 },
+          {
+            expectedActorInstanceId: bootstrap.actorInstanceId,
+            expectedRevision: bootstrap.revision,
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "revision-conflict",
+    });
+  });
+
+  it("validates declared domain revisions at final native admission", async () => {
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        intents: {
+          ...base.remoteIntent.intents,
+          INCREMENT: {
+            ...base.remoteIntent.intents.INCREMENT,
+            observedRevision: {
+              kind: "domain",
+              name: "counter-value",
+              required: true,
+            },
+          },
+        },
+        resolveDomainRevision({
+          currentState,
+        }: {
+          currentState: { value: number };
+        }) {
+          return currentState.value;
+        },
+      },
+    } as AnyRemoteMachineDefinition;
+    const { duplex } = createHarness({ machine });
+    const renderer = duplex.connect();
+    await renderer.subscribe(address());
+
+    await expect(
+      renderer.dispatch(
+        dispatch(
+          { type: "INCREMENT" },
+          {
+            expectedRevision: 99,
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "revision-conflict",
+    });
+    await expect(
+      renderer.dispatch(
+        dispatch(
+          { type: "INCREMENT" },
+          {
+            expectedRevision: 0,
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({ kind: "applied", revision: 1 });
+  });
+
+  it("revalidates the exact revision after trusted event conversion", async () => {
+    const base = createRemoteTestMachine();
+    let actor: ReturnType<ActorHost["peek"]>;
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        toInternalEvent(
+          context: Parameters<typeof base.remoteIntent.toInternalEvent>[0],
+        ) {
+          if (context.intent.type === "SET") {
+            actor?.send({ type: "INCREMENT" });
+          }
+          return base.remoteIntent.toInternalEvent(context);
+        },
+      },
+    };
+    const { duplex, host } = createHarness({ machine });
+    const renderer = duplex.connect();
+    const bootstrap = await renderer.subscribe(address());
+    actor = host.peek(machine.id, "actor");
+
+    await expect(
+      renderer.dispatch(
+        dispatch(
+          { type: "SET", value: 10 },
+          {
+            expectedActorInstanceId: bootstrap.actorInstanceId,
+            expectedRevision: bootstrap.revision,
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "revision-conflict",
+    });
+    expect(actor?.getSnapshot()).toMatchObject({ value: 1 });
   });
 
   it("rejects stale actor identities, malformed payloads, unknown routes, and unauthorized access", async () => {
@@ -890,14 +1298,14 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         async authorizeDispatch(
-          context: Parameters<typeof base.remote.authorizeDispatch>[0],
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
         ) {
           authorizationStarted();
           await gate;
-          return base.remote.authorizeDispatch(context);
+          return base.remoteIntent.authorizeDispatch(context);
         },
       },
     };
@@ -936,14 +1344,14 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         async authorizeSubscribe(
-          context: Parameters<typeof base.remote.authorizeSubscribe>[0],
+          context: Parameters<typeof base.remoteIntent.authorizeSubscribe>[0],
         ) {
           authorizationStarted();
           await gate;
-          return base.remote.authorizeSubscribe(context);
+          return base.remoteIntent.authorizeSubscribe(context);
         },
       },
     };
@@ -975,15 +1383,15 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         async authorizeSubscribe(
-          context: Parameters<typeof base.remote.authorizeSubscribe>[0],
+          context: Parameters<typeof base.remoteIntent.authorizeSubscribe>[0],
         ) {
           authorizationCount += 1;
           authorizationStarted();
           await gate;
-          return base.remote.authorizeSubscribe(context);
+          return base.remoteIntent.authorizeSubscribe(context);
         },
       },
     };
@@ -1022,14 +1430,14 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         async authorizeSubscribe(
-          context: Parameters<typeof base.remote.authorizeSubscribe>[0],
+          context: Parameters<typeof base.remoteIntent.authorizeSubscribe>[0],
         ) {
           authorizationStarted();
           await gate;
-          return base.remote.authorizeSubscribe(context);
+          return base.remoteIntent.authorizeSubscribe(context);
         },
       },
     };
@@ -1048,6 +1456,42 @@ describe("remote machine transport", () => {
     expect(host.peek(machine.id, "actor")).toBeUndefined();
   });
 
+  it("rejects a prepared subscribe after the machine lifecycle changes", async () => {
+    let releaseAuthorization!: () => void;
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        async authorizeSubscribe(
+          context: Parameters<typeof base.remoteIntent.authorizeSubscribe>[0],
+        ) {
+          authorizationStarted();
+          await gate;
+          return base.remoteIntent.authorizeSubscribe(context);
+        },
+      },
+    };
+    const { duplex, host } = createHarness({ machine });
+    const renderer = duplex.connect();
+    const pending = renderer.subscribe(address());
+    await started;
+    await host.disposeMachine(machine.id);
+    releaseAuthorization();
+
+    await expect(pending).rejects.toThrow(
+      "lifecycle changed during subscription authorization",
+    );
+    expect(host.peek(machine.id, "actor")).toBeUndefined();
+  });
+
   it("prevents pending and future admissions after transport disposal", async () => {
     let releaseAuthorization!: () => void;
     let authorizationStarted!: () => void;
@@ -1060,14 +1504,14 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         async authorizeSubscribe(
-          context: Parameters<typeof base.remote.authorizeSubscribe>[0],
+          context: Parameters<typeof base.remoteIntent.authorizeSubscribe>[0],
         ) {
           authorizationStarted();
           await gate;
-          return base.remote.authorizeSubscribe(context);
+          return base.remoteIntent.authorizeSubscribe(context);
         },
       },
     };
@@ -1105,17 +1549,17 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         async authorizeSubscribe(
-          context: Parameters<typeof base.remote.authorizeSubscribe>[0],
+          context: Parameters<typeof base.remoteIntent.authorizeSubscribe>[0],
         ) {
           authorizationCount += 1;
           if (authorizationCount > 1) {
             authorizationStarted();
             await gate;
           }
-          return base.remote.authorizeSubscribe(context);
+          return base.remoteIntent.authorizeSubscribe(context);
         },
       },
     };
@@ -1138,7 +1582,50 @@ describe("remote machine transport", () => {
     expect(host.peek(machine.id, "actor")).toBeUndefined();
   });
 
-  it("re-authorizes when state changes during async authorization", async () => {
+  it("never dispatches to an actor replacement admitted during authorization", async () => {
+    let releaseAuthorization!: () => void;
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        async authorizeDispatch(
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
+        ) {
+          authorizationStarted();
+          await gate;
+          return base.remoteIntent.authorizeDispatch(context);
+        },
+      },
+    };
+    const { duplex, host } = createHarness({ machine });
+    const renderer = duplex.connect();
+    await renderer.subscribe(address());
+    const originalActor = host.peek(machine.id, "actor")!;
+    const pending = renderer.dispatch(dispatch({ type: "INCREMENT" }));
+    await started;
+
+    await host.disposeKey(machine.id, "actor");
+    await renderer.subscribe(address());
+    const replacement = host.peek(machine.id, "actor")!;
+    expect(replacement.actorInstanceId).not.toBe(originalActor.actorInstanceId);
+    releaseAuthorization();
+
+    await expect(pending).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "stale-actor",
+    });
+    expect(replacement.getSnapshot()).toMatchObject({ value: 0 });
+  });
+
+  it("rejects when revision changes during async authorization", async () => {
     let authorize!: () => void;
     let authorizationStarted!: () => void;
     const started = new Promise<void>((resolve) => {
@@ -1151,33 +1638,46 @@ describe("remote machine transport", () => {
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         async authorizeDispatch(
-          context: Parameters<typeof base.remote.authorizeDispatch>[0],
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
         ) {
-          await base.remote.authorizeDispatch(context);
-          if (context.event.type !== "SET") return;
+          const decision = await base.remoteIntent.authorizeDispatch(context);
+          if (decision.kind === "deny" || context.intent.type !== "SET") {
+            return decision;
+          }
           if (firstSet) {
             firstSet = false;
             authorizationStarted();
             await gate;
           }
           if (context.currentState?.value !== 0) {
-            throw new DyadError(
-              "state no longer permits SET",
-              DyadErrorKind.Auth,
-            );
+            return {
+              kind: "deny",
+              error: new DyadError(
+                "state no longer permits SET",
+                DyadErrorKind.Auth,
+              ),
+            } as const;
           }
+          return decision;
         },
       },
     };
     const { duplex } = createHarness({ machine });
     const first = duplex.connect();
     const second = duplex.connect();
-    await first.subscribe(address());
+    const bootstrap = await first.subscribe(address());
+    await second.subscribe(address());
     const pending = first.dispatch(
-      dispatch({ type: "SET", value: 10 }, { expectedRevision: 0 }),
+      dispatch(
+        { type: "SET", value: 10 },
+        {
+          expectedActorInstanceId: bootstrap.actorInstanceId,
+          expectedRevision: 0,
+        },
+      ),
     );
     await started;
     await second.dispatch(dispatch({ type: "INCREMENT" }));
@@ -1185,25 +1685,25 @@ describe("remote machine transport", () => {
 
     await expect(pending).resolves.toMatchObject({
       kind: "rejected",
-      reason: "unauthorized",
+      reason: "revision-conflict",
     });
     expect(first.view(address())?.state).toEqual({ value: 1 });
   });
 
-  it("bounds authorization stabilization retries under continuous changes", async () => {
+  it("does not re-authorize a changed revision", async () => {
     let mutateDuringAuthorization: (() => Promise<void>) | undefined;
     let authorizationCount = 0;
     const base = createRemoteTestMachine();
     const machine = {
       ...base,
-      remote: {
-        ...base.remote,
+      remoteIntent: {
+        ...base.remoteIntent,
         async authorizeDispatch(
-          context: Parameters<typeof base.remote.authorizeDispatch>[0],
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
         ) {
           authorizationCount += 1;
           await mutateDuringAuthorization?.();
-          return base.remote.authorizeDispatch(context);
+          return base.remoteIntent.authorizeDispatch(context);
         },
       },
     };
@@ -1214,7 +1714,9 @@ describe("remote machine transport", () => {
     const renderer = duplex.connect();
     await renderer.subscribe(address());
     mutateDuringAuthorization = async () => {
-      await host.dispatch(machine, "actor", { type: "INCREMENT" }).settled;
+      await host.dispatch(machine as AnyRemoteMachineDefinition, "actor", {
+        type: "INCREMENT",
+      }).settled;
     };
 
     await expect(
@@ -1223,12 +1725,12 @@ describe("remote machine transport", () => {
       kind: "rejected",
       reason: "revision-conflict",
     });
-    expect(authorizationCount).toBe(3);
+    expect(authorizationCount).toBe(1);
 
     mutateDuringAuthorization = undefined;
     await expect(
       renderer.dispatch(dispatch({ type: "INCREMENT" })),
-    ).resolves.toMatchObject({ kind: "applied", revision: 4 });
+    ).resolves.toMatchObject({ kind: "applied", revision: 2 });
   });
 
   it("propagates correlation and causation metadata into machine traces", async () => {
@@ -1269,6 +1771,7 @@ describe("remote machine transport", () => {
     const first = duplex.connect();
     const second = duplex.connect();
     await first.subscribe(objectAddress());
+    await second.subscribe(objectAddress());
     const firstEnvelope: MachineDispatchEnvelope = {
       ...objectAddress(),
       messageId: "object-message:1",
@@ -1290,6 +1793,13 @@ describe("remote machine transport", () => {
     expect(firstReceipt).toMatchObject({ kind: "applied" });
     expect(secondReceipt).toMatchObject({
       kind: "applied",
+    });
+    const retryReceipt = await second.dispatch({
+      ...secondEnvelope,
+      messageId: "object-message:2-retry",
+    });
+    expect(retryReceipt).toMatchObject({
+      kind: "applied",
       actorInstanceId:
         firstReceipt.kind === "applied"
           ? firstReceipt.actorInstanceId
@@ -1298,15 +1808,76 @@ describe("remote machine transport", () => {
 
     const subscriber = duplex.connect();
     await subscriber.subscribe(objectAddress());
-    expect(subscriber.view(objectAddress())?.state).toEqual({ value: 2 });
+    expect(subscriber.view(objectAddress())?.state).toEqual({ value: 3 });
     await subscriber.dispatch({
       ...objectAddress(),
       messageId: "object-message:3",
       encodedEvent: { type: "INCREMENT" },
     });
-    expect(subscriber.view(objectAddress())?.state).toEqual({ value: 3 });
+    expect(subscriber.view(objectAddress())?.state).toEqual({ value: 4 });
     await host.disposeMachine("object-key");
     expect(subscriber.view(objectAddress())?.state).toBeUndefined();
+  });
+
+  it("preserves protocol-v1 definitions through the compatibility adapter", async () => {
+    const machine = createObjectKeyMachine();
+    const { duplex } = createHarness({ machine });
+    const renderer = duplex.connect();
+
+    const bootstrap = await renderer.subscribe(objectAddress());
+    expect(bootstrap.protocolVersion).toBe(REMOTE_MACHINE_PROTOCOL_VERSION);
+    await expect(
+      renderer.dispatch({
+        ...objectAddress(),
+        messageId: "legacy-v1-message",
+        encodedEvent: { type: "INCREMENT" },
+      }),
+    ).resolves.toMatchObject({ kind: "applied", revision: 1 });
+    expect(renderer.view(objectAddress())?.state).toEqual({ value: 1 });
+  });
+
+  it("re-authorizes allow-stale protocol-v1 dispatch after the actor revision changes", async () => {
+    let releaseAuthorization!: () => void;
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    let delayFirstAuthorization = true;
+    const machine = createObjectKeyMachine(async () => {
+      if (!delayFirstAuthorization) return;
+      delayFirstAuthorization = false;
+      authorizationStarted();
+      await gate;
+    });
+    const { duplex } = createHarness({ machine });
+    const first = duplex.connect();
+    const second = duplex.connect();
+    await first.subscribe(objectAddress());
+    await second.subscribe(objectAddress());
+
+    const pending = first.dispatch({
+      ...objectAddress(),
+      messageId: "legacy-racing-message",
+      encodedEvent: { type: "INCREMENT" },
+    });
+    await started;
+    await expect(
+      second.dispatch({
+        ...objectAddress(),
+        messageId: "legacy-concurrent-message",
+        encodedEvent: { type: "INCREMENT" },
+      }),
+    ).resolves.toMatchObject({ kind: "applied", revision: 1 });
+    releaseAuthorization();
+
+    await expect(pending).resolves.toMatchObject({
+      kind: "applied",
+      revision: 2,
+    });
+    expect(first.view(objectAddress())?.state).toEqual({ value: 2 });
   });
 
   it("rolls back subscription ownership when bootstrap projection fails", async () => {
@@ -1362,6 +1933,72 @@ describe("remote machine transport", () => {
     const bootstrap = await transport.subscribe(endpoint, objectAddress());
 
     expect(bootstrap.encodedState).toEqual({ value: 2 });
+  });
+
+  it("does not intern object IDs rejected by subscription authorization", async () => {
+    const canonicalize = vi.fn((key: { id: string }) => key);
+    const base = createObjectKeyMachine();
+    const machine = {
+      ...base,
+      remote: {
+        ...base.remote,
+        canonicalizeKeyAfterAuthorization: canonicalize,
+        authorizeSubscribe() {
+          throw new DyadError("object key denied", DyadErrorKind.Auth);
+        },
+      },
+    } as AnyRemoteMachineDefinition;
+    const { transport, windows } = createHarness({ machine });
+    const sessionId = windows.createTrustedRendererWindow();
+    const endpoint = windows.endpoint(sessionId);
+
+    for (const encodedKey of ["rejected-a", "rejected-b", "rejected-c"]) {
+      await expect(
+        transport.subscribe(endpoint, {
+          ...objectAddress(),
+          encodedKey,
+        }),
+      ).rejects.toMatchObject({ kind: DyadErrorKind.Auth });
+    }
+    expect(canonicalize).not.toHaveBeenCalled();
+    expect(transport.inspectSubscriptions()).toEqual([]);
+  });
+
+  it("rejects post-authorization key canonicalization that changes the wire address", async () => {
+    const keyCodec = z.string().transform((wireId) => ({
+      entityId: "actor",
+      wireId,
+    }));
+    const base = createNativeObjectKeyMachine(() => ({ kind: "allow" }));
+    const machine = {
+      ...base,
+      remote: {
+        ...base.remote,
+        keyCodec,
+        encodeKey: (key: { wireId: string }) => key.wireId,
+        keyToString: (key: { entityId: string }) => key.entityId,
+        canonicalizeKeyAfterAuthorization: (key: {
+          entityId: string;
+          wireId: string;
+        }) => ({ ...key, wireId: "canonical-actor" }),
+      },
+      remoteIntent: {
+        ...base.remoteIntent,
+        keyCodec,
+        encodeKey: (key: { wireId: string }) => key.wireId,
+      },
+    } as AnyRemoteMachineDefinition;
+    const { transport, windows } = createHarness({ machine });
+    const sessionId = windows.createTrustedRendererWindow();
+
+    await expect(
+      transport.subscribe(windows.endpoint(sessionId), objectAddress()),
+    ).rejects.toMatchObject({
+      kind: DyadErrorKind.Precondition,
+      message:
+        "Remote machine wire address changed during subscription authorization",
+    });
+    expect(transport.inspectSubscriptions()).toEqual([]);
   });
 
   it("isolates protocol reload prompt failures", async () => {

@@ -77,6 +77,9 @@ Background and before/after examples of why this pattern exists:
   transient pre-admission transport-lifetime rejections after settlement, with
   an identity check against the cached entry, so reconnect can retry work that
   was never admitted while concurrent in-flight duplicates still coalesce.
+  Compute the complete retry fingerprint before fresh actor admission: a
+  matching retained receipt must replay after its subscription is released,
+  while a fresh dispatch still requires an admitted subscription.
 - Make remote subscribe/bootstrap idempotent per window, machine, and key.
   Resync and reconnect retries must refresh the bootstrap without incrementing
   ownership; projection/encoding failure rolls back only ownership acquired by
@@ -94,7 +97,10 @@ Background and before/after examples of why this pattern exists:
   created by subscription and must lock admission to that actor instance.
 - Remote key codecs need an explicit encoder as well as a decoder. Use the
   canonical encoded value in every wire envelope; never emit the decoded domain
-  key, which may be transformed or non-serializable. Bound every untrusted
+  key, which may be transformed or non-serializable. A native intent contract's
+  codec, encoder, and key identity function must also own renderer store
+  identity plus inbound snapshot/disposal routing; mixing in the legacy key
+  contract can silently drop native updates. Bound every untrusted
   envelope before its codec runs, including subscribe/unsubscribe addresses,
   and bound snapshot envelopes before delivery. Use a
   structured-clone-compatible byte measurement; JSON sizing is not
@@ -105,11 +111,16 @@ Background and before/after examples of why this pattern exists:
   interner used by main-process producers only after subscription authorization
   succeeds, then pass that canonical key to `ActorHost`. Its actor map is
   identity-keyed, but interning inside an untrusted wire decoder lets rejected
-  entity IDs grow a process-lifetime cache.
+  entity IDs grow a process-lifetime cache. Post-authorization canonicalization
+  must preserve the reserved encoded wire address; otherwise reject it or
+  atomically re-key pending quota, subscription, disposal, and reference
+  bookkeeping before admitting the actor.
 - Remote authorization hooks use `DyadErrorKind.Auth` for expected access
   denial. Convert only that explicit classification to an unauthorized receipt;
   propagate unexpected hook failures so telemetry can distinguish dependency
-  failures and bugs from ordinary refusal.
+  failures and bugs from ordinary refusal. A named domain-revision policy needs
+  both an explicit renderer-observed domain token and a main-side resolver;
+  never compare it with, or silently substitute, the actor snapshot revision.
 - Capture receipt metadata synchronously when that dispatch ticket settles.
   Reading mutable actor metadata after awaiting the ticket can observe a
   re-entrant follow-up transaction instead of the acknowledged event.
@@ -503,6 +514,25 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
 - Keep remote transport test doubles behind an existing domain test-support
   facade. Renderer and hybrid harnesses may consume that facade, but must not
   widen the allowlist of production modules that import transport internals.
+- When a test definition uses the native `remoteIntent` contract, inject
+  authorization races through `remoteIntent.authorizeSubscribe` or
+  `remoteIntent.authorizeDispatch`. Replacing the legacy `remote.authorize*`
+  hooks exercises only compatibility definitions and can leave a native test
+  gate waiting forever.
+- Keep native remote-admission revalidation out of the protocol-v1
+  compatibility adapter until a domain migrates. Moving trusted conversion or
+  adding a second revision fence to legacy dispatch can change terminal
+  delivery even when the wire envelope is unchanged; cover a representative
+  legacy streaming integration when editing the adapter. Preserve the adapter's
+  bounded re-authorization when an allow-stale event races an actor revision;
+  exact captured-revision rejection belongs to the native prepared path.
+- Model StrictMode subscriber replay and explicit subscription leases as
+  different ownership classes. A shared subscriber lease may use a
+  replacement generation, while every explicit `retain()` needs its own live
+  token so releasing one owner cannot retire or leak another. A lease created
+  before the owning client/provider starts must let `ready` adopt that startup
+  bootstrap, and an in-flight completion retain must count as transport
+  interest during connection replacement and disposal teardown.
 - In `runCosim` suites, `maxSchedules` bounds visited configurations, not only
   quiescent leaves. If one orthogonal action (for example quit at every phase)
   causes a bound hit, split it into a focused exhaustive alphabet instead of

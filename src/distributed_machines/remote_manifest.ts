@@ -2,13 +2,51 @@ import type { IgnoreReason } from "@/state_machines/types";
 import type { DistributedMachineDefinition } from "./definition";
 import { MachineIdentitySchema } from "./remote_protocol";
 
+/**
+ * Production definitions intentionally left on the protocol-v1 event
+ * compatibility adapter in PR4. Remove IDs only in their domain migration PR.
+ */
+export const REMOTE_PROTOCOL_V1_COMPATIBILITY_INVENTORY = Object.freeze([
+  "app_run",
+  "chat_stream",
+  "github_ops",
+  "image_generation",
+  "plan_handoff",
+  "version_preview",
+]);
+
+export function assertRemoteProtocolV1CompatibilityInventory(
+  definitions: readonly AnyRemoteMachineDefinition[],
+): void {
+  const expected = new Set(REMOTE_PROTOCOL_V1_COMPATIBILITY_INVENTORY);
+  const actual = new Set(
+    definitions
+      .filter((definition) => definition.remoteIntent === undefined)
+      .map((definition) => definition.id),
+  );
+  const unlisted = [...actual].filter((id) => !expected.has(id));
+  const stale = [...expected].filter((id) => !actual.has(id));
+  if (unlisted.length === 0 && stale.length === 0) return;
+
+  throw new Error(
+    [
+      "Remote protocol-v1 compatibility inventory is out of date.",
+      unlisted.length > 0 ? `Unlisted: ${unlisted.join(", ")}` : undefined,
+      stale.length > 0 ? `Stale: ${stale.join(", ")}` : undefined,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
 export type AnyRemoteMachineDefinition = DistributedMachineDefinition<
   string,
   any,
   any,
   any,
   any,
-  IgnoreReason
+  IgnoreReason,
+  any
 > & {
   readonly host: "main";
   readonly remote: NonNullable<
@@ -18,7 +56,8 @@ export type AnyRemoteMachineDefinition = DistributedMachineDefinition<
       any,
       any,
       any,
-      IgnoreReason
+      IgnoreReason,
+      any
     >["remote"]
   >;
 };

@@ -5,7 +5,11 @@ import type { Clock } from "@/state_machines/clock";
 import { PendingReceiptLedger } from "@/state_machines/pending_receipt_ledger";
 import type { WindowSessionId } from "@/window_infrastructure/types";
 import { ActorAdmissionError, type ActorHost } from "./actor_host";
-import type { HostedActorRef, RemoteMachineSender } from "./definition";
+import type {
+  ActorRuntimeMetadata,
+  HostedActorRef,
+  RemoteMachineSender,
+} from "./definition";
 import type {
   AnyRemoteMachineDefinition,
   RemoteMachineManifest,
@@ -18,6 +22,7 @@ import {
   type MachineRejectedReason,
   type MachineSnapshotEnvelope,
 } from "./remote_protocol";
+import type { RemoteAuthorizationDecision } from "./remote_intent_contract";
 
 export interface RemoteTransportEndpoint {
   readonly id: number;
@@ -70,18 +75,44 @@ interface SubscriptionEntry {
 
 interface PreparedDispatchIdentity {
   readonly definition: AnyRemoteMachineDefinition;
-  readonly event: unknown;
+  readonly key: unknown;
+  readonly intent: { readonly type: string };
+  readonly encodedKey: unknown;
   readonly address: string;
+  readonly admittedEntry: SubscriptionEntry;
+  readonly actor: HostedActorRef<unknown, unknown, string>;
+  readonly actorMetadata: ActorRuntimeMetadata;
+  readonly lifecycleGeneration: {
+    readonly host: number;
+    readonly machine: number;
+  };
+  readonly windowSessionId: WindowSessionId;
   readonly fingerprint: string;
+  consumed: boolean;
 }
 
 interface PendingSubscription {
   readonly address: string;
   readonly webContentsId: number;
   readonly countsTowardLimit: boolean;
+  readonly lifecycleGeneration: {
+    readonly host: number;
+    readonly machine: number;
+  };
   cancelled: boolean;
   accountingReleased: boolean;
   promise?: Promise<MachineSnapshotEnvelope>;
+}
+
+interface PreparedSubscribe {
+  readonly definition: AnyRemoteMachineDefinition;
+  readonly decodedKey: unknown;
+  readonly encodedKey: unknown;
+  readonly address: string;
+  readonly domainAddress: string;
+  readonly windowSessionId: WindowSessionId;
+  readonly pending: PendingSubscription;
+  consumed: boolean;
 }
 
 const DEFAULT_DEDUPLICATION_RETENTION_MS = 60_000;
@@ -90,7 +121,32 @@ const DEFAULT_MAX_SUBSCRIPTIONS_PER_WINDOW = 256;
 const DEFAULT_MAX_ADDRESS_ENVELOPE_BYTES = 64 * 1_024;
 const DEFAULT_MAX_DISPATCH_ENVELOPE_BYTES = 256 * 1_024;
 const DEFAULT_MAX_SNAPSHOT_ENVELOPE_BYTES = 1_024 * 1_024;
-const MAX_AUTHORIZATION_STABILIZATION_ATTEMPTS = 3;
+const MAX_LEGACY_AUTHORIZATION_STABILIZATION_ATTEMPTS = 3;
+
+function deepFreezePreparedValue<T>(value: T, seen = new Set<object>()): T {
+  if (typeof value !== "object" || value === null || seen.has(value)) {
+    return value;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    prototype !== Object.prototype &&
+    prototype !== Array.prototype &&
+    prototype !== null
+  ) {
+    throw new Error("Remote prepared values must use plain immutable data");
+  }
+  seen.add(value);
+  for (const nested of Reflect.ownKeys(value).map(
+    (key) => (value as Record<PropertyKey, unknown>)[key],
+  )) {
+    deepFreezePreparedValue(nested, seen);
+  }
+  return Object.freeze(value);
+}
+
+function immutablePreparedClone<T>(value: T): T {
+  return deepFreezePreparedValue(structuredClone(value));
+}
 
 export class RemoteMachineTransport {
   private readonly subscriptions = new Map<string, SubscriptionEntry>();
@@ -147,7 +203,10 @@ export class RemoteMachineTransport {
     this.removeDisposalListener = options.host.onActorDisposed((event) => {
       const definition = options.manifest.get(event.machineId);
       if (!definition) return;
-      const address = this.address(definition, event.key);
+      const address = this.wireAddress(
+        definition,
+        this.encodeKey(definition, event.key),
+      );
       this.cancelPendingSubscriptionsForAddress(address);
       this.actorKeys.delete(address);
       const entry = this.subscriptions.get(address);
@@ -178,7 +237,8 @@ export class RemoteMachineTransport {
     const definition = this.requireDefinition(input.machineId);
     this.assertProtocol(sender, definition, input.protocolVersion);
     const key = this.decodeKey(definition, input.encodedKey);
-    const address = this.address(definition, key);
+    const encodedKey = this.encodeKey(definition, key);
+    const address = this.wireAddress(definition, encodedKey);
     const existingBeforeAuthorization = this.subscriptions.get(address);
     const alreadySubscribedBeforeAuthorization =
       existingBeforeAuthorization?.windows.has(sender.id) === true;
@@ -189,16 +249,20 @@ export class RemoteMachineTransport {
       sender.id,
       address,
       !alreadySubscribedBeforeAuthorization,
+      definition.id,
     );
+    const prepared: PreparedSubscribe = {
+      definition,
+      decodedKey: key,
+      encodedKey,
+      address,
+      domainAddress: this.domainAddress(definition, key),
+      windowSessionId,
+      pending,
+      consumed: false,
+    };
     const promise = Promise.resolve().then(() =>
-      this.completeSubscription(
-        sender,
-        windowSessionId,
-        definition,
-        key,
-        address,
-        pending,
-      ),
+      this.completeSubscription(sender, prepared),
     );
     pending.promise = promise;
     return promise;
@@ -206,96 +270,150 @@ export class RemoteMachineTransport {
 
   private async completeSubscription(
     sender: RemoteTransportEndpoint,
-    windowSessionId: WindowSessionId,
-    definition: AnyRemoteMachineDefinition,
-    key: unknown,
-    address: string,
-    pending: PendingSubscription,
+    prepared: PreparedSubscribe,
   ): Promise<MachineSnapshotEnvelope> {
-    const senderContext = this.senderContext(sender);
+    const { definition, pending, address } = prepared;
+    const senderContext = this.senderContext(sender, prepared.windowSessionId);
     try {
-      await definition.remote.authorizeSubscribe({
+      const decision = await this.authorizeSubscribe(definition, {
         sender: senderContext,
-        key,
+        key: prepared.decodedKey,
+        encodedKey: prepared.encodedKey,
       });
-    } catch (error) {
-      if (isDyadError(error)) throw error;
-      throw error;
+      if (decision.kind === "deny") throw decision.error;
+      this.assertPreparedSubscribeCurrent(sender, prepared);
+
+      const authorizedKey =
+        definition.remote.canonicalizeKeyAfterAuthorization?.(
+          prepared.decodedKey,
+        ) ?? prepared.decodedKey;
+      const canonicalEncodedKey = this.encodeKey(definition, authorizedKey);
+      if (
+        this.domainAddress(definition, authorizedKey) !== prepared.domainAddress
+      ) {
+        throw new DyadError(
+          "Remote machine key changed during subscription authorization",
+          DyadErrorKind.Precondition,
+        );
+      }
+      if (
+        !serialize(canonicalEncodedKey).equals(serialize(prepared.encodedKey))
+      ) {
+        throw new DyadError(
+          "Remote machine wire address changed during subscription authorization",
+          DyadErrorKind.Precondition,
+        );
+      }
+      const canonicalKey = this.actorKeys.get(address) ?? authorizedKey;
+      const currentReferences = this.referencesPerWindow.get(sender.id) ?? 0;
+      let entry = this.subscriptions.get(address);
+      const alreadySubscribed = entry?.windows.has(sender.id) === true;
+      if (
+        !alreadySubscribed &&
+        currentReferences >= this.maxSubscriptionsPerWindow
+      ) {
+        throw new DyadError(
+          "Remote machine subscription limit exceeded",
+          DyadErrorKind.RateLimited,
+        );
+      }
+      this.assertPreparedSubscribeCurrent(sender, prepared);
+      if (
+        entry &&
+        this.options.host.peek(definition.id, entry.key) !== entry.actor
+      ) {
+        throw new DyadError(
+          "Remote machine actor changed during subscription authorization",
+          DyadErrorKind.Precondition,
+        );
+      }
+      if (prepared.consumed) {
+        throw new DyadError(
+          "Prepared remote subscription was already consumed",
+          DyadErrorKind.Precondition,
+        );
+      }
+      prepared.consumed = true;
+
+      if (!entry) {
+        let actor: HostedActorRef<unknown, unknown, string>;
+        try {
+          actor = this.options.host.localRef(
+            definition,
+            canonicalKey,
+          ) as HostedActorRef<unknown, unknown, string>;
+        } catch (error) {
+          if (error instanceof ActorAdmissionError) {
+            throw new DyadError(
+              `Remote machine subscription was refused: ${error.message}`,
+              DyadErrorKind.Precondition,
+              { cause: error },
+            );
+          }
+          throw error;
+        }
+        this.actorKeys.set(address, canonicalKey);
+        entry = {
+          address,
+          definition,
+          key: canonicalKey,
+          encodedKey: canonicalEncodedKey,
+          actor,
+          windows: new Map(),
+          unsubscribeActor: () => undefined,
+        };
+        this.subscriptions.set(address, entry);
+        entry.unsubscribeActor = actor.subscribe(() =>
+          this.broadcastSnapshot(entry!),
+        );
+      }
+
+      if (!alreadySubscribed) {
+        entry.windows.set(sender.id, 1);
+        this.referencesPerWindow.set(sender.id, currentReferences + 1);
+      }
+
+      // Atomic bootstrap invariant: there is deliberately no await between
+      // subscriber registration above and this snapshot capture.
+      try {
+        return this.snapshotEnvelope(entry);
+      } catch (error) {
+        if (!alreadySubscribed) this.removeWindowReference(entry, sender.id);
+        throw error;
+      }
     } finally {
       this.finishPendingSubscription(pending);
     }
+  }
+
+  private assertPreparedSubscribeCurrent(
+    sender: RemoteTransportEndpoint,
+    prepared: PreparedSubscribe,
+  ): void {
     this.assertOpen();
-    if (pending.cancelled) {
+    if (
+      prepared.pending.cancelled ||
+      prepared.pending.accountingReleased ||
+      this.pendingSubscriptions.get(
+        this.pendingSubscriptionKey(sender.id, prepared.address),
+      ) !== prepared.pending
+    ) {
       throw new DyadError(
         "Remote machine subscription was cancelled",
         DyadErrorKind.Precondition,
       );
     }
-    this.assertCurrentSender(sender, windowSessionId);
-
-    const currentReferences = this.referencesPerWindow.get(sender.id) ?? 0;
-    const existingEntry = this.subscriptions.get(address);
-    const alreadySubscribed = existingEntry?.windows.has(sender.id) === true;
+    this.assertCurrentSender(sender, prepared.windowSessionId);
     if (
-      !alreadySubscribed &&
-      currentReferences >= this.maxSubscriptionsPerWindow
+      !this.options.host.isAdmissionGenerationCurrent(
+        prepared.definition.id,
+        prepared.pending.lifecycleGeneration,
+      )
     ) {
       throw new DyadError(
-        "Remote machine subscription limit exceeded",
-        DyadErrorKind.RateLimited,
+        "Remote machine lifecycle changed during subscription authorization",
+        DyadErrorKind.Precondition,
       );
-    }
-
-    let entry = existingEntry;
-    if (!entry) {
-      const authorizedKey =
-        definition.remote.canonicalizeKeyAfterAuthorization?.(key) ?? key;
-      const canonicalKey = this.actorKeys.get(address) ?? authorizedKey;
-      const encodedKey = this.encodeKey(definition, canonicalKey);
-      let actor: HostedActorRef<unknown, unknown, string>;
-      try {
-        actor = this.options.host.localRef(
-          definition,
-          canonicalKey,
-        ) as HostedActorRef<unknown, unknown, string>;
-      } catch (error) {
-        if (error instanceof ActorAdmissionError) {
-          throw new DyadError(
-            `Remote machine subscription was refused: ${error.message}`,
-            DyadErrorKind.Precondition,
-            { cause: error },
-          );
-        }
-        throw error;
-      }
-      this.actorKeys.set(address, canonicalKey);
-      entry = {
-        address,
-        definition,
-        key: canonicalKey,
-        encodedKey,
-        actor,
-        windows: new Map(),
-        unsubscribeActor: () => undefined,
-      };
-      this.subscriptions.set(address, entry);
-      entry.unsubscribeActor = actor.subscribe(() =>
-        this.broadcastSnapshot(entry!),
-      );
-    }
-
-    if (!alreadySubscribed) {
-      entry.windows.set(sender.id, 1);
-      this.referencesPerWindow.set(sender.id, currentReferences + 1);
-    }
-
-    // Atomic bootstrap invariant: there is deliberately no await between
-    // subscriber registration above and this snapshot capture.
-    try {
-      return this.snapshotEnvelope(entry);
-    } catch (error) {
-      if (!alreadySubscribed) this.removeWindowReference(entry, sender.id);
-      throw error;
     }
   }
 
@@ -309,7 +427,10 @@ export class RemoteMachineTransport {
     const definition = this.requireDefinition(input.machineId);
     this.assertProtocol(sender, definition, input.protocolVersion);
     const key = this.decodeKey(definition, input.encodedKey);
-    const address = this.address(definition, key);
+    const address = this.wireAddress(
+      definition,
+      this.encodeKey(definition, key),
+    );
     this.cancelPendingSubscriptions(sender.id, address);
     const entry = this.subscriptions.get(address);
     if (!entry) return;
@@ -322,16 +443,49 @@ export class RemoteMachineTransport {
   ): Promise<MachineDispatchReceipt> {
     this.assertOpen();
     const windowSessionId = this.options.windows.ensureRegistered(sender);
+    const dispatchDefinition = this.options.manifest.get(envelope.machineId);
+    const nativeDispatchLimit =
+      dispatchDefinition?.remoteIntent?.budgets.intentBytes;
     const dispatchLimit =
-      this.options.manifest.get(envelope.machineId)?.remote
-        .maxDispatchEnvelopeBytes ?? this.maxDispatchEnvelopeBytes;
+      nativeDispatchLimit === undefined
+        ? (dispatchDefinition?.remote.maxDispatchEnvelopeBytes ??
+          this.maxDispatchEnvelopeBytes)
+        : nativeDispatchLimit;
     if (!this.isWithinSerializedLimit(envelope, dispatchLimit)) {
       return Promise.resolve(
         this.rejected(envelope.messageId, "invalid-event"),
       );
     }
-    const prepared = this.prepareDispatchIdentity(sender, envelope);
+    const prepared = this.prepareDispatchIdentity(
+      sender,
+      windowSessionId,
+      envelope,
+    );
     if ("receipt" in prepared) {
+      if (
+        prepared.fingerprint !== undefined &&
+        this.receiptLedger.hasReceipt(windowSessionId, envelope.messageId)
+      ) {
+        const replay = this.receiptLedger.claim({
+          scope: windowSessionId,
+          messageId: envelope.messageId,
+          fingerprint: prepared.fingerprint,
+          start: () => prepared.receipt,
+          retention: () => "remove",
+        });
+        if (replay.kind === "duplicate") return replay.receipt;
+        if (replay.kind === "conflict") {
+          return Promise.resolve(
+            this.rejected(envelope.messageId, "invalid-event"),
+          );
+        }
+        if (replay.kind === "fresh") return replay.receipt;
+        if (replay.kind === "disposed") {
+          return Promise.resolve(
+            this.rejected(envelope.messageId, "host-disposing"),
+          );
+        }
+      }
       return Promise.resolve(
         this.receiptLedger.hasReceipt(windowSessionId, envelope.messageId)
           ? this.rejected(envelope.messageId, "invalid-event")
@@ -342,8 +496,7 @@ export class RemoteMachineTransport {
       scope: windowSessionId,
       messageId: envelope.messageId,
       fingerprint: prepared.fingerprint,
-      start: () =>
-        this.dispatchOnce(sender, windowSessionId, envelope, prepared),
+      start: () => this.dispatchOnce(sender, envelope, prepared),
       retention: (settlement) =>
         settlement.status === "fulfilled" &&
         settlement.value.kind === "rejected" &&
@@ -418,13 +571,20 @@ export class RemoteMachineTransport {
     this.subscriptions.clear();
     this.actorKeys.clear();
     this.referencesPerWindow.clear();
+    this.pendingReferencesPerWindow.clear();
     this.receiptLedger.dispose();
   }
 
   private prepareDispatchIdentity(
     sender: RemoteTransportEndpoint,
+    windowSessionId: WindowSessionId,
     envelope: MachineDispatchEnvelope,
-  ): PreparedDispatchIdentity | { readonly receipt: MachineDispatchReceipt } {
+  ):
+    | PreparedDispatchIdentity
+    | {
+        readonly receipt: MachineDispatchReceipt;
+        readonly fingerprint?: string;
+      } {
     const definition = this.options.manifest.get(envelope.machineId);
     if (!definition) {
       return { receipt: this.rejected(envelope.messageId, "unknown-machine") };
@@ -433,120 +593,236 @@ export class RemoteMachineTransport {
       this.noteProtocolMismatch(sender, definition, envelope.protocolVersion);
       return { receipt: this.rejected(envelope.messageId, "protocol-version") };
     }
-    const keyResult = definition.remote.keyCodec.safeParse(envelope.encodedKey);
+    const keyResult = this.keyCodec(definition).safeParse(envelope.encodedKey);
     if (!keyResult.success) {
       return { receipt: this.rejected(envelope.messageId, "invalid-key") };
     }
-    const eventResult = definition.remote.eventCodec.safeParse(
+    const intentResult = this.rendererIntentCodec(definition).safeParse(
       envelope.encodedEvent,
     );
-    if (!eventResult.success) {
+    if (!intentResult.success) {
       return { receipt: this.rejected(envelope.messageId, "invalid-event") };
     }
-    const address = this.address(definition, keyResult.data);
+    const intent = (
+      definition.remoteIntent
+        ? immutablePreparedClone(intentResult.data)
+        : intentResult.data
+    ) as { readonly type: string };
     const encodedKey = this.encodeKey(definition, keyResult.data);
-    const fingerprint = createHash("sha256")
-      .update(
-        serialize([
-          envelope.protocolVersion,
-          definition.id,
-          encodedKey,
-          eventResult.data,
-          envelope.expectedActorInstanceId,
-          envelope.expectedRevision,
-          envelope.correlationId,
-          envelope.causationId,
-        ]),
+    const address = this.wireAddress(definition, encodedKey);
+    const fingerprint = this.dispatchFingerprint(
+      definition,
+      encodedKey,
+      intent,
+      envelope,
+    );
+    const admittedEntry = this.subscriptions.get(address);
+    if (!admittedEntry || !admittedEntry.windows.has(sender.id)) {
+      return {
+        receipt: this.rejected(envelope.messageId, "stale-actor"),
+        fingerprint,
+      };
+    }
+    if (
+      definition.remoteIntent?.keyIntentRelationship.kind === "validate" &&
+      !definition.remoteIntent.keyIntentRelationship.validate(
+        admittedEntry.key,
+        intent,
       )
-      .digest("hex");
+    ) {
+      return {
+        receipt: this.rejected(
+          envelope.messageId,
+          definition.remoteIntent.refusalMap.keyIntentMismatch,
+        ),
+      };
+    }
+    const actor = this.options.host.peek<unknown, unknown, string>(
+      definition.id,
+      admittedEntry.key,
+    );
+    if (!actor || actor !== admittedEntry.actor) {
+      return {
+        receipt: this.rejected(envelope.messageId, "stale-actor"),
+        fingerprint,
+      };
+    }
+    const actorMetadata = actor.getMetadata();
+    if (
+      envelope.expectedActorInstanceId !== undefined &&
+      envelope.expectedActorInstanceId !== actorMetadata.actorInstanceId
+    ) {
+      return {
+        receipt: this.rejected(envelope.messageId, "stale-actor"),
+        fingerprint,
+      };
+    }
+    const revisionPolicy =
+      definition.remoteIntent?.intents[intent.type]?.observedRevision;
+    if (
+      revisionPolicy?.kind === "actor" &&
+      (envelope.expectedActorInstanceId === undefined ||
+        envelope.expectedRevision === undefined)
+    ) {
+      return {
+        receipt: this.rejected(envelope.messageId, "revision-conflict"),
+      };
+    }
+    if (
+      revisionPolicy?.kind === "domain" &&
+      envelope.expectedRevision === undefined
+    ) {
+      return {
+        receipt: this.rejected(envelope.messageId, "revision-conflict"),
+      };
+    }
     return {
       definition,
-      event: eventResult.data,
+      key: admittedEntry.key,
+      intent,
+      encodedKey,
       address,
+      admittedEntry,
+      actor,
+      actorMetadata,
+      lifecycleGeneration: this.options.host.captureAdmissionGeneration(
+        definition.id,
+      ),
+      windowSessionId,
       fingerprint,
+      consumed: false,
     };
   }
 
   private async dispatchOnce(
     sender: RemoteTransportEndpoint,
-    windowSessionId: WindowSessionId,
     envelope: MachineDispatchEnvelope,
     prepared: PreparedDispatchIdentity,
   ): Promise<MachineDispatchReceipt> {
-    const { definition, event, address } = prepared;
-    const admittedEntry = this.subscriptions.get(address);
-    if (!admittedEntry) {
-      return this.rejected(envelope.messageId, "stale-actor");
-    }
-    const key = admittedEntry.key;
-    const senderContext = this.senderContext(sender);
-    let current: HostedActorRef<unknown, unknown, string> | undefined =
-      admittedEntry.actor;
-    for (
-      let attempt = 0;
-      attempt < MAX_AUTHORIZATION_STABILIZATION_ATTEMPTS;
-      attempt += 1
-    ) {
-      const authorizedActorInstanceId = current?.getMetadata().actorInstanceId;
-      const authorizedRevision = current?.getMetadata().snapshotRevision;
-      try {
-        await definition.remote.authorizeDispatch({
+    const { definition, key, intent, address, actor, actorMetadata } = prepared;
+    const senderContext = this.senderContext(sender, prepared.windowSessionId);
+    let event: unknown;
+    let dispatchActorMetadata = actorMetadata;
+    if (!definition.remoteIntent) {
+      let stabilized = false;
+      for (
+        let attempt = 0;
+        attempt < MAX_LEGACY_AUTHORIZATION_STABILIZATION_ATTEMPTS;
+        attempt += 1
+      ) {
+        const authorizedMetadata = actor.getMetadata();
+        const decision = await this.authorizeDispatch(definition, {
           sender: senderContext,
           key,
-          event,
-          currentState: current?.getSnapshot(),
+          intent,
+          currentState: actor.getSnapshot(),
+          actor: authorizedMetadata,
+          expectedObservedRevision: envelope.expectedRevision,
         });
-      } catch (error) {
-        if (isDyadError(error) && error.kind === DyadErrorKind.Auth) {
+        if (decision.kind === "deny") {
           return this.rejected(envelope.messageId, "unauthorized");
         }
-        throw error;
+        if (
+          this.disposed ||
+          !this.isCurrentSender(sender, prepared.windowSessionId)
+        ) {
+          return this.rejected(envelope.messageId, "host-disposing");
+        }
+        if (
+          this.subscriptions.get(address) !== prepared.admittedEntry ||
+          !prepared.admittedEntry.windows.has(sender.id) ||
+          this.options.host.peek(definition.id, key) !== actor
+        ) {
+          return this.rejected(envelope.messageId, "stale-actor");
+        }
+        if (
+          !this.options.host.isAdmissionGenerationCurrent(
+            definition.id,
+            prepared.lifecycleGeneration,
+          )
+        ) {
+          return this.rejected(envelope.messageId, "host-disposing");
+        }
+        const currentMetadata = actor.getMetadata();
+        if (
+          currentMetadata.actorInstanceId ===
+            authorizedMetadata.actorInstanceId &&
+          currentMetadata.snapshotRevision ===
+            authorizedMetadata.snapshotRevision
+        ) {
+          dispatchActorMetadata = currentMetadata;
+          stabilized = true;
+          break;
+        }
       }
-      if (this.disposed || !this.isCurrentSender(sender, windowSessionId)) {
-        return this.rejected(envelope.messageId, "host-disposing");
-      }
-      if (this.subscriptions.get(address) !== admittedEntry) {
-        return this.rejected(envelope.messageId, "stale-actor");
-      }
-
-      const authorizedCurrent = this.options.host.peek<
-        unknown,
-        unknown,
-        string
-      >(definition.id, key);
-      const metadata = authorizedCurrent?.getMetadata();
-      if (
-        metadata?.actorInstanceId === authorizedActorInstanceId &&
-        metadata?.snapshotRevision === authorizedRevision
-      ) {
-        current = authorizedCurrent;
-        break;
-      }
-      if (attempt === MAX_AUTHORIZATION_STABILIZATION_ATTEMPTS - 1) {
+      if (!stabilized) {
         return this.rejected(envelope.messageId, "revision-conflict");
       }
-      current = authorizedCurrent;
+      const revisionPolicy = definition.remote.revisionPolicy(intent as never);
+      if (
+        revisionPolicy === "reject-stale" &&
+        (envelope.expectedRevision === undefined ||
+          dispatchActorMetadata.snapshotRevision !== envelope.expectedRevision)
+      ) {
+        return this.rejected(envelope.messageId, "revision-conflict");
+      }
+      event = intent;
+      if (
+        prepared.consumed ||
+        this.subscriptions.get(address) !== prepared.admittedEntry ||
+        this.options.host.peek(definition.id, key) !== actor
+      ) {
+        return this.rejected(envelope.messageId, "stale-actor");
+      }
+    } else {
+      const decision = await this.authorizeDispatch(definition, {
+        sender: senderContext,
+        key,
+        intent,
+        currentState: actor.getSnapshot(),
+        actor: actorMetadata,
+        expectedObservedRevision: envelope.expectedRevision,
+      });
+      if (decision.kind === "deny") {
+        if (decision.error.kind !== DyadErrorKind.Auth) {
+          throw decision.error;
+        }
+        return this.rejected(
+          envelope.messageId,
+          definition.remoteIntent.refusalMap.authorization,
+        );
+      }
+      this.assertPreparedDispatchContent(prepared, envelope);
+      const preConversionRefusal = this.revalidatePreparedDispatch(
+        sender,
+        envelope,
+        prepared,
+      );
+      if (preConversionRefusal) {
+        return this.rejected(envelope.messageId, preConversionRefusal);
+      }
+      event = this.toInternalEvent(
+        definition,
+        key,
+        intent,
+        senderContext.windowSessionId,
+      );
+      this.assertPreparedDispatchContent(prepared, envelope);
+      const finalRefusal = this.revalidatePreparedDispatch(
+        sender,
+        envelope,
+        prepared,
+      );
+      if (finalRefusal) {
+        return this.rejected(envelope.messageId, finalRefusal);
+      }
     }
-
-    if (!current) {
-      return this.rejected(envelope.messageId, "stale-actor");
-    }
-    const revisionPolicy = definition.remote.revisionPolicy(event);
-    const currentMetadata = current.getMetadata();
-    const currentRevision = currentMetadata.snapshotRevision;
-    if (
-      revisionPolicy === "reject-stale" &&
-      (envelope.expectedRevision === undefined ||
-        currentRevision !== envelope.expectedRevision)
-    ) {
-      return this.rejected(envelope.messageId, "revision-conflict");
-    }
-
+    prepared.consumed = true;
     const ticket = this.options.host.dispatch(
       definition,
       key,
       event,
-      envelope.expectedActorInstanceId ?? currentMetadata.actorInstanceId,
+      dispatchActorMetadata.actorInstanceId,
       {
         messageId: envelope.messageId,
         correlationId: envelope.correlationId,
@@ -594,6 +870,117 @@ export class RemoteMachineTransport {
     };
   }
 
+  private dispatchFingerprint(
+    definition: AnyRemoteMachineDefinition,
+    encodedKey: unknown,
+    intent: { readonly type: string },
+    envelope: MachineDispatchEnvelope,
+  ): string {
+    return createHash("sha256")
+      .update(
+        serialize([
+          envelope.protocolVersion,
+          definition.id,
+          encodedKey,
+          intent,
+          envelope.expectedActorInstanceId,
+          envelope.expectedRevision,
+          envelope.correlationId,
+          envelope.causationId,
+        ]),
+      )
+      .digest("hex");
+  }
+
+  private assertPreparedDispatchContent(
+    prepared: PreparedDispatchIdentity,
+    envelope: MachineDispatchEnvelope,
+  ): void {
+    if (
+      this.dispatchFingerprint(
+        prepared.definition,
+        prepared.encodedKey,
+        prepared.intent,
+        envelope,
+      ) !== prepared.fingerprint
+    ) {
+      throw new Error(
+        `Remote authorization mutated prepared intent for ${prepared.definition.id}`,
+      );
+    }
+  }
+
+  private revalidatePreparedDispatch(
+    sender: RemoteTransportEndpoint,
+    envelope: MachineDispatchEnvelope,
+    prepared: PreparedDispatchIdentity,
+  ): MachineRejectedReason | undefined {
+    const { definition, address, admittedEntry, actor, actorMetadata, key } =
+      prepared;
+    const refusalMap = definition.remoteIntent?.refusalMap;
+    if (
+      prepared.consumed ||
+      this.disposed ||
+      !this.isCurrentSender(sender, prepared.windowSessionId)
+    ) {
+      return refusalMap?.transportClosed ?? "host-disposing";
+    }
+    if (
+      this.subscriptions.get(address) !== admittedEntry ||
+      !admittedEntry.windows.has(sender.id)
+    ) {
+      return refusalMap?.actorChanged ?? "stale-actor";
+    }
+    if (
+      !this.options.host.isAdmissionGenerationCurrent(
+        definition.id,
+        prepared.lifecycleGeneration,
+      )
+    ) {
+      return refusalMap?.transportClosed ?? "host-disposing";
+    }
+    const current = this.options.host.peek<unknown, unknown, string>(
+      definition.id,
+      key,
+    );
+    if (!current || current !== actor) {
+      return refusalMap?.actorChanged ?? "stale-actor";
+    }
+    const currentMetadata = current.getMetadata();
+    if (currentMetadata.actorInstanceId !== actorMetadata.actorInstanceId) {
+      return refusalMap?.actorChanged ?? "stale-actor";
+    }
+    if (currentMetadata.snapshotRevision !== actorMetadata.snapshotRevision) {
+      return refusalMap?.revisionChanged ?? "revision-conflict";
+    }
+
+    const observedRevision =
+      definition.remoteIntent?.intents[prepared.intent.type]?.observedRevision;
+    if (
+      observedRevision?.kind === "actor" &&
+      (envelope.expectedActorInstanceId !== actorMetadata.actorInstanceId ||
+        envelope.expectedRevision !== actorMetadata.snapshotRevision)
+    ) {
+      return refusalMap?.revisionChanged ?? "revision-conflict";
+    }
+    if (observedRevision?.kind === "domain") {
+      const currentDomainRevision =
+        definition.remoteIntent?.resolveDomainRevision?.({
+          name: observedRevision.name,
+          key,
+          intent: prepared.intent,
+          currentState: current.getSnapshot(),
+        });
+      if (
+        currentDomainRevision === undefined ||
+        envelope.expectedRevision !== currentDomainRevision
+      ) {
+        return refusalMap?.revisionChanged ?? "revision-conflict";
+      }
+    }
+    return undefined;
+  }
+
   private snapshotEnvelope(entry: SubscriptionEntry): MachineSnapshotEnvelope {
     const metadata = entry.actor.getMetadata();
     const projected = entry.definition.remote.projectSnapshot(
@@ -601,7 +988,10 @@ export class RemoteMachineTransport {
       entry.key,
       metadata,
     );
-    const parsed = entry.definition.remote.snapshotCodec.safeParse(projected);
+    const parsed = (
+      entry.definition.remoteIntent?.snapshotCodec ??
+      entry.definition.remote.snapshotCodec
+    ).safeParse(projected);
     if (!parsed.success) {
       throw new Error(
         `Remote snapshot projection failed for ${entry.definition.id}: ${parsed.error.message}`,
@@ -615,13 +1005,14 @@ export class RemoteMachineTransport {
       revision: metadata.snapshotRevision,
       encodedState: parsed.data,
     };
-    if (
-      !this.isWithinSerializedLimit(
-        envelope,
-        entry.definition.remote.maxSnapshotEnvelopeBytes ??
-          this.maxSnapshotEnvelopeBytes,
-      )
-    ) {
+    const nativeSnapshotLimit =
+      entry.definition.remoteIntent?.budgets.snapshotBytes;
+    const snapshotLimit =
+      nativeSnapshotLimit === undefined
+        ? (entry.definition.remote.maxSnapshotEnvelopeBytes ??
+          this.maxSnapshotEnvelopeBytes)
+        : nativeSnapshotLimit;
+    if (!this.isWithinSerializedLimit(envelope, snapshotLimit)) {
       throw new DyadError(
         `Remote snapshot exceeds the transport limit for ${entry.definition.id}`,
         DyadErrorKind.RateLimited,
@@ -707,29 +1098,39 @@ export class RemoteMachineTransport {
     definition: AnyRemoteMachineDefinition,
     encodedKey: unknown,
   ): unknown {
-    const parsed = definition.remote.keyCodec.safeParse(encodedKey);
+    const parsed = this.keyCodec(definition).safeParse(encodedKey);
     if (!parsed.success) {
       throw new DyadError(
         "Invalid remote machine key",
         DyadErrorKind.Validation,
       );
     }
-    return parsed.data;
+    return definition.remoteIntent
+      ? immutablePreparedClone(parsed.data)
+      : parsed.data;
   }
 
   private encodeKey(
     definition: AnyRemoteMachineDefinition,
     key: unknown,
   ): unknown {
-    const encodedKey = definition.remote.encodeKey(key);
-    const roundTrip = definition.remote.keyCodec.safeParse(encodedKey);
+    const keyContract = definition.remoteIntent ?? definition.remote;
+    const encodedKey = keyContract.encodeKey(key);
+    const roundTrip = keyContract.keyCodec.safeParse(encodedKey);
     if (
       !roundTrip.success ||
-      this.address(definition, roundTrip.data) !== this.address(definition, key)
+      this.domainAddress(definition, roundTrip.data) !==
+        this.domainAddress(definition, key)
     ) {
       throw new Error(`Remote key encoding failed for ${definition.id}`);
     }
-    return encodedKey;
+    return definition.remoteIntent
+      ? immutablePreparedClone(encodedKey)
+      : encodedKey;
+  }
+
+  private keyCodec(definition: AnyRemoteMachineDefinition) {
+    return definition.remoteIntent?.keyCodec ?? definition.remote.keyCodec;
   }
 
   private requireDefinition(machineId: string): AnyRemoteMachineDefinition {
@@ -743,18 +1144,137 @@ export class RemoteMachineTransport {
     return definition;
   }
 
-  private address(
+  private domainAddress(
     definition: AnyRemoteMachineDefinition,
     key: unknown,
   ): string {
-    return `${definition.id}\0${definition.remote.keyToString(key)}`;
+    const keyToString =
+      definition.remoteIntent?.keyToString ?? definition.remote.keyToString;
+    return `${definition.id}\0${keyToString(key)}`;
   }
 
-  private senderContext(sender: RemoteTransportEndpoint): RemoteMachineSender {
+  private wireAddress(
+    definition: AnyRemoteMachineDefinition,
+    encodedKey: unknown,
+  ): string {
+    return createHash("sha256")
+      .update(
+        serialize([
+          definition.remote.protocolVersion,
+          definition.id,
+          encodedKey,
+        ]),
+      )
+      .digest("hex");
+  }
+
+  private senderContext(
+    sender: RemoteTransportEndpoint,
+    capturedWindowSessionId?: WindowSessionId,
+  ): RemoteMachineSender & { readonly windowSessionId: WindowSessionId } {
+    const windowSessionId =
+      capturedWindowSessionId ??
+      this.options.windows.sessionForWebContents(sender.id);
+    if (!windowSessionId) {
+      throw new DyadError(
+        "Remote machine sender has no registered window session",
+        DyadErrorKind.Precondition,
+      );
+    }
     return {
       webContentsId: sender.id,
-      windowSessionId: this.options.windows.sessionForWebContents(sender.id),
+      windowSessionId,
     };
+  }
+
+  private rendererIntentCodec(definition: AnyRemoteMachineDefinition) {
+    return (
+      definition.remoteIntent?.rendererIntentCodec ??
+      definition.remote.eventCodec
+    );
+  }
+
+  private async authorizeSubscribe(
+    definition: AnyRemoteMachineDefinition,
+    context: {
+      readonly sender: RemoteMachineSender & {
+        readonly windowSessionId: string;
+      };
+      readonly key: unknown;
+      readonly encodedKey: unknown;
+    },
+  ): Promise<RemoteAuthorizationDecision> {
+    if (definition.remoteIntent) {
+      return definition.remoteIntent.authorizeSubscribe(context);
+    }
+    try {
+      await definition.remote.authorizeSubscribe({
+        sender: context.sender,
+        key: context.key,
+      });
+      return { kind: "allow" };
+    } catch (error) {
+      if (isDyadError(error) && error.kind === DyadErrorKind.Auth) {
+        return { kind: "deny", error };
+      }
+      throw error;
+    }
+  }
+
+  private async authorizeDispatch(
+    definition: AnyRemoteMachineDefinition,
+    context: {
+      readonly sender: RemoteMachineSender & {
+        readonly windowSessionId: string;
+      };
+      readonly key: unknown;
+      readonly intent: { readonly type: string };
+      readonly currentState: unknown;
+      readonly actor: ActorRuntimeMetadata;
+      readonly expectedObservedRevision?: number;
+    },
+  ): Promise<RemoteAuthorizationDecision> {
+    if (definition.remoteIntent) {
+      return definition.remoteIntent.authorizeDispatch(context);
+    }
+    try {
+      await definition.remote.authorizeDispatch({
+        sender: context.sender,
+        key: context.key,
+        event: context.intent,
+        currentState: context.currentState,
+      });
+      return { kind: "allow" };
+    } catch (error) {
+      if (isDyadError(error) && error.kind === DyadErrorKind.Auth) {
+        return { kind: "deny", error };
+      }
+      throw error;
+    }
+  }
+
+  private toInternalEvent(
+    definition: AnyRemoteMachineDefinition,
+    key: unknown,
+    intent: { readonly type: string },
+    windowSessionId: string,
+  ): unknown {
+    if (!definition.remoteIntent) return intent;
+    const event = definition.remoteIntent.toInternalEvent({
+      key,
+      intent,
+      sender: { windowSessionId },
+    });
+    if (
+      typeof intent === "object" &&
+      intent !== null &&
+      Object.is(event, intent)
+    ) {
+      throw new Error(
+        `Remote intent conversion for ${definition.id} reused renderer data`,
+      );
+    }
+    return immutablePreparedClone(event);
   }
 
   private assertProtocol(
@@ -827,6 +1347,7 @@ export class RemoteMachineTransport {
     webContentsId: number,
     address: string,
     countsTowardLimit: boolean,
+    machineId: string,
   ): PendingSubscription {
     const currentReferences = this.referencesPerWindow.get(webContentsId) ?? 0;
     const pendingReferences =
@@ -844,6 +1365,8 @@ export class RemoteMachineTransport {
       address,
       webContentsId,
       countsTowardLimit,
+      lifecycleGeneration:
+        this.options.host.captureAdmissionGeneration(machineId),
       cancelled: false,
       accountingReleased: false,
     };

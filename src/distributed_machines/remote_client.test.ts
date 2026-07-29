@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
   createFakeClock,
   createSequentialIdSource,
@@ -6,6 +7,7 @@ import {
 import { TwoWindowHarness } from "@/testing/two_window_harness";
 import { ActorHost, type ActorHostError } from "./actor_host";
 import {
+  observeDomainRevision,
   RemoteMachineClient,
   RemoteMachineTransportError,
 } from "./remote_client";
@@ -27,7 +29,7 @@ async function waitFor(check: () => boolean): Promise<void> {
   throw new Error("Timed out waiting for remote client state");
 }
 
-function createHarness() {
+function createHarness(machine = createRemoteTestMachine()) {
   const clock = createFakeClock();
   const errors: ActorHostError[] = [];
   const host = new ActorHost({
@@ -36,7 +38,6 @@ function createHarness() {
     ids: createSequentialIdSource(),
     reportError: (error) => errors.push(error),
   });
-  const machine = createRemoteTestMachine();
   const manifest = createRemoteMachineManifest([machine]);
   const windows = new TwoWindowHarness();
   const transport = new RemoteMachineTransport({
@@ -50,7 +51,7 @@ function createHarness() {
 }
 
 describe("RemoteMachineClient", () => {
-  it("reference-counts one bootstrap per key and applies pre-bootstrap snapshots", async () => {
+  it("reference-counts one bootstrap per key and blocks dispatch before bootstrap", async () => {
     const { duplex, machine, transport } = createHarness();
     const renderer = duplex.connect();
     renderer.holdBootstrapResponses();
@@ -69,9 +70,12 @@ describe("RemoteMachineClient", () => {
         transport.inspectSubscriptions().length === 1,
     );
 
-    await actor.dispatch({ type: "INCREMENT" });
+    await expect(actor.dispatch({ type: "INCREMENT" })).rejects.toThrow(
+      "requires a completed subscription bootstrap",
+    );
     renderer.releaseBootstrapResponses();
     await waitFor(() => actor.getStatus() === "ready");
+    await actor.dispatch({ type: "INCREMENT" });
 
     expect(actor.getSnapshot()).toEqual({ value: 1 });
     expect(subscribe).toHaveBeenCalledTimes(1);
@@ -121,6 +125,259 @@ describe("RemoteMachineClient", () => {
     expect(transport.inspectSubscriptions()).toHaveLength(1);
     await actor.dispatch({ type: "INCREMENT" });
     expect(actor.getSnapshot()).toEqual({ value: 1 });
+  });
+
+  it("retries a failed bootstrap through the same subscription lease", async () => {
+    const { duplex, machine, transport } = createHarness();
+    const renderer = duplex.connect();
+    vi.spyOn(renderer, "subscribe").mockRejectedValueOnce(
+      new Error("synthetic bootstrap failure"),
+    );
+    const client = new RemoteMachineClient(
+      renderer,
+      createSequentialIdSource(),
+    );
+    client.start();
+    const actor = client.actor(machine, "actor");
+    const lease = actor.retain();
+
+    await expect(lease.ready).rejects.toThrow("synthetic bootstrap failure");
+    await expect(lease.refresh()).resolves.toBeUndefined();
+    expect(actor.getStatus()).toBe("ready");
+    expect(transport.inspectSubscriptions()).toHaveLength(1);
+
+    lease.release();
+    await flush();
+    expect(transport.inspectSubscriptions()).toHaveLength(0);
+  });
+
+  it("sends an explicitly observed domain revision without substituting the actor revision", async () => {
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        intents: {
+          ...base.remoteIntent.intents,
+          INCREMENT: {
+            ...base.remoteIntent.intents.INCREMENT,
+            observedRevision: {
+              kind: "domain",
+              name: "counter-value",
+              required: true,
+            },
+          },
+        },
+        resolveDomainRevision({
+          currentState,
+        }: {
+          currentState: { value: number };
+        }) {
+          return currentState.value;
+        },
+      },
+    } as ReturnType<typeof createRemoteTestMachine>;
+    const { duplex } = createHarness(machine);
+    const client = new RemoteMachineClient(
+      duplex.connect(),
+      createSequentialIdSource(),
+    );
+    client.start();
+    const actor = client.actor(machine, "actor");
+    actor.subscribe(() => undefined);
+    await waitFor(() => actor.getStatus() === "ready");
+
+    await expect(
+      actor.dispatch(
+        { type: "INCREMENT" },
+        { expected: observeDomainRevision("counter-value", 0) },
+      ),
+    ).resolves.toMatchObject({ kind: "applied", revision: 1 });
+    await expect(
+      actor.dispatch(
+        { type: "INCREMENT" },
+        { expected: observeDomainRevision("other-counter", 1) },
+      ),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "revision-conflict",
+    });
+  });
+
+  it("routes native snapshots with the native key identity contract", async () => {
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remote: {
+        ...base.remote,
+        keyCodec: z.string().transform((key) => `legacy:${key}`),
+      },
+    };
+    const { duplex } = createHarness(machine);
+    const client = new RemoteMachineClient(
+      duplex.connect(),
+      createSequentialIdSource(),
+    );
+    client.start();
+    const actor = client.actor(machine, "actor");
+    actor.subscribe(() => undefined);
+    await waitFor(() => actor.getStatus() === "ready");
+
+    await actor.dispatch({ type: "INCREMENT" });
+    await waitFor(() => actor.getSnapshot().value === 1);
+  });
+
+  it("refreshes without changing ownership and ignores a stale release", async () => {
+    const { duplex, machine, transport } = createHarness();
+    const renderer = duplex.connect();
+    const client = new RemoteMachineClient(
+      renderer,
+      createSequentialIdSource(),
+    );
+    client.start();
+    const actor = client.actor(machine, "actor");
+    const first = actor.retain();
+    await first.ready;
+    await first.refresh();
+    expect(transport.inspectSubscriptions()[0]?.totalReferences).toBe(1);
+
+    first.release();
+    const replacement = actor.retain();
+    await replacement.ready;
+    await flush();
+    expect(transport.inspectSubscriptions()[0]?.totalReferences).toBe(1);
+
+    replacement.release();
+    replacement.release();
+    await flush();
+    expect(transport.inspectSubscriptions()).toHaveLength(0);
+  });
+
+  it("keeps simultaneous leases independently owned", async () => {
+    const { duplex, machine, transport } = createHarness();
+    const client = new RemoteMachineClient(
+      duplex.connect(),
+      createSequentialIdSource(),
+    );
+    client.start();
+    const actor = client.actor(machine, "actor");
+    const first = actor.retain();
+    const second = actor.retain();
+    await Promise.all([first.ready, second.ready]);
+
+    second.release();
+    await flush();
+    expect(transport.inspectSubscriptions()).toHaveLength(1);
+    await expect(first.refresh()).resolves.toBeUndefined();
+
+    first.release();
+    await flush();
+    expect(transport.inspectSubscriptions()).toHaveLength(0);
+
+    const releaseListener = actor.subscribe(() => undefined);
+    await waitFor(() => transport.inspectSubscriptions().length === 1);
+    const explicit = actor.retain();
+    await explicit.ready;
+    explicit.release();
+    await flush();
+    expect(transport.inspectSubscriptions()).toHaveLength(1);
+    releaseListener();
+    await waitFor(() => transport.inspectSubscriptions().length === 0);
+  });
+
+  it("retains ownership through an in-flight terminal delivery", async () => {
+    let releaseAuthorization!: () => void;
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        async authorizeDispatch(
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
+        ) {
+          authorizationStarted();
+          await gate;
+          return base.remoteIntent.authorizeDispatch(context);
+        },
+      },
+    };
+    const { duplex, transport } = createHarness(machine);
+    const renderer = duplex.connect();
+    const client = new RemoteMachineClient(
+      renderer,
+      createSequentialIdSource(),
+    );
+    client.start();
+    const actor = client.actor(machine, "actor");
+    const lease = actor.retain();
+    await lease.ready;
+    const pending = actor.dispatch({ type: "INCREMENT" });
+    await started;
+
+    lease.release();
+    await flush();
+    expect(transport.inspectSubscriptions()).toHaveLength(1);
+    releaseAuthorization();
+    await expect(pending).resolves.toMatchObject({ kind: "applied" });
+    await flush();
+    expect(transport.inspectSubscriptions()).toHaveLength(0);
+  });
+
+  it("unsubscribes the previous transport when completion is the only retain", async () => {
+    let releaseAuthorization!: () => void;
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        async authorizeDispatch(
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
+        ) {
+          authorizationStarted();
+          await gate;
+          return base.remoteIntent.authorizeDispatch(context);
+        },
+      },
+    };
+    const { duplex, transport } = createHarness(machine);
+    const renderer = duplex.connect();
+    const unsubscribe = vi.spyOn(renderer, "unsubscribe");
+    const client = new RemoteMachineClient(
+      renderer,
+      createSequentialIdSource(),
+    );
+    client.start();
+    const actor = client.actor(machine, "actor");
+    const releaseListener = actor.subscribe(() => undefined);
+    await waitFor(() => actor.getStatus() === "ready");
+    const pending = actor.dispatch({ type: "INCREMENT" });
+    await started;
+
+    releaseListener();
+    await flush();
+    expect(transport.inspectSubscriptions()).toHaveLength(1);
+    client.replaceConnection(duplex.connect());
+    await expect(pending).rejects.toMatchObject({
+      code: "renderer-destroyed",
+    } satisfies Partial<RemoteMachineTransportError>);
+    expect(unsubscribe).toHaveBeenCalledWith(
+      expect.objectContaining({ machineId: machine.id }),
+    );
+    releaseAuthorization();
   });
 
   it("resyncs revision gaps and rejects stale or disposed actor lifetimes", async () => {
@@ -178,16 +435,21 @@ describe("RemoteMachineClient", () => {
     const gate = new Promise<void>((resolve) => {
       authorize = resolve;
     });
-    const harness = createHarness();
-    const baseAuthorize = harness.machine.remote.authorizeDispatch;
-    const mutableRemote = harness.machine.remote as {
-      authorizeDispatch: typeof harness.machine.remote.authorizeDispatch;
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        async authorizeDispatch(
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
+        ) {
+          started();
+          await gate;
+          return base.remoteIntent.authorizeDispatch(context);
+        },
+      },
     };
-    mutableRemote.authorizeDispatch = async (context) => {
-      started();
-      await gate;
-      return baseAuthorize(context);
-    };
+    const harness = createHarness(machine);
     const renderer = harness.duplex.connect();
     const client = new RemoteMachineClient(
       renderer,
