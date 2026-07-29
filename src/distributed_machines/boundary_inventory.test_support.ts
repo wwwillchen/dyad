@@ -228,7 +228,7 @@ export const nonRemoteDispatchOrEnqueueInventory = [
   owned("ipc/utils/fallback_ai_model.ts", 1),
   owned("state_machines/dispatcher.ts", 1),
   owned("supabase_admin/supabase_deploy_queue.ts", 1),
-  owned("version_preview/window_interest_client.ts", 2),
+  owned("version_preview/window_interest_client.ts", 3),
   owned("window_infrastructure/main/high_volume_interests.ts", 1),
 ] as const;
 

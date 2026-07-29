@@ -26,6 +26,7 @@ const versionPreviewEventVariants = defineVariantInventory<
 >()([
   "ACQUIRE_WINDOW_INTEREST",
   "RESTORE_WINDOW_INTEREST",
+  "RELEASE_WINDOW_INTEREST",
   "CLOSE",
   "APP_CHANGED",
   "SELECT_VERSION",
@@ -86,6 +87,7 @@ export const versionPreviewConformance = defineMachineConformance({
   representativeCapabilities: {
     canAcquireInterest: ["acquire-interest"],
     canRestoreInterest: ["restore-interest"],
+    canReleaseInterest: ["release-interest"],
     canClose: ["close"],
     canSwitchApp: ["switch-app"],
     canSelectVersion: ["select-version"],
@@ -106,6 +108,13 @@ export const versionPreviewConformance = defineMachineConformance({
       create: () => ({
         type: "RESTORE_WINDOW_INTEREST",
         operationId: "restore-interest",
+      }),
+    },
+    "release-interest": {
+      event: "RELEASE_WINDOW_INTEREST",
+      create: () => ({
+        type: "RELEASE_WINDOW_INTEREST",
+        operationId: "release-interest",
       }),
     },
     close: {

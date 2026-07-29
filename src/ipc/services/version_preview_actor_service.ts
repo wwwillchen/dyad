@@ -45,6 +45,7 @@ function isDrainEvent(event: VersionPreviewActorEvent): boolean {
     event.type === "CLOSE" ||
     event.type === "APP_CHANGED" ||
     event.type === "RETRY_RETURN" ||
+    event.type === "RELEASE_WINDOW_INTEREST" ||
     event.type === "WINDOW_INTEREST_DISPOSED" ||
     event.type === "RECONCILE_REQUESTED" ||
     event.type === "RECONCILED" ||

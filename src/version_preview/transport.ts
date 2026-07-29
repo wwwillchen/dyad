@@ -141,6 +141,12 @@ export const VersionPreviewIntentEventSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("RELEASE_WINDOW_INTEREST"),
+      operationId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("CLOSE"),
       operationId: z.string().min(1),
     })
@@ -487,6 +493,7 @@ export function toPreviewDomainEvent(
   switch (event.type) {
     case "ACQUIRE_WINDOW_INTEREST":
     case "RESTORE_WINDOW_INTEREST":
+    case "RELEASE_WINDOW_INTEREST":
       throw new Error(`${event.type} is handled by the hosted actor`);
     case "RECONCILE_REQUESTED":
     case "RECONCILED":

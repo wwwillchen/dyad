@@ -142,6 +142,7 @@ function operationKind(
       return "retry-return";
     case "ACQUIRE_WINDOW_INTEREST":
     case "RESTORE_WINDOW_INTEREST":
+    case "RELEASE_WINDOW_INTEREST":
       throw new Error(`${event.type} is admission-only`);
   }
 }
@@ -238,7 +239,10 @@ function transitionActor(
   event: VersionPreviewActorEvent,
 ) {
   const interests = actorState.windowInterestSessionIds ?? [];
-  if (event.type === "WINDOW_INTEREST_DISPOSED") {
+  if (
+    event.type === "WINDOW_INTEREST_DISPOSED" ||
+    event.type === "RELEASE_WINDOW_INTEREST"
+  ) {
     if (!interests.includes(event.windowSessionId)) {
       return ignore(actorState, "no-change");
     }

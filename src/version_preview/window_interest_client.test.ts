@@ -132,6 +132,29 @@ describe("VersionPreviewWindowInterestClient", () => {
     expect(client.inspectLeaseCount()).toBe(0);
   });
 
+  it("relinquishes interest on disposal without closing the preview", async () => {
+    const owned = lease();
+    const acquireDispatchLease = lease();
+    const releaseDispatchLease = lease();
+    const { actor, client } = harness(
+      [
+        { kind: "applied", revision: 1 },
+        { kind: "applied", revision: 2 },
+      ],
+      [owned, acquireDispatchLease, releaseDispatchLease],
+    );
+
+    await client.acquire(7);
+    await client.dispose();
+
+    expect(actor.dispatch.mock.calls.map(([event]) => event.type)).toEqual([
+      "ACQUIRE_WINDOW_INTEREST",
+      "RELEASE_WINDOW_INTEREST",
+    ]);
+    expect(owned.release).toHaveBeenCalledOnce();
+    expect(client.inspectLeaseCount()).toBe(0);
+  });
+
   it("releases an orphan-restore claim owned by another live window", async () => {
     const owned = lease();
     const transient = lease();

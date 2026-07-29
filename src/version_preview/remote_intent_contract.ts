@@ -71,6 +71,13 @@ export const versionPreviewRemoteIntentContract = defineRemoteIntentContract<
       acceptance: "admission",
       inputDisposition: "preserve",
     },
+    RELEASE_WINDOW_INTEREST: {
+      completion: "admission-only",
+      observedRevision: { kind: "none" },
+      retry: { kind: "none" },
+      acceptance: "admission",
+      inputDisposition: "preserve",
+    },
     CLOSE: trackedMutation,
     APP_CHANGED: trackedMutation,
     SELECT_VERSION: trackedMutation,

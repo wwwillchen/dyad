@@ -129,14 +129,27 @@ export class VersionPreviewWindowInterestClient {
       }
       const operationId = `version-preview:dispose:${appId}:${globalThis.crypto.randomUUID()}`;
       releases.push(
-        this.release(appId, operationId, { type: "close" })
-          .then(() => undefined)
-          .catch(() => {
-            if (this.interests.get(appId) === interest) {
-              this.interests.delete(appId);
-              interest.lease.release();
-            }
-          }),
+        this.enqueue(appId, async () => {
+          if (this.interests.get(appId) !== interest) return;
+          const receipt = await dispatchRemoteAdmissionOnly(this.actor(appId), {
+            type: "RELEASE_WINDOW_INTEREST",
+            operationId,
+          });
+          if (receipt.kind === "rejected") {
+            throw new Error(
+              `Window interest release was refused: ${receipt.reason}`,
+            );
+          }
+          if (this.interests.get(appId) === interest) {
+            this.interests.delete(appId);
+            interest.lease.release();
+          }
+        }).catch(() => {
+          if (this.interests.get(appId) === interest) {
+            this.interests.delete(appId);
+            interest.lease.release();
+          }
+        }),
       );
     }
     await Promise.all(releases);
