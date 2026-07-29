@@ -3,16 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   requireExistingApp: vi.fn().mockResolvedValue(undefined),
   createExternalLifecycleRef: vi.fn(),
+  executeExternalLifecycle: vi.fn(),
 }));
 
-vi.mock("@/app_run/definition", () => ({
-  appRunDefinition: { id: "app_run" },
+vi.mock("@/app_run/definition", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/app_run/definition")>()),
   requireExistingApp: mocks.requireExistingApp,
 }));
 
 vi.mock("./app_runtime_service", () => ({
   appRuntimeService: {
     createExternalLifecycleRef: mocks.createExternalLifecycleRef,
+    executeExternalLifecycle: mocks.executeExternalLifecycle,
   },
 }));
 
@@ -25,6 +27,7 @@ vi.mock("./main_app_runtime_output", () => ({
 }));
 
 import { AppRunActorService } from "./app_run_actor_service";
+import { appRunOperationRegistry } from "@/app_run/operations";
 
 describe("AppRunActorService.executeAlreadyLockedExternalRestart", () => {
   const invocationRef = {
@@ -34,6 +37,10 @@ describe("AppRunActorService.executeAlreadyLockedExternalRestart", () => {
   };
   const actor = {
     send: vi.fn(),
+    captureSink: vi.fn(() => ({ send: actor.send })),
+    trackCaptured: vi.fn((_sink: unknown, start: () => Promise<unknown>) =>
+      start(),
+    ),
   };
   const host = {
     ensure: vi.fn(() => actor),
@@ -93,6 +100,49 @@ describe("AppRunActorService.executeAlreadyLockedExternalRestart", () => {
 });
 
 describe("AppRunActorService lifecycle settlement", () => {
+  it("tracks the complete external lifecycle under its captured actor fence", async () => {
+    const invocationRef = {
+      kind: "app-run" as const,
+      entityKey: 7,
+      operationId: "external-restart-1",
+    };
+    const sink = { send: vi.fn() };
+    const actor = {
+      captureSink: vi.fn(() => sink),
+      trackCaptured: vi.fn((_sink: unknown, start: () => Promise<unknown>) =>
+        start(),
+      ),
+    };
+    const host = {
+      ensure: vi.fn(() => actor),
+      peek: vi.fn(() => actor),
+      disposeKey: vi.fn(),
+      disposeMachine: vi.fn(),
+      dispose: vi.fn(),
+    };
+    mocks.createExternalLifecycleRef.mockReturnValue(invocationRef);
+    mocks.executeExternalLifecycle.mockResolvedValue(undefined);
+    const service = new AppRunActorService(host as never);
+
+    await service.executeExternalLifecycle({
+      appId: 7,
+      operation: "restart",
+      timeoutMs: 123,
+    });
+
+    expect(actor.trackCaptured).toHaveBeenCalledWith(
+      sink,
+      expect.any(Function),
+    );
+    expect(mocks.executeExternalLifecycle).toHaveBeenCalledWith({
+      appId: 7,
+      operation: "restart",
+      timeoutMs: 123,
+      invocationRef,
+      output: expect.anything(),
+    });
+  });
+
   it("rejects disposal that races between admission and waiter setup", async () => {
     let service!: AppRunActorService;
     const actor = {
@@ -104,18 +154,33 @@ describe("AppRunActorService lifecycle settlement", () => {
           void service.disposeAllApps();
           return outcome;
         }),
+        getSettledMetadata: () => undefined,
       })),
-      getSnapshot: vi.fn(() => ({ lastSettlement: null })),
+      getSnapshot: vi.fn(() => ({
+        runState: { type: "idle" as const },
+        previewReloadEpoch: 0,
+        observedExit: null,
+        reusableStartInvocation: null,
+        lastSettlement: null,
+      })),
+      getMetadata: vi.fn(() => ({
+        actorInstanceId: "app-run-actor",
+        snapshotRevision: 0,
+        transactionSequence: 0,
+      })),
       subscribe: vi.fn(() => () => undefined),
+      captureSink: vi.fn(),
     };
     const host = {
       ensure: vi.fn(() => actor),
-      peek: vi.fn(),
+      peek: vi.fn(() => actor),
       disposeKey: vi.fn(),
       disposeMachine: vi.fn().mockResolvedValue(undefined),
       dispose: vi.fn(),
     };
-    service = new AppRunActorService(host as never);
+    service = new AppRunActorService(host as never, {
+      next: vi.fn(() => "logical-ipc-request"),
+    });
 
     await expect(
       service.dispatchStart(7, {
@@ -127,5 +192,59 @@ describe("AppRunActorService lifecycle settlement", () => {
       message: "App run actor was disposed",
     });
     expect(actor.subscribe).not.toHaveBeenCalled();
+    expect(actor.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "start-before-reset",
+        requestId: "logical-ipc-request",
+      }),
+    );
+  });
+
+  it("rolls back a lifecycle operation when asynchronous dispatch fails", async () => {
+    const failure = new Error("synthetic app-run transition failure");
+    const actor = {
+      enqueue: vi.fn(() => ({
+        settled: Promise.resolve({
+          kind: "failed" as const,
+          error: failure,
+        }),
+        getSettledMetadata: () => undefined,
+      })),
+      getSnapshot: vi.fn(() => ({
+        runState: { type: "idle" as const },
+        previewReloadEpoch: 0,
+        observedExit: null,
+        reusableStartInvocation: null,
+        lastSettlement: null,
+      })),
+      getMetadata: vi.fn(() => ({
+        actorInstanceId: "failed-app-run-actor",
+        snapshotRevision: 0,
+        transactionSequence: 0,
+      })),
+    };
+    const host = {
+      ensure: vi.fn(() => actor),
+      peek: vi.fn(() => actor),
+      disposeKey: vi.fn(),
+      disposeMachine: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const service = new AppRunActorService(host as never, {
+      next: vi.fn(() => "failed-logical-ipc-request"),
+    });
+
+    await expect(
+      service.dispatchStart(7, {
+        operationId: "failed-start",
+        startedAt: 10,
+      }),
+    ).rejects.toBe(failure);
+
+    expect(appRunOperationRegistry.inspect()).toEqual({
+      unresolved: 0,
+      settled: 0,
+      total: 0,
+    });
   });
 });

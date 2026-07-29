@@ -140,6 +140,11 @@ Background and before/after examples of why this pattern exists:
 - Capture receipt metadata synchronously when that dispatch ticket settles.
   Reading mutable actor metadata after awaiting the ticket can observe a
   re-entrant follow-up transaction instead of the acknowledged event.
+- A completion-aware operation registered before actor dispatch must roll back
+  its admission when that dispatch later fails, is disposed, is ignored, or
+  lacks settled metadata. None of those paths will publish a correlated
+  post-commit outcome, so leaving the admission unresolved leaks registry
+  capacity.
 - Machine-generated queued work must not be editable or removable (including
   through bulk-clear paths) unless removal explicitly settles or rejects the
   owning machine request; otherwise reload can resurrect abandoned work.
@@ -267,6 +272,10 @@ Background and before/after examples of why this pattern exists:
   acquire the resource before the StrictMode-safe disposal microtask runs.
 - When disposal can race an async command that registers external state after
   an `await`, clean up both immediately and again after the command settles.
+- A captured non-creating sink validates late producer delivery but does not
+  by itself make a destructive fence wait. Externally initiated work, including
+  work that already owns a domain lock, must enroll its full promise under the
+  captured actor/admission generation before it starts.
 - When a cross-owner facade defers keyed delivery to a microtask, entity
   disposal must invalidate both queued and future deliveries for that key.
   Otherwise the deferred callback can recreate a controller after deletion.
@@ -364,6 +373,10 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   the user's input while the operation runs and after failure. Close dialogs
   and clear forms only on authoritative settlement; dispatch itself is not
   proof that the mutation succeeded.
+- When a presentation entry mounts the component that owns its mutation hook,
+  do not clear that entry before dispatch. Capture its identity and clear only
+  that same entry after authoritative settlement; an entry emitted during the
+  operation is newer state and must survive.
 - A remote dispatch receipt proves transport admission, not runtime completion.
   When callers sequence work on the outcome, project a bounded,
   operation-correlated settlement acknowledgment. Superseded completions must
@@ -578,10 +591,13 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   remove that work from the current fence's drain set even though no fence
   existed when tracking began. Test this with controlled pre-fence work; a
   tracker that cleans up only its originally captured fence can strand sealing.
-- A command runner that returns `void` after starting asynchronous work has not
-  provided a fence-trackable completion boundary. Until that compatibility path
-  adopts a completion promise or explicit tracked lease, destructive fencing
-  must fail closed rather than treating the handoff as command completion.
+- A command runner that returns `void` has not provided a fence-trackable
+  completion boundary, even when that particular branch is synchronous; the
+  host cannot distinguish it from detached asynchronous work. Migrated
+  definitions must return a completion promise from every command branch.
+  Until a compatibility path adopts a completion promise or explicit tracked
+  lease, destructive fencing must fail closed rather than treating the handoff
+  as command completion.
 - Prepared admission must revalidate after the last trusted synchronous domain
   callback, not merely after asynchronous authorization. Revision policies,
   intent conversion, and similar callbacks can reenter fencing, subscription,
@@ -593,6 +609,11 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   Preserve delivery/admission ambiguity across retry and disposal; only a
   failure classified at a definitely-pre-delivery boundary may settle as
   `not-admitted`.
+- When a correlated outcome is delivered before its committed snapshot, carry
+  the committed actor metadata and retain request-owned snapshot observation
+  until that revision (or disposal) is visible. A compatibility owner that
+  emits no correlated outcome must still settle admitted ownership from an
+  unavailable snapshot; otherwise disposal strands the renderer request.
 - If terminal outcome or receipt construction throws, reject or explicitly
   fail the exact correlated registry entry and continue bulk disposal. Never
   leave callback-construction failures pinned as unresolved work.

@@ -2,6 +2,7 @@ import type { z } from "zod";
 import type { DyadError } from "@/errors/dyad_error";
 import type { RemoteMachineContract } from "./definition";
 import type { ActorRuntimeMetadata, RemoteMachineSender } from "./definition";
+import type { RequestIdentity } from "./request_identity";
 
 export const DEFAULT_REMOTE_INTENT_ENVELOPE_BYTES = 256 * 1_024;
 export const DEFAULT_REMOTE_SNAPSHOT_ENVELOPE_BYTES = 1_024 * 1_024;
@@ -21,6 +22,11 @@ export interface AdmittedIntentContext<Key, Intent> {
   readonly sender: {
     readonly windowSessionId: string;
   };
+  /**
+   * Present for completion-aware protocol-v1 requests. Main replaces the
+   * renderer's local session value with the authenticated window session.
+   */
+  readonly requestIdentity?: RequestIdentity;
 }
 
 export type RemoteAuthorizationDecision =
@@ -64,6 +70,48 @@ export interface DomainRevisionContext<Key, Intent, State> {
   readonly intent: Intent;
   readonly currentState: State;
 }
+
+export interface RemoteOperationAdmissionContext<
+  Key,
+  State,
+  RemoteIntent,
+  InternalEvent,
+> {
+  readonly key: Key;
+  readonly intent: RemoteIntent;
+  readonly event: InternalEvent;
+  readonly currentState: State;
+  readonly actor: ActorRuntimeMetadata;
+  readonly sender: { readonly windowSessionId: string };
+  readonly requestIdentity: RequestIdentity;
+  readonly fingerprint: string;
+}
+
+interface RemoteOperationTicket {
+  readonly settled: Promise<{
+    readonly invocationRef: unknown;
+    readonly outcome: unknown;
+    readonly receipt: {
+      readonly actor: ActorRuntimeMetadata;
+    };
+  }>;
+}
+
+export type RemoteOperationAdmissionResult<EnqueueResult> =
+  | {
+      readonly disposition: "fresh";
+      readonly enqueueResult: EnqueueResult;
+      readonly operation: RemoteOperationTicket;
+      /**
+       * Rejects the operation admission when the actor dispatcher cannot
+       * authoritatively apply the correlated intent.
+       */
+      readonly rollbackAdmission: (error: unknown) => void;
+    }
+  | {
+      readonly disposition: "coalesced" | "replayed";
+      readonly operation: RemoteOperationTicket;
+    };
 
 export type ObservedRevisionPolicy =
   | { readonly kind: "none" }
@@ -136,6 +184,11 @@ export interface RemoteIntentContract<
   readonly encodeKey: (key: Key) => unknown;
   readonly rendererIntentCodec: z.ZodType<RendererIntent>;
   readonly snapshotCodec: z.ZodType<Snapshot>;
+  readonly operationOutcome?: {
+    readonly maxEnvelopeBytes: number;
+    readonly invocationRefCodec: z.ZodType;
+    readonly outcomeCodec: z.ZodType;
+  };
   readonly toTrustedEvent: (
     context: AdmittedIntentContext<Key, RendererIntent>,
   ) => TrustedEvent;
@@ -178,6 +231,19 @@ export interface RuntimeRemoteIntentContract<
   readonly resolveDomainRevision?: (
     context: DomainRevisionContext<Key, RemoteIntent, State>,
   ) => number;
+  readonly finalizeOperation?: (
+    context: RemoteOperationAdmissionContext<
+      Key,
+      State,
+      RemoteIntent,
+      InternalEvent
+    >,
+    controls: {
+      readonly assertFinalAdmission: () => void;
+      readonly enqueue: () => unknown;
+    },
+  ) => RemoteOperationAdmissionResult<unknown>;
+  readonly disposeWindowSession?: (windowSessionId: string) => void;
 }
 
 export function defineRuntimeRemoteIntentContract<

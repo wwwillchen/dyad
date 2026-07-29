@@ -398,12 +398,34 @@ async function deleteAppById(
   appId: number,
   options: DeleteAppByIdOptions = {},
 ): Promise<void> {
-  await appDeletionQueue.run(() => deleteAppByIdExclusive(appId, options));
+  const appRunDeletion = appRunActorService.beginAppDeletion(appId);
+  let appRunDeletionCommitted = false;
+  try {
+    await appDeletionQueue.run(() =>
+      deleteAppByIdExclusive(appId, options, {
+        seal: () => appRunDeletion.seal(),
+        commit: () => {
+          appRunDeletion.commit();
+          appRunDeletionCommitted = true;
+        },
+      }),
+    );
+  } finally {
+    if (appRunDeletionCommitted) {
+      appRunDeletion.release();
+    } else {
+      appRunDeletion.abort();
+    }
+  }
 }
 
 async function deleteAppByIdExclusive(
   appId: number,
   options: DeleteAppByIdOptions = {},
+  appRunDeletion: {
+    seal(): Promise<void>;
+    commit(): void;
+  },
 ): Promise<void> {
   let versionPreviewDeletionStarted = false;
   let githubDeletionStarted = false;
@@ -450,6 +472,8 @@ async function deleteAppByIdExclusive(
 
       if (!app) {
         if (options.allowMissing && options.knownAppPath) {
+          await appRunDeletion.seal();
+          appRunDeletion.commit();
           deletionCommitted = true;
           return options.knownAppPath;
         }
@@ -467,8 +491,10 @@ async function deleteAppByIdExclusive(
         }
       }
 
+      await appRunDeletion.seal();
       try {
         await db.delete(apps).where(eq(apps.id, appId));
+        appRunDeletion.commit();
         deletionCommitted = true;
         // Note: Associated chats will cascade delete
         if (options.publishDisposal !== false) {
@@ -1486,6 +1512,9 @@ export function registerAppHandlers() {
   });
 
   createTypedHandler(systemContracts.resetAll, async () => {
+    const appRunReset = appRunActorService.beginReset();
+    let appRunResetCommitted = false;
+    let appRunResetCompleted = false;
     versionPreviewService.beginReset();
     githubOpsService.beginReset();
     imageGenerationService.beginReset();
@@ -1505,6 +1534,7 @@ export function registerAppHandlers() {
         }
       }
       logger.log("all running apps stopped.");
+      await appRunReset.seal();
       await appRunActorService.disposeAllApps();
       logger.log("all app run actors disposed.");
       await githubOpsActorService.disposeAllApps();
@@ -1524,6 +1554,11 @@ export function registerAppHandlers() {
       // 1. Drop the database by closing the singleton and deleting SQLite files
       const dbFilePaths = getDatabaseFilePaths();
       closeDatabase();
+      // Closing the database is the last reversible boundary. Commit before
+      // deleting any SQLite file so a partial sidecar deletion cannot reopen
+      // app-run admission against a partially reset database.
+      appRunReset.commit();
+      appRunResetCommitted = true;
       for (const dbFilePath of dbFilePaths) {
         if (fs.existsSync(dbFilePath)) {
           await fsPromises.unlink(dbFilePath);
@@ -1569,7 +1604,13 @@ export function registerAppHandlers() {
       }
       logger.log("all app files removed.");
       logger.log("reset all complete.");
+      appRunResetCompleted = true;
     } finally {
+      if (appRunResetCompleted) {
+        appRunReset.release();
+      } else if (!appRunResetCommitted) {
+        appRunReset.abort();
+      }
       imageGenerationService.endReset();
       githubOpsService.endReset();
       versionPreviewService.endReset();

@@ -1,3 +1,4 @@
+import { DEFAULT_REMOTE_OPERATION_OUTCOME_ENVELOPE_BYTES } from "@/distributed_machines/remote_protocol";
 import {
   DEFAULT_REMOTE_INTENT_ENVELOPE_BYTES,
   DEFAULT_REMOTE_SNAPSHOT_ENVELOPE_BYTES,
@@ -13,6 +14,10 @@ import {
   type AppRunKey,
   type AppRunRemoteSnapshot,
 } from "./transport";
+import {
+  AppRunInvocationRefSchema,
+  AppRunOperationOutcomeSchema,
+} from "./operations";
 
 const trackedAtAdmission = {
   completion: "tracked-completion",
@@ -32,6 +37,11 @@ export const appRunRemoteIntentContract = defineRemoteIntentContract<
   encodeKey: (key) => key,
   rendererIntentCodec: AppRunIntentEventSchema,
   snapshotCodec: AppRunRemoteSnapshotSchema,
+  operationOutcome: {
+    maxEnvelopeBytes: DEFAULT_REMOTE_OPERATION_OUTCOME_ENVELOPE_BYTES,
+    invocationRefCodec: AppRunInvocationRefSchema,
+    outcomeCodec: AppRunOperationOutcomeSchema,
+  },
   toTrustedEvent: ({ intent }) => Object.freeze(structuredClone(intent)),
   authorization: {
     subscribe: "required",
@@ -47,12 +57,6 @@ export const appRunRemoteIntentContract = defineRemoteIntentContract<
     START: {
       ...trackedAtAdmission,
       observedRevision: { kind: "actor", required: true },
-      retry: {
-        kind: "stable-id",
-        identity: "request",
-        receiverDeduplication: "required",
-        lifetime: "window-session",
-      },
     },
     RESTART: {
       ...trackedAtAdmission,

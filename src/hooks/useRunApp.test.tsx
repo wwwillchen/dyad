@@ -268,6 +268,60 @@ describe("useRunApp remote intents", () => {
       operation: "rebuild",
     });
   });
+
+  it("keeps the run callback stable across mutation state renders", async () => {
+    const { Wrapper } = makeWrapper(1);
+    const hook = renderHook(() => useRunApp(), { wrapper: Wrapper });
+    const initialRunApp = hook.result.current.runApp;
+
+    await act(async () => {
+      await hook.result.current.runApp(1);
+    });
+
+    expect(hook.result.current.runApp).toBe(initialRunApp);
+  });
+
+  it("keeps package warnings mounted until restart dispatches", async () => {
+    const { connection, packageWarnings, Wrapper } = makeWrapper(1);
+    packageWarnings.setWarning(1, {
+      kind: "pnpm-migration",
+      message: "Migrate pnpm",
+    });
+    connection.onDispatch = (_appId, event) => {
+      if (event.type === "RESTART") {
+        expect(packageWarnings.getSnapshot(1)).toBeDefined();
+      }
+    };
+    const hook = renderHook(() => useRunApp(), { wrapper: Wrapper });
+
+    await act(async () => {
+      await hook.result.current.restartApp();
+    });
+
+    expect(packageWarnings.getSnapshot(1)).toBeUndefined();
+  });
+
+  it("preserves a package warning emitted during restart", async () => {
+    const { connection, packageWarnings, Wrapper } = makeWrapper(1);
+    connection.onDispatch = (_appId, event) => {
+      if (event.type === "RESTART") {
+        packageWarnings.setWarning(1, {
+          kind: "pnpm-migration",
+          message: "Migrate pnpm",
+        });
+      }
+    };
+    const hook = renderHook(() => useRunApp(), { wrapper: Wrapper });
+
+    await act(async () => {
+      await hook.result.current.restartApp();
+    });
+
+    expect(packageWarnings.getSnapshot(1)).toMatchObject({
+      kind: "pnpm-migration",
+      message: "Migrate pnpm",
+    });
+  });
 });
 
 describe("runAppLifecycleInBackground", () => {

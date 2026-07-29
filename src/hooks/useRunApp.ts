@@ -9,8 +9,26 @@ import { useAppRunState } from "./useAppRun";
 import { useSettings } from "./useSettings";
 import { usePreviewErrorFacade } from "@/app_wiring/preview_error_facade";
 import { usePackageManagerWarningStore } from "@/package_manager_warnings/PackageManagerWarningProvider";
+import { useMachineMutation } from "@/distributed_machines/use_machine_mutation";
+import type {
+  AppRunAdmission,
+  AppRunRemoteManager,
+  AppRunOperationInput,
+  AppRunRefusal,
+} from "@/app_run/remote_manager";
+import type { AppRunOperationOutcome } from "@/app_run/operations";
 
 const CLOUD_SYNC_ERROR_TOAST_WINDOW_MS = 30_000;
+
+function classifyAppRunOutcome(outcome: AppRunOperationOutcome) {
+  if (outcome.kind === "succeeded") return { kind: "succeeded" } as const;
+  if (outcome.kind === "failed") {
+    return { kind: "failed", error: outcome.error } as const;
+  }
+  return outcome.reason === "superseded"
+    ? ({ kind: "superseded" } as const)
+    : ({ kind: "cancelled" } as const);
+}
 
 export function runAppLifecycleInBackground(
   operation: "start" | "restart" | "rebuild",
@@ -201,18 +219,62 @@ export function useRunApp() {
   const packageWarnings = usePackageManagerWarningStore();
   const appId = useAtomValue(selectedAppIdAtom);
   const runState = useAppRunState(appId);
+  const view = appId === null ? undefined : manager.getView(appId);
+  const prepareMutationRequest = useCallback(
+    (
+      input: {
+        readonly appId: number;
+        readonly operation: AppRunOperationInput;
+      },
+      observedRevision: Parameters<AppRunRemoteManager["prepareRequest"]>[2],
+    ) =>
+      manager.prepareRequest(
+        input.appId,
+        input.operation,
+        input.appId === appId ? observedRevision : undefined,
+      ),
+    [appId, manager],
+  );
+  const mutation = useMachineMutation<
+    { readonly appId: number; readonly operation: AppRunOperationInput },
+    AppRunAdmission,
+    AppRunOperationOutcome,
+    AppRunRefusal
+  >({
+    connection: view?.connection ?? "disconnected",
+    snapshot: view?.snapshot ?? { kind: "unavailable" },
+    request: prepareMutationRequest,
+    classifyOutcome: classifyAppRunOutcome,
+    requestOwnership: "parallel",
+  });
+  const mutateAppRunRef = useRef(mutation.mutate);
+  mutateAppRunRef.current = mutation.mutate;
   const loading =
-    runState.phase === "starting" || runState.phase === "stopping";
+    runState.phase === "starting" ||
+    runState.phase === "stopping" ||
+    mutation.admission.kind === "preparing" ||
+    mutation.execution.kind === "running";
+
+  const dispatchMutation = useCallback(
+    async (targetAppId: number, operation: AppRunOperationInput) => {
+      const settlement = await mutateAppRunRef.current({
+        appId: targetAppId,
+        operation,
+      });
+      await manager.applyPublicSettlement(targetAppId, operation, settlement);
+    },
+    [manager],
+  );
 
   const runApp = useCallback(
     (appId: number) => {
       packageWarnings.clear(appId);
-      return manager.dispatch(appId, {
+      return dispatchMutation(appId, {
         type: "START",
         startedAt: Date.now(),
       });
     },
-    [manager, packageWarnings],
+    [dispatchMutation, packageWarnings],
   );
 
   const stopApp = useCallback(
@@ -220,12 +282,12 @@ export function useRunApp() {
       if (appId === null) {
         return;
       }
-      await manager.dispatch(appId, {
+      await dispatchMutation(appId, {
         type: "STOP",
         startedAt: Date.now(),
       });
     },
-    [manager],
+    [dispatchMutation],
   );
 
   const restartApp = useCallback(
@@ -242,14 +304,20 @@ export function useRunApp() {
       if (targetAppId === null) {
         return;
       }
-      packageWarnings.clear(targetAppId);
-      await manager.dispatch(targetAppId, {
+      const warningBeforeRestart = packageWarnings.getSnapshot(targetAppId);
+      await dispatchMutation(targetAppId, {
         type: "RESTART",
         startedAt: Date.now(),
         options: { removeNodeModules, recreateSandbox },
       });
+      if (
+        warningBeforeRestart !== undefined &&
+        packageWarnings.getSnapshot(targetAppId) === warningBeforeRestart
+      ) {
+        packageWarnings.clear(targetAppId);
+      }
     },
-    [appId, manager, packageWarnings],
+    [appId, dispatchMutation, packageWarnings],
   );
 
   const refreshAppIframe = useCallback(async () => {
