@@ -69,12 +69,15 @@ export class KeyedAdmissionGate<Key, Event> {
   private readonly entries = new Map<Key, KeyEntry<Event>>();
   private nextGeneration = 1;
   private readonly defaultGeneration = this.createGeneration();
+  private disposed = false;
 
   captureGeneration(key: Key): KeyedAdmissionGeneration {
+    this.assertOpen();
     return this.entries.get(key)?.generation ?? this.defaultGeneration;
   }
 
   isGenerationCurrent(key: Key, generation: KeyedAdmissionGeneration): boolean {
+    if (this.disposed) return false;
     return this.captureGeneration(key) === generation;
   }
 
@@ -82,6 +85,7 @@ export class KeyedAdmissionGate<Key, Event> {
     readonly key: Key;
     readonly allowDuringDrain: (event: Event) => boolean;
   }): FenceHandle<Key> {
+    this.assertOpen();
     const entry = this.entry(options.key);
     if (entry.fence) {
       throw new KeyedAdmissionGateError(
@@ -117,6 +121,7 @@ export class KeyedAdmissionGate<Key, Event> {
     key: Key,
     generation: KeyedAdmissionGeneration = this.captureGeneration(key),
   ): void {
+    this.assertOpen();
     const entry = this.entries.get(key);
     this.assertCurrentGeneration(entry, generation);
     if (entry?.fence) {
@@ -132,6 +137,7 @@ export class KeyedAdmissionGate<Key, Event> {
     event: Event,
     generation: KeyedAdmissionGeneration = this.captureGeneration(key),
   ): void {
+    this.assertOpen();
     const entry = this.entries.get(key);
     this.assertCurrentGeneration(entry, generation);
     const fence = entry?.fence;
@@ -156,6 +162,7 @@ export class KeyedAdmissionGate<Key, Event> {
     event: Event,
     generation: KeyedAdmissionGeneration,
   ): void {
+    this.assertOpen();
     const entry = this.entries.get(key);
     const fence = entry?.fence;
     if (
@@ -184,6 +191,7 @@ export class KeyedAdmissionGate<Key, Event> {
     generation: KeyedAdmissionGeneration,
     start: () => Promise<Result>,
   ): Promise<Result> {
+    this.assertOpen();
     const entry = this.entry(key);
     const fence = entry.fence;
     const admitted =
@@ -250,6 +258,8 @@ export class KeyedAdmissionGate<Key, Event> {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     for (const entry of this.entries.values()) {
       entry.active.clear();
       const fence = entry.fence;
@@ -375,6 +385,14 @@ export class KeyedAdmissionGate<Key, Event> {
       this.entries.set(key, entry);
     }
     return entry;
+  }
+
+  private assertOpen(): void {
+    if (!this.disposed) return;
+    throw new KeyedAdmissionGateError(
+      "gate-disposed",
+      "The keyed admission gate is disposed",
+    );
   }
 
   private createGeneration(): KeyedAdmissionGeneration {

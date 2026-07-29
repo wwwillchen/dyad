@@ -280,17 +280,29 @@ describe("KeyedAdmissionGate", () => {
     expect(fence.release()).toBe(false);
     await expect(fence.seal()).resolves.toBeUndefined();
 
-    const replacement = gate.beginFence({
-      key: "one",
-      allowDuringDrain: () => false,
-    });
+    expect(() => gate.captureGeneration("one")).toThrowError(
+      expect.objectContaining({ code: "gate-disposed" }),
+    );
+    expect(() => gate.assertCreateAllowed("one")).toThrowError(
+      expect.objectContaining({ code: "gate-disposed" }),
+    );
+    expect(() =>
+      gate.assertDispatchAllowed("one", { type: "WORK" }),
+    ).toThrowError(expect.objectContaining({ code: "gate-disposed" }));
+    expect(() => gate.track("one", async () => undefined)).toThrowError(
+      expect.objectContaining({ code: "gate-disposed" }),
+    );
+    expect(() =>
+      gate.beginFence({
+        key: "one",
+        allowDuringDrain: () => false,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "gate-disposed" }));
     expect(fence.abort()).toBe(false);
-    expect(gate.inspect("one").phase).toBe("draining");
-    expect(replacement.abort()).toBe(true);
 
     command.resolve();
     await tracked;
-    expect(gate.inspectEntryCount()).toBe(1);
+    expect(gate.inspectEntryCount()).toBe(0);
   });
 
   it("models the complete destructive success and failure sequences", async () => {

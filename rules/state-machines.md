@@ -574,6 +574,9 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   factory-time ingress, or a later fence can wait forever. Keep factory-buffered
   events bound to that construction admission; if fencing publishes before
   activation, do not reclassify them as cleanup allowed during draining.
+- Disposal of an admission primitive is terminal. Clearing current records
+  without a persistent disposed state lets retained references recreate open
+  admission after host teardown.
 - If a scheduler retains an execution callback and then throws or rejects, the
   retained callback must be invalidated. Marking the batch failed while still
   allowing that callback to run lets command side effects escape after sealing.
