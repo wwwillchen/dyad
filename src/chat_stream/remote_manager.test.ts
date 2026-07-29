@@ -1,10 +1,12 @@
 import { createStore } from "jotai";
-import { describe, expect, it, vi } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   MachineAddress,
   MachineDispatchEnvelope,
   MachineSnapshotEnvelope,
 } from "@/distributed_machines/remote_protocol";
+import { ipc } from "@/ipc/types";
 import { createSequentialIdSource } from "@/state_machines/testing";
 import { ChatStreamRemoteManager } from "./remote_manager";
 import type { ChatStreamRemoteConnection } from "./remote_manager";
@@ -16,6 +18,10 @@ vi.mock("@/lib/toast", () => ({
 }));
 
 describe("ChatStreamRemoteManager", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("refreshes a retained subscription after its bootstrap fails", async () => {
     let rejectBootstrap!: (error: Error) => void;
     const subscribe = vi
@@ -468,4 +474,98 @@ describe("ChatStreamRemoteManager", () => {
     release();
     manager.dispose();
   });
+
+  it.each(["resolves", "rejects"] as const)(
+    "ignores a completion refresh that %s after disposal",
+    async (settlement) => {
+      let deliverSnapshot: (payload: unknown) => void = () => undefined;
+      let resolveChat!: (
+        chat: Awaited<ReturnType<typeof ipc.chat.getChat>>,
+      ) => void;
+      let rejectChat!: (error: unknown) => void;
+      const getChat = vi.spyOn(ipc.chat, "getChat").mockReturnValue(
+        new Promise((resolve, reject) => {
+          resolveChat = resolve;
+          rejectChat = reject;
+        }),
+      );
+      const connection: ChatStreamRemoteConnection = {
+        getStatus: () => "connected",
+        onStatusChange: () => () => undefined,
+        onSnapshot: (listener) => {
+          deliverSnapshot = listener;
+          return () => undefined;
+        },
+        onDisposed: () => () => undefined,
+        subscribe: async (address) => ({
+          ...address,
+          actorInstanceId: "actor",
+          revision: 1,
+          encodedState: {
+            ...unavailableChatStreamSnapshot(7),
+            revision: 1,
+          },
+        }),
+        unsubscribe: () => Promise.resolve(),
+        dispatch: vi.fn(),
+      };
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      const store = createStore();
+      const manager = new ChatStreamRemoteManager(
+        store,
+        createSequentialIdSource(),
+        connection,
+      );
+      manager.registerRuntimeDeps({
+        store,
+        queryClient: new QueryClient(),
+        getSettings: () => null,
+        getPosthog: () => null,
+        requestPreviewReload: vi.fn(),
+        requestCapture: vi.fn(),
+      });
+      const release = manager.ensure(7).subscribe(() => undefined);
+      await vi.waitFor(() => expect(manager.getSnapshot(7).revision).toBe(1));
+
+      deliverSnapshot({
+        protocolVersion: 1,
+        machineId: "chat_stream",
+        encodedKey: { chatId: 7 },
+        actorInstanceId: "actor",
+        revision: 2,
+        encodedState: {
+          ...unavailableChatStreamSnapshot(7),
+          revision: 2,
+          lastCompletion: {
+            intentId: "completed-turn",
+            invocationRef: {
+              kind: "chat-stream",
+              entityKey: 7,
+              operationId: "completed-stream",
+            },
+            outcome: "completed",
+            targetAppId: null,
+          },
+        },
+      });
+      await vi.waitFor(() => expect(getChat).toHaveBeenCalledWith(7));
+
+      release();
+      manager.dispose();
+      if (settlement === "resolves") {
+        resolveChat({ messages: [] } as never);
+      } else {
+        rejectChat(new Error("late completion refresh"));
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(consoleError).not.toHaveBeenCalledWith(
+        "[chat-stream] Failed to refresh completed chat",
+        expect.anything(),
+      );
+    },
+  );
 });
