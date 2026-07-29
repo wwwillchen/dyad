@@ -145,6 +145,30 @@ describe("ActorHost keyed admission integration", () => {
     await host.dispose();
   });
 
+  it("advances a command sink across its own sequential emissions", async () => {
+    const finished = deferred();
+    const definition = machine({
+      id: "sequential-command-output",
+      async runCommand(_context, emit) {
+        emit({ type: "PRODUCER" });
+        await Promise.resolve();
+        emit({ type: "COMMAND_DONE" });
+        finished.resolve();
+      },
+    });
+    const { host } = harness(definition);
+    const actor = host.localRef(definition, "one");
+    actor.send({ type: "COMMAND" });
+    await finished.promise;
+
+    expect(actor.getSnapshot().events).toEqual([
+      "COMMAND",
+      "PRODUCER",
+      "COMMAND_DONE",
+    ]);
+    await host.dispose();
+  });
+
   it("fails closed when a legacy command runner hands off detached work", async () => {
     const detached = deferred();
     const definition = machine({

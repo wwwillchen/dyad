@@ -565,3 +565,7 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
 - If a scheduler retains an execution callback and then throws or rejects, the
   retained callback must be invalidated. Marking the batch failed while still
   allowing that callback to run lets command side effects escape after sealing.
+- A revision-bound producer sink that supports sequential emissions must
+  advance its expected revision in the dispatcher's synchronous settlement
+  callback. Updating only from `ticket.settled.then(...)` is too late when an
+  async command continuation resumes before that Promise reaction.

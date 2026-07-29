@@ -392,6 +392,7 @@ class HostedActor<
     generation: KeyedAdmissionGeneration,
     captured: boolean,
     expectedActor?: ActorRuntimeMetadata,
+    onSettledMetadata?: (metadata: ActorRuntimeMetadata) => void,
   ): ActorDispatchTicket<State, Reason> {
     try {
       this.admission.assertDispatch(event, generation, captured);
@@ -451,6 +452,7 @@ class HostedActor<
       event,
       () => {
         settledMetadata = this.getMetadata();
+        onSettledMetadata?.(settledMetadata);
       },
       dispatchContext,
     );
@@ -473,6 +475,7 @@ class HostedActor<
     generation: KeyedAdmissionGeneration = this.admission.capture(),
   ): ActorEventSink<Event> {
     const actor = this.getMetadata();
+    let expectedActor = actor;
     return Object.freeze({
       actor,
       admissionGeneration: generation,
@@ -484,16 +487,31 @@ class HostedActor<
           this.bufferedEvents.push({
             event,
             generation,
-            expectedActor: actor,
+            expectedActor,
           });
           return;
         }
-        void this.enqueueWithAdmission(
+        const advanceExpectedActor = (settled?: ActorRuntimeMetadata) => {
+          if (
+            settled?.actorInstanceId === expectedActor.actorInstanceId &&
+            settled.snapshotRevision >= expectedActor.snapshotRevision
+          ) {
+            expectedActor = settled;
+          }
+        };
+        const ticket = this.enqueueWithAdmission(
           event,
           undefined,
           generation,
           true,
-          actor,
+          expectedActor,
+          advanceExpectedActor,
+        );
+        // The dispatcher normally settles synchronously. The Promise path also
+        // covers a producer emission queued behind hostile synchronous reentry.
+        advanceExpectedActor(ticket.getSettledMetadata());
+        void ticket.settled.then(() =>
+          advanceExpectedActor(ticket.getSettledMetadata()),
         );
       },
     });
