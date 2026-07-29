@@ -128,7 +128,7 @@ function harness(
 }
 
 describe("ActorHost keyed admission integration", () => {
-  it("rejects output captured for an old revision of the same actor", async () => {
+  it("rejects default sink output after an unrelated actor revision", async () => {
     let context!: MachineHostContext<string, State, Event>;
     const definition = machine({
       id: "revision-bound-sink",
@@ -144,6 +144,25 @@ describe("ActorHost keyed admission integration", () => {
     sink.send({ type: "PRODUCER" });
 
     expect(actor.getSnapshot().events).toEqual(["COMMAND", "WORK"]);
+    await host.dispose();
+  });
+
+  it("admits explicitly correlated collection output after another revision", async () => {
+    let context!: MachineHostContext<string, State, Event>;
+    const definition = machine({
+      id: "correlated-collection-sink",
+      runCommand(commandContext) {
+        context = commandContext;
+      },
+    });
+    const { host } = harness(definition);
+    const actor = host.localRef(definition, "one");
+    actor.send({ type: "COMMAND" });
+    const sink = context.captureSink({ revisionPolicy: "allow-advance" });
+    actor.send({ type: "WORK" });
+    sink.send({ type: "PRODUCER" });
+
+    expect(actor.getSnapshot().events).toEqual(["COMMAND", "WORK", "PRODUCER"]);
     await host.dispose();
   });
 

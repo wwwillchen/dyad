@@ -376,6 +376,11 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   be superseded before its producer settles, but its original waiter must
   still complete. A producer sink captured for one invocation must also ignore
   or overwrite any conflicting invocation identity supplied by its payload.
+- When final admission registers an operation before awaiting the actor ticket,
+  roll back only that fresh entry on every failed, disposed, or metadata-less
+  ticket exit; never mutate a coalesced or replayed operation. Registry release
+  must use the same terminal predicate as settlement accounting, because a
+  rejected entry has already left pending capacity even without a payload.
 - A first-response-wins renderer handoff needs a correlated claim, not a
   boolean. Matching follow-ups may be revision-stale only when the opaque claim
   ID is validated by the host. Unrelated reconciliation must not release the
@@ -609,10 +614,16 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
 - If a scheduler retains an execution callback and then throws or rejects, the
   retained callback must be invalidated. Marking the batch failed while still
   allowing that callback to run lets command side effects escape after sealing.
-- A revision-bound producer sink that supports sequential emissions must
-  advance its expected revision in the dispatcher's synchronous settlement
-  callback. Updating only from `ticket.settled.then(...)` is too late when an
-  async command continuation resumes before that Promise reaction. Events
-  buffered during synchronous construction must retain the same mutable
-  per-sink revision cursor so activation can advance the sequence after each
-  replayed event.
+- Keep captured producer sinks revision-bound by default. A collection actor
+  whose every producer event carries domain correlation may explicitly opt into
+  actor-instance plus keyed-admission-generation binding, because cancellation
+  and unrelated parallel jobs legitimately advance that actor before terminal
+  output arrives. Such an opt-in must use domain invocation identity to reject
+  stale or replacement-job output. Factory-buffered sequential emissions must
+  retain the same captured identity through activation, and output after actor
+  disposal must remain non-creating.
+- A destructive fence is scoped to the actor key, not to a domain predicate
+  within a collection. If owner deletion must preserve unrelated in-flight
+  producers, partition the actor key by owner or add first-class scoped gate
+  generations; filtering drain events alone cannot preserve unrelated captured
+  generations through seal and release.

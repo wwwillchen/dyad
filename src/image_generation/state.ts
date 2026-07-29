@@ -8,6 +8,11 @@
  */
 
 import type { InvocationRef } from "@/state_machines/invocation_ref";
+import type {
+  CorrelatedOperationOutcome,
+  OperationDisposalCause,
+} from "@/distributed_machines/operation_registry";
+import type { RequestId } from "@/distributed_machines/request_identity";
 
 export const IMAGE_GENERATION_INVOCATION_KIND = "image-generation";
 
@@ -59,6 +64,7 @@ export interface ImageGenerationJob extends ImageGenerationJobDetails {
 }
 
 export interface ImageGenerationJobView extends ImageGenerationJobDetails {
+  requestId: RequestId;
   status: ImageGenerationStatus;
   result?: ImageGenerationResultView;
   error?: string;
@@ -73,6 +79,7 @@ export type ImageGenerationInvocationRef = InvocationRef<
 
 export interface ImageGenerationActorJob {
   readonly job: ImageGenerationJob;
+  readonly requestId: RequestId;
   readonly activeInvocationRef: ImageGenerationInvocationRef | null;
 }
 
@@ -80,11 +87,47 @@ export interface ImageGenerationActorState {
   readonly jobs: readonly ImageGenerationActorJob[];
 }
 
-export type ImageGenerationFailureKind = "user_cancelled" | "other";
+export type ImageGenerationFailureKind =
+  | "user_cancelled"
+  | "provider"
+  | "unexpected";
+
+export type ImageGenerationOperationOutcome =
+  | {
+      readonly kind: "succeeded";
+      readonly jobId: string;
+      readonly result: ImageGenerationResultView;
+    }
+  | {
+      readonly kind: "failed";
+      readonly jobId: string;
+      readonly message: string;
+      readonly failureKind: Exclude<
+        ImageGenerationFailureKind,
+        "user_cancelled"
+      >;
+    }
+  | { readonly kind: "cancelled"; readonly jobId: string }
+  | {
+      readonly kind: "disposed";
+      readonly jobId: string;
+      readonly cause: OperationDisposalCause | "app-deletion";
+    }
+  | {
+      readonly kind: "rejected";
+      readonly jobId: string;
+      readonly reason: ImageGenerationIgnoreReason;
+    };
+
+export type ImageGenerationCorrelatedOutcome = CorrelatedOperationOutcome<
+  ImageGenerationOperationOutcome,
+  ImageGenerationInvocationRef
+>;
 
 export type SubmitImageGenerationEvent = {
   readonly type: "SUBMIT";
   readonly job: ImageGenerationJobDetails;
+  readonly requestId: RequestId;
   readonly operationId: string;
   /**
    * Host-enriched after remote authorization. The wire codec does not accept
@@ -124,6 +167,7 @@ export type ImageGenerationProducerEvent =
       readonly cancelled: boolean;
     }
   | { readonly type: "PRUNE_JOB"; readonly jobId: string }
+  | { readonly type: "APP_DELETION_STARTED"; readonly appId: number }
   | { readonly type: "APP_DELETED"; readonly appId: number };
 
 export type ImageGenerationEvent =
@@ -170,5 +214,6 @@ export type ImageGenerationTransitionResult =
   import("@/state_machines/types").TransitionResult<
     ImageGenerationActorState,
     ImageGenerationCommand,
-    ImageGenerationIgnoreReason
+    ImageGenerationIgnoreReason,
+    ImageGenerationCorrelatedOutcome
   >;

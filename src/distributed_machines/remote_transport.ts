@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { serialize } from "node:v8";
 import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import type { Clock } from "@/state_machines/clock";
+import type { InvocationRef } from "@/state_machines/invocation_ref";
 import { PendingReceiptLedger } from "@/state_machines/pending_receipt_ledger";
 import type { WindowSessionId } from "@/window_infrastructure/types";
 import {
@@ -12,6 +13,7 @@ import {
 import type {
   ActorRuntimeMetadata,
   HostedActorRef,
+  RemoteOperationContract,
   RemoteMachineSender,
 } from "./definition";
 import type {
@@ -27,6 +29,11 @@ import {
   type MachineSnapshotEnvelope,
 } from "./remote_protocol";
 import type { RemoteAuthorizationDecision } from "./remote_intent_contract";
+import type { RequestId } from "./request_identity";
+import {
+  finalizeOperationAdmission,
+  type OperationRegistry,
+} from "./operation_registry";
 
 export interface RemoteTransportEndpoint {
   readonly id: number;
@@ -582,6 +589,18 @@ export class RemoteMachineTransport {
     }
     this.removeWindowListener();
     this.removeDisposalListener();
+    for (const definition of this.options.manifest.definitions) {
+      const operation = definition.remoteOperation as
+        | RemoteOperationContract<
+            unknown,
+            unknown,
+            unknown,
+            unknown,
+            InvocationRef
+          >
+        | undefined;
+      operation?.releaseManager?.();
+    }
     for (const entry of this.subscriptions.values()) entry.unsubscribeActor();
     this.subscriptions.clear();
     this.actorKeys.clear();
@@ -835,25 +854,112 @@ export class RemoteMachineTransport {
         return this.rejected(envelope.messageId, finalRefusal);
       }
     }
-    prepared.consumed = true;
-    const ticket = this.options.host.dispatchCaptured(
-      definition,
+    const enqueue = () =>
+      this.options.host.dispatchCaptured(
+        definition,
+        key,
+        event,
+        prepared.lifecycleGeneration,
+        dispatchActorMetadata,
+        {
+          messageId: envelope.messageId,
+          correlationId: envelope.correlationId,
+          causationId: envelope.causationId,
+        },
+      );
+    const remoteOperation = definition.remoteOperation as
+      | RemoteOperationContract<
+          unknown,
+          unknown,
+          unknown,
+          unknown,
+          InvocationRef
+        >
+      | undefined;
+    const operationPreparation = remoteOperation?.prepare({
       key,
+      intent,
       event,
-      prepared.lifecycleGeneration,
-      dispatchActorMetadata,
-      {
-        messageId: envelope.messageId,
-        correlationId: envelope.correlationId,
-        causationId: envelope.causationId,
-      },
-    );
+      sender: { windowSessionId: prepared.windowSessionId },
+      actor: dispatchActorMetadata,
+      hostId: "main",
+      fingerprint: prepared.fingerprint,
+    });
+    let ticket;
+    let operationInvocationRef: InvocationRef | undefined;
+    let freshOperation:
+      | {
+          readonly registry: OperationRegistry<unknown, InvocationRef>;
+          readonly requestId: RequestId;
+          readonly invocationRef: InvocationRef;
+        }
+      | undefined;
+    if (operationPreparation) {
+      const operationAdmission = finalizeOperationAdmission({
+        registry: operationPreparation.registry as OperationRegistry<
+          unknown,
+          InvocationRef
+        >,
+        identity: operationPreparation.identity,
+        createInvocationRef: operationPreparation.createInvocationRef,
+        assertFinalAdmission: () => {
+          const refusal = definition.remoteIntent
+            ? this.revalidatePreparedDispatch(sender, envelope, prepared)
+            : this.revalidateLegacyPreparedDispatch(
+                sender,
+                prepared,
+                dispatchActorMetadata,
+              );
+          if (refusal) {
+            throw new ActorAdmissionError(
+              refusal === "stale-actor"
+                ? "stale-actor-instance"
+                : refusal === "revision-conflict"
+                  ? "stale-actor-revision"
+                  : "key-fenced",
+              `Prepared operation admission was refused: ${refusal}`,
+            );
+          }
+        },
+        enqueue,
+        receiptOnEnqueueFailure: () =>
+          remoteOperation!.receipt(dispatchActorMetadata),
+      });
+      operationInvocationRef = operationAdmission.operation.invocationRef;
+      if (operationAdmission.kind !== "enqueued") {
+        prepared.consumed = true;
+        return {
+          kind: "applied",
+          actorInstanceId: dispatchActorMetadata.actorInstanceId,
+          revision: dispatchActorMetadata.snapshotRevision,
+          transactionSequence: dispatchActorMetadata.transactionSequence,
+          messageId: envelope.messageId,
+        };
+      }
+      freshOperation = {
+        registry: operationPreparation.registry as OperationRegistry<
+          unknown,
+          InvocationRef
+        >,
+        requestId: operationPreparation.identity.requestId,
+        invocationRef: operationAdmission.operation.invocationRef,
+      };
+      ticket = operationAdmission.enqueueResult;
+    } else {
+      ticket = enqueue();
+    }
+    prepared.consumed = true;
     const dispatchedActor = this.options.host.peek<unknown, unknown, string>(
       definition.id,
       key,
     );
     const outcome = await ticket.settled;
     if (outcome.kind === "failed") {
+      freshOperation?.registry.rollbackAdmission(
+        freshOperation.requestId,
+        freshOperation.invocationRef,
+        outcome.error,
+      );
       if (outcome.error instanceof ActorAdmissionError) {
         if (outcome.error.code === "stale-actor-instance") {
           return this.rejected(envelope.messageId, "stale-actor");
@@ -870,14 +976,38 @@ export class RemoteMachineTransport {
       throw outcome.error;
     }
     if (outcome.kind === "disposed" || !dispatchedActor) {
+      freshOperation?.registry.rollbackAdmission(
+        freshOperation.requestId,
+        freshOperation.invocationRef,
+        new ActorAdmissionError(
+          "actor-disposing",
+          "Actor disposed before authoritative operation admission completed",
+        ),
+      );
       this.actorKeys.delete(address);
       return this.rejected(envelope.messageId, "host-disposing");
     }
     const metadata = ticket.getSettledMetadata();
     if (!metadata) {
+      freshOperation?.registry.rollbackAdmission(
+        freshOperation.requestId,
+        freshOperation.invocationRef,
+        new ActorAdmissionError(
+          "actor-disposing",
+          "Actor admission completed without settled metadata",
+        ),
+      );
       return this.rejected(envelope.messageId, "host-disposing");
     }
     if (outcome.kind === "ignored") {
+      if (operationPreparation) {
+        operationPreparation.registry.settle(
+          operationPreparation.identity.requestId,
+          operationInvocationRef!,
+          remoteOperation!.ignoredOutcome(outcome.reason),
+          remoteOperation!.receipt(metadata),
+        );
+      }
       return {
         kind: "ignored",
         actorInstanceId: metadata.actorInstanceId,
