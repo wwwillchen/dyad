@@ -30,6 +30,7 @@ The post-migration inventories are:
   and `src/hooks/useRunApp.ts`.
 - Image generation: `src/hooks/useGenerateImage.ts`,
   `src/image_generation/hooks.ts`,
+  `src/image_generation/request_scope.tsx`,
   `src/ipc/services/image_generation_service.ts`,
   `src/ipc/services/image_generation_actor_service.ts`,
   `src/ipc/services/image_generation_operation_service.ts`, and
@@ -40,18 +41,20 @@ The post-migration inventories are:
 - `defineFrameworkCoveredRemoteMachine` brands migrated definitions only when
   they provide either a native runtime remote-intent contract or the narrow
   completion-aware protocol-v1 declaration/operation pair. App-run and image
-  generation use that constructor.
+  generation use that constructor. Production registration accepts only that
+  capability or the exact legacy compatibility capability for chat stream,
+  GitHub operations, plan handoff, and version preview.
 - The semantic AST inventory separates framework internals, migrated safe
   adapters, unrelated queues, and unsafe compatibility. New definitions,
   callsites, renames, and deletions fail exact inventory tests.
 - Every unsafe compatibility group records machine, exact file, mechanism,
   rationale, and removal owner. No app-run or image-generation entry is in the
   unsafe compatibility inventory.
-- Both pilots run the reusable operation-registry and keyed-admission
-  conformance suite. The suite covers duplicate coalescing/replay, conflicting
-  identity reuse, exactly-once terminal settlement, bounded replay with pinned
-  unresolved work, tracked producer drain, destructive commit/release, stale
-  generation/release, abort/reopen, and zero harness-owned resources.
+- The reusable framework-mechanism suite covers duplicate coalescing/replay,
+  conflicting identity reuse, exactly-once terminal settlement, bounded replay
+  with pinned unresolved work, tracked producer drain, destructive
+  commit/release, stale generation/release, abort/reopen, and inspected
+  framework-owned resources.
 - `assertNoOwnedResources` reports every declared resource class with owner,
   machine, key, and generation. Existing pilot tests additionally inspect
   operation registries, request scopes, and transport subscriptions at their
@@ -89,8 +92,8 @@ Migrated adapters are separately pinned:
 
 ## Shared and domain conformance evidence
 
-The shared suite is
-`src/distributed_machines/testing/pilot_framework_conformance.test.ts`.
+The shared primitive suite is
+`src/distributed_machines/testing/framework_mechanism_conformance.test.ts`.
 Admission/authorization, request settlement, lifecycle, late producer, and
 renderer races that require a full transport or domain state are covered by the
 named framework and pilot tests cataloged in:
@@ -108,16 +111,19 @@ The shared resource inventory includes prepared requests, admitted operations,
 pending receipts, waiters, subscriptions/leases, fences/continuations,
 tasks/timers, producer sinks, actors, terminal payloads, renderer listeners,
 and renderer request owners. The reusable harness reaches zero in each
-terminal/disposal scenario it owns.
+terminal/disposal scenario it owns using registry and gate inspectors.
 
 This audit does **not** prove one aggregate zero-resource snapshot for every
 domain-specific terminal permutation. Existing focused tests prove the
 individual app-run and image resource owners, but the lack of a unified
-domain-level inspector remains an authoring/diagnostic gap.
+domain-level inspector remains an authoring/diagnostic gap. There is also no
+single reusable runtime driver that instantiates both domain façades; the
+pilot-specific cases remain exact focused tests. This missing cross-pilot
+adapter is a conformance blocker, not completed evidence.
 
 ## Historical review coverage and remaining blockers
 
-All exact finding mappings are executable inventory tests. Two applicable
+All exact finding mappings are executable inventory tests. Three applicable
 image-pilot findings remain negative invariants:
 
 1. The image collection has one global actor key. Deleting app A fences and
@@ -129,14 +135,22 @@ image-pilot findings remain negative invariants:
    the current fence can reopen, but the provider work and settlement cannot be
    restored. The focused regression documents this irreversible pre-commit
    boundary.
+3. Closing the initiating image-generation window drops presentation instead
+   of preserving the previous single-window fallback. The focused test pins
+   the current no-peer behavior; a compatible fallback needs an explicit
+   presentation ownership policy.
 
-Neither issue is hidden by a widened allowlist. Both are framework-covered
-lifecycle problems and block expansion.
+None is hidden by a widened allowlist. They are framework-covered lifecycle or
+compatibility problems and block expansion.
 
 At the pilot merge cutoffs, accepted HIGH/P1 findings were addressed and no
-validated HIGH/P1 thread remained open. PR9's final local deep review and
-trusted-author PR review must be reflected here before merge; until those
-checks complete, the final count is unknown.
+validated HIGH/P1 thread remained open. PR9's six-finder adversarial local
+review and fix recheck validated 13 deduplicated findings (4 HIGH, 9 MEDIUM). The implementation
+fixes the production registration bypass, exact-inventory gaps, resource and
+historical-evidence assertions, and measurement defects; it removes the false
+cross-pilot conformance claim and records the missing reusable domain driver as
+a STOP blocker. No validated local-review HIGH/P1 defect remains unresolved.
+Trusted-author PR review is processed separately before handoff.
 
 ## Glue measurement
 
@@ -148,11 +162,11 @@ percentages mean growth.
 | Category                  | PR6 baseline LOC | Final pilot/PR9 LOC |  Reduction |
 | ------------------------- | ---------------: | ------------------: | ---------: |
 | Admission/mutation        |              221 |                 467 |    -111.3% |
-| Subscription/ref-count    |               39 |                   0 |     100.0% |
-| Promise/waiter/settlement |              150 |                  95 |      36.7% |
+| Subscription/ref-count    |               55 |                   0 |     100.0% |
+| Promise/waiter/settlement |              159 |                 116 |      27.0% |
 | Deletion/fence            |                0 |                  12 |        new |
 | Late-producer guards      |               83 |                  90 |      -8.4% |
-| **Total**                 |          **493** |             **664** | **-34.7%** |
+| **Total**                 |          **518** |             **685** | **-32.2%** |
 
 Raw actor dispatch in the ordinary renderer manager fell from three callsites
 to zero. The app-run hook continues to call its domain manager façade; that is
@@ -166,10 +180,10 @@ escape hatches: **0**.
 | --------------------------------------- | ---------------: | ------------------: | ----------: |
 | Admission/mutation                      |               49 |                 289 |     -489.8% |
 | Subscription/ref-count                  |                0 |                   0 |         n/a |
-| Promise/waiter/settlement               |               66 |                 243 |     -268.2% |
+| Promise/waiter/settlement               |               66 |                 278 |     -321.2% |
 | Deletion/fence                          |               24 |                 113 |     -370.8% |
 | Late-producer guards/effect correlation |               59 |                 101 |      -71.2% |
-| **Total**                               |          **198** |             **746** | **-276.8%** |
+| **Total**                               |          **198** |             **781** | **-294.4%** |
 
 Ordinary hook/component raw dispatch fell from two callsites to zero. Two
 completion-aware protocol-v1 adapter dispatches and two destructive actor
@@ -186,15 +200,39 @@ production lines would misstate authoring cost.
 
 Measured on the same macOS checkout and Node/npm environment, after one warm-up:
 
-| Measurement                  | Command                                                                                             |                                           Result |
-| ---------------------------- | --------------------------------------------------------------------------------------------------- | -----------------------------------------------: |
-| Shared conformance wall time | `/usr/bin/time -p npm test -- src/distributed_machines/testing/pilot_framework_conformance.test.ts` |    1.21 s wall; 14 tests, Vitest duration 294 ms |
-| Targeted pilot suite         | the 18-file command listed in the PR verification record                                            | 11.52 s wall; 179 tests, Vitest duration 10.91 s |
-| PR6 `npm run ts`             | three warm runs                                                                                     |                 1.78 s median (1.78, 1.79, 1.78) |
-| PR9 `npm run ts`             | three warm runs                                                                                     |                 1.78 s median (1.79, 1.78, 1.77) |
+| Measurement                  | Command                                                                                                 |                                         Result |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------: |
+| Shared conformance wall time | `/usr/bin/time -p npm test -- src/distributed_machines/testing/framework_mechanism_conformance.test.ts` |   0.86 s wall; 7 tests, 312 ms Vitest duration |
+| Targeted pilot suite         | the exact 18-file command below                                                                         | 3.75 s wall; 360 tests, 3.28 s Vitest duration |
+| PR6 `npm run ts`             | three warm runs                                                                                         |               1.78 s median (1.78, 1.79, 1.78) |
+| PR9 `npm run ts`             | three warm runs                                                                                         |               1.71 s median (1.82, 1.70, 1.71) |
 
 There is no material type-check regression. The contract/conformance presubmit
 is far below two minutes.
+
+Reproduce the targeted pilot suite:
+
+```sh
+/usr/bin/time -p npm test -- \
+  src/distributed_machines/boundary_inventory.test.ts \
+  src/distributed_machines/testing/framework_mechanism_conformance.test.ts \
+  src/distributed_machines/testing/pilot_finding_catalog.test.ts \
+  src/distributed_machines/testing/machine_conformance.test.ts \
+  src/distributed_machines/remote_transport.test.ts \
+  src/distributed_machines/operation_registry.test.ts \
+  src/distributed_machines/actor_host_admission_gate.test.ts \
+  src/distributed_machines/actor_host.test.ts \
+  src/distributed_machines/prepared_request.test.ts \
+  src/distributed_machines/remote_client.test.ts \
+  src/distributed_machines/use_machine_mutation.test.tsx \
+  src/app_run/main_actor.test.ts \
+  src/ipc/services/app_run_actor_service.test.ts \
+  src/image_generation/main_actor.test.ts \
+  src/ipc/services/image_generation_actor_service.test.ts \
+  src/ipc/services/image_generation_operation_service.test.ts \
+  src/ipc/services/image_generation_service.test.ts \
+  src/hooks/useGenerateImage.test.tsx
+```
 
 ## Compatibility, storage, and rollback
 
@@ -216,9 +254,14 @@ is far below two minutes.
 
 - Image deletion is globally exclusive and pre-commit provider cancellation is
   non-reversible.
+- Image result presentation lacks the prior fallback after its initiating
+  window closes.
 - Domain-level aggregate zero-resource diagnostics are incomplete even though
   individual registries, scopes, subscriptions, and services have focused
   assertions.
+- No reusable runtime conformance adapter drives both pilot domain façades; the
+  current shared suite covers framework primitives and the exact pilot catalogs
+  link to focused domain tests.
 - Settlement is in-process and bounded; there is no crash-safe or durable
   exactly-once claim.
 - The protocol-v1 image adapter still requires two internal raw dispatch calls.

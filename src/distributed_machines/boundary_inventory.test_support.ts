@@ -171,9 +171,9 @@ export const compatibilityBoundaryInventory = [
     machine: "chat_stream",
     exactFile: "chat_stream/definition.ts",
     mechanism: "wideningCasts",
-    boundaries: unsafeEscapeHatchInventory.wideningCasts.filter((entry) =>
-      entry.startsWith("chat_stream/definition.ts::"),
-    ),
+    boundaries: [
+      "chat_stream/definition.ts::chatStreamDefinition.remote.eventCodec",
+    ],
     why: "The protocol-v1 codec still widens renderer intents to trusted events.",
     removalOwner: "Conditional follow-up A — remaining remote definitions",
   },
@@ -181,9 +181,11 @@ export const compatibilityBoundaryInventory = [
     machine: "chat_stream",
     exactFile: "chat_stream/remote_manager.ts",
     mechanism: "rawDispatchOrEnqueue",
-    boundaries: unsafeEscapeHatchInventory.rawDispatchOrEnqueue.filter(
-      (entry) => entry.startsWith("chat_stream/"),
-    ),
+    boundaries: [
+      "chat_stream/remote_manager.ts::ChatStreamRemoteManager.dispatchCompatibilityCommand::call(this.actor().dispatch)",
+      "chat_stream/remote_manager.ts::ChatStreamRemoteManager.dispatchQueueEvent::call(actor.dispatch)",
+      "chat_stream/remote_manager.ts::ChatStreamRemoteManager.prepareAndDispatchSubmission::call(actor.dispatch)",
+    ],
     why: "Chat keeps its pre-MVP owned queue and remote-manager adapter.",
     removalOwner: "Conditional follow-up C — chat/plan owned queue",
   },
@@ -191,9 +193,9 @@ export const compatibilityBoundaryInventory = [
     machine: "chat_stream",
     exactFile: "chat_stream/remote_manager.ts",
     mechanism: "subscriptionRefCounts",
-    boundaries: unsafeEscapeHatchInventory.subscriptionRefCounts.filter(
-      (entry) => entry.startsWith("chat_stream/"),
-    ),
+    boundaries: [
+      "chat_stream/remote_manager.ts::ChatStreamRemoteManager.subscriptions",
+    ],
     why: "Chat subscription ownership has not migrated to leases.",
     removalOwner: "Conditional follow-up A — remaining remote definitions",
   },
@@ -201,9 +203,9 @@ export const compatibilityBoundaryInventory = [
     machine: "github_ops",
     exactFile: "ipc/services/github_ops_definition.ts",
     mechanism: "wideningCasts",
-    boundaries: unsafeEscapeHatchInventory.wideningCasts.filter((entry) =>
-      entry.startsWith("ipc/services/github_ops_definition.ts::"),
-    ),
+    boundaries: [
+      "ipc/services/github_ops_definition.ts::githubOpsDefinition.remote.eventCodec",
+    ],
     why: "The protocol-v1 codec still widens renderer intents to trusted events.",
     removalOwner: "Conditional follow-up A — GitHub operations",
   },
@@ -211,9 +213,14 @@ export const compatibilityBoundaryInventory = [
     machine: "github_ops",
     exactFile: "github_ops/useGithubOps.ts",
     mechanism: "rawDispatchOrEnqueue",
-    boundaries: unsafeEscapeHatchInventory.rawDispatchOrEnqueue.filter(
-      (entry) => entry.startsWith("github_ops/"),
-    ),
+    boundaries: [
+      "github_ops/useGithubOps.ts::useGithubOps.dispatch::access(remote.dispatch)",
+      "github_ops/useGithubOps.ts::useGithubOps.dispatch::call(remote.dispatch)",
+      "github_ops/useGithubOps.ts::useGithubOps.dispatchConflictResolutionCancelled::access(remote.dispatch)",
+      "github_ops/useGithubOps.ts::useGithubOps.dispatchConflictResolutionCancelled::call(remote.dispatch)",
+      "github_ops/useGithubOps.ts::useGithubOps.dispatchConflictResolutionStarted::access(remote.dispatch)",
+      "github_ops/useGithubOps.ts::useGithubOps.dispatchConflictResolutionStarted::call(remote.dispatch)",
+    ],
     why: "GitHub operations were explicitly excluded from the MVP pilots.",
     removalOwner: "Conditional follow-up A — GitHub operations",
   },
@@ -221,9 +228,9 @@ export const compatibilityBoundaryInventory = [
     machine: "version_preview",
     exactFile: "ipc/services/version_preview_definition.ts",
     mechanism: "wideningCasts",
-    boundaries: unsafeEscapeHatchInventory.wideningCasts.filter((entry) =>
-      entry.startsWith("ipc/services/version_preview_definition.ts::"),
-    ),
+    boundaries: [
+      "ipc/services/version_preview_definition.ts::versionPreviewDefinition.remote.eventCodec",
+    ],
     why: "The protocol-v1 codec still widens renderer intents to trusted events.",
     removalOwner: "Conditional follow-up A — version-preview ownership",
   },
@@ -231,7 +238,7 @@ export const compatibilityBoundaryInventory = [
     machine: "version_preview",
     exactFile: "hooks/useVersionPreview.ts",
     mechanism: "bespokeWaiters",
-    boundaries: unsafeEscapeHatchInventory.bespokeWaiters,
+    boundaries: ["hooks/useVersionPreview.ts::useVersionPreview.dispatchNow"],
     why: "Version preview still owns its protocol-v1 settlement waiters.",
     removalOwner: "Conditional follow-up A — version-preview ownership",
   },
@@ -239,9 +246,9 @@ export const compatibilityBoundaryInventory = [
     machine: "version_preview",
     exactFile: "hooks/useVersionPreview.ts",
     mechanism: "rawDispatchOrEnqueue",
-    boundaries: unsafeEscapeHatchInventory.rawDispatchOrEnqueue.filter(
-      (entry) => entry.startsWith("hooks/useVersionPreview.ts::"),
-    ),
+    boundaries: [
+      "hooks/useVersionPreview.ts::useVersionPreview.dispatchNow::call(actor.dispatch)",
+    ],
     why: "Version preview still uses its protocol-v1 dispatch façade.",
     removalOwner: "Conditional follow-up A — version-preview ownership",
   },
@@ -249,10 +256,9 @@ export const compatibilityBoundaryInventory = [
     machine: "version_preview",
     exactFile: "version_preview/VersionPreviewProvider.tsx",
     mechanism: "rawDispatchOrEnqueue",
-    boundaries: unsafeEscapeHatchInventory.rawDispatchOrEnqueue.filter(
-      (entry) =>
-        entry.startsWith("version_preview/VersionPreviewProvider.tsx::"),
-    ),
+    boundaries: [
+      "version_preview/VersionPreviewProvider.tsx::VersionPreviewProvider.subscribeSelected.inspect.action.onClick::call(actor.dispatch)",
+    ],
     why: "Version preview presentation still emits a raw compatibility intent.",
     removalOwner: "Conditional follow-up A — version-preview ownership",
   },
@@ -260,9 +266,9 @@ export const compatibilityBoundaryInventory = [
     machine: "plan_handoff",
     exactFile: "plan_handoff/definition.ts",
     mechanism: "wideningCasts",
-    boundaries: unsafeEscapeHatchInventory.wideningCasts.filter((entry) =>
-      entry.startsWith("plan_handoff/definition.ts::"),
-    ),
+    boundaries: [
+      "plan_handoff/definition.ts::planHandoffDefinition.remote.eventCodec",
+    ],
     why: "The protocol-v1 codec still widens renderer intents to trusted events.",
     removalOwner: "Conditional follow-up B/C — plan handoff",
   },
@@ -270,9 +276,9 @@ export const compatibilityBoundaryInventory = [
     machine: "plan_handoff",
     exactFile: "plan_handoff/remote_manager.ts",
     mechanism: "rawDispatchOrEnqueue",
-    boundaries: unsafeEscapeHatchInventory.rawDispatchOrEnqueue.filter(
-      (entry) => entry.startsWith("plan_handoff/remote_manager.ts::"),
-    ),
+    boundaries: [
+      "plan_handoff/remote_manager.ts::PlanHandoffRemoteManager.accept::call(actor.dispatch)",
+    ],
     why: "Plan handoff was excluded until durable checkpoint work.",
     removalOwner: "Conditional follow-up B/C — plan handoff",
   },
@@ -280,9 +286,9 @@ export const compatibilityBoundaryInventory = [
     machine: "plan_handoff",
     exactFile: "ipc/services/plan_handoff_service.ts",
     mechanism: "rawDispatchOrEnqueue",
-    boundaries: unsafeEscapeHatchInventory.rawDispatchOrEnqueue.filter(
-      (entry) => entry.startsWith("ipc/services/plan_handoff_service.ts::"),
-    ),
+    boundaries: [
+      "ipc/services/plan_handoff_service.ts::startPlanHandoffFromMain::call(actor.enqueue)",
+    ],
     why: "Main-owned plan handoff still uses protocol-v1 actor enqueue.",
     removalOwner: "Conditional follow-up B/C — plan handoff",
   },
@@ -290,9 +296,9 @@ export const compatibilityBoundaryInventory = [
     machine: "user_input",
     exactFile: "user_input/read_model.ts",
     mechanism: "subscriptionRefCounts",
-    boundaries: unsafeEscapeHatchInventory.subscriptionRefCounts.filter(
-      (entry) => entry.startsWith("user_input/"),
-    ),
+    boundaries: [
+      "user_input/read_model.ts::getUserInputReadModel.readModel.start.subscriptions",
+    ],
     why: "User-input queue ownership is outside the MVP.",
     removalOwner: "Conditional follow-up C — chat/plan owned queue",
   },
@@ -300,9 +306,11 @@ export const compatibilityBoundaryInventory = [
     machine: "app_chat_creation",
     exactFile: "ipc/services/app_chat_creation_fence.ts",
     mechanism: "deletionResetFences",
-    boundaries: unsafeEscapeHatchInventory.deletionResetFences.filter((entry) =>
-      entry.startsWith("ipc/services/app_chat_creation_fence.ts::"),
-    ),
+    boundaries: [
+      "ipc/services/app_chat_creation_fence.ts::assertAppChatCreationOpen::uses(creationBlockCounts)",
+      "ipc/services/app_chat_creation_fence.ts::beginAppChatMutation::uses(creationBlockCounts)",
+      "ipc/services/app_chat_creation_fence.ts::creationBlockCounts",
+    ],
     why: "Chat creation has not migrated to keyed admission.",
     removalOwner: "Conditional follow-up C — chat/plan owned queue",
   },
@@ -310,9 +318,11 @@ export const compatibilityBoundaryInventory = [
     machine: "chat_stream",
     exactFile: "ipc/services/chat_actor_deletion_fence.ts",
     mechanism: "deletionResetFences",
-    boundaries: unsafeEscapeHatchInventory.deletionResetFences.filter((entry) =>
-      entry.startsWith("ipc/services/chat_actor_deletion_fence.ts::"),
-    ),
+    boundaries: [
+      "ipc/services/chat_actor_deletion_fence.ts::admissionBlockCounts",
+      "ipc/services/chat_actor_deletion_fence.ts::assertChatActorAdmissionOpen::uses(admissionBlockCounts)",
+      "ipc/services/chat_actor_deletion_fence.ts::beginChatActorMutation::uses(admissionBlockCounts)",
+    ],
     why: "Chat deletion has not migrated to keyed admission.",
     removalOwner: "Conditional follow-up C — chat/plan owned queue",
   },
@@ -320,9 +330,16 @@ export const compatibilityBoundaryInventory = [
     machine: "github_ops",
     exactFile: "ipc/services/github_ops_service.ts",
     mechanism: "deletionResetFences",
-    boundaries: unsafeEscapeHatchInventory.deletionResetFences.filter((entry) =>
-      entry.startsWith("ipc/services/github_ops_service.ts::"),
-    ),
+    boundaries: [
+      "ipc/services/github_ops_service.ts::GithubOpsService.assertAcceptingOperations::uses(deletionFences)",
+      "ipc/services/github_ops_service.ts::GithubOpsService.assertAcceptingOperations::uses(resetFenceCount)",
+      "ipc/services/github_ops_service.ts::GithubOpsService.beginAppDeletion::uses(deletionFences)",
+      "ipc/services/github_ops_service.ts::GithubOpsService.beginReset::uses(resetFenceCount)",
+      "ipc/services/github_ops_service.ts::GithubOpsService.deletionFences",
+      "ipc/services/github_ops_service.ts::GithubOpsService.endAppDeletion::uses(deletionFences)",
+      "ipc/services/github_ops_service.ts::GithubOpsService.endReset::uses(resetFenceCount)",
+      "ipc/services/github_ops_service.ts::GithubOpsService.resetFenceCount",
+    ],
     why: "GitHub operations retain domain-owned deletion/reset counters.",
     removalOwner: "Conditional follow-up A — GitHub operations",
   },
@@ -330,9 +347,16 @@ export const compatibilityBoundaryInventory = [
     machine: "version_preview",
     exactFile: "ipc/services/version_preview_service.ts",
     mechanism: "deletionResetFences",
-    boundaries: unsafeEscapeHatchInventory.deletionResetFences.filter((entry) =>
-      entry.startsWith("ipc/services/version_preview_service.ts::"),
-    ),
+    boundaries: [
+      "ipc/services/version_preview_service.ts::VersionPreviewService.assertAcceptingOperations::uses(deletionFences)",
+      "ipc/services/version_preview_service.ts::VersionPreviewService.assertAcceptingOperations::uses(resetFenceCount)",
+      "ipc/services/version_preview_service.ts::VersionPreviewService.beginAppDeletion::uses(deletionFences)",
+      "ipc/services/version_preview_service.ts::VersionPreviewService.beginReset::uses(resetFenceCount)",
+      "ipc/services/version_preview_service.ts::VersionPreviewService.deletionFences",
+      "ipc/services/version_preview_service.ts::VersionPreviewService.endAppDeletion::uses(deletionFences)",
+      "ipc/services/version_preview_service.ts::VersionPreviewService.endReset::uses(resetFenceCount)",
+      "ipc/services/version_preview_service.ts::VersionPreviewService.resetFenceCount",
+    ],
     why: "Version preview retains domain-owned deletion/reset counters.",
     removalOwner: "Conditional follow-up A — version-preview ownership",
   },
@@ -340,10 +364,12 @@ export const compatibilityBoundaryInventory = [
     machine: "github_ops",
     exactFile: "ipc/services/github_ops_presentation_service.ts",
     mechanism: "initiatorRoutingMaps",
-    boundaries: unsafeEscapeHatchInventory.initiatorRoutingMaps.filter(
-      (entry) =>
-        entry.startsWith("ipc/services/github_ops_presentation_service.ts::"),
-    ),
+    boundaries: [
+      "ipc/services/github_ops_presentation_service.ts::GithubOpsPresentationService.forget::uses(initiatorByOperationId)",
+      "ipc/services/github_ops_presentation_service.ts::GithubOpsPresentationService.initiatorByOperationId",
+      "ipc/services/github_ops_presentation_service.ts::GithubOpsPresentationService.recordInitiator::uses(initiatorByOperationId)",
+      "ipc/services/github_ops_presentation_service.ts::GithubOpsPresentationService.showError::uses(initiatorByOperationId)",
+    ],
     why: "GitHub presentation routing predates correlated operation ownership.",
     removalOwner: "Conditional follow-up A — GitHub operations",
   },
@@ -351,12 +377,13 @@ export const compatibilityBoundaryInventory = [
     machine: "version_preview",
     exactFile: "ipc/services/version_preview_presentation_service.ts",
     mechanism: "initiatorRoutingMaps",
-    boundaries: unsafeEscapeHatchInventory.initiatorRoutingMaps.filter(
-      (entry) =>
-        entry.startsWith(
-          "ipc/services/version_preview_presentation_service.ts::",
-        ),
-    ),
+    boundaries: [
+      "ipc/services/version_preview_presentation_service.ts::VersionPreviewPresentationService.confirm::uses(initiatorByOperationId)",
+      "ipc/services/version_preview_presentation_service.ts::VersionPreviewPresentationService.forget::uses(initiatorByOperationId)",
+      "ipc/services/version_preview_presentation_service.ts::VersionPreviewPresentationService.initiatorByOperationId",
+      "ipc/services/version_preview_presentation_service.ts::VersionPreviewPresentationService.originEndpointFor::uses(initiatorByOperationId)",
+      "ipc/services/version_preview_presentation_service.ts::VersionPreviewPresentationService.recordInitiator::uses(initiatorByOperationId)",
+    ],
     why: "Version preview presentation still owns an operation route map.",
     removalOwner: "Conditional follow-up A — version-preview ownership",
   },
@@ -364,10 +391,17 @@ export const compatibilityBoundaryInventory = [
     machine: "version_preview",
     exactFile: "ipc/services/version_preview_window_interest.ts",
     mechanism: "initiatorRoutingMaps",
-    boundaries: unsafeEscapeHatchInventory.initiatorRoutingMaps.filter(
-      (entry) =>
-        entry.startsWith("ipc/services/version_preview_window_interest.ts::"),
-    ),
+    boundaries: [
+      "ipc/services/version_preview_window_interest.ts::VersionPreviewWindowInterestService.acquire::uses(windowIdsByAppId)",
+      "ipc/services/version_preview_window_interest.ts::VersionPreviewWindowInterestService.acquireIfUnowned::uses(windowIdsByAppId)",
+      "ipc/services/version_preview_window_interest.ts::VersionPreviewWindowInterestService.clearAll::uses(windowIdsByAppId)",
+      "ipc/services/version_preview_window_interest.ts::VersionPreviewWindowInterestService.clearApp::uses(windowIdsByAppId)",
+      "ipc/services/version_preview_window_interest.ts::VersionPreviewWindowInterestService.inspect::uses(windowIdsByAppId)",
+      "ipc/services/version_preview_window_interest.ts::VersionPreviewWindowInterestService.isLastOwner::uses(windowIdsByAppId)",
+      "ipc/services/version_preview_window_interest.ts::VersionPreviewWindowInterestService.release::uses(windowIdsByAppId)",
+      "ipc/services/version_preview_window_interest.ts::VersionPreviewWindowInterestService.removeWindow::uses(windowIdsByAppId)",
+      "ipc/services/version_preview_window_interest.ts::VersionPreviewWindowInterestService.windowIdsByAppId",
+    ],
     why: "Version preview window interest has not migrated to shared leases.",
     removalOwner: "Conditional follow-up A — version-preview ownership",
   },
@@ -408,4 +442,56 @@ export const completionAwareDispatchOrEnqueueInventory = [
   "distributed_machines/request_actor.ts::dispatchRemoteAdmissionOnly::call(actor.dispatch)",
   "distributed_machines/use_machine_mutation.ts::useMachineMutation.retry::call(current.request.retry.dispatch)",
   "ipc/services/app_run_actor_service.ts::AppRunActorService.dispatchAndWait.admission.enqueue::call(actor.enqueue)",
+] as const;
+
+/**
+ * Every direct actor-host creation capability remains review-visible. Producer
+ * callbacks on migrated surfaces must use captured non-creating sinks instead
+ * of adding a new ensure() call.
+ */
+export const actorEnsureInventory = [
+  "chat_stream/preview_store.ts::ChatStreamPreviewStore.set::call(this.ensure)",
+  "chat_stream/preview_store.ts::ChatStreamPreviewStore.subscribeKey::call(this.ensure)",
+  "chat_stream/remote_manager.ts::ChatStreamRemoteManager.watchIdle::call(this.ensure)",
+  "hooks/useChatStream.ts::useChatStreamState.getSnapshot::call(manager.ensure)",
+  "hooks/useChatStream.ts::useChatStreamState.subscribe::call(manager.ensure)",
+  "hooks/useResolveMergeConflictsWithAI.ts::useResolveMergeConflictsWithAI.resolveFilesWithAI::call(chatStreamManager.ensure)",
+  "hooks/useStreamChat.ts::useStreamChat.cancelStream::call(chatStreamManager.ensure)",
+  "hooks/useStreamChat.ts::useStreamChat.queueMessage::call(chatStreamManager.ensure)",
+  "hooks/useStreamChat.ts::useStreamChat.setError::call(chatStreamManager.ensure)",
+  "hooks/useStreamChat.ts::useStreamChat.streamMessage::call(chatStreamManager.ensure)",
+  "ipc/services/app_run_actor_service.ts::AppRunActorService.actor::call(this.host.ensure)",
+  "ipc/services/version_preview_actor_service.ts::VersionPreviewActorService.releaseWindowInterest::call(this.host.ensure)",
+  "package_manager_warnings/store.ts::PackageManagerWarningStore.setWarning::call(this.host.ensure)",
+  "preview_console/store.ts::PreviewConsoleStore.append::call(this.host.ensure)",
+  "preview_console/store.ts::PreviewConsoleStore.replace::call(this.host.ensure)",
+  "preview_iframe/manager.ts::PreviewIframeManager.send::call(this.host.ensure)",
+  "screenshot/manager.ts::ScreenshotManager.send::call(this.host.ensure)",
+  "state_machines/testing.ts::runControllerConformanceSuite::call(host.ensure)",
+  "state_machines/testing.ts::runControllerConformanceSuite::call(host.ensure)",
+  "testing/hybrid_chat_harness.tsx::setupHybridChatHarness.mountSurface.firstPromptChatStream.submit::call(chatStreamManager.ensure)",
+  "version_preview/presentation_store.ts::VersionPreviewPresentationStore.send::call(this.ensure)",
+  "version_preview/presentation_store.ts::VersionPreviewPresentationStore.subscribe::call(this.ensure)",
+] as const;
+
+/**
+ * Stateful collection owners in migrated production files. Exact discovery
+ * prevents a bespoke waiter, receipt, deduplication, or ownership registry
+ * from appearing under a novel identifier without a review-visible update.
+ */
+export const migratedStatefulOwnerInventory = [
+  "app_run/remote_manager.ts::AppRunRemoteManager.listeners::new(Set)",
+  "app_run/transport.ts::appRunKeys::new(Map)",
+  "hooks/useRunApp.ts::useAppOutputSubscription.unsubscribe.entriesByAppId::new(Map)",
+  "image_generation/selectors.ts::chatJobsCache::new(WeakMap)",
+  "ipc/services/app_runtime_service.ts::AppRuntimeService.externalClaims::new(Map)",
+  "ipc/services/app_runtime_service.ts::AppRuntimeService.externalClaimsByApp::new(Map)",
+  "ipc/services/app_runtime_service.ts::pnpmVersionMigrationNotifiedAppIds::new(Set)",
+  "ipc/services/app_runtime_transport.ts::outputsBySender::new(WeakMap)",
+  "ipc/services/image_generation_definition.ts::imageGenerationDefinition.createBeforeCommit.nextIds::new(Set)",
+  "ipc/services/image_generation_presentation_service.ts::ImageGenerationPresentationService.forgetApp.targets::new(Set)",
+  "ipc/services/image_generation_presentation_service.ts::ImageGenerationPresentationService.initiatorByJobId::new(Map)",
+  "ipc/services/image_generation_service.ts::ImageGenerationService.active::new(Map)",
+  "ipc/services/image_generation_service.ts::ImageGenerationService.cancellationTombstones::new(Set)",
+  "ipc/services/image_generation_service.ts::ImageGenerationService.deletionFences::new(Map)",
 ] as const;

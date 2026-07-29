@@ -9,10 +9,7 @@ import {
   type OperationReceiptMetadata,
 } from "../operation_registry";
 import type { RequestId } from "../request_identity";
-import {
-  assertNoOwnedResources,
-  type MachineConformance,
-} from "./machine_conformance";
+import { assertNoOwnedResources } from "./machine_conformance";
 
 type TestRef = InvocationRef<string, string | number>;
 
@@ -23,11 +20,9 @@ type TestOutcome =
   | { readonly kind: "superseded" }
   | { readonly kind: "disposed"; readonly cause: OperationDisposalCause };
 
-export interface PilotFrameworkConformanceAdapter {
-  readonly conformance: MachineConformance;
-  readonly key: string | number;
-  readonly invocationKind: string;
-}
+const MACHINE_ID = "distributed-machine-framework";
+const KEY = "shared";
+const INVOCATION_KIND = "framework-operation";
 
 function createRegistry(): OperationRegistry<TestOutcome, TestRef> {
   return new OperationRegistry<TestOutcome, TestRef>({
@@ -44,7 +39,6 @@ function createRegistry(): OperationRegistry<TestOutcome, TestRef> {
 }
 
 function identity(
-  adapter: PilotFrameworkConformanceAdapter,
   requestId: string,
   operationId: string,
   fingerprint = requestId,
@@ -52,15 +46,15 @@ function identity(
   return {
     requestId: requestId as RequestId,
     invocationRef: {
-      kind: adapter.invocationKind,
-      entityKey: adapter.key,
+      kind: INVOCATION_KIND,
+      entityKey: KEY,
       operationId,
     },
     fingerprint,
     owner: {
       hostId: "conformance-host",
-      machineId: adapter.conformance.machineId,
-      keyId: String(adapter.key),
+      machineId: MACHINE_ID,
+      keyId: KEY,
       actorInstanceId: "actor-1",
       actorRevision: 1,
       windowSessionId: "window-1",
@@ -79,10 +73,13 @@ function receipt(): OperationReceiptMetadata {
   };
 }
 
-function zeroResources(): Parameters<typeof assertNoOwnedResources>[1] {
+function registryResources(
+  registry: OperationRegistry<TestOutcome, TestRef>,
+): Parameters<typeof assertNoOwnedResources>[1] {
+  const inspected = registry.inspect();
   return {
     preparedRequests: 0,
-    admittedOperations: 0,
+    admittedOperations: inspected.unresolved,
     pendingReceipts: 0,
     waiters: 0,
     tasks: 0,
@@ -94,25 +91,38 @@ function zeroResources(): Parameters<typeof assertNoOwnedResources>[1] {
     producerSinks: 0,
     routes: 0,
     actors: 0,
-    retainedTerminalPayloads: 0,
+    retainedTerminalPayloads: inspected.settled,
     rendererListeners: 0,
     rendererRequestOwners: 0,
   };
 }
 
-export function runPilotFrameworkConformanceSuite(
-  adapter: PilotFrameworkConformanceAdapter,
-): void {
-  describe(`${adapter.conformance.machineId} shared framework conformance`, () => {
+function gateResources(
+  gate: KeyedAdmissionGate<string | number, string>,
+): Parameters<typeof assertNoOwnedResources>[1] {
+  const inspected = gate.inspect(KEY);
+  return {
+    ...registryResources(createDisposedRegistry()),
+    fences: gate.inspectEntryCount(),
+    trackedContinuations: inspected?.trackedContinuations ?? 0,
+  };
+}
+
+function createDisposedRegistry(): OperationRegistry<TestOutcome, TestRef> {
+  const registry = createRegistry();
+  registry.dispose();
+  return registry;
+}
+
+export function runFrameworkMechanismConformanceSuite(): void {
+  describe("shared distributed-machine framework mechanism conformance", () => {
     it("coalesces duplicates, rejects identity conflicts, and settles once", async () => {
       const registry = createRegistry();
-      const firstIdentity = identity(adapter, "request-1", "operation-1");
+      const firstIdentity = identity("request-1", "operation-1");
       const first = registry.admit(firstIdentity);
       expect(registry.admit(firstIdentity).kind).toBe("coalesced");
       expect(() =>
-        registry.admit(
-          identity(adapter, "request-1", "operation-1", "conflict"),
-        ),
+        registry.admit(identity("request-1", "operation-1", "conflict")),
       ).toThrow(OperationIdentityConflictError);
 
       expect(
@@ -150,7 +160,7 @@ export function runPilotFrameworkConformanceSuite(
     ])("settles $kind without retaining ownership", async (outcome) => {
       const registry = createRegistry();
       const admitted = registry.admit(
-        identity(adapter, `request-${outcome.kind}`, `op-${outcome.kind}`),
+        identity(`request-${outcome.kind}`, `op-${outcome.kind}`),
       );
       registry.settle(
         admitted.ticket.requestId,
@@ -163,21 +173,20 @@ export function runPilotFrameworkConformanceSuite(
       assertNoOwnedResources(
         {
           owner: "operation-registry",
-          machine: adapter.conformance.machineId,
-          key: String(adapter.key),
+          machine: MACHINE_ID,
+          key: KEY,
           generation: 1,
         },
-        zeroResources(),
+        registryResources(registry),
       );
     });
 
     it("pins unresolved operations while evicting only bounded terminal replay", () => {
       const registry = createRegistry();
-      const pending = identity(adapter, "pending", "pending-operation");
+      const pending = identity("pending", "pending-operation");
       registry.admit(pending);
       for (const suffix of ["one", "two"]) {
         const settled = identity(
-          adapter,
           `settled-${suffix}`,
           `settled-operation-${suffix}`,
         );
@@ -200,10 +209,10 @@ export function runPilotFrameworkConformanceSuite(
 
     it("fences tracked producers through destructive commit and rejects stale release", async () => {
       const gate = new KeyedAdmissionGate<string | number, string>();
-      const producerGeneration = gate.captureGeneration(adapter.key);
+      const producerGeneration = gate.captureGeneration(KEY);
       let settleProducer!: () => void;
       const producer = gate.trackCaptured(
-        adapter.key,
+        KEY,
         producerGeneration,
         () =>
           new Promise<void>((resolve) => {
@@ -211,26 +220,18 @@ export function runPilotFrameworkConformanceSuite(
           }),
       );
       const fence = gate.beginFence({
-        key: adapter.key,
+        key: KEY,
         allowDuringDrain: (event) => event === "terminal",
       });
       expect(() =>
-        gate.assertCapturedDispatchAllowed(
-          adapter.key,
-          "ordinary",
-          producerGeneration,
-        ),
+        gate.assertCapturedDispatchAllowed(KEY, "ordinary", producerGeneration),
       ).toThrow("not allowed while draining");
       expect(() =>
-        gate.assertCapturedDispatchAllowed(
-          adapter.key,
-          "terminal",
-          producerGeneration,
-        ),
+        gate.assertCapturedDispatchAllowed(KEY, "terminal", producerGeneration),
       ).not.toThrow();
 
       const sealing = fence.seal();
-      expect(gate.inspect(adapter.key)).toMatchObject({
+      expect(gate.inspect(KEY)).toMatchObject({
         phase: "draining",
         trackedContinuations: 1,
       });
@@ -241,32 +242,32 @@ export function runPilotFrameworkConformanceSuite(
       expect(fence.release()).toBe(true);
       expect(fence.release()).toBe(false);
       expect(() =>
-        gate.assertDispatchAllowed(adapter.key, "ordinary", producerGeneration),
+        gate.assertDispatchAllowed(KEY, "ordinary", producerGeneration),
       ).toThrow("generation");
       gate.dispose();
       assertNoOwnedResources(
         {
           owner: "keyed-admission-gate",
-          machine: adapter.conformance.machineId,
-          key: String(adapter.key),
+          machine: MACHINE_ID,
+          key: KEY,
           generation: fence.generation.ordinal,
         },
-        zeroResources(),
+        gateResources(gate),
       );
     });
 
     it("reopens a failed destructive attempt only through its current fence", async () => {
       const gate = new KeyedAdmissionGate<string | number, string>();
       const first = gate.beginFence({
-        key: adapter.key,
+        key: KEY,
         allowDuringDrain: () => false,
       });
       expect(first.abort()).toBe(true);
       expect(first.abort()).toBe(false);
-      gate.assertCreateAllowed(adapter.key);
+      gate.assertCreateAllowed(KEY);
 
       const replacement = gate.beginFence({
-        key: adapter.key,
+        key: KEY,
         allowDuringDrain: () => false,
       });
       await replacement.seal();

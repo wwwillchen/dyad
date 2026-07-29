@@ -15,6 +15,7 @@ import type {
 } from "@/state_machines/types";
 import type {
   RemoteIntentContract,
+  RemoteIntentPolicy,
   RuntimeRemoteIntentContract,
 } from "./remote_intent_contract";
 import type { KeyedAdmissionGeneration } from "./keyed_admission_gate";
@@ -341,71 +342,60 @@ export type FrameworkCoveredRemoteMachine<
   readonly [frameworkCoveredRemoteMachine]: true;
 };
 
-type NativeFrameworkBoundary = {
-  readonly remote: NonNullable<
-    DistributedMachineDefinition<
-      string,
-      any,
-      any,
-      any,
-      any,
-      any,
-      any,
-      any
-    >["remote"]
-  >;
-  readonly remoteIntent: NonNullable<
-    DistributedMachineDefinition<
-      string,
-      any,
-      any,
-      any,
-      any,
-      any,
-      any,
-      any
-    >["remoteIntent"]
+type NativeFrameworkBoundary<Key, State, Event, RemoteIntent> = {
+  readonly remote: RemoteMachineContract<Key, State, Event>;
+  readonly remoteIntent: RuntimeRemoteIntentContract<
+    Key,
+    State,
+    Extract<RemoteIntent, { readonly type: string }>,
+    Event,
+    unknown
   >;
 };
 
-type ProtocolV1FrameworkBoundary = {
-  readonly remote: NonNullable<
-    DistributedMachineDefinition<
-      string,
-      any,
-      any,
-      any,
-      any,
-      any,
-      any,
-      any
-    >["remote"]
+type ProtocolV1FrameworkBoundary<Key, State, Event, RemoteIntent> = {
+  readonly remote: RemoteMachineContract<Key, State, Event>;
+  readonly remoteIntentDeclaration: RemoteIntentContract<
+    Key,
+    Extract<RemoteIntent, { readonly type: string }>,
+    Event,
+    unknown
   >;
-  readonly remoteIntentDeclaration: NonNullable<
-    DistributedMachineDefinition<
-      string,
-      any,
-      any,
-      any,
-      any,
-      any,
-      any,
-      any
-    >["remoteIntentDeclaration"]
-  >;
-  readonly remoteOperation: NonNullable<
-    DistributedMachineDefinition<
-      string,
-      any,
-      any,
-      any,
-      any,
-      any,
-      any,
-      any
-    >["remoteOperation"]
+  readonly remoteOperation: RemoteOperationContract<
+    Key,
+    Extract<RemoteIntent, { readonly type: string }>,
+    Event,
+    any,
+    any
   >;
 };
+
+type FrameworkBoundaryFor<
+  Definition extends DistributedMachineDefinition<
+    string,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any
+  >,
+> =
+  Definition extends DistributedMachineDefinition<
+    string,
+    infer Key,
+    infer State,
+    infer Event,
+    any,
+    any,
+    infer RemoteIntent,
+    any
+  >
+    ?
+        | NativeFrameworkBoundary<Key, State, Event, RemoteIntent>
+        | ProtocolV1FrameworkBoundary<Key, State, Event, RemoteIntent>
+    : never;
 
 /**
  * Capability constructor for migrated distributed surfaces. It is impossible
@@ -424,10 +414,32 @@ export function defineFrameworkCoveredRemoteMachine<
     any
   >,
 >(
-  definition: Definition &
-    (NativeFrameworkBoundary | ProtocolV1FrameworkBoundary),
+  definition: Definition & FrameworkBoundaryFor<Definition>,
 ): FrameworkCoveredRemoteMachine<Definition> {
-  return Object.freeze(definition) as FrameworkCoveredRemoteMachine<Definition>;
+  const intentContract =
+    definition.remoteIntent ?? definition.remoteIntentDeclaration;
+  if (!intentContract) {
+    throw new Error(
+      `Framework-covered machine ${definition.id} has no remote intent contract`,
+    );
+  }
+  const hasTrackedCompletion = Object.values(
+    intentContract.intents as Readonly<Record<string, RemoteIntentPolicy>>,
+  ).some(
+    (policy: RemoteIntentPolicy) => policy.completion === "tracked-completion",
+  );
+  if (
+    hasTrackedCompletion &&
+    definition.remoteIntent &&
+    !definition.remoteIntent.finalizeOperation
+  ) {
+    throw new Error(
+      `Framework-covered machine ${definition.id} declares tracked completion without finalizeOperation`,
+    );
+  }
+  return Object.freeze(
+    definition,
+  ) as unknown as FrameworkCoveredRemoteMachine<Definition>;
 }
 
 export interface LocalActorRef<State, Event> {

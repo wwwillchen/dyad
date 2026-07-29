@@ -3,11 +3,13 @@ import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import {
+  actorEnsureInventory,
   compatibilityBoundaryInventory,
   completionAwareDispatchOrEnqueueInventory,
   distributedDefinitionInventory,
   frameworkOwnedBoundaryInventory,
   migratedSurfaceBoundaryInventory,
+  migratedStatefulOwnerInventory,
   nonRemoteDispatchOrEnqueueInventory,
   unsafeEscapeHatchInventory,
 } from "./boundary_inventory.test_support";
@@ -638,6 +640,107 @@ function dispatchBoundaries(
   return withStableCollisionDiscriminators(boundaries);
 }
 
+function actorEnsureBoundaries(
+  sourceFile: ts.SourceFile,
+  sourcePath: string,
+): SemanticBoundary[] {
+  const boundaries: SemanticBoundary[] = [];
+  visitSource(sourceFile, (node) => {
+    if (
+      !ts.isCallExpression(node) ||
+      !ts.isPropertyAccessExpression(node.expression) ||
+      node.expression.name.text !== "ensure"
+    ) {
+      return;
+    }
+    boundaries.push({
+      key: `${sourcePath}::${enclosingOwner(node)}::call(${expressionIdentity(node.expression.expression)}.ensure)`,
+      location: locationOf(node, sourceFile),
+    });
+  });
+  return boundaries;
+}
+
+function productionManifestCapabilityBoundaries(
+  sourceFile: ts.SourceFile,
+  sourcePath: string,
+): SemanticBoundary[] {
+  if (sourcePath !== "ipc/services/distributed_machine_host.ts") return [];
+  const boundaries: SemanticBoundary[] = [];
+  visitSource(sourceFile, (node) => {
+    if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)) {
+      return;
+    }
+    if (
+      node.expression.text !== "createProductionRemoteMachineManifest" &&
+      node.expression.text !== "defineLegacyRemoteMachineCompatibility"
+    ) {
+      return;
+    }
+    const argument = node.arguments[0];
+    const argumentName =
+      argument && ts.isIdentifier(argument) ? argument.text : "non-identifier";
+    boundaries.push({
+      key: `${sourcePath}::call(${node.expression.text}:${argumentName})`,
+      location: locationOf(node, sourceFile),
+    });
+  });
+  return boundaries;
+}
+
+function isMigratedSurfacePath(sourcePath: string): boolean {
+  if (sourcePath.endsWith("/testing.ts")) return false;
+  return (
+    sourcePath.startsWith("app_run/") ||
+    sourcePath.startsWith("image_generation/") ||
+    sourcePath === "hooks/useRunApp.ts" ||
+    sourcePath === "hooks/useGenerateImage.ts" ||
+    sourcePath.startsWith("ipc/services/app_run_") ||
+    sourcePath.startsWith("ipc/services/app_runtime_") ||
+    sourcePath === "ipc/services/main_app_runtime_output.ts" ||
+    sourcePath.startsWith("ipc/services/image_generation_")
+  );
+}
+
+function migratedStatefulOwnerBoundaries(
+  sourceFile: ts.SourceFile,
+  sourcePath: string,
+): SemanticBoundary[] {
+  if (!isMigratedSurfacePath(sourcePath)) return [];
+  const boundaries: SemanticBoundary[] = [];
+  visitSource(sourceFile, (node) => {
+    if (
+      !(
+        ts.isVariableDeclaration(node) ||
+        ts.isPropertyDeclaration(node) ||
+        ts.isPropertyAssignment(node)
+      ) ||
+      !node.initializer
+    ) {
+      return;
+    }
+    const initializer = unwrapExpression(node.initializer);
+    if (
+      !ts.isNewExpression(initializer) ||
+      !ts.isIdentifier(initializer.expression) ||
+      !["Map", "Set", "WeakMap", "WeakSet"].includes(
+        initializer.expression.text,
+      )
+    ) {
+      return;
+    }
+    const name = ts.isVariableDeclaration(node)
+      ? bindingNameText(node.name)
+      : propertyNameText(node.name);
+    if (!name) return;
+    boundaries.push({
+      key: `${sourcePath}::${declarationOwner(node, name)}::new(${initializer.expression.text})`,
+      location: locationOf(node, sourceFile),
+    });
+  });
+  return boundaries;
+}
+
 function isDeclarationIdentifier(node: ts.Identifier): boolean {
   const parent = node.parent;
   return (
@@ -912,6 +1015,27 @@ describe("semantic boundary inventory helpers", () => {
       "fixture.ts::deletionFences",
     ]);
   });
+
+  it("finds renamed stateful owners on migrated surfaces", () => {
+    const sourceFile = fixtureSource(
+      "const pendingByRequestId = new Map<RequestId, Promise<void>>();",
+    );
+    expect(
+      migratedStatefulOwnerBoundaries(
+        sourceFile,
+        "image_generation/fixture.ts",
+      ).map(({ key }) => key),
+    ).toEqual(["image_generation/fixture.ts::pendingByRequestId::new(Map)"]);
+  });
+
+  it("finds direct creation capability calls regardless of receiver name", () => {
+    const sourceFile = fixtureSource(
+      "function onOutput() { replacementHost.ensure(definition, key); }",
+    );
+    expect(
+      actorEnsureBoundaries(sourceFile, "fixture.ts").map(({ key }) => key),
+    ).toEqual(["fixture.ts::onOutput::call(replacementHost.ensure)"]);
+  });
 });
 
 describe("progressive distributed-machine inventories", () => {
@@ -931,6 +1055,20 @@ describe("progressive distributed-machine inventories", () => {
         "app_run/definition.ts::appRunDefinition",
         "ipc/services/image_generation_definition.ts::imageGenerationDefinition",
       ],
+    );
+  }, 20_000);
+
+  it("requires exact capabilities at the production manifest boundary", () => {
+    assertInventory(
+      "production manifest capabilities",
+      collectProduction(productionManifestCapabilityBoundaries),
+      [
+        "ipc/services/distributed_machine_host.ts::call(createProductionRemoteMachineManifest:remoteMachineDefinitions)",
+        "ipc/services/distributed_machine_host.ts::call(defineLegacyRemoteMachineCompatibility:chatStreamDefinition)",
+        "ipc/services/distributed_machine_host.ts::call(defineLegacyRemoteMachineCompatibility:githubOpsDefinition)",
+        "ipc/services/distributed_machine_host.ts::call(defineLegacyRemoteMachineCompatibility:planHandoffDefinition)",
+        "ipc/services/distributed_machine_host.ts::call(defineLegacyRemoteMachineCompatibility:versionPreviewDefinition)",
+      ].sort(),
     );
   }, 20_000);
 
@@ -1009,7 +1147,28 @@ describe("progressive distributed-machine inventories", () => {
     );
   }, 20_000);
 
+  it("pins every direct actor-host ensure call", () => {
+    assertInventory(
+      "actor ensure",
+      collectProduction(actorEnsureBoundaries),
+      actorEnsureInventory,
+    );
+  }, 20_000);
+
+  it("pins all stateful collection owners on migrated surfaces", () => {
+    assertInventory(
+      "migrated stateful owners",
+      collectProduction(migratedStatefulOwnerBoundaries),
+      migratedStatefulOwnerInventory,
+    );
+  }, 20_000);
+
   it("keeps migrated pilots out of the unsafe compatibility inventory", () => {
+    expect(
+      compatibilityBoundaryInventory.filter(({ machine }) =>
+        ["app_run", "image_generation"].includes(machine),
+      ),
+    ).toEqual([]);
     const unsafe = Object.values(unsafeEscapeHatchInventory).flat();
     expect(
       unsafe.filter(
@@ -1033,6 +1192,10 @@ describe("progressive distributed-machine inventories", () => {
       expect(entry.boundaries.length).toBeGreaterThan(0);
       for (const boundary of entry.boundaries) {
         expect(boundary.startsWith(`${entry.exactFile}::`)).toBe(true);
+        expect(
+          unsafeEscapeHatchInventory[entry.mechanism],
+          `${entry.machine}:${entry.exactFile}:${entry.mechanism}`,
+        ).toContain(boundary);
       }
       return entry.boundaries;
     });

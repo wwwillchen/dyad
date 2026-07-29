@@ -34,6 +34,9 @@ Background and before/after examples of why this pattern exists:
   `defineFrameworkCoveredRemoteMachine`; the constructor requires either a
   native `RuntimeRemoteIntentContract` or the narrow protocol-v1 combination
   of a declarative `RemoteIntentContract` plus `RemoteOperationContract`.
+  `createProductionRemoteMachineManifest` accepts only that capability or an
+  exact `defineLegacyRemoteMachineCompatibility` capability from the
+  production legacy-definition inventory.
 - `src/distributed_machines/boundary_inventory.test.ts` derives production
   definitions and semantic dispatch, waiter, subscription, fence, and routing
   boundaries from the TypeScript AST. It exact-matches framework-owned,
@@ -42,7 +45,9 @@ Background and before/after examples of why this pattern exists:
 - Every unsafe compatibility entry lives in
   `compatibilityBoundaryInventory` with its machine, exact file, mechanism,
   rationale, and conditional follow-up owner. Renames, removals, and new
-  boundaries require an explicit inventory change.
+  boundaries require an explicit inventory change. Keep each entry's boundary
+  tuple literal; deriving it with a file-prefix filter silently lets new
+  callsites inherit stale ownership metadata.
 - New remote intents declare authorization, key/intent relationship, refusal
   mapping, retry/idempotency, completion, observed revision, acceptance/input
   disposition, and wire/snapshot budgets through
@@ -50,11 +55,13 @@ Background and before/after examples of why this pattern exists:
   `defineMachineConformance` separately requires applicable tiers and explicit
   exclusions, so purely local machines do not acquire irrelevant remote
   capabilities.
-- Both pilots run
-  `testing/pilot_framework_conformance.test.ts`; resource failures use
+- Shared primitive scenarios run in
+  `testing/framework_mechanism_conformance.test.ts`; resource failures use
   `assertNoOwnedResources` and identify the resource, owner, machine, key, and
-  generation. Foundation and pilot review findings are exact-mapped in the
-  corresponding `*_finding_catalog.ts` files.
+  generation. Do not call this cross-pilot runtime conformance unless one
+  reusable driver instantiates both domain façades and reads their inspectors.
+  Foundation and pilot review findings are exact-mapped in the corresponding
+  `*_finding_catalog.ts` files.
 
 ## Invariants
 

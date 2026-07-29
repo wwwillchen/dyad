@@ -19,9 +19,13 @@ const inventories = {
       ["admission", "src/ipc/services/app_run_actor_service.ts", 63, 123],
       ["admission", "src/hooks/useRunApp.ts", 199, 254],
       ["subscription", "src/app_run/remote_manager.ts", 48, 51],
+      ["subscription", "src/app_run/remote_manager.ts", 236, 239],
+      ["subscription", "src/app_run/remote_manager.ts", 241, 252],
       ["subscription", "src/app_run/remote_manager.ts", 267, 301],
       ["settlement", "src/app_run/remote_manager.ts", 53, 56],
       ["settlement", "src/app_run/remote_manager.ts", 330, 361],
+      ["settlement", "src/app_run/remote_manager.ts", 240, 240],
+      ["settlement", "src/app_run/remote_manager.ts", 253, 260],
       ["settlement", "src/ipc/services/app_run_actor_service.ts", 19, 23],
       ["settlement", "src/ipc/services/app_run_actor_service.ts", 208, 317],
       ["late-producer", "src/ipc/services/app_run_actor_service.ts", 30, 62],
@@ -33,6 +37,8 @@ const inventories = {
       ["admission", "src/ipc/services/app_run_actor_service.ts", 268, 371],
       ["admission", "src/hooks/useRunApp.ts", 217, 322],
       ["settlement", "src/app_run/operations.ts", 1, 102],
+      ["settlement", "src/app_run/remote_manager.ts", 69, 82],
+      ["settlement", "src/app_run/remote_manager.ts", 343, 350],
       ["deletion-fence", "src/ipc/services/app_run_actor_service.ts", 228, 241],
       ["late-producer", "src/ipc/services/app_run_actor_service.ts", 64, 95],
       ["late-producer", "src/ipc/services/app_run_actor_service.ts", 157, 227],
@@ -81,6 +87,7 @@ const inventories = {
       ["settlement", "src/ipc/services/image_generation_service.ts", 68, 69],
       ["settlement", "src/ipc/services/image_generation_service.ts", 73, 100],
       ["settlement", "src/ipc/services/image_generation_service.ts", 347, 412],
+      ["settlement", "src/image_generation/request_scope.tsx", 1, 37],
       [
         "deletion-fence",
         "src/ipc/services/image_generation_service.ts",
@@ -115,8 +122,10 @@ function sourceAt(ref, file) {
     return execFileSync("git", ["show", `${ref}:${file}`], {
       encoding: "utf8",
     });
-  } catch {
-    return "";
+  } catch (error) {
+    throw new Error(`Unable to read measured source ${ref}:${file}`, {
+      cause: error,
+    });
   }
 }
 
@@ -149,6 +158,18 @@ function measure(ref, inventory) {
       const source = sourceAt(ref, file);
       measured = { source, code: codeLines(source) };
       byFile.set(file, measured);
+    }
+    const lineCount = measured.source.split(/\r?\n/).length;
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      start < 1 ||
+      end < start ||
+      end > lineCount
+    ) {
+      throw new Error(
+        `Invalid measured range ${file}:${start}-${end} at ${ref} (${lineCount} lines)`,
+      );
     }
     const owned = categoryLines.get(category) ?? new Map();
     const lines = owned.get(file) ?? new Set();

@@ -1,6 +1,14 @@
 export type PilotFindingCoverage =
-  | { readonly kind: "api-prohibition"; readonly id: string }
-  | { readonly kind: "conformance-scenario"; readonly scenario: string }
+  | {
+      readonly kind: "api-prohibition";
+      readonly id: string;
+      readonly evidence: string;
+    }
+  | {
+      readonly kind: "conformance-scenario";
+      readonly scenario: string;
+      readonly focusedTest: string;
+    }
   | {
       readonly kind: "domain-invariant";
       readonly id: string;
@@ -22,14 +30,16 @@ const test = (id: string, focusedTest: string): PilotFindingCoverage => ({
   focusedTest,
 });
 
-const scenario = (name: string): PilotFindingCoverage => ({
+const scenario = (name: string, focusedTest: string): PilotFindingCoverage => ({
   kind: "conformance-scenario",
   scenario: name,
+  focusedTest,
 });
 
-const prohibition = (id: string): PilotFindingCoverage => ({
+const prohibition = (id: string, evidence: string): PilotFindingCoverage => ({
   kind: "api-prohibition",
   id,
+  evidence,
 });
 
 function finding(
@@ -81,12 +91,18 @@ export const PILOT_FINDINGS = [
   finding(
     4144,
     3672417363,
-    prohibition("migrated-command-runners-return-trackable-promises"),
+    prohibition(
+      "migrated-command-runners-return-trackable-promises",
+      "src/distributed_machines/actor_host_admission_gate.test.ts::fails closed when a legacy command runner hands off detached work",
+    ),
   ),
   finding(
     4144,
     3672649819,
-    prohibition("post-commit-cleanup-cannot-reject-authoritative-db-commit"),
+    prohibition(
+      "post-commit-cleanup-cannot-reject-authoritative-db-commit",
+      "src/distributed_machines/actor_host.test.ts::reports terminal-policy failures without rejecting dispatch",
+    ),
   ),
   finding(
     4144,
@@ -115,7 +131,10 @@ export const PILOT_FINDINGS = [
   finding(
     4144,
     3675786487,
-    scenario("failed-dispatch-rolls-back-operation-admission"),
+    scenario(
+      "failed-dispatch-rolls-back-operation-admission",
+      "src/distributed_machines/remote_transport.test.ts::rolls back a fresh operation when actor dispatch fails",
+    ),
   ),
   finding(
     4144,
@@ -145,7 +164,11 @@ export const PILOT_FINDINGS = [
   finding(
     4144,
     3676159765,
-    prohibition("initiator-window-presentation-never-falls-back-to-a-peer"),
+    test(
+      "initiator-window-presentation-fallback-is-missing",
+      "src/ipc/services/image_generation_presentation_service.test.ts::does not present an initiator's result in another window",
+    ),
+    "Closing the initiating window drops presentation instead of preserving the prior single-window fallback; presentation ownership needs an explicit compatible fallback policy.",
   ),
   finding(
     4145,
@@ -158,7 +181,10 @@ export const PILOT_FINDINGS = [
   finding(
     4145,
     3672543107,
-    prohibition("migrated-command-runners-return-trackable-promises"),
+    prohibition(
+      "migrated-command-runners-return-trackable-promises",
+      "src/distributed_machines/actor_host_admission_gate.test.ts::fails closed when a legacy command runner hands off detached work",
+    ),
   ),
   finding(
     4145,
@@ -171,7 +197,10 @@ export const PILOT_FINDINGS = [
   finding(
     4145,
     3672723910,
-    scenario("external-work-enrolled-in-destructive-fence"),
+    scenario(
+      "external-work-enrolled-in-destructive-fence",
+      "src/app_run/main_actor.test.ts::drains an already-locked external restart before reset sealing",
+    ),
   ),
   finding(
     4145,
@@ -184,22 +213,34 @@ export const PILOT_FINDINGS = [
   finding(
     4145,
     3672881112,
-    prohibition("bounded-operation-outcome-envelope-before-codec"),
+    prohibition(
+      "bounded-operation-outcome-envelope-before-codec",
+      "src/distributed_machines/remote_transport.test.ts::bounds structured-clone dispatch and snapshot envelopes",
+    ),
   ),
   finding(
     4145,
     3675724742,
-    scenario("external-work-enrolled-in-destructive-fence"),
+    scenario(
+      "external-work-enrolled-in-destructive-fence",
+      "src/app_run/main_actor.test.ts::drains an already-locked external restart before reset sealing",
+    ),
   ),
   finding(
     4145,
     3675724747,
-    scenario("failed-dispatch-rolls-back-operation-admission"),
+    scenario(
+      "failed-dispatch-rolls-back-operation-admission",
+      "src/distributed_machines/remote_transport.test.ts::rolls back a fresh operation when actor dispatch fails",
+    ),
   ),
   finding(
     4145,
     3676141363,
-    scenario("ignored-dispatch-rolls-back-operation-admission"),
+    scenario(
+      "ignored-dispatch-rolls-back-operation-admission",
+      "src/distributed_machines/remote_transport.test.ts::rolls back a native operation when actor dispatch is ignored",
+    ),
   ),
   finding(4145, 3676188536, {
     kind: "inapplicable",

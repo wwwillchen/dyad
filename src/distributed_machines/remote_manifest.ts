@@ -1,5 +1,8 @@
 import type { IgnoreReason } from "@/state_machines/types";
-import type { DistributedMachineDefinition } from "./definition";
+import type {
+  DistributedMachineDefinition,
+  FrameworkCoveredRemoteMachine,
+} from "./definition";
 import { MachineIdentitySchema } from "./remote_protocol";
 
 /**
@@ -13,6 +16,13 @@ export const REMOTE_PROTOCOL_V1_COMPATIBILITY_INVENTORY = Object.freeze([
   "plan_handoff",
   "version_preview",
 ]);
+
+export const LEGACY_REMOTE_MACHINE_DEFINITION_INVENTORY = Object.freeze([
+  "chat_stream",
+  "github_ops",
+  "plan_handoff",
+  "version_preview",
+] as const);
 
 export function assertRemoteProtocolV1CompatibilityInventory(
   definitions: readonly AnyRemoteMachineDefinition[],
@@ -59,6 +69,38 @@ export type AnyRemoteMachineDefinition = ErasedRemoteMachineDefinition & {
   readonly remote: NonNullable<ErasedRemoteMachineDefinition["remote"]>;
 };
 
+declare const legacyRemoteMachineCompatibility: unique symbol;
+
+export type LegacyRemoteMachineCompatibility<
+  Definition extends AnyRemoteMachineDefinition,
+> = Definition & {
+  readonly [legacyRemoteMachineCompatibility]: true;
+};
+
+export type RegisteredRemoteMachineDefinition =
+  | FrameworkCoveredRemoteMachine<AnyRemoteMachineDefinition>
+  | LegacyRemoteMachineCompatibility<AnyRemoteMachineDefinition>;
+
+/**
+ * Explicit capability for the exact production definitions that have not
+ * migrated. New IDs cannot acquire this brand without changing the
+ * review-visible inventory.
+ */
+export function defineLegacyRemoteMachineCompatibility<
+  const Definition extends AnyRemoteMachineDefinition,
+>(definition: Definition): LegacyRemoteMachineCompatibility<Definition> {
+  if (
+    !LEGACY_REMOTE_MACHINE_DEFINITION_INVENTORY.includes(
+      definition.id as (typeof LEGACY_REMOTE_MACHINE_DEFINITION_INVENTORY)[number],
+    )
+  ) {
+    throw new Error(
+      `Remote machine ${definition.id} is not in the legacy definition inventory`,
+    );
+  }
+  return definition as LegacyRemoteMachineCompatibility<Definition>;
+}
+
 export interface RemoteMachineManifest {
   readonly definitions: readonly AnyRemoteMachineDefinition[];
   get(machineId: string): AnyRemoteMachineDefinition | undefined;
@@ -101,4 +143,15 @@ export function createRemoteMachineManifest(
     definitions: frozenDefinitions,
     get: (machineId: string) => byId.get(machineId),
   });
+}
+
+/**
+ * Authoritative production registration boundary. Generic manifests remain
+ * available to test fixtures, but production definitions must present either
+ * the framework-covered capability or the exact legacy compatibility brand.
+ */
+export function createProductionRemoteMachineManifest(
+  definitions: readonly RegisteredRemoteMachineDefinition[],
+): RemoteMachineManifest {
+  return createRemoteMachineManifest(definitions);
 }

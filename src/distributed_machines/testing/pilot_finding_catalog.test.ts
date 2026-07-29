@@ -15,10 +15,14 @@ describe("pilot finding enforcement catalog", () => {
     ).toEqual({ 4144: 13, 4145: 12 });
   });
 
-  it("pins every domain invariant to an exact named focused test", () => {
+  it("pins every executable coverage mapping to an exact named test", () => {
     for (const finding of PILOT_FINDINGS) {
-      if (finding.coverage.kind !== "domain-invariant") continue;
-      const [relativeFile, title] = finding.coverage.focusedTest.split("::");
+      if (finding.coverage.kind === "inapplicable") continue;
+      const reference =
+        finding.coverage.kind === "api-prohibition"
+          ? finding.coverage.evidence
+          : finding.coverage.focusedTest;
+      const [relativeFile, title] = reference.split("::");
       expect(relativeFile, finding.id).toBeTruthy();
       expect(title, finding.id).toBeTruthy();
       const file = path.resolve(process.cwd(), relativeFile);
@@ -34,6 +38,6 @@ describe("pilot finding enforcement catalog", () => {
       PILOT_FINDINGS.filter(({ decisionBlocker }) => decisionBlocker).map(
         ({ id }) => id,
       ),
-    ).toEqual(["4144-3672394282", "4144-3675796771"]);
+    ).toEqual(["4144-3672394282", "4144-3675796771", "4144-3676159765"]);
   });
 });
