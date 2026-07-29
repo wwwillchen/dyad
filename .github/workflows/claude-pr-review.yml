@@ -98,7 +98,7 @@ jobs:
           prompt: ${{ steps.render-prompt.outputs.prompt }}
 
           claude_args: |
-            --model claude-opus-4-8
+            --model claude-opus-5
             --setting-sources user
             --allowedTools "Agent,Read,Glob,Grep,Edit(tmp/pr-review/**)"
 
