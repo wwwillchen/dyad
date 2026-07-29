@@ -3,8 +3,11 @@ import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import {
+  compatibilityBoundaryInventory,
   completionAwareDispatchOrEnqueueInventory,
   distributedDefinitionInventory,
+  frameworkOwnedBoundaryInventory,
+  migratedSurfaceBoundaryInventory,
   nonRemoteDispatchOrEnqueueInventory,
   unsafeEscapeHatchInventory,
 } from "./boundary_inventory.test_support";
@@ -50,14 +53,20 @@ function normalizePath(file: string): string {
   return path.relative(SOURCE_ROOT, file).replaceAll("\\", "/");
 }
 
+const sourceFileCache = new Map<string, ts.SourceFile>();
+
 function sourceFileFor(file: string): ts.SourceFile {
-  return ts.createSourceFile(
+  const cached = sourceFileCache.get(file);
+  if (cached) return cached;
+  const sourceFile = ts.createSourceFile(
     file,
     fs.readFileSync(file, "utf8"),
     ts.ScriptTarget.Latest,
     true,
     file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
+  sourceFileCache.set(file, sourceFile);
+  return sourceFile;
 }
 
 function fixtureSource(source: string): ts.SourceFile {
@@ -369,10 +378,21 @@ function objectProperty(
 function mainRemoteDefinition(node: ts.Node): {
   readonly name: string;
   readonly declaration: ts.VariableDeclaration;
+  readonly frameworkCovered: boolean;
 } | null {
   if (!ts.isVariableDeclaration(node) || !node.initializer) return null;
   const name = bindingNameText(node.name);
-  const initializer = unwrapExpression(node.initializer);
+  let initializer = unwrapExpression(node.initializer);
+  let frameworkCovered = false;
+  if (
+    ts.isCallExpression(initializer) &&
+    ts.isIdentifier(initializer.expression) &&
+    initializer.expression.text === "defineFrameworkCoveredRemoteMachine" &&
+    initializer.arguments[0]
+  ) {
+    frameworkCovered = true;
+    initializer = unwrapExpression(initializer.arguments[0]);
+  }
   if (!name || !ts.isObjectLiteralExpression(initializer)) return null;
   const host = objectProperty(initializer, "host");
   if (
@@ -388,7 +408,7 @@ function mainRemoteDefinition(node: ts.Node): {
   ) {
     return null;
   }
-  return { name, declaration: node };
+  return { name, declaration: node, frameworkCovered };
 }
 
 function definitionBoundaries(
@@ -399,6 +419,22 @@ function definitionBoundaries(
   visitSource(sourceFile, (node) => {
     const definition = mainRemoteDefinition(node);
     if (!definition) return;
+    boundaries.push({
+      key: `${sourcePath}::${definition.name}`,
+      location: locationOf(definition.declaration, sourceFile),
+    });
+  });
+  return sortedBoundaries(boundaries);
+}
+
+function frameworkCoveredDefinitionBoundaries(
+  sourceFile: ts.SourceFile,
+  sourcePath: string,
+): SemanticBoundary[] {
+  const boundaries: SemanticBoundary[] = [];
+  visitSource(sourceFile, (node) => {
+    const definition = mainRemoteDefinition(node);
+    if (!definition?.frameworkCovered) return;
     boundaries.push({
       key: `${sourcePath}::${definition.name}`,
       location: locationOf(definition.declaration, sourceFile),
@@ -885,15 +921,29 @@ describe("progressive distributed-machine inventories", () => {
       collectProduction(definitionBoundaries),
       distributedDefinitionInventory,
     );
-  });
+  }, 20_000);
+
+  it("requires the two migrated definitions to use the framework capability constructor", () => {
+    assertInventory(
+      "framework-covered definitions",
+      collectProduction(frameworkCoveredDefinitionBoundaries),
+      [
+        "app_run/definition.ts::appRunDefinition",
+        "ipc/services/image_generation_definition.ts::imageGenerationDefinition",
+      ],
+    );
+  }, 20_000);
 
   it("pins renderer-schema-to-internal-event widening casts", () => {
     assertInventory(
       "widening casts",
       collectProduction(wideningCastBoundaries),
-      unsafeEscapeHatchInventory.wideningCasts,
+      [
+        ...unsafeEscapeHatchInventory.wideningCasts,
+        ...migratedSurfaceBoundaryInventory.wideningCasts,
+      ].sort(),
     );
-  });
+  }, 20_000);
 
   it("pins raw, completion-aware, and unrelated dispatch/enqueue access separately", () => {
     const actual = collectProduction(dispatchBoundaries);
@@ -902,11 +952,13 @@ describe("progressive distributed-machine inventories", () => {
       actual,
       [
         ...unsafeEscapeHatchInventory.rawDispatchOrEnqueue,
+        ...frameworkOwnedBoundaryInventory.rawDispatchOrEnqueue,
+        ...migratedSurfaceBoundaryInventory.rawDispatchOrEnqueue,
         ...completionAwareDispatchOrEnqueueInventory,
         ...nonRemoteDispatchOrEnqueueInventory,
       ].sort(),
     );
-  });
+  }, 20_000);
 
   it("pins bespoke waiter registries and owning APIs", () => {
     assertInventory(
@@ -916,7 +968,7 @@ describe("progressive distributed-machine inventories", () => {
       ),
       unsafeEscapeHatchInventory.bespokeWaiters,
     );
-  });
+  }, 20_000);
 
   it("pins independent subscription/ref-count declarations and owning APIs", () => {
     assertInventory(
@@ -924,9 +976,12 @@ describe("progressive distributed-machine inventories", () => {
       collectProduction((sourceFile, sourcePath) =>
         namedSurfaceBoundaries(sourceFile, sourcePath, SUBSCRIPTION_SURFACES),
       ),
-      unsafeEscapeHatchInventory.subscriptionRefCounts,
+      [
+        ...unsafeEscapeHatchInventory.subscriptionRefCounts,
+        ...frameworkOwnedBoundaryInventory.subscriptionRefCounts,
+      ].sort(),
     );
-  });
+  }, 20_000);
 
   it("pins deletion/reset fence declarations and owning APIs", () => {
     assertInventory(
@@ -934,9 +989,12 @@ describe("progressive distributed-machine inventories", () => {
       collectProduction((sourceFile, sourcePath) =>
         namedSurfaceBoundaries(sourceFile, sourcePath, FENCE_SURFACES),
       ),
-      unsafeEscapeHatchInventory.deletionResetFences,
+      [
+        ...unsafeEscapeHatchInventory.deletionResetFences,
+        ...migratedSurfaceBoundaryInventory.deletionResetFences,
+      ].sort(),
     );
-  });
+  }, 20_000);
 
   it("pins initiator/routing map declarations and owning APIs", () => {
     assertInventory(
@@ -944,7 +1002,43 @@ describe("progressive distributed-machine inventories", () => {
       collectProduction((sourceFile, sourcePath) =>
         namedSurfaceBoundaries(sourceFile, sourcePath, ROUTING_SURFACES),
       ),
-      unsafeEscapeHatchInventory.initiatorRoutingMaps,
+      [
+        ...unsafeEscapeHatchInventory.initiatorRoutingMaps,
+        ...migratedSurfaceBoundaryInventory.initiatorRoutingMaps,
+      ].sort(),
+    );
+  }, 20_000);
+
+  it("keeps migrated pilots out of the unsafe compatibility inventory", () => {
+    const unsafe = Object.values(unsafeEscapeHatchInventory).flat();
+    expect(
+      unsafe.filter(
+        (entry) =>
+          entry.startsWith("app_run/") ||
+          entry.startsWith("hooks/useRunApp") ||
+          entry.startsWith("image_generation/") ||
+          entry.startsWith("hooks/useGenerateImage") ||
+          entry.startsWith("ipc/services/app_run") ||
+          entry.startsWith("ipc/services/image_generation"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("requires exact ownership metadata for every compatibility boundary", () => {
+    const actual = compatibilityBoundaryInventory.flatMap((entry) => {
+      expect(entry.machine.trim()).not.toBe("");
+      expect(entry.exactFile.trim()).not.toBe("");
+      expect(entry.why.trim()).not.toBe("");
+      expect(entry.removalOwner.trim()).not.toBe("");
+      expect(entry.boundaries.length).toBeGreaterThan(0);
+      for (const boundary of entry.boundaries) {
+        expect(boundary.startsWith(`${entry.exactFile}::`)).toBe(true);
+      }
+      return entry.boundaries;
+    });
+    expect([...new Set(actual)].sort()).toEqual([...actual].sort());
+    expect(actual.sort()).toEqual(
+      Object.values(unsafeEscapeHatchInventory).flat().sort(),
     );
   });
 });

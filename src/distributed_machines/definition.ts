@@ -13,7 +13,10 @@ import type {
   TransitionObserver,
   TransitionResult,
 } from "@/state_machines/types";
-import type { RuntimeRemoteIntentContract } from "./remote_intent_contract";
+import type {
+  RemoteIntentContract,
+  RuntimeRemoteIntentContract,
+} from "./remote_intent_contract";
 import type { KeyedAdmissionGeneration } from "./keyed_admission_gate";
 import type {
   OperationLookupIdentity,
@@ -300,6 +303,17 @@ export interface DistributedMachineDefinition<
     Event,
     unknown
   >;
+  /**
+   * Declarative renderer-intent contract for a completion-aware protocol-v1
+   * adapter. Framework-covered definitions use this only when the runtime
+   * native remoteIntent path is not yet wire-compatible.
+   */
+  readonly remoteIntentDeclaration?: RemoteIntentContract<
+    Key,
+    Extract<RemoteIntent, { readonly type: string }>,
+    Event,
+    unknown
+  >;
   /** Optional completion-aware admission for declared request intents. */
   readonly remoteOperation?: RemoteOperationContract<
     Key,
@@ -308,6 +322,112 @@ export interface DistributedMachineDefinition<
     any,
     any
   >;
+}
+
+declare const frameworkCoveredRemoteMachine: unique symbol;
+
+export type FrameworkCoveredRemoteMachine<
+  Definition extends DistributedMachineDefinition<
+    string,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any
+  >,
+> = Definition & {
+  readonly [frameworkCoveredRemoteMachine]: true;
+};
+
+type NativeFrameworkBoundary = {
+  readonly remote: NonNullable<
+    DistributedMachineDefinition<
+      string,
+      any,
+      any,
+      any,
+      any,
+      any,
+      any,
+      any
+    >["remote"]
+  >;
+  readonly remoteIntent: NonNullable<
+    DistributedMachineDefinition<
+      string,
+      any,
+      any,
+      any,
+      any,
+      any,
+      any,
+      any
+    >["remoteIntent"]
+  >;
+};
+
+type ProtocolV1FrameworkBoundary = {
+  readonly remote: NonNullable<
+    DistributedMachineDefinition<
+      string,
+      any,
+      any,
+      any,
+      any,
+      any,
+      any,
+      any
+    >["remote"]
+  >;
+  readonly remoteIntentDeclaration: NonNullable<
+    DistributedMachineDefinition<
+      string,
+      any,
+      any,
+      any,
+      any,
+      any,
+      any,
+      any
+    >["remoteIntentDeclaration"]
+  >;
+  readonly remoteOperation: NonNullable<
+    DistributedMachineDefinition<
+      string,
+      any,
+      any,
+      any,
+      any,
+      any,
+      any,
+      any
+    >["remoteOperation"]
+  >;
+};
+
+/**
+ * Capability constructor for migrated distributed surfaces. It is impossible
+ * to obtain the framework-covered brand without either the native prepared
+ * remote-intent contract or the narrow completion-aware protocol-v1 adapter.
+ */
+export function defineFrameworkCoveredRemoteMachine<
+  const Definition extends DistributedMachineDefinition<
+    string,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any,
+    any
+  >,
+>(
+  definition: Definition &
+    (NativeFrameworkBoundary | ProtocolV1FrameworkBoundary),
+): FrameworkCoveredRemoteMachine<Definition> {
+  return Object.freeze(definition) as FrameworkCoveredRemoteMachine<Definition>;
 }
 
 export interface LocalActorRef<State, Event> {

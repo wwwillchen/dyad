@@ -950,6 +950,32 @@ describe("main-hosted app-run actor", () => {
     manager.dispose();
   });
 
+  it("retries a stale idle start after resync", async () => {
+    const { duplex } = createHarness();
+    const connection = duplex.connect();
+    const dispatch = connection.dispatch.bind(connection);
+    connection.dispatch = vi
+      .fn()
+      .mockImplementationOnce(async (envelope) => ({
+        kind: "rejected" as const,
+        messageId: envelope.messageId,
+        reason: "revision-conflict" as const,
+      }))
+      .mockImplementation(dispatch);
+    const manager = new AppRunRemoteManager(
+      createSequentialIdSource(),
+      connection,
+    );
+    manager.start();
+
+    await expect(
+      manager.dispatch(7, { type: "START", startedAt: 10 }),
+    ).resolves.toBeUndefined();
+    expect(connection.dispatch).toHaveBeenCalledTimes(2);
+    expect(runtime.start).toHaveBeenCalledTimes(1);
+    manager.dispose();
+  });
+
   it("settles from the protocol-v1 runtime correlation fallback", async () => {
     const { duplex, host } = createHarness();
     const connection = duplex.connect();

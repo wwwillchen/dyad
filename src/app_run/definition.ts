@@ -1,6 +1,9 @@
 import { db } from "@/db";
 import { apps } from "@/db/schema";
-import type { DistributedMachineDefinition } from "@/distributed_machines/definition";
+import {
+  defineFrameworkCoveredRemoteMachine,
+  type DistributedMachineDefinition,
+} from "@/distributed_machines/definition";
 import {
   createOperationOutcomePublisher,
   finalizeOperationAdmission,
@@ -563,7 +566,7 @@ function createCommandRunner() {
   };
 }
 
-export const appRunDefinition = {
+export const appRunDefinition = defineFrameworkCoveredRemoteMachine({
   id: APP_RUN_MACHINE_ID,
   host: "main",
   initialState: (): AppRunActorState => ({
@@ -773,4 +776,4 @@ export const appRunDefinition = {
   AppRunIgnoreReason,
   AppRunIntentEvent,
   AppRunCorrelatedOutcome
->;
+>);

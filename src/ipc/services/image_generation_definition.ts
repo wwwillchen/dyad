@@ -2,7 +2,10 @@ import { eq } from "drizzle-orm";
 import type { z } from "zod";
 import { db } from "@/db";
 import { apps } from "@/db/schema";
-import type { DistributedMachineDefinition } from "@/distributed_machines/definition";
+import {
+  defineFrameworkCoveredRemoteMachine,
+  type DistributedMachineDefinition,
+} from "@/distributed_machines/definition";
 import { REMOTE_MACHINE_PROTOCOL_VERSION } from "@/distributed_machines/remote_protocol";
 import {
   defineCorrelatedEffectHandlers,
@@ -29,6 +32,7 @@ import {
   type ImageGenerationFailureKind,
 } from "@/image_generation/state";
 import { isTerminal, transition } from "@/image_generation/transition";
+import { imageGenerationRemoteIntentContract } from "@/image_generation/remote_intent_contract";
 import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 import { imageGenerationPresentationService } from "./image_generation_presentation_service";
 import { imageGenerationService } from "./image_generation_service";
@@ -199,109 +203,114 @@ type ImageGenerationDefinition = DistributedMachineDefinition<
   >;
 };
 
-export const imageGenerationDefinition: ImageGenerationDefinition = {
-  id: IMAGE_GENERATION_MACHINE_ID,
-  host: "main",
-  initialState: (): ImageGenerationActorState => ({ jobs: [] }),
-  transition: (state, event) => transition(state, event),
-  createScheduler: () => ({
-    schedule(batch, execute) {
-      for (const command of batch.commands) void execute(command);
-    },
-  }),
-  createCommandRunner,
-  createOutcomePublisher: (context) =>
-    imageGenerationOperationService.createPublisher(context.getMetadata),
-  createBeforeCommit: (context) => (previous, next) => {
-    const nextIds = new Set(next.jobs.map(({ job }) => job.id));
-    for (const { job } of previous.jobs) {
-      if (!nextIds.has(job.id)) {
-        context.timers.remove(`terminal:${job.id}`);
-      }
-    }
-  },
-  lifecycle: {
-    subscriptionCreates: true,
-    dispatchCreates: false,
-    idleEviction: { kind: "retain" },
-    terminalRetention: {
-      kind: "retain",
-    },
-    entityDeletion: "retain",
-    rendererOwnership: "host",
-    survivesRendererReload: true,
-    restartPersistence: "ephemeral",
-    flushOnShutdown: true,
-    isTerminal: (state) =>
-      state.jobs.length > 0 && state.jobs.every(({ job }) => isTerminal(job)),
-    flush: () => imageGenerationService.cancelAndSettleAll(),
-    settleWaiters: ({ metadata }) => {
-      imageGenerationOperationService.settleActor(metadata.actorInstanceId);
-    },
-    onDisposed: ({ metadata }) => {
-      imageGenerationOperationService.releaseActor(metadata.actorInstanceId);
-      imageGenerationPresentationService.clear();
-    },
-  },
-  remote: {
-    protocolVersion: REMOTE_MACHINE_PROTOCOL_VERSION,
-    keyCodec: ImageGenerationKeySchema,
-    encodeKey: () => getImageGenerationKey(),
-    canonicalizeKeyAfterAuthorization: () => getImageGenerationKey(),
-    eventCodec:
-      ImageGenerationIntentEventSchema as z.ZodType<ImageGenerationEvent>,
-    snapshotCodec: ImageGenerationRemoteSnapshotSchema,
-    keyToString: () => "jobs",
-    projectSnapshot: (state, _key, metadata) =>
-      projectImageGenerationRemoteSnapshot(state, metadata.snapshotRevision),
-    unavailableSnapshot: () => ({ jobs: [], revision: 0 }),
-    revisionPolicy: () => "allow-stale",
-    authorizeSubscribe: () => {},
-    authorizeDispatch: async ({ sender, event, currentState }) => {
-      const intent = event as ImageGenerationIntentEvent;
-      if (intent.type === "SUBMIT") {
-        imageGenerationService.assertAcceptingGenerations(
-          intent.job.targetAppId,
-        );
-        if (!(await appExists(intent.job.targetAppId))) {
-          throw new DyadError("Target app not found", DyadErrorKind.NotFound);
+export const imageGenerationDefinition: ImageGenerationDefinition =
+  defineFrameworkCoveredRemoteMachine({
+    id: IMAGE_GENERATION_MACHINE_ID,
+    host: "main",
+    initialState: (): ImageGenerationActorState => ({ jobs: [] }),
+    transition: (state, event) => transition(state, event),
+    createScheduler: () => ({
+      schedule(batch, execute) {
+        for (const command of batch.commands) void execute(command);
+      },
+    }),
+    createCommandRunner,
+    createOutcomePublisher: (context) =>
+      imageGenerationOperationService.createPublisher(context.getMetadata),
+    createBeforeCommit: (context) => (previous, next) => {
+      const nextIds = new Set(next.jobs.map(({ job }) => job.id));
+      for (const { job } of previous.jobs) {
+        if (!nextIds.has(job.id)) {
+          context.timers.remove(`terminal:${job.id}`);
         }
-        imageGenerationService.assertAcceptingGenerations(
-          intent.job.targetAppId,
-        );
-        intent.initiatorWindowSessionId = sender.windowSessionId;
-        return;
-      }
-      const job = currentState?.jobs.find(({ job }) => job.id === intent.jobId);
-      if (
-        intent.activeInvocationRef.entityKey !== intent.jobId ||
-        !sameImageGenerationInvocation(
-          job?.activeInvocationRef ?? null,
-          intent.activeInvocationRef,
-        )
-      ) {
-        throw new DyadError(
-          "Cancellation does not target the active image generation",
-          DyadErrorKind.Auth,
-        );
-      }
-      if (
-        !job ||
-        !sender.windowSessionId ||
-        !imageGenerationOperationService.owns(
-          job.requestId,
-          sender.windowSessionId,
-        )
-      ) {
-        throw new DyadError(
-          "Cancellation does not belong to the initiating window",
-          DyadErrorKind.Auth,
-        );
       }
     },
-  },
-  remoteOperation: imageGenerationOperationService.remoteContract(),
-};
+    lifecycle: {
+      subscriptionCreates: true,
+      dispatchCreates: false,
+      idleEviction: { kind: "retain" },
+      terminalRetention: {
+        kind: "retain",
+      },
+      entityDeletion: "retain",
+      rendererOwnership: "host",
+      survivesRendererReload: true,
+      restartPersistence: "ephemeral",
+      flushOnShutdown: true,
+      isTerminal: (state: ImageGenerationActorState) =>
+        state.jobs.length > 0 && state.jobs.every(({ job }) => isTerminal(job)),
+      flush: () => imageGenerationService.cancelAndSettleAll(),
+      settleWaiters: ({ metadata }) => {
+        imageGenerationOperationService.settleActor(metadata.actorInstanceId);
+      },
+      onDisposed: ({ metadata }) => {
+        imageGenerationOperationService.releaseActor(metadata.actorInstanceId);
+        imageGenerationPresentationService.clear();
+      },
+    },
+    remote: {
+      protocolVersion: REMOTE_MACHINE_PROTOCOL_VERSION,
+      keyCodec: ImageGenerationKeySchema,
+      encodeKey: () => getImageGenerationKey(),
+      canonicalizeKeyAfterAuthorization: () => getImageGenerationKey(),
+      eventCodec:
+        ImageGenerationIntentEventSchema as z.ZodType<ImageGenerationEvent>,
+      snapshotCodec: ImageGenerationRemoteSnapshotSchema,
+      keyToString: () => "jobs",
+      projectSnapshot: (state, _key, metadata) =>
+        projectImageGenerationRemoteSnapshot(state, metadata.snapshotRevision),
+      unavailableSnapshot: () => ({ jobs: [], revision: 0 }),
+      revisionPolicy: () => "allow-stale",
+      authorizeSubscribe: () => {},
+      authorizeDispatch: async ({ sender, event, currentState }) => {
+        const intent = event as ImageGenerationIntentEvent;
+        if (intent.type === "SUBMIT") {
+          imageGenerationService.assertAcceptingGenerations(
+            intent.job.targetAppId,
+          );
+          if (!(await appExists(intent.job.targetAppId))) {
+            throw new DyadError("Target app not found", DyadErrorKind.NotFound);
+          }
+          imageGenerationService.assertAcceptingGenerations(
+            intent.job.targetAppId,
+          );
+          intent.initiatorWindowSessionId = sender.windowSessionId;
+          return;
+        }
+        const job = currentState?.jobs.find(
+          ({ job }: ImageGenerationActorState["jobs"][number]) =>
+            job.id === intent.jobId,
+        );
+        if (
+          intent.activeInvocationRef.entityKey !== intent.jobId ||
+          !sameImageGenerationInvocation(
+            job?.activeInvocationRef ?? null,
+            intent.activeInvocationRef,
+          )
+        ) {
+          throw new DyadError(
+            "Cancellation does not target the active image generation",
+            DyadErrorKind.Auth,
+          );
+        }
+        if (
+          !job ||
+          !sender.windowSessionId ||
+          !imageGenerationOperationService.owns(
+            job.requestId,
+            sender.windowSessionId,
+          )
+        ) {
+          throw new DyadError(
+            "Cancellation does not belong to the initiating window",
+            DyadErrorKind.Auth,
+          );
+        }
+      },
+    },
+    remoteIntentDeclaration: imageGenerationRemoteIntentContract,
+    remoteOperation: imageGenerationOperationService.remoteContract(),
+  });
 
 function assertNever(value: never): never {
   throw new Error(

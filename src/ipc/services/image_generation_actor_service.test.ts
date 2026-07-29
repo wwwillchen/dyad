@@ -140,6 +140,64 @@ describe("ImageGenerationActorService", () => {
     expect(service.endAppDeletion).toHaveBeenCalledWith(7);
   });
 
+  it("publishes the singleton collection fence for app deletion", () => {
+    const beginFence = vi.fn(() => ({
+      key: { collection: "default" },
+      generation: { ordinal: 1, identity: {} },
+      seal: vi.fn(),
+      commit: vi.fn(),
+      abort: vi.fn(),
+      release: vi.fn(),
+    }));
+    const actorService = new ImageGenerationActorService({
+      peek: vi.fn(),
+      disposeMachine: vi.fn(),
+      beginFence,
+    } as never);
+
+    actorService.beginAppDeletion(7);
+
+    expect(beginFence).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "image_generation" }),
+      expect.objectContaining({
+        key: { scope: "jobs" },
+      }),
+    );
+  });
+
+  it("documents precommit cancellation before an aborted delete", async () => {
+    const enqueue = vi.fn(() => ({
+      settled: Promise.resolve({ kind: "applied" }),
+    }));
+    const fence = {
+      key: { collection: "default" },
+      generation: { ordinal: 1, identity: {} },
+      seal: vi.fn(async () => undefined),
+      commit: vi.fn(() => true),
+      abort: vi.fn(() => true),
+      release: vi.fn(() => true),
+    };
+    const actorService = new ImageGenerationActorService({
+      peek: vi.fn(() => ({
+        getSnapshot: () => ({ jobs: [] }),
+        enqueue,
+      })),
+      disposeMachine: vi.fn(),
+      beginFence: vi.fn(() => fence),
+    } as never);
+
+    const deletion = actorService.beginAppDeletion(7);
+    await actorService.prepareAppDeletion(deletion);
+    await actorService.finishAppDeletion(deletion, false);
+
+    expect(enqueue).toHaveBeenCalledWith({
+      type: "APP_DELETION_STARTED",
+      appId: 7,
+    });
+    expect(service.cancelAndSettleApp).toHaveBeenCalledWith(7);
+    expect(fence.abort).toHaveBeenCalledOnce();
+  });
+
   it("disposes the actor before reset continues", async () => {
     const disposeMachine = vi.fn(async () => undefined);
     const actorService = new ImageGenerationActorService({

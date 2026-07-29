@@ -392,7 +392,7 @@ describe("conformance diagnostics", () => {
         "unsubscribe won the race but bootstrap installed stale ownership",
         "schedule: subscribe -> authorize:pause -> unsubscribe -> resume",
         "identities: message=msg-1 request=req-1 invocation=inv-9 actor=actor-2 revision=7 window=window-a",
-        "resources(actual/expected): waiters=0/0 tasks=0/0 timers=0/0 subscriptions=1/0 routes=0/0 actors=1/0",
+        "resources(actual/expected): preparedRequests=0/0 admittedOperations=0/0 pendingReceipts=0/0 waiters=0/0 tasks=0/0 timers=0/0 subscriptions=1/0 leases=0/0 fences=0/0 trackedContinuations=0/0 producerSinks=0/0 routes=0/0 actors=1/0 retainedTerminalPayloads=0/0 rendererListeners=0/0 rendererRequestOwners=0/0",
         'record: {"scenario":"unsubscribe-during-bootstrap","payload":"[REDACTED]"}',
       ].join("\n"),
     );
@@ -578,7 +578,8 @@ describe("diff-first contract report", () => {
       "START: completion=tracked-completion revision=actor(required=true) retry=none acceptance=admission input=preserve-until-accepted",
     );
     expect(report).toContain("tiers: T0,T1,T2");
-    expect(report).toContain("wideningCasts:\n  app_run/definition.ts#1");
+    expect(report).toContain("wideningCasts:\n  chat_stream/definition.ts#1");
+    expect(report).not.toContain("app_run/definition.ts#1");
     expect(report.split("\n").length).toBeLessThan(100);
   });
 

@@ -232,12 +232,22 @@ export interface ConformanceIdentityRecord {
 }
 
 export interface ConformanceResourceCounts {
+  readonly preparedRequests?: number;
+  readonly admittedOperations?: number;
+  readonly pendingReceipts?: number;
   readonly waiters?: number;
   readonly tasks?: number;
   readonly timers?: number;
   readonly subscriptions?: number;
+  readonly leases?: number;
+  readonly fences?: number;
+  readonly trackedContinuations?: number;
+  readonly producerSinks?: number;
   readonly routes?: number;
   readonly actors?: number;
+  readonly retainedTerminalPayloads?: number;
+  readonly rendererListeners?: number;
+  readonly rendererRequestOwners?: number;
 }
 
 export interface ConformanceDiagnostic {
@@ -293,12 +303,22 @@ export function formatConformanceDiagnostic(
     "window",
   ] as const;
   const resourceOrder = [
+    "preparedRequests",
+    "admittedOperations",
+    "pendingReceipts",
     "waiters",
     "tasks",
     "timers",
     "subscriptions",
+    "leases",
+    "fences",
+    "trackedContinuations",
+    "producerSinks",
     "routes",
     "actors",
+    "retainedTerminalPayloads",
+    "rendererListeners",
+    "rendererRequestOwners",
   ] as const;
   const identities = identityOrder
     .map((key) => `${key}=${diagnostic.identities[key] ?? "-"}`)
@@ -316,6 +336,31 @@ export function formatConformanceDiagnostic(
     `resources(actual/expected): ${resources}`,
     `record: ${JSON.stringify(diagnostic.redactedRecord)}`,
   ].join("\n");
+}
+
+export interface OwnedResourceContext {
+  readonly owner: string;
+  readonly machine: string;
+  readonly key: string;
+  readonly generation: string | number;
+}
+
+/**
+ * Shared terminal/disposal assertion. Keep the full inventory at call sites so
+ * a newly owned resource cannot disappear behind an omitted optional field.
+ */
+export function assertNoOwnedResources(
+  context: OwnedResourceContext,
+  resources: Required<ConformanceResourceCounts>,
+): void {
+  const leaked = Object.entries(resources).filter(([, count]) => count !== 0);
+  if (leaked.length === 0) return;
+  throw new Error(
+    [
+      `Owned resources remain for owner=${context.owner} machine=${context.machine} key=${context.key} generation=${context.generation}`,
+      ...leaked.map(([resource, count]) => `  ${resource}=${count}`),
+    ].join("\n"),
+  );
 }
 
 export function formatContractReport(
