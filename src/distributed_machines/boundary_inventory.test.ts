@@ -13,6 +13,7 @@ import {
   nonRemoteDispatchOrEnqueueInventory,
   unsafeEscapeHatchInventory,
 } from "./boundary_inventory.test_support";
+import { defineFrameworkCoveredRemoteMachine } from "./definition";
 
 const SOURCE_ROOT = path.resolve(process.cwd(), "src");
 
@@ -665,13 +666,13 @@ function productionManifestCapabilityBoundaries(
   sourceFile: ts.SourceFile,
   sourcePath: string,
 ): SemanticBoundary[] {
-  if (sourcePath !== "ipc/services/distributed_machine_host.ts") return [];
   const boundaries: SemanticBoundary[] = [];
   visitSource(sourceFile, (node) => {
     if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)) {
       return;
     }
     if (
+      node.expression.text !== "createRemoteMachineManifest" &&
       node.expression.text !== "createProductionRemoteMachineManifest" &&
       node.expression.text !== "defineLegacyRemoteMachineCompatibility"
     ) {
@@ -1039,6 +1040,23 @@ describe("semantic boundary inventory helpers", () => {
 });
 
 describe("progressive distributed-machine inventories", () => {
+  it("runtime-rejects tracked protocol-v1 definitions without an operation adapter", () => {
+    expect(() =>
+      defineFrameworkCoveredRemoteMachine({
+        id: "widened-protocol-v1-definition",
+        remoteIntentDeclaration: {
+          intents: {
+            start: {
+              completion: "tracked-completion",
+            },
+          },
+        },
+      } as never),
+    ).toThrow(
+      "Framework-covered machine widened-protocol-v1-definition declares tracked completion without remoteOperation",
+    );
+  });
+
   it("inventories all six production distributed definitions", () => {
     assertInventory(
       "distributed definitions",
@@ -1063,6 +1081,7 @@ describe("progressive distributed-machine inventories", () => {
       "production manifest capabilities",
       collectProduction(productionManifestCapabilityBoundaries),
       [
+        "distributed_machines/remote_manifest.ts::call(createRemoteMachineManifest:definitions)",
         "ipc/services/distributed_machine_host.ts::call(createProductionRemoteMachineManifest:remoteMachineDefinitions)",
         "ipc/services/distributed_machine_host.ts::call(defineLegacyRemoteMachineCompatibility:chatStreamDefinition)",
         "ipc/services/distributed_machine_host.ts::call(defineLegacyRemoteMachineCompatibility:githubOpsDefinition)",

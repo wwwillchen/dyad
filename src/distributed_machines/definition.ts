@@ -437,6 +437,15 @@ export function defineFrameworkCoveredRemoteMachine<
       `Framework-covered machine ${definition.id} declares tracked completion without finalizeOperation`,
     );
   }
+  if (
+    hasTrackedCompletion &&
+    definition.remoteIntentDeclaration &&
+    !definition.remoteOperation
+  ) {
+    throw new Error(
+      `Framework-covered machine ${definition.id} declares tracked completion without remoteOperation`,
+    );
+  }
   return Object.freeze(
     definition,
   ) as unknown as FrameworkCoveredRemoteMachine<Definition>;
