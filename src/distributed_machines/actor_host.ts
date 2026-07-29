@@ -187,6 +187,7 @@ function createEventContinuation(
 
 interface HostedActorAdmission<Event> {
   capture(): KeyedAdmissionGeneration;
+  isCreateAllowed(generation: KeyedAdmissionGeneration): boolean;
   markUntrackedCommandCompletion(): void;
   assertDispatch(
     event: Event,
@@ -625,9 +626,13 @@ class HostedActor<
     );
   }
 
-  activate(): void {
+  activate(constructionGeneration: KeyedAdmissionGeneration): void {
     const bufferedEvents = this.bufferedEvents.splice(0);
     for (const buffered of bufferedEvents) {
+      // Factory-time events belong to construction admission, not to cleanup
+      // drain admission. If construction crossed a fence, suppress them all;
+      // the host's final create recheck will dispose the actor.
+      if (!this.admission.isCreateAllowed(constructionGeneration)) break;
       if (buffered.generation) {
         const advanceExpectedActor = (settled: ActorRuntimeMetadata) => {
           if (
@@ -1518,6 +1523,15 @@ export class ActorHost {
         this.options,
         {
           capture: () => admissionGate.captureGeneration(admissionKey),
+          isCreateAllowed: (generation) => {
+            try {
+              admissionGate.assertCreateAllowed(admissionKey, generation);
+              return true;
+            } catch (error) {
+              if (!(error instanceof KeyedAdmissionGateError)) throw error;
+              return false;
+            }
+          },
           markUntrackedCommandCompletion: () => {
             let keys = this.untrackedCommandKeys.get(definition.id);
             if (!keys) {
@@ -1640,7 +1654,7 @@ export class ActorHost {
       this.throwActorDisposing(definition.id);
     }
     keyed.set(key, actor);
-    actor.activate();
+    actor.activate(constructionGeneration);
     if (this.disposed) {
       settleConstruction();
       throw new ActorAdmissionError("host-disposed", "ActorHost is disposed");

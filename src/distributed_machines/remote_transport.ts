@@ -858,6 +858,13 @@ export class RemoteMachineTransport {
         if (outcome.error.code === "stale-actor-instance") {
           return this.rejected(envelope.messageId, "stale-actor");
         }
+        if (outcome.error.code === "stale-actor-revision") {
+          return this.rejected(
+            envelope.messageId,
+            definition.remoteIntent?.refusalMap.revisionChanged ??
+              "revision-conflict",
+          );
+        }
         return this.rejected(envelope.messageId, "host-disposing");
       }
       throw outcome.error;

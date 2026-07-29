@@ -394,7 +394,7 @@ describe("ActorHost keyed admission integration", () => {
         context.send({ type: "WORK" });
         fence = host.beginFence(definition, {
           key: context.key,
-          allowDuringDrain: () => false,
+          allowDuringDrain: (event) => event.type === "WORK",
         });
         return {};
       },

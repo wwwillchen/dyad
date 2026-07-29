@@ -172,7 +172,7 @@ export class KeyedAdmissionGate<Key, Event> {
       return;
     }
     this.assertCurrentGeneration(entry, generation);
-    this.throwDispatchBlocked(fence);
+    this.assertDispatchAllowed(key, event, generation);
   }
 
   track<Result>(key: Key, start: () => Promise<Result>): Promise<Result> {

@@ -1098,6 +1098,41 @@ describe("remote machine transport", () => {
     expect(actor?.getSnapshot()).toMatchObject({ value: 1 });
   });
 
+  it("maps a final host revision race to the revision refusal", async () => {
+    const { duplex, host, machine } = createHarness();
+    const renderer = duplex.connect();
+    const bootstrap = await renderer.subscribe(address());
+    const actor = host.peek(machine.id, "actor")!;
+    let reentered = false;
+    const fence = host.beginFence(machine, {
+      key: "actor",
+      allowDuringDrain(event) {
+        if (event.type === "SET" && !reentered) {
+          reentered = true;
+          actor.send({ type: "INCREMENT" });
+        }
+        return event.type === "SET" || event.type === "INCREMENT";
+      },
+    });
+
+    await expect(
+      renderer.dispatch(
+        dispatch(
+          { type: "SET", value: 10 },
+          {
+            expectedActorInstanceId: bootstrap.actorInstanceId,
+            expectedRevision: bootstrap.revision,
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "revision-conflict",
+    });
+    expect(actor.getSnapshot()).toMatchObject({ value: 1 });
+    expect(fence.abort()).toBe(true);
+  });
+
   it("rejects stale actor identities, malformed payloads, unknown routes, and unauthorized access", async () => {
     const protocolMismatch = vi.fn();
     const { duplex, host, machine } = createHarness({ protocolMismatch });

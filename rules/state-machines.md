@@ -571,7 +571,9 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   replacement before returning.
 - Construction continuations enrolled for fencing must settle on every
   post-activation exit, including host or machine disposal triggered by buffered
-  factory-time ingress, or a later fence can wait forever.
+  factory-time ingress, or a later fence can wait forever. Keep factory-buffered
+  events bound to that construction admission; if fencing publishes before
+  activation, do not reclassify them as cleanup allowed during draining.
 - If a scheduler retains an execution callback and then throws or rejects, the
   retained callback must be invalidated. Marking the batch failed while still
   allowing that callback to run lets command side effects escape after sealing.
