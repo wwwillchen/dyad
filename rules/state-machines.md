@@ -465,6 +465,37 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
 - Treat an operation ID's initiating window as a first-writer ownership claim.
   A duplicate intent from another window must not overwrite that routing entry,
   even if the duplicate transition will later be ignored.
+- Main-owned presentation routes use `OperationRouteRegistry` from
+  `src/window_infrastructure/main/`. Admit with the stable authoritative
+  operation ID and an owner containing stable owner/machine identities, an
+  optional window session, and an opaque route. Identical duplicates coalesce
+  (or replay while terminal retention remains); conflicts never replace the
+  first owner. The required `snapshotRoute` adapter must return an owned route
+  value so caller or inspector mutation cannot rewrite stored ownership, and
+  `sameRoute` must explicitly define equality for that opaque value. Both
+  adapters are trusted synchronous code; the registry fails closed if either
+  attempts to reenter ownership mutation, rejecting before stored ownership
+  changes even when the adapter catches the inner rejection. Runtime thenable
+  results from either adapter are rejected without assimilating arbitrary
+  thenables outside the guard.
+- `OperationRouteRegistry` pins unresolved routes behind a separately bounded
+  admission limit and evicts only terminal routes, in settlement order, behind
+  a declared finite retention count. Its constructor snapshots validated
+  policy values and callbacks; later caller mutation cannot change accounting.
+  Call `markTerminal(handle)` only at authoritative publication/settlement,
+  then release with the opaque generation-bearing handle or an explicit
+  owner/window/machine disposal method. Owner disposal is scoped by both
+  machine and owner identity. Duplicate terminal/release calls and stale
+  handles are no-ops.
+- Window destruction must call the registry's read-only
+  `inspectWindowRoutes()` before the domain explicitly chooses drop,
+  entity-window, or focused-window fallback. Do not wire window unregister to
+  `releaseWindow()`: unresolved ownership survives renderer loss until the
+  authoritative operation settles or the domain explicitly disposes it.
+- Use `inspect()` for route resource accounting and leak diagnostics; it
+  reports operation identity, owner, machine/window metadata, state, and
+  generation. Registry disposal is terminal and must leave the route count at
+  zero.
 - Authorization can run before revision admission. Keep any presentation
   ownership recorded there tentative and expire it unless an applied
   transition confirms the claim; rejected stale dispatches never reach actor
