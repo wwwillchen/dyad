@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type {
+  CommandExecutor,
+  ReservedCommandBatch,
+} from "@/state_machines/dispatcher";
 import {
   createFakeClock,
   createSequentialIdSource,
@@ -141,6 +145,65 @@ describe("ActorHost keyed admission integration", () => {
     await host.dispose();
   });
 
+  it("fails closed when a legacy command runner hands off detached work", async () => {
+    const detached = deferred();
+    const definition = machine({
+      id: "detached-command-compatibility",
+      runCommand(_context, emit) {
+        void detached.promise.then(() => {
+          emit({ type: "COMMAND_DONE" });
+        });
+      },
+    });
+    const { host } = harness(definition);
+    const actor = host.localRef(definition, "one");
+    actor.send({ type: "COMMAND" });
+
+    expect(() =>
+      host.beginFence(definition, {
+        key: "one",
+        allowDuringDrain: (event) => event.type === "COMMAND_DONE",
+      }),
+    ).toThrow(
+      expect.objectContaining({ code: "untracked-command-completion" }),
+    );
+
+    detached.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(actor.getSnapshot().events).toEqual(["COMMAND", "COMMAND_DONE"]);
+    await host.dispose();
+  });
+
+  it("does not seal over a detached command admitted during draining", async () => {
+    const detached = deferred();
+    const definition = machine({
+      id: "detached-command-during-drain",
+      runCommand(_context, emit) {
+        void detached.promise.then(() => {
+          emit({ type: "COMMAND_DONE" });
+        });
+      },
+    });
+    const { host } = harness(definition);
+    host.localRef(definition, "one");
+    const fence = host.beginFence(definition, {
+      key: "one",
+      allowDuringDrain: (event) => event.type === "COMMAND",
+    });
+
+    await expect(
+      host.dispatch(definition, "one", { type: "COMMAND" } as Event).settled,
+    ).resolves.toMatchObject({ kind: "applied" });
+    await expect(fence.seal()).rejects.toMatchObject({
+      code: "untracked-command-completion",
+    });
+    expect(fence.abort()).toBe(true);
+
+    detached.resolve();
+    await host.dispose();
+  });
+
   it("gates local, command, timer, producer, and creation ingress through one fence", async () => {
     const command = deferred();
     let context!: MachineHostContext<string, State, Event>;
@@ -192,11 +255,7 @@ describe("ActorHost keyed admission integration", () => {
     expect(await isSettled(sealing)).toBe(false);
     command.resolve();
     await sealing;
-    expect(actor.getSnapshot().events).toEqual([
-      "COMMAND",
-      "CLEANUP",
-      "COMMAND_DONE",
-    ]);
+    expect(actor.getSnapshot().events).toEqual(["COMMAND", "CLEANUP"]);
 
     actor.send({ type: "WORK" });
     producer.send({ type: "PRODUCER" });
@@ -204,11 +263,7 @@ describe("ActorHost keyed admission integration", () => {
     await expect(
       host.dispatch(definition, "one", { type: "CLEANUP" } as Event).settled,
     ).resolves.toMatchObject({ kind: "failed" });
-    expect(actor.getSnapshot().events).toEqual([
-      "COMMAND",
-      "CLEANUP",
-      "COMMAND_DONE",
-    ]);
+    expect(actor.getSnapshot().events).toEqual(["COMMAND", "CLEANUP"]);
 
     fence.commit();
     expect(host.inspectAdmission(definition.id, "one").phase).toBe("committed");
@@ -219,6 +274,67 @@ describe("ActorHost keyed admission integration", () => {
     const replacement = host.localRef(definition, "one");
     producer.send({ type: "PRODUCER" });
     expect(replacement.getSnapshot().events).toEqual([]);
+    await host.dispose();
+  });
+
+  it("invalidates scheduler callbacks that have not started when scheduling fails", async () => {
+    let delayedExecute!: CommandExecutor<Command>;
+    let delayedBatch!: ReservedCommandBatch<Command>;
+    let commandRuns = 0;
+    const base = machine({
+      id: "failed-scheduler",
+      runCommand() {
+        commandRuns += 1;
+      },
+    });
+    const definition: typeof base = {
+      ...base,
+      createScheduler: () => ({
+        schedule(batch, execute) {
+          delayedBatch = batch;
+          delayedExecute = execute;
+          throw new Error("scheduler retained callback before failing");
+        },
+      }),
+    };
+    const { host } = harness(definition);
+    const actor = host.localRef(definition, "one");
+    actor.send({ type: "COMMAND" });
+
+    const fence = host.beginFence(definition, {
+      key: "one",
+      allowDuringDrain: () => false,
+    });
+    await fence.seal();
+    await delayedExecute(delayedBatch.commands[0]!);
+
+    expect(commandRuns).toBe(0);
+    expect(actor.getSnapshot().events).toEqual(["COMMAND"]);
+    await host.dispose();
+  });
+
+  it("does not retain an orphan continuation for output sent after disposal", async () => {
+    let sink!: ActorEventSink<Event>;
+    const definition = machine({
+      id: "disposed-output",
+      runCommand(context) {
+        sink = context.captureSink();
+      },
+    });
+    const { host } = harness(definition);
+    const actor = host.localRef(definition, "one");
+    actor.send({ type: "COMMAND" });
+    await host.disposeKey(definition.id, "one");
+
+    sink.send({ type: "PRODUCER" });
+
+    expect(
+      (
+        actor as unknown as {
+          readonly pendingContinuations: readonly unknown[];
+        }
+      ).pendingContinuations,
+    ).toHaveLength(0);
     await host.dispose();
   });
 

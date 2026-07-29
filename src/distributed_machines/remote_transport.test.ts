@@ -232,7 +232,6 @@ describe("remote machine transport", () => {
     await first.subscribe(address());
     await second.subscribe(address());
     await first.subscribe(address());
-
     expect(transport.inspectSubscriptions()).toEqual([
       expect.objectContaining({
         machineId: "remote-test",
@@ -2200,5 +2199,90 @@ describe("remote machine transport", () => {
         failure: expect.objectContaining({ stage: "command" }),
       }),
     ]);
+  });
+
+  it("rejects legacy dispatch when revision policy replaces its captured gate generation", async () => {
+    let revisionPolicyReentry = () => undefined;
+    const base = createObjectKeyMachine();
+    const machine = {
+      ...base,
+      remote: {
+        ...base.remote,
+        revisionPolicy: () => {
+          revisionPolicyReentry();
+          return "allow-stale" as const;
+        },
+      },
+    } as AnyRemoteMachineDefinition;
+    const { duplex, host, transport } = createHarness({ machine });
+    const renderer = duplex.connect();
+    await renderer.subscribe(objectAddress());
+
+    revisionPolicyReentry = () => {
+      const fence = host.beginFence(machine, {
+        key: { id: "actor" },
+        allowDuringDrain: () => false,
+      });
+      expect(fence.abort()).toBe(true);
+    };
+
+    await expect(
+      renderer.dispatch({
+        ...dispatch({ type: "INCREMENT" }),
+        machineId: "object-key",
+      }),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "host-disposing",
+    });
+    expect(renderer.view(objectAddress())?.state).toEqual({ value: 0 });
+    transport.dispose();
+  });
+
+  it("revalidates the dispatching window after legacy revision policy reentry", async () => {
+    let revisionPolicyReentry = () => undefined;
+    const base = createObjectKeyMachine();
+    const machine = {
+      ...base,
+      remote: {
+        ...base.remote,
+        revisionPolicy: () => {
+          revisionPolicyReentry();
+          return "allow-stale" as const;
+        },
+      },
+    } as AnyRemoteMachineDefinition;
+    const { duplex, transport } = createHarness({ machine });
+    const first = duplex.connect();
+    const second = duplex.connect();
+    await first.subscribe(objectAddress());
+    await second.subscribe(objectAddress());
+
+    revisionPolicyReentry = () => {
+      revisionPolicyReentry = () => undefined;
+      void first.unsubscribe(objectAddress());
+    };
+    await expect(
+      first.dispatch({
+        ...dispatch({ type: "INCREMENT" }),
+        machineId: "object-key",
+      }),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "stale-actor",
+    });
+    expect(transport.inspectSubscriptions()).toEqual([
+      expect.objectContaining({
+        totalReferences: 1,
+        windows: new Map([[2, 1]]),
+      }),
+    ]);
+    await expect(
+      second.dispatch({
+        ...dispatch({ type: "INCREMENT" }),
+        machineId: "object-key",
+      }),
+    ).resolves.toMatchObject({ kind: "applied", revision: 1 });
+    transport.dispose();
   });
 });

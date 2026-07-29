@@ -75,7 +75,8 @@ export class ActorAdmissionError extends Error {
       | "machine-disposing"
       | "key-fenced"
       | "stale-admission-generation"
-      | "stale-actor-revision",
+      | "stale-actor-revision"
+      | "untracked-command-completion",
     message: string,
   ) {
     super(message);
@@ -186,6 +187,7 @@ function createEventContinuation(
 
 interface HostedActorAdmission<Event> {
   capture(): KeyedAdmissionGeneration;
+  markUntrackedCommandCompletion(): void;
   assertDispatch(
     event: Event,
     generation: KeyedAdmissionGeneration,
@@ -297,7 +299,18 @@ class HostedActor<
           const generation =
             this.startingCommandGeneration ?? this.admission.capture();
           const sink = this.captureSink(generation);
-          return runCommand(command, sink.send);
+          const execution = runCommand(command, sink.send);
+          if (
+            execution === undefined ||
+            typeof (execution as PromiseLike<void>).then !== "function"
+          ) {
+            // A legacy runner that returns void may have completed
+            // synchronously or may have handed off detached work. The host
+            // cannot distinguish those cases, so destructive fencing must
+            // fail closed until the definition adopts promise completion.
+            this.admission.markUntrackedCommandCompletion();
+          }
+          return execution;
         },
         beforeCommit,
         project: (snapshot) => {
@@ -397,7 +410,6 @@ class HostedActor<
     }
     if (
       expectedActor &&
-      this.admission.capture() === generation &&
       (expectedActor.actorInstanceId !== this.actorInstanceId ||
         expectedActor.snapshotRevision !== this.getMetadata().snapshotRevision)
     ) {
@@ -411,6 +423,9 @@ class HostedActor<
       });
     }
     if (this.isAdmissionClosed()) this.stopAdmission();
+    if (!this.dispatcher.isAccepting()) {
+      return settledTicket({ kind: "disposed" });
+    }
     const continuation = createEventContinuation(generation);
     this.pendingContinuations.push(continuation);
     try {
@@ -441,6 +456,7 @@ class HostedActor<
     );
     void ticket.settled
       .then((outcome) => {
+        this.removePendingContinuation(continuation);
         continuation.observeTicket(
           outcome as DispatchTicketOutcome<unknown, IgnoreReason>,
         );
@@ -494,7 +510,9 @@ class HostedActor<
         const continuation = this.currentContinuation;
         if (!continuation) return scheduler.schedule(batch, execute);
         continuation.observeBatch(batch.commands.length);
+        let acceptingExecutions = true;
         const trackedExecute: CommandExecutor<Command> = async (command) => {
+          if (!acceptingExecutions) return;
           let execution: Promise<void>;
           continuation.observeCommandStart();
           this.startingCommandGeneration = continuation.generation;
@@ -513,15 +531,22 @@ class HostedActor<
           const scheduled = scheduler.schedule(batch, trackedExecute);
           if (!scheduled) return;
           return Promise.resolve(scheduled).catch((failure) => {
+            acceptingExecutions = false;
             continuation.observeSchedulerFailure();
             throw failure;
           });
         } catch (failure) {
+          acceptingExecutions = false;
           continuation.observeSchedulerFailure();
           throw failure;
         }
       },
     };
+  }
+
+  private removePendingContinuation(continuation: EventContinuation): void {
+    const index = this.pendingContinuations.indexOf(continuation);
+    if (index !== -1) this.pendingContinuations.splice(index, 1);
   }
 
   enqueueExpected(
@@ -543,6 +568,31 @@ class HostedActor<
       });
     }
     return this.enqueue(event, dispatchContext);
+  }
+
+  enqueueExpectedCaptured(
+    event: Event,
+    generation: KeyedAdmissionGeneration,
+    expectedActor: ActorRuntimeMetadata,
+    dispatchContext?: DispatchContext,
+  ): ActorDispatchTicket<State, Reason> {
+    if (expectedActor.actorInstanceId !== this.actorInstanceId) {
+      return settledTicket({
+        kind: "failed",
+        stage: "before-admission",
+        error: new ActorAdmissionError(
+          "stale-actor-instance",
+          `Actor ${this.definition.id} was recreated`,
+        ),
+      });
+    }
+    return this.enqueueWithAdmission(
+      event,
+      dispatchContext,
+      generation,
+      true,
+      expectedActor,
+    );
   }
 
   stopAdmission(): void {
@@ -801,6 +851,7 @@ export class ActorHost {
     string,
     KeyedAdmissionGate<unknown, unknown>
   >();
+  private readonly untrackedCommandKeys = new Map<string, Set<unknown>>();
   private readonly registeredDefinitions = new WeakSet<object>();
   private readonly constructing = new Map<string, Set<unknown>>();
   private readonly constructionDisposals = new Map<
@@ -947,6 +998,12 @@ export class ActorHost {
       this.throwMachineDisposing(definition.id);
     }
     const admissionKey = this.admissionKey(definition, options.key);
+    if (this.hasUntrackedCommandCompletion(definition.id, admissionKey)) {
+      throw new ActorAdmissionError(
+        "untracked-command-completion",
+        `Actor ${definition.id} handed off command work without a completion promise`,
+      );
+    }
     const handle = this.gate(definition.id).beginFence({
       key: admissionKey,
       allowDuringDrain: options.allowDuringDrain as (event: unknown) => boolean,
@@ -954,7 +1011,15 @@ export class ActorHost {
     return {
       key: options.key,
       generation: handle.generation,
-      seal: handle.seal,
+      seal: async () => {
+        await handle.seal();
+        if (this.hasUntrackedCommandCompletion(definition.id, admissionKey)) {
+          throw new ActorAdmissionError(
+            "untracked-command-completion",
+            `Actor ${definition.id} handed off command work without a completion promise`,
+          );
+        }
+      },
       commit: handle.commit,
       abort: handle.abort,
       release: handle.release,
@@ -1157,6 +1222,66 @@ export class ActorHost {
     );
   }
 
+  /**
+   * Final synchronous admission for work prepared across an asynchronous
+   * authorization boundary. This never creates an actor and dispatches against
+   * the exact host, machine, key-fence, actor-instance, and actor-revision
+   * identities captured by the caller.
+   */
+  dispatchCaptured<
+    Id extends string,
+    Key,
+    State,
+    Event,
+    Command,
+    Reason extends IgnoreReason,
+  >(
+    definition: DistributedMachineDefinition<
+      Id,
+      Key,
+      State,
+      Event,
+      Command,
+      Reason
+    >,
+    key: Key,
+    event: Event,
+    generation: ActorHostAdmissionGeneration,
+    expectedActor: ActorRuntimeMetadata,
+    dispatchContext?: DispatchContext,
+  ): ActorDispatchTicket<State, Reason> {
+    this.assertRegistered(definition);
+    if (!this.isAdmissionGenerationCurrent(definition.id, key, generation)) {
+      return settledTicket({
+        kind: "failed",
+        stage: "before-admission",
+        error: new ActorAdmissionError(
+          "stale-admission-generation",
+          `Admission changed while dispatching ${definition.id}`,
+        ),
+      });
+    }
+    const actor = this.actors.get(definition.id)?.get(key) as
+      | HostedActor<Key, State, Event, Command, Reason>
+      | undefined;
+    if (!actor || actor.isDisposing()) {
+      return settledTicket({
+        kind: "failed",
+        stage: "before-admission",
+        error: new ActorAdmissionError(
+          "stale-actor-instance",
+          `Actor ${definition.id} no longer exists`,
+        ),
+      });
+    }
+    return actor.enqueueExpectedCaptured(
+      event,
+      generation.gate,
+      expectedActor,
+      dispatchContext,
+    );
+  }
+
   async disposeKey(
     machineId: string,
     key: unknown,
@@ -1237,6 +1362,7 @@ export class ActorHost {
     } finally {
       this.definitions.clear();
       this.machineLifecycleGenerations.clear();
+      this.untrackedCommandKeys.clear();
       for (const gate of this.admissionGates.values()) gate.dispose();
       this.admissionGates.clear();
     }
@@ -1321,6 +1447,14 @@ export class ActorHost {
         this.options,
         {
           capture: () => admissionGate.captureGeneration(admissionKey),
+          markUntrackedCommandCompletion: () => {
+            let keys = this.untrackedCommandKeys.get(definition.id);
+            if (!keys) {
+              keys = new Set();
+              this.untrackedCommandKeys.set(definition.id, keys);
+            }
+            keys.add(admissionKey);
+          },
           assertDispatch: (event, generation, captured) => {
             if (captured) {
               admissionGate.assertCapturedDispatchAllowed(
@@ -1490,6 +1624,13 @@ export class ActorHost {
     const gate = this.admissionGates.get(machineId);
     if (!gate) throw new Error(`Machine ${machineId} is not registered`);
     return gate;
+  }
+
+  private hasUntrackedCommandCompletion(
+    machineId: string,
+    admissionKey: unknown,
+  ): boolean {
+    return this.untrackedCommandKeys.get(machineId)?.has(admissionKey) === true;
   }
 
   private admissionKey<Key>(

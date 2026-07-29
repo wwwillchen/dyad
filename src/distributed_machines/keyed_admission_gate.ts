@@ -16,6 +16,7 @@ export class KeyedAdmissionGateError extends Error {
       | "dispatch-blocked"
       | "stale-generation"
       | "fence-active"
+      | "gate-disposed"
       | "invalid-fence-transition",
     message: string,
     options?: ErrorOptions,
@@ -45,6 +46,11 @@ interface FenceRecord<Event> {
   readonly tracked: Set<TrackedContinuation>;
   phase: Exclude<KeyedAdmissionPhase, "open">;
   sealing?: Promise<void>;
+  sealCancellation?: {
+    readonly promise: Promise<void>;
+    readonly cancel: () => void;
+  };
+  sealFailure?: KeyedAdmissionGateError;
 }
 
 interface KeyEntry<Event> {
@@ -232,6 +238,18 @@ export class KeyedAdmissionGate<Key, Event> {
   }
 
   dispose(): void {
+    for (const entry of this.entries.values()) {
+      entry.active.clear();
+      const fence = entry.fence;
+      if (fence) {
+        fence.tracked.clear();
+        fence.sealFailure = new KeyedAdmissionGateError(
+          "gate-disposed",
+          "The admission gate was disposed while the fence was sealing",
+        );
+        fence.sealCancellation?.cancel();
+      }
+    }
     this.entries.clear();
   }
 
@@ -250,6 +268,11 @@ export class KeyedAdmissionGate<Key, Event> {
     }
     if (record.phase === "sealed") return Promise.resolve();
     if (!record.sealing) {
+      let cancel!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        cancel = resolve;
+      });
+      record.sealCancellation = { promise, cancel };
       record.sealing = this.finishSeal(key, record);
     }
     return record.sealing;
@@ -263,10 +286,15 @@ export class KeyedAdmissionGate<Key, Event> {
     // events. Each loop includes work synchronously enrolled by the previous
     // continuation before publishing the sealed linearization point.
     while (record.tracked.size > 0) {
-      await Promise.allSettled(
-        [...record.tracked].map((continuation) => continuation.settled),
-      );
+      await Promise.race([
+        Promise.allSettled(
+          [...record.tracked].map((continuation) => continuation.settled),
+        ),
+        record.sealCancellation?.promise,
+      ]);
+      if (record.sealFailure) throw record.sealFailure;
     }
+    if (record.sealFailure) throw record.sealFailure;
     const entry = this.entries.get(key);
     if (entry?.fence === record && record.phase === "draining") {
       record.phase = "sealed";
@@ -297,6 +325,12 @@ export class KeyedAdmissionGate<Key, Event> {
       throw new KeyedAdmissionGateError(
         "invalid-fence-transition",
         "A committed fence cannot abort",
+      );
+    }
+    if (record.phase === "draining" && record.sealing) {
+      throw new KeyedAdmissionGateError(
+        "invalid-fence-transition",
+        "A fence cannot abort while sealing is in progress",
       );
     }
     entry.fence = undefined;

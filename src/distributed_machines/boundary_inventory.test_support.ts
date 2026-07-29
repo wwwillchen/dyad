@@ -33,7 +33,6 @@ export const unsafeEscapeHatchInventory = {
     "distributed_machines/react.ts::useDistributedMachine::access(actor.dispatch)",
     "distributed_machines/remote_client.ts::RemoteMachineClient.dispatch::call(this.connection.dispatch)",
     "distributed_machines/remote_client.ts::RemoteSnapshotStore.dispatch::call(this.client.dispatch)",
-    "distributed_machines/remote_transport.ts::RemoteMachineTransport.dispatchOnce::call(this.options.host.dispatch)",
     "github_ops/useGithubOps.ts::useGithubOps.dispatch::access(remote.dispatch)",
     "github_ops/useGithubOps.ts::useGithubOps.dispatch::call(remote.dispatch)",
     "github_ops/useGithubOps.ts::useGithubOps.dispatchConflictResolutionCancelled::access(remote.dispatch)",

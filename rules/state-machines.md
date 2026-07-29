@@ -554,3 +554,14 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   remove that work from the current fence's drain set even though no fence
   existed when tracking began. Test this with controlled pre-fence work; a
   tracker that cleans up only its originally captured fence can strand sealing.
+- A command runner that returns `void` after starting asynchronous work has not
+  provided a fence-trackable completion boundary. Until that compatibility path
+  adopts a completion promise or explicit tracked lease, destructive fencing
+  must fail closed rather than treating the handoff as command completion.
+- Prepared admission must revalidate after the last trusted synchronous domain
+  callback, not merely after asynchronous authorization. Revision policies,
+  intent conversion, and similar callbacks can reenter fencing, subscription,
+  or disposal code before final host admission.
+- If a scheduler retains an execution callback and then throws or rejects, the
+  retained callback must be invalidated. Marking the batch failed while still
+  allowing that callback to run lets command side effects escape after sealing.

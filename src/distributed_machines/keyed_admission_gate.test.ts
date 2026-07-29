@@ -178,6 +178,70 @@ describe("KeyedAdmissionGate", () => {
     expect(() => gate.assertCreateAllowed("one")).not.toThrow();
   });
 
+  it("cannot abort and reopen while an in-progress seal is draining", async () => {
+    const gate = new KeyedAdmissionGate<string, Event>();
+    const command = deferred();
+    const tracked = gate.track("one", () => command.promise);
+    const fence = gate.beginFence({
+      key: "one",
+      allowDuringDrain: () => false,
+    });
+
+    const sealing = fence.seal();
+    expect(await isSettled(sealing)).toBe(false);
+    expect(() => fence.abort()).toThrowError(
+      expect.objectContaining({
+        code: "invalid-fence-transition",
+      }),
+    );
+    expect(gate.inspect("one").phase).toBe("draining");
+    expect(() => gate.assertCreateAllowed("one")).toThrow(
+      KeyedAdmissionGateError,
+    );
+
+    command.resolve();
+    await tracked;
+    await sealing;
+    expect(gate.inspect("one").phase).toBe("sealed");
+    expect(fence.abort()).toBe(true);
+    expect(gate.inspect("one").phase).toBe("open");
+  });
+
+  it("cancels active seal waits and drops tracked references on disposal", async () => {
+    const gate = new KeyedAdmissionGate<string, Event>();
+    const command = deferred();
+    const tracked = gate.track("one", () => command.promise);
+    const fence = gate.beginFence({
+      key: "one",
+      allowDuringDrain: () => false,
+    });
+    const sealing = fence.seal();
+    expect(await isSettled(sealing)).toBe(false);
+
+    gate.dispose();
+
+    await expect(sealing).rejects.toMatchObject({
+      code: "gate-disposed",
+    });
+    expect(gate.inspectEntryCount()).toBe(0);
+    expect(fence.abort()).toBe(false);
+    expect(fence.commit()).toBe(false);
+    expect(fence.release()).toBe(false);
+    await expect(fence.seal()).resolves.toBeUndefined();
+
+    const replacement = gate.beginFence({
+      key: "one",
+      allowDuringDrain: () => false,
+    });
+    expect(fence.abort()).toBe(false);
+    expect(gate.inspect("one").phase).toBe("draining");
+    expect(replacement.abort()).toBe(true);
+
+    command.resolve();
+    await tracked;
+    expect(gate.inspectEntryCount()).toBe(1);
+  });
+
   it("models the complete destructive success and failure sequences", async () => {
     const gate = new KeyedAdmissionGate<string, Event>();
     const order: string[] = [];

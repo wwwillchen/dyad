@@ -769,12 +769,13 @@ export class RemoteMachineTransport {
         return this.rejected(envelope.messageId, "revision-conflict");
       }
       event = intent;
-      if (
-        prepared.consumed ||
-        this.subscriptions.get(address) !== prepared.admittedEntry ||
-        this.options.host.peek(definition.id, key) !== actor
-      ) {
-        return this.rejected(envelope.messageId, "stale-actor");
+      const finalRefusal = this.revalidateLegacyPreparedDispatch(
+        sender,
+        prepared,
+        dispatchActorMetadata,
+      );
+      if (finalRefusal) {
+        return this.rejected(envelope.messageId, finalRefusal);
       }
     } else {
       const decision = await this.authorizeDispatch(definition, {
@@ -820,11 +821,12 @@ export class RemoteMachineTransport {
       }
     }
     prepared.consumed = true;
-    const ticket = this.options.host.dispatch(
+    const ticket = this.options.host.dispatchCaptured(
       definition,
       key,
       event,
-      dispatchActorMetadata.actorInstanceId,
+      prepared.lifecycleGeneration,
+      dispatchActorMetadata,
       {
         messageId: envelope.messageId,
         correlationId: envelope.correlationId,
@@ -910,6 +912,51 @@ export class RemoteMachineTransport {
         `Remote authorization mutated prepared intent for ${prepared.definition.id}`,
       );
     }
+  }
+
+  private revalidateLegacyPreparedDispatch(
+    sender: RemoteTransportEndpoint,
+    prepared: PreparedDispatchIdentity,
+    stabilizedActorMetadata: ActorRuntimeMetadata,
+  ): MachineRejectedReason | undefined {
+    const { definition, address, admittedEntry, actor, key } = prepared;
+    if (
+      prepared.consumed ||
+      this.disposed ||
+      !this.isCurrentSender(sender, prepared.windowSessionId)
+    ) {
+      return "host-disposing";
+    }
+    if (
+      this.subscriptions.get(address) !== admittedEntry ||
+      !admittedEntry.windows.has(sender.id)
+    ) {
+      return "stale-actor";
+    }
+    if (
+      !this.options.host.isAdmissionGenerationCurrent(
+        definition.id,
+        key,
+        prepared.lifecycleGeneration,
+      )
+    ) {
+      return "host-disposing";
+    }
+    const current = this.options.host.peek<unknown, unknown, string>(
+      definition.id,
+      key,
+    );
+    if (!current || current !== actor) return "stale-actor";
+    const currentMetadata = current.getMetadata();
+    if (
+      currentMetadata.actorInstanceId !==
+        stabilizedActorMetadata.actorInstanceId ||
+      currentMetadata.snapshotRevision !==
+        stabilizedActorMetadata.snapshotRevision
+    ) {
+      return "revision-conflict";
+    }
+    return undefined;
   }
 
   private revalidatePreparedDispatch(

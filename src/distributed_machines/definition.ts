@@ -62,6 +62,11 @@ export interface ActorEventSink<Event> {
   send(event: Event): void;
 }
 
+/**
+ * A returned Promise must span the complete command continuation. Returning
+ * void is retained for compatibility, but ActorHost must reject destructive
+ * fencing if that legacy runner may have detached asynchronous work.
+ */
 export type CommandRunner<Command, Event> = (
   command: Command,
   emit: (event: Event) => void,
