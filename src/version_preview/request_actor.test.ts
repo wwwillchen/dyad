@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { PreparedRequestScope } from "@/distributed_machines/prepared_request";
 import { RemoteMachineTransportError } from "@/distributed_machines/remote_client";
-import { createVersionPreviewRequestActor } from "./request_actor";
+import {
+  createVersionPreviewRequestActor,
+  observeVersionPreviewAdmission,
+} from "./request_actor";
 
 describe("createVersionPreviewRequestActor", () => {
   it("registers before dispatch and preserves observed revision and identity on retry", async () => {
@@ -83,17 +86,19 @@ describe("createVersionPreviewRequestActor", () => {
       },
       observed,
     });
+    const onAdmitted = vi.fn();
+    const observedAdmission = observeVersionPreviewAdmission(
+      request,
+      onAdmitted,
+    );
 
     expect(scope.inspectActiveCount()).toBe(1);
     await expect(request.admission).resolves.toMatchObject({
       kind: "disconnected",
       retryable: true,
     });
-    expect(request.retry.kind).toBe("enabled");
-    if (request.retry.kind !== "enabled") throw new Error("retry unavailable");
-    await expect(request.retry.dispatch()).resolves.toMatchObject({
-      kind: "admitted",
-    });
+    await expect(observedAdmission).resolves.toBeUndefined();
+    expect(onAdmitted).toHaveBeenCalledOnce();
     await expect(request.settled).resolves.toEqual({
       kind: "completed",
       outcome: { kind: "succeeded", operation: "select-version" },
@@ -109,6 +114,62 @@ describe("createVersionPreviewRequestActor", () => {
     expect(releases.every((release) => release.mock.calls.length === 1)).toBe(
       true,
     );
+    expect(scope.inspectActiveCount()).toBe(0);
+  });
+
+  it("detaches after an exhausted automatic retry instead of leaving settlement pending", async () => {
+    const scope = new PreparedRequestScope("window-session");
+    const release = vi.fn();
+    const actor = {
+      retain: vi.fn(() => ({
+        ready: Promise.resolve(),
+        refresh: vi.fn(async () => undefined),
+        release,
+      })),
+      getView: vi.fn(() => ({
+        state: {
+          appId: 7,
+          revision: 0,
+          state: { type: "closed" },
+          activeInvocationRef: null,
+          lastSettlement: null,
+        },
+        connection: "disconnected",
+        snapshot: { kind: "unavailable" },
+      })),
+      subscribe: vi.fn(() => () => undefined),
+      subscribeOperationOutcome: vi.fn(() => () => undefined),
+      dispatch: vi
+        .fn()
+        .mockRejectedValue(
+          new RemoteMachineTransportError("disconnected", "connection lost"),
+        ),
+    };
+    const requestActor = createVersionPreviewRequestActor(
+      { actor: vi.fn(() => actor) } as never,
+      scope,
+      7,
+    );
+    const request = requestActor.request({
+      intent: {
+        type: "SELECT_VERSION",
+        versionId: "abc123",
+        operationId: "select",
+      },
+    });
+
+    await expect(
+      observeVersionPreviewAdmission(request, vi.fn()),
+    ).resolves.toBeUndefined();
+    await expect(request.settled).resolves.toEqual({
+      kind: "detached",
+      authoritativeOperationMayContinue: true,
+    });
+    expect(actor.dispatch).toHaveBeenCalledTimes(2);
+    expect(actor.dispatch.mock.calls[1]?.[1].requestIdentity).toEqual(
+      actor.dispatch.mock.calls[0]?.[1].requestIdentity,
+    );
+    expect(release).toHaveBeenCalledTimes(2);
     expect(scope.inspectActiveCount()).toBe(0);
   });
 });

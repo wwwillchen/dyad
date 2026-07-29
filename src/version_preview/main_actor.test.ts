@@ -9,8 +9,10 @@ import {
   createSequentialIdSource,
 } from "@/state_machines/testing";
 import { TwoWindowHarness } from "@/testing/two_window_harness";
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { versionPreviewDefinition } from "@/ipc/services/version_preview_definition";
 import { versionPreviewClientDefinition } from "./client_definition";
+import { versionPreviewOperationRegistry } from "./operations";
 import { versionPreviewKey } from "./transport";
 import { isMutatingState, type RestoreRecovery } from "./state";
 
@@ -33,8 +35,8 @@ const presentation = vi.hoisted(() => ({
   forget: vi.fn(),
   confirm: vi.fn(),
   settle: vi.fn(),
-  releaseApp: vi.fn(),
-  releaseWindow: vi.fn(),
+  settleApp: vi.fn(),
+  settleActor: vi.fn(),
 }));
 const invalidations = vi.hoisted(() => ({ publish: vi.fn() }));
 const appRun = vi.hoisted(() => ({
@@ -194,6 +196,22 @@ describe("version_preview main actor", () => {
     persistence.checkpointRestore.mockImplementation(() => undefined);
   });
 
+  it("preserves a classified dispatch refusal without collapsing it to auth", async () => {
+    const refusal = new DyadError(
+      "Version preview is fenced",
+      DyadErrorKind.Precondition,
+    );
+    service.assertReadyForIntent.mockImplementationOnce(() => {
+      throw refusal;
+    });
+
+    await expect(
+      versionPreviewDefinition.remoteIntent!.authorizeDispatch({
+        key: versionPreviewKey(7),
+      } as never),
+    ).resolves.toEqual({ kind: "deny", error: refusal });
+  });
+
   it("continues checkout after the initiating window closes and reattaches", async () => {
     const origin = deferred<{ branch: string | null }>();
     const checkout = deferred<{
@@ -238,6 +256,8 @@ describe("version_preview main actor", () => {
 
     harness.releaseA();
     harness.clientA.dispose();
+    await flush();
+    expect(presentation.settle).not.toHaveBeenCalledWith("preview-1");
     checkout.resolve({
       repositoryOutcome: "target-applied",
       notification: null,
@@ -253,7 +273,7 @@ describe("version_preview main actor", () => {
         checkedOutVersionId: "abc123",
       },
     });
-    expect(presentation.forget).toHaveBeenCalledWith("preview-1");
+    expect(presentation.settle).toHaveBeenCalledWith("preview-1");
 
     harness.releaseB();
     harness.clientB.dispose();
@@ -325,8 +345,8 @@ describe("version_preview main actor", () => {
       operationId: "close-1",
     });
     expect(closeReceipt.kind).toBe("applied");
-    expect(presentation.forget).toHaveBeenCalledWith("close-1");
-    expect(presentation.forget).not.toHaveBeenCalledWith("preview-1");
+    expect(presentation.settle).toHaveBeenCalledWith("close-1");
+    expect(presentation.settle).not.toHaveBeenCalledWith("preview-1");
     await flush();
     checkout.resolve({
       repositoryOutcome: "target-applied",
@@ -354,7 +374,7 @@ describe("version_preview main actor", () => {
     });
     await flush();
     expect(harness.actorA.getSnapshot().state.type).toBe("closed");
-    expect(presentation.forget).toHaveBeenCalledWith("preview-1");
+    expect(presentation.settle).toHaveBeenCalledWith("preview-1");
 
     harness.releaseA();
     harness.releaseB();
@@ -384,8 +404,8 @@ describe("version_preview main actor", () => {
       state: { type: "closed" },
       activeInvocationRef: null,
     });
-    expect(presentation.forget).toHaveBeenCalledWith("preview-1");
-    expect(presentation.forget).toHaveBeenCalledWith("close-1");
+    expect(presentation.settle).toHaveBeenCalledWith("preview-1");
+    expect(presentation.settle).toHaveBeenCalledWith("close-1");
 
     origin.resolve({ branch: "feature/origin" });
     await flush();
@@ -413,6 +433,9 @@ describe("version_preview main actor", () => {
     presentation.forget.mockImplementation((operationId: string) => {
       routes.delete(operationId);
     });
+    presentation.settle.mockImplementation((operationId: string) => {
+      routes.delete(operationId);
+    });
     const harness = createHarness();
     await harness.actorA.resync();
 
@@ -433,6 +456,7 @@ describe("version_preview main actor", () => {
     } finally {
       presentation.recordInitiator.mockImplementation(() => undefined);
       presentation.forget.mockImplementation(() => undefined);
+      presentation.settle.mockImplementation(() => undefined);
       harness.releaseA();
       harness.releaseB();
       harness.clientA.dispose();
@@ -441,14 +465,84 @@ describe("version_preview main actor", () => {
     }
   });
 
-  it("publishes an origin-resolution error before releasing its initiator", async () => {
+  it("supersedes only the matching invocation in the owning actor scope", async () => {
+    service.resolveOriginBranch.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    const harness = createHarness();
+    const otherActor = harness.clientA.actor(
+      versionPreviewClientDefinition,
+      versionPreviewKey(8),
+    );
+    const dispatch = otherActor.dispatch;
+    (otherActor as { dispatch: typeof otherActor.dispatch }).dispatch = (
+      event,
+      options,
+    ) => {
+      const request = ++harnessRequestSequence;
+      const view = otherActor.getView();
+      return dispatch(event, {
+        ...options,
+        expected:
+          view.snapshot.kind === "available"
+            ? view.snapshot.observedRevision
+            : undefined,
+        requestIdentity: {
+          requestId: `version-preview-test-request:${request}` as never,
+          messageId: `version-preview-test-message:${request}` as never,
+          idempotencyKey:
+            `version-preview-test-idempotency:${request}` as never,
+          windowSessionId: "renderer-test",
+        },
+      });
+    };
+    const releaseOther = otherActor.subscribe(() => undefined);
+    const unresolvedBefore =
+      versionPreviewOperationRegistry.inspect().unresolved;
+    await harness.actorA.resync();
+    await otherActor.resync();
+
+    try {
+      await harness.actorA.dispatch({
+        type: "SELECT_VERSION",
+        versionId: "first",
+        operationId: "shared-operation",
+      });
+      await otherActor.dispatch({
+        type: "SELECT_VERSION",
+        versionId: "replacement",
+        operationId: "shared-operation",
+      });
+      expect(versionPreviewOperationRegistry.inspect().unresolved).toBe(
+        unresolvedBefore + 2,
+      );
+
+      await otherActor.dispatch({
+        type: "CLOSE",
+        operationId: "close-replacement",
+      });
+
+      expect(versionPreviewOperationRegistry.inspect().unresolved).toBe(
+        unresolvedBefore + 1,
+      );
+    } finally {
+      releaseOther();
+      harness.releaseA();
+      harness.releaseB();
+      harness.clientA.dispose();
+      harness.clientB.dispose();
+      harness.transport.dispose();
+    }
+  });
+
+  it("retains a settled route while publishing an origin-resolution error", async () => {
     service.resolveOriginBranch.mockResolvedValue({ branch: null });
     const presentationOrder: string[] = [];
     presentation.publishError.mockImplementationOnce(() => {
       presentationOrder.push("publish-error");
     });
-    presentation.forget.mockImplementation((operationId: string) => {
-      if (operationId === "preview-1") presentationOrder.push("forget");
+    presentation.settle.mockImplementation((operationId: string) => {
+      if (operationId === "preview-1") presentationOrder.push("settle");
     });
     const harness = createHarness();
     await harness.actorA.resync();
@@ -466,7 +560,7 @@ describe("version_preview main actor", () => {
         "preview-1",
         expect.stringMatching(/current Git branch/i),
       );
-      expect(presentationOrder).toEqual(["publish-error", "forget"]);
+      expect(presentationOrder).toEqual(["settle", "publish-error"]);
       expect(harness.actorA.getSnapshot().state.type).toBe("browsing");
     } finally {
       harness.releaseA();

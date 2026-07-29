@@ -22,7 +22,10 @@ import {
   versionPreviewKey,
   type VersionPreviewIntentEvent,
 } from "@/version_preview/transport";
-import { useVersionPreviewRequestActor } from "@/version_preview/request_actor";
+import {
+  observeVersionPreviewAdmission,
+  useVersionPreviewRequestActor,
+} from "@/version_preview/request_actor";
 import type { VersionPreviewOperationOutcome } from "@/version_preview/operations";
 import type { PreparedRequestSettlement } from "@/distributed_machines/prepared_request";
 
@@ -120,9 +123,12 @@ export function useVersionPreview(appId: number | null): {
         intent,
         observed: observedRevision,
       });
-      void prepared.admission.then((admission) => {
-        if (admission.kind === "admitted") input.onAdmitted();
-      });
+      // mutate() owns authoritative error/settlement handling. This observer
+      // only commits local presentation after admission, and consumes its own
+      // rejection so a failed admission cannot become an unhandled promise.
+      void observeVersionPreviewAdmission(prepared, input.onAdmitted).catch(
+        () => undefined,
+      );
       return prepared;
     },
     classifyOutcome: (outcome) => {
@@ -288,7 +294,8 @@ export function useVersionPreview(appId: number | null): {
   );
   const send = useCallback(
     (event: PreviewEvent) => {
-      void dispatch(event, false).catch(() => {
+      void dispatch(event, false).catch((error) => {
+        if (error instanceof VersionPreviewExpectedSettlementError) return;
         showError(
           "Version controls are temporarily unavailable. Please try again.",
         );
@@ -322,6 +329,43 @@ export function useVersionPreview(appId: number | null): {
   };
 }
 
+type VersionPreviewExpectedSettlement =
+  | Extract<
+      PreparedRequestSettlement<
+        VersionPreviewOperationOutcome,
+        import("@/version_preview/request_actor").VersionPreviewRefusal
+      >,
+      { readonly kind: "completed" }
+    >
+  | {
+      readonly kind: "not-admitted";
+      readonly reason: "refused" | "disposed";
+      readonly refusal?: import("@/version_preview/request_actor").VersionPreviewRefusal;
+    };
+
+export class VersionPreviewExpectedSettlementError extends Error {
+  readonly name = "VersionPreviewExpectedSettlementError";
+
+  constructor(readonly settlement: VersionPreviewExpectedSettlement) {
+    super(expectedSettlementMessage(settlement));
+  }
+}
+
+function expectedSettlementMessage(
+  settlement: VersionPreviewExpectedSettlement,
+): string {
+  if (settlement.kind === "not-admitted") {
+    return `The version operation was not accepted: ${settlement.refusal ?? settlement.reason}`;
+  }
+  if (settlement.outcome.kind === "failed") {
+    return settlement.outcome.error.message;
+  }
+  if (settlement.outcome.kind === "cancelled") {
+    return `The version operation was ${settlement.outcome.reason}`;
+  }
+  return "The version operation did not complete";
+}
+
 function settlementError(
   settlement: PreparedRequestSettlement<
     VersionPreviewOperationOutcome,
@@ -329,6 +373,15 @@ function settlementError(
   >,
 ): Error {
   if (settlement.kind === "not-admitted") {
+    if (settlement.reason !== "disconnected") {
+      return new VersionPreviewExpectedSettlementError({
+        kind: "not-admitted",
+        reason: settlement.reason,
+        ...(settlement.refusal === undefined
+          ? {}
+          : { refusal: settlement.refusal }),
+      });
+    }
     return new Error(
       `The version operation was not accepted: ${settlement.refusal ?? settlement.reason}`,
     );
@@ -336,11 +389,5 @@ function settlementError(
   if (settlement.kind === "detached") {
     return new Error("The version operation detached before completion");
   }
-  if (settlement.outcome.kind === "failed") {
-    return new Error(settlement.outcome.error.message);
-  }
-  if (settlement.outcome.kind === "cancelled") {
-    return new Error(`The version operation was ${settlement.outcome.reason}`);
-  }
-  return new Error("The version operation did not complete");
+  return new VersionPreviewExpectedSettlementError(settlement);
 }

@@ -48,6 +48,16 @@ export type VersionPreviewCorrelatedOutcome = CorrelatedOperationOutcome<
   VersionPreviewInvocationRef
 >;
 
+const versionPreviewFailureSchema = z.preprocess(
+  (value) => (value instanceof Error ? undefined : value),
+  z
+    .object({
+      message: z.string(),
+      kind: z.enum(DyadErrorKind).optional(),
+    })
+    .strict(),
+);
+
 export const VersionPreviewOperationOutcomeSchema = z.discriminatedUnion(
   "kind",
   [
@@ -78,12 +88,7 @@ export const VersionPreviewOperationOutcomeSchema = z.discriminatedUnion(
           "restore-to-message",
           "retry-return",
         ]),
-        error: z
-          .object({
-            message: z.string(),
-            kind: z.enum(DyadErrorKind).optional(),
-          })
-          .strict(),
+        error: versionPreviewFailureSchema,
       })
       .strict(),
     z

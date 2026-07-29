@@ -87,8 +87,12 @@ describe("VersionPreviewPresentationService", () => {
     expect(survivor.send).not.toHaveBeenCalled();
     expect(windows.routePresentation).not.toHaveBeenCalled();
     expect(service.inspect().unresolved).toBe(1);
-    expect(service.releaseWindow("initiator")).toBe(1);
-    expect(service.inspect().total).toBe(0);
+    service.settle("operation");
+    expect(service.inspect()).toMatchObject({
+      unresolved: 0,
+      terminal: 1,
+      total: 1,
+    });
   });
 
   it("isolates endpoint send failures from post-mutation lifecycle work", () => {
@@ -143,5 +147,50 @@ describe("VersionPreviewPresentationService", () => {
       terminal: 1,
       total: 1,
     });
+  });
+
+  it("retains closed-window routes until authoritative actor settlement", () => {
+    const windows = {
+      endpointForSession: vi.fn(() => undefined),
+      routePresentation: vi.fn(),
+    };
+    const service = new VersionPreviewPresentationService(windows as never);
+
+    service.recordInitiator(7, "closed-window-operation", "closed-window");
+
+    expect(service.inspect().unresolved).toBe(1);
+    expect(
+      service.originEndpointFor("closed-window-operation"),
+    ).toBeUndefined();
+    expect(service.inspect().unresolved).toBe(1);
+    service.settle("closed-window-operation");
+    expect(service.inspect()).toMatchObject({
+      unresolved: 0,
+      terminal: 1,
+    });
+  });
+
+  it("does not settle a replacement actor's route when a stale actor disposes", () => {
+    const windows = {
+      endpointForSession: vi.fn(() => undefined),
+      routePresentation: vi.fn(),
+    };
+    const service = new VersionPreviewPresentationService(windows as never);
+
+    service.recordInitiator(7, "stale-operation", "window-a", "actor-old");
+    service.recordInitiator(
+      7,
+      "replacement-operation",
+      "window-b",
+      "actor-new",
+    );
+
+    expect(service.settleActor("actor-old")).toBe(1);
+    expect(service.inspect()).toMatchObject({
+      unresolved: 1,
+      terminal: 1,
+    });
+    expect(service.originEndpointFor("replacement-operation")).toBeUndefined();
+    expect(service.settleActor("actor-new")).toBe(1);
   });
 });

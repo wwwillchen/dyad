@@ -177,6 +177,9 @@ export const versionPreviewConformance = defineMachineConformance({
     "stale-release",
     "bootstrap-generation-regression",
     "error-classification-collapse",
+    "error-instance-wire-outcome",
+    "cross-actor-supersession",
+    "closed-window-route-terminal-retention",
     "abort-terminal-settlement",
   ],
 });

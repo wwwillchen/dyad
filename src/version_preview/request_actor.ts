@@ -6,6 +6,7 @@ import {
 } from "@/distributed_machines/remote_client";
 import { createRemoteRequestActor } from "@/distributed_machines/request_actor";
 import type { PreparedRequest } from "@/distributed_machines/prepared_request";
+import type { PreparedAdmission } from "@/distributed_machines/prepared_request";
 import type { MachineDispatchReceipt } from "@/distributed_machines/remote_protocol";
 import { uuidIdSource } from "@/state_machines/clock";
 import { useRemoteMachineClient } from "@/distributed_machines/react";
@@ -45,6 +46,41 @@ export interface VersionPreviewRequestActor {
   >;
 }
 
+/**
+ * Observes admission for renderer presentation and performs one stable-identity
+ * retry when delivery may have succeeded but the receipt was lost.
+ *
+ * A second disconnect is detached explicitly so the request's settlement
+ * cannot remain unresolved forever after the automatic retry is exhausted.
+ */
+export async function observeVersionPreviewAdmission(
+  prepared: PreparedRequest<
+    VersionPreviewAdmission,
+    VersionPreviewOperationOutcome,
+    VersionPreviewRefusal
+  >,
+  onAdmitted: (admission: VersionPreviewAdmission) => void,
+): Promise<void> {
+  let admission: PreparedAdmission<
+    VersionPreviewAdmission,
+    VersionPreviewRefusal
+  > = await prepared.admission;
+  if (
+    admission.kind === "disconnected" &&
+    admission.retryable &&
+    prepared.retry.kind === "enabled"
+  ) {
+    admission = await prepared.retry.dispatch();
+  }
+  if (admission.kind === "admitted") {
+    onAdmitted(admission.admission);
+    return;
+  }
+  if (admission.kind === "disconnected" && admission.retryable) {
+    prepared.detach();
+  }
+}
+
 export function createVersionPreviewRequestActor(
   client: RemoteMachineClient,
   scope: import("@/distributed_machines/prepared_request").PreparedRequestScope,
@@ -79,24 +115,21 @@ export function createVersionPreviewRequestActor(
       JSON.stringify({ appId, intent: input.intent, observed: input.observed }),
     selectOutcome: (view, requestId) => {
       const settlement = view.state.lastSettlement;
-      if (
-        !settlement ||
-        (settlement.requestId !== requestId &&
-          settlement.operationId !== requestId)
-      ) {
+      // Protocol-v1 snapshots retain only the historical operation identity.
+      // Current correlated requests settle through the authoritative operation
+      // outcome channel; this fallback remains solely for a matching legacy
+      // snapshot.
+      if (!settlement || settlement.operationId !== requestId) {
         return undefined;
       }
       return settlement.outcome === "succeeded"
         ? {
             kind: "succeeded" as const,
-            operation: settlement.operation ?? "select-version",
-            ...(settlement.cleanupStarted === undefined
-              ? {}
-              : { cleanupStarted: settlement.cleanupStarted }),
+            operation: "select-version" as const,
           }
         : {
             kind: "failed" as const,
-            operation: settlement.operation ?? "select-version",
+            operation: "select-version" as const,
             error: settlement.error ?? {
               message: "Version operation failed",
             },

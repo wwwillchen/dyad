@@ -18,6 +18,7 @@ import { REMOTE_MACHINE_PROTOCOL_VERSION } from "@/distributed_machines/remote_p
 import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 import { ignore } from "@/state_machines/types";
+import { sameInvocationRef } from "@/state_machines/invocation_ref";
 import {
   CLOSED_STATE,
   type PreviewCommand,
@@ -817,15 +818,11 @@ function createCommandRunner(
       }
       case "notify-error":
         if (invocationRef) {
-          try {
-            versionPreviewPresentationService.publishError(
-              appId,
-              invocationRef.operationId,
-              command.message,
-            );
-          } finally {
-            versionPreviewPresentationService.forget(invocationRef.operationId);
-          }
+          versionPreviewPresentationService.publishError(
+            appId,
+            invocationRef.operationId,
+            command.message,
+          );
         }
         return Promise.resolve();
       case "notify-recovery":
@@ -882,285 +879,275 @@ type Definition = DistributedMachineDefinition<
   >;
 };
 
-export const versionPreviewDefinition = defineFrameworkCoveredRemoteMachine({
-  id: VERSION_PREVIEW_MACHINE_ID,
-  host: "main",
-  initialState: (key) => ({
-    state: versionPreviewPersistence.load(key.appId),
-    activeInvocationRef: null,
-    lastSettlement: null,
-    windowInterestSessionIds: [],
-  }),
-  transition: (state, event, key) => transitionActor(key, state, event),
-  createScheduler: () => ({
-    schedule(batch, execute) {
-      for (const command of batch.commands) void execute(command);
+export const versionPreviewDefinition =
+  defineFrameworkCoveredRemoteMachine<Definition>({
+    id: VERSION_PREVIEW_MACHINE_ID,
+    host: "main",
+    initialState: (key) => ({
+      state: versionPreviewPersistence.load(key.appId),
+      activeInvocationRef: null,
+      lastSettlement: null,
+      windowInterestSessionIds: [],
+    }),
+    transition: (state, event, key) => transitionActor(key, state, event),
+    createScheduler: () => ({
+      schedule(batch, execute) {
+        for (const command of batch.commands) void execute(command);
+      },
+    }),
+    createCommandRunner: (context) => {
+      const runner = createCommandRunner(context);
+      if (context.getSnapshot().state.type !== "closed") {
+        versionPreviewService.beginReconciliation(context.key.appId);
+        queueMicrotask(() => context.send({ type: "RECONCILE_REQUESTED" }));
+      }
+      return runner;
     },
-  }),
-  createCommandRunner: (context) => {
-    const runner = createCommandRunner(context);
-    if (context.getSnapshot().state.type !== "closed") {
-      versionPreviewService.beginReconciliation(context.key.appId);
-      queueMicrotask(() => context.send({ type: "RECONCILE_REQUESTED" }));
-    }
-    return runner;
-  },
-  createObserver: (context) => ({
-    onTransitionApplied: ({ previous, state, event, commands }) => {
-      versionPreviewPersistence.schedule(context.key.appId, state.state);
-      const previousOperationId =
-        previous.activeInvocationRef?.operationId ?? null;
-      const activeOperationId = state.activeInvocationRef?.operationId ?? null;
-      if ("operationId" in event) {
-        versionPreviewPresentationService.confirm(event.operationId);
-        if (event.operationId !== activeOperationId) {
-          versionPreviewPresentationService.forget(event.operationId);
+    createObserver: (context) => ({
+      onTransitionApplied: ({ previous, state }) => {
+        versionPreviewPersistence.schedule(context.key.appId, state.state);
+        if (
+          state.lastSettlement &&
+          state.lastSettlement.requestId === undefined &&
+          state.lastSettlement !== previous.lastSettlement
+        ) {
+          versionPreviewPresentationService.settle(
+            state.lastSettlement.operationId,
+          );
         }
-      }
-      if (
-        previousOperationId !== null &&
-        previousOperationId !== activeOperationId &&
-        !commands.some(
-          ({ command, invocationRef }) =>
-            command.type === "notify-error" &&
-            invocationRef?.operationId === previousOperationId,
-        )
-      ) {
-        versionPreviewPresentationService.forget(previousOperationId);
-      }
-      if (
-        previous.activeInvocationRef &&
-        previous.activeInvocationRef.operationId !==
-          state.activeInvocationRef?.operationId
-      ) {
-        versionPreviewOperationRegistry.settleSuperseded(
-          (identity) =>
-            identity.invocationRef.operationId ===
-            previous.activeInvocationRef?.operationId,
+        const previousOperationId =
+          previous.activeInvocationRef?.operationId ?? null;
+        if (
+          previous.activeInvocationRef &&
+          previous.activeInvocationRef.operationId !==
+            state.activeInvocationRef?.operationId
+        ) {
+          const settled = versionPreviewOperationRegistry.settleSuperseded(
+            (identity) =>
+              sameInvocationRef(
+                identity.invocationRef,
+                previous.activeInvocationRef!,
+              ) &&
+              identity.owner.hostId === "main-remote-machine-host" &&
+              identity.owner.machineId === VERSION_PREVIEW_MACHINE_ID &&
+              identity.owner.keyId === String(context.key.appId) &&
+              identity.owner.actorInstanceId ===
+                context.getMetadata().actorInstanceId,
+          );
+          if (settled > 0 && previousOperationId !== null) {
+            versionPreviewPresentationService.settle(previousOperationId);
+          }
+        }
+      },
+    }),
+    createOutcomePublisher: (context) => {
+      const publish = createOperationOutcomePublisher(
+        versionPreviewOperationRegistry,
+        () => ({
+          actor: context.getMetadata(),
+          acknowledgedAt: Date.now(),
+        }),
+      );
+      return (outcome: VersionPreviewCorrelatedOutcome) => {
+        publish(outcome);
+        versionPreviewPresentationService.settle(
+          outcome.invocationRef.operationId,
         );
-      }
+      };
     },
-    onEventIgnored: ({ event }) => {
-      if ("operationId" in event) {
-        versionPreviewPresentationService.forget(event.operationId);
-      }
+    commandSinkRevisionPolicy: "allow-advance",
+    lifecycle: {
+      subscriptionCreates: true,
+      dispatchCreates: false,
+      idleEviction: { kind: "retain" },
+      terminalRetention: { kind: "retain" },
+      entityDeletion: "dispose",
+      rendererOwnership: "host",
+      survivesRendererReload: true,
+      restartPersistence: "persistent",
+      flushOnShutdown: true,
+      flush: async ({ key }) => {
+        versionPreviewPersistence.flush(key.appId);
+      },
+      settleWaiters: ({ metadata }) => {
+        versionPreviewOperationRegistry.settleActor(metadata.actorInstanceId);
+      },
+      onDisposed: ({ key, cause, metadata }) => {
+        versionPreviewService.endReconciliation(key.appId);
+        versionPreviewOperationRegistry.releaseOwned(
+          "actor",
+          (owner) => owner.actorInstanceId === metadata.actorInstanceId,
+        );
+        versionPreviewPresentationService.settleActor(metadata.actorInstanceId);
+        if (cause === "entity-deletion") {
+          versionPreviewPersistence.remove(key.appId);
+        }
+      },
     },
-  }),
-  createOutcomePublisher: (context) => {
-    const publish = createOperationOutcomePublisher(
-      versionPreviewOperationRegistry,
-      () => ({
-        actor: context.getMetadata(),
-        acknowledgedAt: Date.now(),
-      }),
-    );
-    return (outcome: VersionPreviewCorrelatedOutcome) => {
-      publish(outcome);
-      versionPreviewPresentationService.settle(
-        outcome.invocationRef.operationId,
-      );
-    };
-  },
-  commandSinkRevisionPolicy: "allow-advance",
-  lifecycle: {
-    subscriptionCreates: true,
-    dispatchCreates: false,
-    idleEviction: { kind: "retain" },
-    terminalRetention: { kind: "retain" },
-    entityDeletion: "dispose",
-    rendererOwnership: "host",
-    survivesRendererReload: true,
-    restartPersistence: "persistent",
-    flushOnShutdown: true,
-    flush: async ({ key }) => {
-      versionPreviewPersistence.flush(key.appId);
-    },
-    settleWaiters: ({ metadata }) => {
-      versionPreviewOperationRegistry.settleActor(metadata.actorInstanceId);
-    },
-    onDisposed: ({ key, cause, metadata }) => {
-      versionPreviewService.endReconciliation(key.appId);
-      versionPreviewOperationRegistry.releaseOwned(
-        "actor",
-        (owner) => owner.actorInstanceId === metadata.actorInstanceId,
-      );
-      versionPreviewPresentationService.releaseApp(key.appId);
-      if (cause === "entity-deletion") {
-        versionPreviewPersistence.remove(key.appId);
-      }
-    },
-  },
-  remote: {
-    protocolVersion: REMOTE_MACHINE_PROTOCOL_VERSION,
-    keyCodec: VersionPreviewKeySchema,
-    encodeKey: (key) => key,
-    canonicalizeKeyAfterAuthorization: (key) => versionPreviewKey(key.appId),
-    eventCodec: z.custom<VersionPreviewActorEvent>(
-      (value) => VersionPreviewIntentEventSchema.safeParse(value).success,
-    ),
-    snapshotCodec: VersionPreviewRemoteSnapshotSchema,
-    keyToString: (key) => String(key.appId),
-    projectSnapshot: (state, key, metadata) =>
-      projectVersionPreviewRemoteSnapshot(
-        key.appId,
-        metadata.snapshotRevision,
-        state,
+    remote: {
+      protocolVersion: REMOTE_MACHINE_PROTOCOL_VERSION,
+      keyCodec: VersionPreviewKeySchema,
+      encodeKey: (key) => key,
+      canonicalizeKeyAfterAuthorization: (key) => versionPreviewKey(key.appId),
+      eventCodec: z.custom<VersionPreviewActorEvent>(
+        (value) => VersionPreviewIntentEventSchema.safeParse(value).success,
       ),
-    unavailableSnapshot: (key) =>
-      projectVersionPreviewRemoteSnapshot(key.appId, 0, {
-        state: CLOSED_STATE,
-        activeInvocationRef: null,
-        lastSettlement: null,
-      }),
-    revisionPolicy: () => "reject-stale",
-    authorizeSubscribe: ({ key }) => authorizeApp(key.appId),
-    authorizeDispatch: async ({ key }) => {
-      if (key.appId === 0) {
-        throw new DyadError(
-          "A real app is required for version preview",
-          DyadErrorKind.Auth,
-        );
-      }
-      await authorizeApp(key.appId);
-      versionPreviewService.assertReadyForIntent(key.appId);
-    },
-  },
-  remoteIntent: defineRuntimeRemoteIntentContract<
-    VersionPreviewKey,
-    VersionPreviewActorState,
-    VersionPreviewIntentEvent,
-    VersionPreviewActorEvent,
-    import("@/version_preview/transport").VersionPreviewRemoteSnapshot
-  >({
-    ...versionPreviewRemoteIntentContract,
-    keyToString: (key: VersionPreviewKey) => String(key.appId),
-    toInternalEvent: ({ intent, sender, requestIdentity }) => {
-      const tracked =
-        versionPreviewRemoteIntentContract.intents[intent.type].completion ===
-        "tracked-completion";
-      if (tracked && !requestIdentity) {
-        throw new DyadError(
-          "Version preview request identity is missing",
-          DyadErrorKind.Validation,
-        );
-      }
-      return Object.freeze({
-        ...structuredClone(intent),
-        windowSessionId: sender.windowSessionId,
-        ...(requestIdentity ? { requestId: requestIdentity.requestId } : {}),
-      }) as VersionPreviewAdmittedIntent;
-    },
-    authorizeSubscribe: async ({ key }) => {
-      try {
-        await authorizeApp(key.appId);
-        return { kind: "allow" as const };
-      } catch (error) {
-        if (isDyadError(error)) return { kind: "deny" as const, error };
-        throw error;
-      }
-    },
-    authorizeDispatch: async ({ key }) => {
-      try {
+      snapshotCodec: VersionPreviewRemoteSnapshotSchema,
+      keyToString: (key) => String(key.appId),
+      projectSnapshot: (state, key, metadata) =>
+        projectVersionPreviewRemoteSnapshot(
+          key.appId,
+          metadata.snapshotRevision,
+          state,
+        ),
+      unavailableSnapshot: (key) =>
+        projectVersionPreviewRemoteSnapshot(key.appId, 0, {
+          state: CLOSED_STATE,
+          activeInvocationRef: null,
+          lastSettlement: null,
+        }),
+      revisionPolicy: () => "reject-stale",
+      authorizeSubscribe: ({ key }) => authorizeApp(key.appId),
+      authorizeDispatch: async ({ key }) => {
+        if (key.appId === 0) {
+          throw new DyadError(
+            "A real app is required for version preview",
+            DyadErrorKind.Auth,
+          );
+        }
         await authorizeApp(key.appId);
         versionPreviewService.assertReadyForIntent(key.appId);
-        return { kind: "allow" as const };
-      } catch (error) {
-        if (isDyadError(error)) {
-          return {
-            kind: "deny" as const,
-            error:
-              error.kind === DyadErrorKind.Auth
-                ? error
-                : new DyadError(error.message, DyadErrorKind.Auth, {
-                    cause: error,
-                  }),
-          };
+      },
+    },
+    remoteIntent: defineRuntimeRemoteIntentContract<
+      VersionPreviewKey,
+      VersionPreviewActorState,
+      VersionPreviewIntentEvent,
+      VersionPreviewActorEvent,
+      import("@/version_preview/transport").VersionPreviewRemoteSnapshot
+    >({
+      ...versionPreviewRemoteIntentContract,
+      keyToString: (key: VersionPreviewKey) => String(key.appId),
+      toInternalEvent: ({ intent, sender, requestIdentity }) => {
+        const tracked =
+          versionPreviewRemoteIntentContract.intents[intent.type].completion ===
+          "tracked-completion";
+        if (tracked && !requestIdentity) {
+          throw new DyadError(
+            "Version preview request identity is missing",
+            DyadErrorKind.Validation,
+          );
         }
-        throw error;
-      }
-    },
-    finalizeOperation: (context, controls) => {
-      const event = context.event as VersionPreviewAdmittedIntent;
-      let routeHandle:
-        | import("@/window_infrastructure/main/operation_route_registry").OperationRouteHandle
-        | undefined;
-      try {
-        const owner: OperationOwner = {
-          hostId: "main-remote-machine-host",
-          machineId: VERSION_PREVIEW_MACHINE_ID,
-          keyId: String(context.key.appId),
-          actorInstanceId: context.actor.actorInstanceId,
-          actorRevision: context.actor.snapshotRevision,
-          windowSessionId: context.sender.windowSessionId,
-        };
-        const admission = finalizeOperationAdmission({
-          registry: versionPreviewOperationRegistry,
-          identity: {
-            requestId: context.requestIdentity.requestId,
-            fingerprint: context.fingerprint,
-            owner,
-          },
-          createInvocationRef: () =>
-            invocation(context.key.appId, event.operationId),
-          assertFinalAdmission: controls.assertFinalAdmission,
-          enqueue: () => {
-            const route = versionPreviewPresentationService.recordInitiator(
-              context.key.appId,
-              event.operationId,
-              context.sender.windowSessionId,
-            );
-            if (route && route.kind !== "fresh") {
-              throw new DyadError(
-                "Version preview operation identity is already owned",
-                DyadErrorKind.Conflict,
+        return Object.freeze({
+          ...structuredClone(intent),
+          windowSessionId: sender.windowSessionId,
+          ...(requestIdentity ? { requestId: requestIdentity.requestId } : {}),
+        }) as VersionPreviewAdmittedIntent;
+      },
+      authorizeSubscribe: async ({ key }) => {
+        try {
+          await authorizeApp(key.appId);
+          return { kind: "allow" as const };
+        } catch (error) {
+          if (isDyadError(error)) return { kind: "deny" as const, error };
+          throw error;
+        }
+      },
+      authorizeDispatch: async ({ key }) => {
+        try {
+          await authorizeApp(key.appId);
+          versionPreviewService.assertReadyForIntent(key.appId);
+          return { kind: "allow" as const };
+        } catch (error) {
+          if (isDyadError(error)) {
+            return { kind: "deny" as const, error };
+          }
+          throw error;
+        }
+      },
+      finalizeOperation: (context, controls) => {
+        const event = context.event as VersionPreviewAdmittedIntent;
+        let routeHandle:
+          | import("@/window_infrastructure/main/operation_route_registry").OperationRouteHandle
+          | undefined;
+        try {
+          const owner: OperationOwner = {
+            hostId: "main-remote-machine-host",
+            machineId: VERSION_PREVIEW_MACHINE_ID,
+            keyId: String(context.key.appId),
+            actorInstanceId: context.actor.actorInstanceId,
+            actorRevision: context.actor.snapshotRevision,
+            windowSessionId: context.sender.windowSessionId,
+          };
+          const admission = finalizeOperationAdmission({
+            registry: versionPreviewOperationRegistry,
+            identity: {
+              requestId: context.requestIdentity.requestId,
+              fingerprint: context.fingerprint,
+              owner,
+            },
+            createInvocationRef: () =>
+              invocation(context.key.appId, event.operationId),
+            assertFinalAdmission: controls.assertFinalAdmission,
+            enqueue: () => {
+              const route = versionPreviewPresentationService.recordInitiator(
+                context.key.appId,
+                event.operationId,
+                context.sender.windowSessionId,
+                context.actor.actorInstanceId,
               );
-            }
-            routeHandle = route?.handle;
-            try {
-              return controls.enqueue();
-            } catch (error) {
-              if (route)
-                versionPreviewPresentationService.release(route.handle);
-              routeHandle = undefined;
-              throw error;
-            }
-          },
-          receiptOnEnqueueFailure: () => ({
-            actor: context.actor,
-            acknowledgedAt: Date.now(),
-          }),
-        });
-        return admission.kind === "enqueued"
-          ? {
-              disposition: "fresh" as const,
-              enqueueResult: admission.enqueueResult,
-              operation: admission.operation,
-              rollbackAdmission: (error: unknown) => {
-                versionPreviewOperationRegistry.rollbackAdmission(
-                  context.requestIdentity.requestId,
-                  admission.operation.invocationRef,
-                  error,
+              if (route && route.kind !== "fresh") {
+                throw new DyadError(
+                  "Version preview operation identity is already owned",
+                  DyadErrorKind.Conflict,
                 );
-                if (routeHandle)
-                  versionPreviewPresentationService.release(routeHandle);
-              },
-            }
-          : {
-              disposition: admission.kind,
-              operation: admission.operation,
-            };
-      } catch (error) {
-        if (routeHandle) versionPreviewPresentationService.release(routeHandle);
-        throw error;
-      }
-    },
-    disposeWindowSession: (windowSessionId, controls) => {
-      versionPreviewOperationRegistry.settleWindowSession(windowSessionId);
-      versionPreviewPresentationService.releaseWindow(windowSessionId);
-      controls.dispatchExisting(() => ({
-        type: "WINDOW_INTEREST_DISPOSED",
-        windowSessionId,
-      }));
-    },
-  }),
-} satisfies Definition);
+              }
+              routeHandle = route?.handle;
+              try {
+                return controls.enqueue();
+              } catch (error) {
+                if (route)
+                  versionPreviewPresentationService.release(route.handle);
+                routeHandle = undefined;
+                throw error;
+              }
+            },
+            receiptOnEnqueueFailure: () => ({
+              actor: context.actor,
+              acknowledgedAt: Date.now(),
+            }),
+          });
+          return admission.kind === "enqueued"
+            ? {
+                disposition: "fresh" as const,
+                enqueueResult: admission.enqueueResult,
+                operation: admission.operation,
+                rollbackAdmission: (error: unknown) => {
+                  versionPreviewOperationRegistry.rollbackAdmission(
+                    context.requestIdentity.requestId,
+                    admission.operation.invocationRef,
+                    error,
+                  );
+                  if (routeHandle)
+                    versionPreviewPresentationService.release(routeHandle);
+                },
+              }
+            : {
+                disposition: admission.kind,
+                operation: admission.operation,
+              };
+        } catch (error) {
+          if (routeHandle)
+            versionPreviewPresentationService.release(routeHandle);
+          throw error;
+        }
+      },
+      disposeWindowSession: (windowSessionId, controls) => {
+        versionPreviewOperationRegistry.settleWindowSession(windowSessionId);
+        controls.dispatchExisting(() => ({
+          type: "WINDOW_INTEREST_DISPOSED",
+          windowSessionId,
+        }));
+      },
+    }),
+  });

@@ -13,6 +13,7 @@ import { safeSend } from "../utils/safe_sender";
 
 interface VersionPreviewRoute {
   readonly appId: number;
+  readonly actorInstanceId?: string;
   readonly windowSessionId: WindowSessionId;
 }
 
@@ -29,6 +30,7 @@ export class VersionPreviewPresentationService {
     snapshotRoute: (route) => Object.freeze({ ...route }),
     sameRoute: (left, right) =>
       left.appId === right.appId &&
+      left.actorInstanceId === right.actorInstanceId &&
       left.windowSessionId === right.windowSessionId,
   });
 
@@ -38,6 +40,7 @@ export class VersionPreviewPresentationService {
     appId: number,
     operationId: string,
     windowSessionId: string | undefined,
+    actorInstanceId?: string,
   ): OperationRouteAdmission<VersionPreviewRoute> | undefined {
     if (!windowSessionId) return undefined;
     const admission = this.routes.admit({
@@ -48,6 +51,7 @@ export class VersionPreviewPresentationService {
         windowSessionId,
         route: {
           appId,
+          ...(actorInstanceId ? { actorInstanceId } : {}),
           windowSessionId: windowSessionId as WindowSessionId,
         },
       },
@@ -100,24 +104,37 @@ export class VersionPreviewPresentationService {
     this.routes.markTerminal(admission.handle);
   }
 
-  releaseApp(appId: number): number {
-    let released = 0;
+  settleApp(appId: number): number {
+    let settled = 0;
     for (const route of this.routes.inspect().routes) {
       if (route.owner.route.appId !== appId) continue;
-      released += this.routes.releaseOwner(
-        "version_preview",
-        route.owner.ownerId,
-      );
+      if (route.state === "terminal") continue;
+      this.settle(route.operationId);
+      settled += 1;
     }
-    return released;
+    return settled;
   }
 
-  releaseWindow(windowSessionId: string): number {
-    return this.routes.releaseWindow(windowSessionId);
+  settleActor(actorInstanceId: string): number {
+    let settled = 0;
+    for (const route of this.routes.inspect().routes) {
+      if (route.owner.route.actorInstanceId !== actorInstanceId) continue;
+      if (route.state === "terminal") continue;
+      this.settle(route.operationId);
+      settled += 1;
+    }
+    return settled;
   }
 
-  releaseMachine(): number {
-    return this.routes.releaseMachine("version_preview");
+  settleMachine(): number {
+    let settled = 0;
+    for (const route of this.routes.inspect().routes) {
+      if (route.owner.machineId !== "version_preview") continue;
+      if (route.state === "terminal") continue;
+      this.settle(route.operationId);
+      settled += 1;
+    }
+    return settled;
   }
 
   originEndpointFor(operationId: string) {

@@ -101,6 +101,7 @@ export class VersionPreviewActorService {
       appId,
       operationId,
       windowSessionId,
+      actor.getMetadata().actorInstanceId,
     );
     const result = await actor.enqueue(
       exit.type === "close"
@@ -206,7 +207,7 @@ export class VersionPreviewActorService {
       await this.host.disposeMachine(versionPreviewDefinition.id);
     } finally {
       versionPreviewPersistence.removeAll();
-      versionPreviewPresentationService.releaseMachine();
+      versionPreviewPresentationService.settleMachine();
     }
   }
 

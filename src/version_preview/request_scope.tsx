@@ -14,16 +14,30 @@ export function VersionPreviewRequestScopeProvider({
   children,
   scope: providedScope,
 }: PropsWithChildren<{ readonly scope?: PreparedRequestScope }>) {
+  if (providedScope) {
+    return (
+      <VersionPreviewRequestScopeContext.Provider value={providedScope}>
+        {children}
+      </VersionPreviewRequestScopeContext.Provider>
+    );
+  }
+  return (
+    <OwnedVersionPreviewRequestScope>
+      {children}
+    </OwnedVersionPreviewRequestScope>
+  );
+}
+
+function OwnedVersionPreviewRequestScope({ children }: PropsWithChildren) {
   const [ownedScope] = useState(
     () =>
       new PreparedRequestScope(
         `version-preview-window:${globalThis.crypto.randomUUID()}`,
       ),
   );
-  const scope = providedScope ?? ownedScope;
-  useManagerLifecycle(scope);
+  useManagerLifecycle(ownedScope);
   return (
-    <VersionPreviewRequestScopeContext.Provider value={scope}>
+    <VersionPreviewRequestScopeContext.Provider value={ownedScope}>
       {children}
     </VersionPreviewRequestScopeContext.Provider>
   );

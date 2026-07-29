@@ -396,20 +396,7 @@ export const VersionPreviewRemoteSnapshotSchema = z
     lastSettlement: z
       .object({
         operationId: z.string(),
-        requestId: z.string().optional(),
-        operation: z
-          .enum([
-            "close",
-            "switch-app",
-            "select-version",
-            "switch-branch",
-            "restore",
-            "restore-to-message",
-            "retry-return",
-          ])
-          .optional(),
         outcome: z.enum(["succeeded", "failed"]),
-        cleanupStarted: z.boolean().optional(),
         error: previewErrorSchema.optional(),
       })
       .strict()
@@ -434,10 +421,11 @@ export function projectVersionPreviewRemoteSnapshot(
       actorState.lastSettlement === null
         ? null
         : {
-            ...actorState.lastSettlement,
-            operation:
-              actorState.lastSettlement.operation ??
-              ("select-version" as const),
+            operationId: actorState.lastSettlement.operationId,
+            outcome: actorState.lastSettlement.outcome,
+            ...(actorState.lastSettlement.error
+              ? { error: actorState.lastSettlement.error }
+              : {}),
           },
   };
 }

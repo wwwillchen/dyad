@@ -244,6 +244,7 @@ export const completionAwareDispatchOrEnqueueInventory = [
   owned("ipc/services/app_run_actor_service.ts", 1),
   owned("ipc/services/version_preview_actor_service.ts", 4),
   owned("ipc/services/version_preview_definition.ts", 1),
+  owned("version_preview/request_actor.ts", 1),
 ] as const;
 
 /**

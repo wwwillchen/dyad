@@ -6,11 +6,22 @@ import type { PreparedRequestScope } from "@/distributed_machines/prepared_reque
 import { dispatchRemoteAdmissionOnly } from "@/distributed_machines/request_actor";
 import { versionPreviewClientDefinition } from "./client_definition";
 import { versionPreviewKey, type VersionPreviewIntentEvent } from "./transport";
-import { createVersionPreviewRequestActor } from "./request_actor";
+import {
+  createVersionPreviewRequestActor,
+  observeVersionPreviewAdmission,
+} from "./request_actor";
+import type { VersionPreviewCancellationReason } from "./operations";
 
 interface OwnedInterest {
   readonly lease: RemoteSubscriptionLease;
   admitted: boolean;
+}
+
+export class VersionPreviewReleaseCancelledError extends Error {
+  constructor(readonly reason: VersionPreviewCancellationReason) {
+    super(`Version preview release was cancelled: ${reason}`);
+    this.name = "VersionPreviewReleaseCancelledError";
+  }
 }
 
 /**
@@ -65,7 +76,7 @@ export class VersionPreviewWindowInterestClient {
             ? view.snapshot.observedRevision
             : undefined,
       });
-      void request.admission.catch(() => undefined);
+      await observeVersionPreviewAdmission(request, () => undefined);
       const settlement = await request.settled;
       if (settlement.kind === "not-admitted") {
         throw new Error(
@@ -83,10 +94,13 @@ export class VersionPreviewWindowInterestClient {
       if (settlement.outcome.kind === "failed") {
         throw new Error(settlement.outcome.error.message);
       }
+      if (settlement.outcome.kind === "cancelled") {
+        throw new VersionPreviewReleaseCancelledError(
+          settlement.outcome.reason,
+        );
+      }
       return {
-        cleanupStarted:
-          settlement.outcome.kind === "succeeded" &&
-          settlement.outcome.cleanupStarted === true,
+        cleanupStarted: settlement.outcome.cleanupStarted === true,
       };
     });
   }
@@ -103,18 +117,29 @@ export class VersionPreviewWindowInterestClient {
     return this.interests.size;
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    const releases: Promise<void>[] = [];
     for (const [appId, interest] of this.interests) {
+      if (!interest.admitted) {
+        this.interests.delete(appId);
+        interest.lease.release();
+        continue;
+      }
       const operationId = `version-preview:dispose:${appId}:${globalThis.crypto.randomUUID()}`;
-      void this.release(appId, operationId, { type: "close" }).catch(() => {
-        if (this.interests.get(appId) === interest) {
-          this.interests.delete(appId);
-          interest.lease.release();
-        }
-      });
+      releases.push(
+        this.release(appId, operationId, { type: "close" })
+          .then(() => undefined)
+          .catch(() => {
+            if (this.interests.get(appId) === interest) {
+              this.interests.delete(appId);
+              interest.lease.release();
+            }
+          }),
+      );
     }
+    await Promise.all(releases);
   }
 
   private acquireWithIntent(
@@ -132,6 +157,13 @@ export class VersionPreviewWindowInterestClient {
       try {
         if (fresh) await owned.lease.ready;
         else await owned.lease.refresh();
+        if (this.disposed || this.interests.get(appId) !== owned) {
+          if (this.interests.get(appId) === owned) {
+            this.interests.delete(appId);
+            owned.lease.release();
+          }
+          throw new Error("Window interest client is disposed");
+        }
         if (owned.admitted) return { acquired: false };
         const intent: VersionPreviewIntentEvent = {
           type,

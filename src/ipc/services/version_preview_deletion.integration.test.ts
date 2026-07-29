@@ -50,9 +50,9 @@ vi.mock("./version_preview_presentation_service", () => ({
     forget: vi.fn(),
     confirm: vi.fn(),
     settle: vi.fn(),
-    releaseApp: vi.fn(),
-    releaseWindow: vi.fn(),
-    releaseMachine: vi.fn(),
+    settleApp: vi.fn(),
+    settleActor: vi.fn(),
+    settleMachine: vi.fn(),
   },
 }));
 vi.mock(
