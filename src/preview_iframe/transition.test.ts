@@ -86,6 +86,47 @@ function boundedEvents(state: PreviewIframeState): PreviewIframeEvent[] {
 }
 
 describe("preview iframe transition", () => {
+  it("restores transferable browser history and navigates the recreated iframe", () => {
+    const result = transition(INITIAL_PREVIEW_IFRAME_STATE, {
+      type: "RESTORE_PRESENTATION",
+      history: [URL, `${URL}/settings`],
+      position: 1,
+    });
+
+    expect(result.kind).toBe("applied");
+    if (result.kind !== "applied") return;
+    expect(result.state.history).toEqual([URL, `${URL}/settings`]);
+    expect(result.state.currentUrl).toBe(`${URL}/settings`);
+    expect(result.commands).toEqual([
+      {
+        type: "post-to-iframe",
+        message: {
+          type: "navigate",
+          payload: { url: `${URL}/settings`, direction: undefined },
+        },
+      },
+    ]);
+  });
+
+  it("replaces the iframe when restoring an empty presentation", () => {
+    const nested = transition(INITIAL_PREVIEW_IFRAME_STATE, {
+      type: "APP_URL_CHANGED",
+      url: `${URL}/settings`,
+    });
+    expect(nested.kind).toBe("applied");
+    if (nested.kind !== "applied") return;
+
+    const result = transition(nested.state, {
+      type: "RESTORE_PRESENTATION",
+      history: [],
+      position: 0,
+    });
+
+    expect(result.kind).toBe("applied");
+    if (result.kind !== "applied") return;
+    expect(result.state.currentUrl).toBeNull();
+    expect(result.state.iframeEpoch).toBe(nested.state.iframeEpoch + 1);
+  });
   it("reaches every state aspect and produces every command kind", () => {
     const options = {
       initialState: INITIAL_PREVIEW_IFRAME_STATE,
@@ -270,6 +311,27 @@ describe("preview iframe transition", () => {
     });
     expect(replayed.state).toBe(replaced.state);
     expect(ignoreReasonOf(replayed)).toBe("already-replaced");
+  });
+
+  it("preserves restored history through a deferred iframe attachment", () => {
+    const restored = transition(INITIAL_PREVIEW_IFRAME_STATE, {
+      type: "RESTORE_PRESENTATION",
+      history: [URL, `${URL}/settings`],
+      position: 1,
+      preserveHistoryOnNextReplacement: true,
+    });
+
+    const replaced = transition(restored.state, {
+      type: "IFRAME_REPLACED",
+      reason: "external",
+    });
+
+    expect(replaced.state).toMatchObject({
+      history: [URL, `${URL}/settings`],
+      position: 1,
+      currentUrl: `${URL}/settings`,
+      preserveHistoryOnNextReplacement: false,
+    });
   });
 
   it("uses the trusted app URL when preserved navigation is cross-origin", () => {

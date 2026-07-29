@@ -120,6 +120,31 @@ When a loaded window consumes and clears a persisted one-shot event, send the
 event through that known-ready window rather than `BrowserWindow.getAllWindows()[0]`.
 In multi-window startup the first global window may still be loading, which
 would drop the only replay before its early listener exists.
+For cross-window ownership transfer, a successful `webContents.send()` is not
+an acknowledgement. Buffer the request before React mounts, require a
+correlated renderer receipt after local persistence, retain the main-process
+transfer until that receipt arrives, and roll back source or destination state
+on timeout/failure so the same stable identity cannot remain in both windows.
+The typed IPC handler must return/await the receipt promise; dropping it reports
+success early and turns later rejection into an unhandled main-process promise.
+The persistence path used for the receipt must propagate or verify write
+failure—best-effort storage adapters that log and swallow errors do not prove
+durability.
+If either side writes ownership to durable renderer storage before the receipt,
+also reconcile duplicate stable identities across restorable sessions during
+bootstrap. An in-memory coordinator cannot resolve the crash/restart window by
+itself.
+If the source durably removes transferred state before the destination observes
+its acknowledgement, persist a correlated removal marker until the destination
+observes that acknowledgement. On a lost receipt, the destination can use the
+marker to keep its durable adoption instead of rolling back both copies.
+The receipt timeout must retain that correlated settlement long enough for a
+late confirmation; the destination's explicit rollback/rejection is the abort
+decision that makes later source confirmation invalid.
+
+When a replayed renderer event mutates persisted session state, do not consume
+it until the session's derived atoms have hydrated. Persisting from empty
+pre-hydration atoms can erase unrelated restored entities.
 
 **Custom-protocol debugging:** Before using `git bisect` on a `dyad://` flow, quit every dev and packaged Dyad instance and verify which build owns the protocol registration. macOS may route the link to a different running/registered build, producing a convincing but false good/bad result.
 

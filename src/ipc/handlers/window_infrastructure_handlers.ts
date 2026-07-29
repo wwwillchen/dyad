@@ -16,6 +16,14 @@ import {
 import type { ChatResponseChunk } from "../types/chat";
 import { getWindowProductController } from "../../window_infrastructure/main/window_product_controller";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { ChatTabTransferCoordinator } from "@/window_infrastructure/main/chat_tab_transfer_coordinator";
+import { readSettings } from "@/main/settings";
+import {
+  chatNotificationTarget,
+  deliverChatNavigationToExistingWindow,
+} from "@/window_infrastructure/main/chat_notification_routing";
+
+const chatTabTransfers = new ChatTabTransferCoordinator(windowRegistry);
 
 export function registerWindowInfrastructureHandlers(): void {
   createTypedHandler(
@@ -64,17 +72,139 @@ export function registerWindowInfrastructureHandlers(): void {
   );
 
   createTypedHandler(
+    windowInfrastructureContracts.confirmSourceChatTabRemoval,
+    async (event, input) => {
+      const sourceWindowSessionId = windowRegistry.ensureRegistered(
+        event.sender,
+      );
+      chatTabTransfers.confirmSourceRemoval(sourceWindowSessionId, input);
+      windowRegistry.removeOwnedChatTab(
+        sourceWindowSessionId,
+        input.chatId,
+        input.tabInstanceId,
+      );
+    },
+  );
+
+  createTypedHandler(
     windowInfrastructureContracts.openEntityInNewWindow,
     async (_event, entity) => {
       const controller = getWindowProductController();
       if (!controller) {
-        throw new Error("Window product controller is not ready");
+        throw new DyadError(
+          "Window product controller is not ready",
+          DyadErrorKind.Precondition,
+        );
       }
-      const existingApp = await db.query.apps.findFirst({
-        where: eq(apps.id, entity.id),
+      const exists =
+        entity.kind === "app"
+          ? await db.query.apps.findFirst({ where: eq(apps.id, entity.id) })
+          : await db.query.chats.findFirst({ where: eq(chats.id, entity.id) });
+      if (!exists) {
+        throw new DyadError(
+          entity.kind === "app" ? "App not found" : "Chat not found",
+          DyadErrorKind.NotFound,
+        );
+      }
+      return {
+        windowSessionId: await controller.openEntityInNewWindow(entity),
+      };
+    },
+  );
+
+  createTypedHandler(
+    windowInfrastructureContracts.beginChatTabTransfer,
+    async (event, { transferId, payload, tabs }) => {
+      const sourceWindowSessionId = windowRegistry.ensureRegistered(
+        event.sender,
+      );
+      const chat = await db.query.chats.findFirst({
+        where: eq(chats.id, payload.chatId),
       });
-      if (!existingApp) {
-        throw new DyadError("App not found", DyadErrorKind.NotFound);
+      if (!chat || chat.appId !== payload.appId) {
+        throw new DyadError("Chat not found", DyadErrorKind.NotFound);
+      }
+      if (
+        !windowRegistry.refreshChatTabOwnershipForTransfer(
+          sourceWindowSessionId,
+          tabs,
+          payload.chatId,
+          payload.tabInstanceId,
+        )
+      ) {
+        throw new DyadError(
+          "The source window does not own this chat tab",
+          DyadErrorKind.Precondition,
+        );
+      }
+      return {
+        transferId: chatTabTransfers.begin(
+          transferId,
+          sourceWindowSessionId,
+          payload,
+        ),
+      };
+    },
+  );
+
+  createTypedHandler(
+    windowInfrastructureContracts.adoptChatTabTransfer,
+    async (event, { transferId }) =>
+      chatTabTransfers.adopt(
+        windowRegistry.ensureRegistered(event.sender),
+        transferId,
+      ),
+  );
+
+  createTypedHandler(
+    windowInfrastructureContracts.rejectChatTabTransfer,
+    async (event, { transferId }) => ({
+      aborted: chatTabTransfers.reject(
+        windowRegistry.ensureRegistered(event.sender),
+        transferId,
+      ),
+    }),
+  );
+
+  createTypedHandler(
+    windowInfrastructureContracts.acknowledgeChatTabTransfer,
+    async (event, { transferId }) =>
+      chatTabTransfers.acknowledge(
+        windowRegistry.ensureRegistered(event.sender),
+        transferId,
+      ),
+  );
+
+  createTypedHandler(
+    windowInfrastructureContracts.focusChat,
+    async (_event, { chatId }) => {
+      const chat = await db.query.chats.findFirst({
+        where: eq(chats.id, chatId),
+      });
+      if (!chat) {
+        throw new DyadError("Chat not found", DyadErrorKind.NotFound);
+      }
+      const entity = { kind: "chat" as const, id: chatId };
+      const targetSession = chatNotificationTarget(
+        windowRegistry,
+        entity,
+        !!readSettings().enableMultiWindow,
+      );
+      if (
+        targetSession &&
+        deliverChatNavigationToExistingWindow(windowRegistry, targetSession, {
+          chatId,
+          appId: chat.appId,
+        })
+      ) {
+        return { windowSessionId: targetSession };
+      }
+      const controller = getWindowProductController();
+      if (!controller) {
+        throw new DyadError(
+          "Window product controller is not ready",
+          DyadErrorKind.Precondition,
+        );
       }
       return {
         windowSessionId: await controller.openEntityInNewWindow(entity),
@@ -96,6 +226,14 @@ export function registerWindowInfrastructureHandlers(): void {
       const sessionId = windowRegistry.ensureRegistered(event.sender);
       windowRegistry.setVisibleEntities(sessionId, entities);
       getWindowProductController()?.setVisibleEntities(sessionId, entities);
+    },
+  );
+
+  createTypedHandler(
+    windowInfrastructureContracts.setChatTabOwnership,
+    async (event, tabs) => {
+      const sessionId = windowRegistry.ensureRegistered(event.sender);
+      windowRegistry.setChatTabOwnership(sessionId, tabs);
     },
   );
 

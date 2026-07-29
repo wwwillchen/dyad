@@ -30,6 +30,30 @@ export function transition(
   event: PreviewIframeEvent,
 ): PreviewIframeTransitionResult {
   switch (event.type) {
+    case "RESTORE_PRESENTATION": {
+      const history = event.history.slice(0, 100);
+      const position =
+        history.length === 0
+          ? 0
+          : Math.min(Math.max(event.position, 0), history.length - 1);
+      const currentUrl = history[position] ?? null;
+      return applied(
+        {
+          ...state,
+          history,
+          position,
+          currentUrl,
+          preservedUrl: currentUrl,
+          iframeEpoch:
+            currentUrl === null ? state.iframeEpoch + 1 : state.iframeEpoch,
+          selectorReady: false,
+          picking: false,
+          preserveHistoryOnNextReplacement:
+            event.preserveHistoryOnNextReplacement === true,
+        },
+        currentUrl ? [navigateCommand(currentUrl)] : [],
+      );
+    }
     case "APP_URL_CHANGED": {
       if (!event.url) return ignore(state, "empty-url");
       if (
@@ -146,6 +170,14 @@ export function transition(
         error: undefined,
       });
     case "IFRAME_REPLACED": {
+      if (state.preserveHistoryOnNextReplacement) {
+        return applied({
+          ...state,
+          preserveHistoryOnNextReplacement: false,
+          selectorReady: false,
+          picking: false,
+        });
+      }
       const history = state.currentUrl ? [state.currentUrl] : [];
       if (
         state.history.length === history.length &&

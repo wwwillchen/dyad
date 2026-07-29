@@ -16,6 +16,9 @@ const capturedSession = capturedSessionFixture as ChatTabSession;
 
 const mocks = vi.hoisted(() => ({
   selectChat: vi.fn(),
+  router: {
+    subscribe: vi.fn(() => vi.fn()),
+  },
 }));
 
 vi.mock("@/hooks/useChats", () => ({
@@ -65,10 +68,38 @@ vi.mock("@/hooks/useChatStream", () => ({
   useChatStreamState: () => undefined,
 }));
 
+vi.mock("@/hooks/useSettings", () => ({
+  useSettings: () => ({
+    settings: { enableMultiWindow: false },
+  }),
+}));
+
+vi.mock("@/preview_iframe/PreviewIframeProvider", () => ({
+  usePreviewIframeManager: () => ({
+    getSnapshot: vi.fn(),
+    send: vi.fn(),
+  }),
+}));
+
+vi.mock("@/ipc/types", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/ipc/types")>();
+  return {
+    ...actual,
+    ipc: {
+      ...actual.ipc,
+      windowInfrastructure: {
+        ...actual.ipc.windowInfrastructure,
+        setChatTabOwnership: vi.fn().mockResolvedValue(undefined),
+      },
+    },
+  };
+});
+
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
+  useRouter: () => mocks.router,
   useRouterState: ({ select }: { select: (state: any) => unknown }) =>
-    select({ location: { pathname: "/" } }),
+    select({ location: { pathname: "/", href: "/" } }),
 }));
 
 describe("golden single-window: tab-session schema", () => {

@@ -7,15 +7,21 @@ import {
   type ChatTabSession,
 } from "@/atoms/chatAtoms";
 import {
+  activeStoredChatTabInstanceState,
   LEGACY_CHAT_TAB_SESSION_STORAGE_KEY,
   LEGACY_CHAT_TAB_SESSION_MIGRATION_KEY,
+  adoptStoredChatTab,
+  clearSourceChatTabRemoval,
   chatTabSessionStorageKey,
   configureChatTabWindowSession,
   createChatTabSessionStorage,
+  hasSourceChatTabRemoval,
+  markSourceChatTabRemoval,
   pruneChatTabWindowSessions,
+  removeActiveStoredChatTab,
   type StoredWindowChatTabSession,
 } from "./chat_tab_session_storage";
-import type { WindowSessionId } from "./types";
+import type { TabInstanceId, WindowSessionId } from "./types";
 
 const firstWindow = "10000000-0000-4000-8000-000000000001" as WindowSessionId;
 const secondWindow = "20000000-0000-4000-8000-000000000002" as WindowSessionId;
@@ -108,6 +114,139 @@ describe("per-window chat tab session storage", () => {
       localStorage.getItem(chatTabSessionStorageKey(secondWindow))!,
     ) as StoredWindowChatTabSession;
     expect(secondEnvelope.tabs).toHaveLength(1);
+  });
+
+  it("rejects adoption when the destination already has that chat", () => {
+    const storage = createChatTabSessionStorage(localStorage);
+    storage.setItem(LEGACY_CHAT_TAB_SESSION_STORAGE_KEY, {
+      openChatIds: [10, 20],
+      selectedChatId: 20,
+      closedChatIds: [30],
+      updatedAt: 1,
+    });
+    const transferredTabInstanceId =
+      "60000000-0000-4000-8000-000000000006" as TabInstanceId;
+
+    expect(() =>
+      adoptStoredChatTab({
+        chatId: 20,
+        tabInstanceId: transferredTabInstanceId,
+      }),
+    ).toThrow("already has a tab");
+
+    const adopted = JSON.parse(
+      localStorage.getItem(chatTabSessionStorageKey(firstWindow))!,
+    ) as StoredWindowChatTabSession;
+    expect(adopted.tabs.map((tab) => tab.chatId)).toEqual([10, 20]);
+    expect(adopted.tabs[0].tabInstanceId).not.toBe(transferredTabInstanceId);
+    expect(adopted.closedChatIds).toEqual([30]);
+  });
+
+  it("adopts a transferred identity when the chat is not open", () => {
+    const storage = createChatTabSessionStorage(localStorage);
+    storage.setItem(LEGACY_CHAT_TAB_SESSION_STORAGE_KEY, {
+      openChatIds: [10],
+      selectedChatId: 10,
+      closedChatIds: [20],
+      updatedAt: 1,
+    });
+    const transferredTabInstanceId =
+      "60000000-0000-4000-8000-000000000006" as TabInstanceId;
+
+    adoptStoredChatTab({
+      chatId: 20,
+      tabInstanceId: transferredTabInstanceId,
+    });
+
+    const adopted = JSON.parse(
+      localStorage.getItem(chatTabSessionStorageKey(firstWindow))!,
+    ) as StoredWindowChatTabSession;
+    expect(adopted.tabs.map((tab) => tab.chatId)).toEqual([20, 10]);
+    expect(adopted.tabs[0].tabInstanceId).toBe(transferredTabInstanceId);
+    expect(adopted.selectedTabInstanceId).toBe(transferredTabInstanceId);
+    expect(adopted.closedChatIds).toEqual([]);
+    expect(activeStoredChatTabInstanceState(transferredTabInstanceId)).toBe(
+      "present",
+    );
+  });
+
+  it("rejects adoption instead of overwriting an unreadable session", () => {
+    const key = chatTabSessionStorageKey(firstWindow);
+    localStorage.setItem(key, "{bad json");
+
+    expect(() =>
+      adoptStoredChatTab({
+        chatId: 20,
+        tabInstanceId: "60000000-0000-4000-8000-000000000006" as TabInstanceId,
+      }),
+    ).toThrow("could not be read");
+    expect(localStorage.getItem(key)).toBe("{bad json");
+  });
+
+  it("removes only the adopted tab from the current stored session", () => {
+    const storage = createChatTabSessionStorage(localStorage);
+    storage.setItem(LEGACY_CHAT_TAB_SESSION_STORAGE_KEY, {
+      openChatIds: [10, 20],
+      selectedChatId: 20,
+      closedChatIds: [30],
+      updatedAt: 1,
+    });
+    const session = JSON.parse(
+      localStorage.getItem(chatTabSessionStorageKey(firstWindow))!,
+    ) as StoredWindowChatTabSession;
+    const removed = session.tabs.find((tab) => tab.chatId === 20)!;
+
+    removeActiveStoredChatTab(removed.tabInstanceId);
+
+    const current = JSON.parse(
+      localStorage.getItem(chatTabSessionStorageKey(firstWindow))!,
+    ) as StoredWindowChatTabSession;
+    expect(current.tabs.map((tab) => tab.chatId)).toEqual([10]);
+    expect(current.selectedTabInstanceId).toBeNull();
+    expect(current.closedChatIds).toEqual([30]);
+  });
+
+  it("distinguishes an absent instance from unavailable session storage", () => {
+    const missing = "60000000-0000-4000-8000-000000000006" as TabInstanceId;
+    expect(activeStoredChatTabInstanceState(missing)).toBe("absent");
+
+    localStorage.setItem(chatTabSessionStorageKey(firstWindow), "{bad json");
+    expect(() => activeStoredChatTabInstanceState(missing)).toThrow(
+      "could not be read",
+    );
+  });
+
+  it("persists a correlated durable source-removal receipt", () => {
+    const transferredTabInstanceId =
+      "60000000-0000-4000-8000-000000000006" as TabInstanceId;
+
+    markSourceChatTabRemoval("transfer-1", transferredTabInstanceId);
+
+    expect(
+      hasSourceChatTabRemoval("transfer-1", transferredTabInstanceId),
+    ).toBe(true);
+    expect(
+      hasSourceChatTabRemoval(
+        "transfer-1",
+        "70000000-0000-4000-8000-000000000007" as TabInstanceId,
+      ),
+    ).toBe(false);
+    clearSourceChatTabRemoval("transfer-1");
+    expect(
+      hasSourceChatTabRemoval("transfer-1", transferredTabInstanceId),
+    ).toBe(false);
+  });
+
+  it("preserves active source-removal receipts during session pruning", () => {
+    const transferredTabInstanceId =
+      "60000000-0000-4000-8000-000000000006" as TabInstanceId;
+    markSourceChatTabRemoval("transfer-1", transferredTabInstanceId);
+
+    pruneChatTabWindowSessions(localStorage, []);
+
+    expect(
+      hasSourceChatTabRemoval("transfer-1", transferredTabInstanceId),
+    ).toBe(true);
   });
 
   it("does not replay the retained legacy blob into a second window", () => {
@@ -219,6 +358,53 @@ describe("per-window chat tab session storage", () => {
     expect(localStorage.getItem(LEGACY_CHAT_TAB_SESSION_STORAGE_KEY)).toBe(
       "{}",
     );
+  });
+
+  it("reconciles a crash-window duplicate identity into the newest session", () => {
+    const duplicate = "60000000-0000-4000-8000-000000000006" as TabInstanceId;
+    const first: StoredWindowChatTabSession = {
+      version: 2,
+      windowSessionId: firstWindow,
+      tabs: [{ chatId: 10, tabInstanceId: duplicate }],
+      selectedTabInstanceId: duplicate,
+      closedChatIds: [],
+      updatedAt: 1,
+    };
+    const second: StoredWindowChatTabSession = {
+      version: 2,
+      windowSessionId: secondWindow,
+      tabs: [
+        { chatId: 10, tabInstanceId: duplicate },
+        {
+          chatId: 20,
+          tabInstanceId:
+            "70000000-0000-4000-8000-000000000007" as TabInstanceId,
+        },
+      ],
+      selectedTabInstanceId: duplicate,
+      closedChatIds: [],
+      updatedAt: 2,
+    };
+    localStorage.setItem(
+      chatTabSessionStorageKey(firstWindow),
+      JSON.stringify(first),
+    );
+    localStorage.setItem(
+      chatTabSessionStorageKey(secondWindow),
+      JSON.stringify(second),
+    );
+
+    pruneChatTabWindowSessions(localStorage, [firstWindow, secondWindow]);
+
+    const reconciledFirst = JSON.parse(
+      localStorage.getItem(chatTabSessionStorageKey(firstWindow))!,
+    ) as StoredWindowChatTabSession;
+    const reconciledSecond = JSON.parse(
+      localStorage.getItem(chatTabSessionStorageKey(secondWindow))!,
+    ) as StoredWindowChatTabSession;
+    expect(reconciledFirst.tabs).toEqual([]);
+    expect(reconciledFirst.selectedTabInstanceId).toBeNull();
+    expect(reconciledSecond).toEqual(second);
   });
 
   it("falls back without blocking startup when browser storage is unavailable", () => {

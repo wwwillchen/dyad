@@ -17,6 +17,7 @@ export interface PreviewIframeState {
   readonly selectorReady: boolean;
   readonly picking: boolean;
   readonly restoreQueued: boolean;
+  readonly preserveHistoryOnNextReplacement: boolean;
   readonly error: PreviewError | undefined;
 }
 
@@ -34,10 +35,17 @@ export const INITIAL_PREVIEW_IFRAME_STATE: PreviewIframeState = {
   selectorReady: false,
   picking: false,
   restoreQueued: false,
+  preserveHistoryOnNextReplacement: false,
   error: undefined,
 };
 
 export type PreviewIframeEvent =
+  | {
+      type: "RESTORE_PRESENTATION";
+      history: readonly string[];
+      position: number;
+      preserveHistoryOnNextReplacement?: boolean;
+    }
   | { type: "APP_URL_CHANGED"; url: string }
   | { type: "NAVIGATE"; path: string }
   | {

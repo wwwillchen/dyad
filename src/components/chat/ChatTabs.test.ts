@@ -20,12 +20,22 @@ import {
 import {
   applySelectionToOrderedChatIds,
   addFinishedChatNotification,
+  consumePreNavigationPresentationCapture,
   getOrderedRecentChatIds,
   getVisibleTabCapacity,
+  matchesPreNavigationPresentationCapture,
   getFallbackChatIdAfterClose,
   groupChatIdsByApp,
   partitionChatsByVisibleCount,
   reorderVisibleChatIds,
+  restoreLocalStorageSnapshot,
+  restoreMessagesScrollTop,
+  restoreOrderedIdAfterRollback,
+  shouldPrepareCrossWindowTransfer,
+  shouldCapturePresentationBeforeNavigation,
+  shouldRemoveTransferredChatFromRenderer,
+  shouldRestorePriorNavigationAfterAdoption,
+  shouldSkipChatSelection,
 } from "@/components/chat/ChatTabs";
 import type { ChatSummary } from "@/lib/schemas";
 
@@ -42,9 +52,182 @@ function chat(id: number, appId = 1): ChatSummary {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("ChatTabs helpers", () => {
+  it("keeps local reorder available without preparing a cross-window move", () => {
+    expect(shouldPrepareCrossWindowTransfer(false)).toBe(false);
+    expect(shouldPrepareCrossWindowTransfer(true)).toBe(true);
+    expect(shouldPrepareCrossWindowTransfer(true, true)).toBe(false);
+  });
+
+  it("verifies durable session rollback before transfer rejection", () => {
+    localStorage.setItem("rollback-test", "current");
+    restoreLocalStorageSnapshot("rollback-test", "previous");
+    expect(localStorage.getItem("rollback-test")).toBe("previous");
+
+    vi.spyOn(window.localStorage, "setItem").mockImplementationOnce(() => {});
+    expect(() =>
+      restoreLocalStorageSnapshot("rollback-test", "unwritten"),
+    ).toThrow("Failed to durably restore chat tab session storage");
+  });
+
+  it("rolls back only the adopted id while preserving concurrent ordering", () => {
+    expect(restoreOrderedIdAfterRollback([9, 2, 3, 4], [1, 2, 3], 9)).toEqual([
+      2, 3, 4,
+    ]);
+    expect(restoreOrderedIdAfterRollback([4, 1, 3], [1, 2, 3], 2)).toEqual([
+      4, 1, 2, 3,
+    ]);
+  });
+
+  it("restores the prior route only while adoption still owns navigation", () => {
+    expect(
+      shouldRestorePriorNavigationAfterAdoption(
+        9,
+        9,
+        "/chat",
+        "/chat?id=9",
+        "/settings",
+      ),
+    ).toBe(true);
+    expect(
+      shouldRestorePriorNavigationAfterAdoption(
+        9,
+        9,
+        "/settings",
+        "/settings",
+        "/settings",
+      ),
+    ).toBe(true);
+    expect(
+      shouldRestorePriorNavigationAfterAdoption(
+        12,
+        9,
+        "/chat",
+        "/chat?id=12",
+        "/settings",
+      ),
+    ).toBe(false);
+    expect(
+      shouldRestorePriorNavigationAfterAdoption(
+        9,
+        9,
+        "/library",
+        "/library",
+        "/settings",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps applying restored scroll after a later chat-switch auto-scroll", () => {
+    const callbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    });
+    const wrapper = document.createElement("div");
+    wrapper.dataset.testid = "messages-list";
+    const viewport = document.createElement("div");
+    viewport.dataset.virtuosoScroller = "";
+    Object.defineProperties(viewport, {
+      scrollHeight: { value: 1_000 },
+      clientHeight: { value: 200 },
+    });
+    wrapper.append(viewport);
+    document.body.append(wrapper);
+
+    restoreMessagesScrollTop(300, () => true);
+    callbacks.shift()?.(0);
+    expect(viewport.scrollTop).toBe(300);
+
+    viewport.scrollTop = 800;
+    callbacks.shift()?.(1);
+    callbacks.shift()?.(2);
+    callbacks.shift()?.(3);
+    expect(viewport.scrollTop).toBe(300);
+    wrapper.remove();
+  });
+
+  it("reselects the active chat when navigation must return to the chat route", () => {
+    expect(shouldSkipChatSelection(7, 7, "/chat")).toBe(true);
+    expect(shouldSkipChatSelection(7, 7, "/settings")).toBe(false);
+    expect(shouldSkipChatSelection(7, 8, "/chat")).toBe(false);
+  });
+
+  it("captures the outgoing chat before route-driven presentation changes", () => {
+    expect(
+      shouldCapturePresentationBeforeNavigation(7, "/chat", 7, "/chat", 8),
+    ).toBe(true);
+    expect(
+      shouldCapturePresentationBeforeNavigation(
+        7,
+        "/chat",
+        7,
+        "/settings",
+        null,
+      ),
+    ).toBe(true);
+    expect(
+      shouldCapturePresentationBeforeNavigation(7, "/chat", 7, "/chat", 7),
+    ).toBe(false);
+    expect(
+      shouldCapturePresentationBeforeNavigation(
+        7,
+        "/settings",
+        null,
+        "/chat",
+        8,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not reuse a stale capture marker for a later destination", () => {
+    const settingsCapture = { fromChatId: 7, toChatId: null };
+
+    expect(matchesPreNavigationPresentationCapture(settingsCapture, 7, 8)).toBe(
+      false,
+    );
+    expect(
+      matchesPreNavigationPresentationCapture(
+        { fromChatId: 7, toChatId: 8 },
+        7,
+        8,
+      ),
+    ).toBe(true);
+  });
+
+  it("consumes a capture marker even when selection is already synchronized", () => {
+    const captureRef: {
+      current: { fromChatId: number; toChatId: number | null } | null;
+    } = {
+      current: { fromChatId: 7, toChatId: 8 },
+    };
+
+    expect(consumePreNavigationPresentationCapture(captureRef, 8, 8)).toBe(
+      false,
+    );
+    expect(captureRef.current).toBeNull();
+  });
+
+  it("preserves a chat reopened under a different tab identity", () => {
+    const transferred = "10000000-0000-4000-8000-000000000007";
+
+    expect(shouldRemoveTransferredChatFromRenderer(null, transferred)).toBe(
+      true,
+    );
+    expect(
+      shouldRemoveTransferredChatFromRenderer(transferred, transferred),
+    ).toBe(true);
+    expect(
+      shouldRemoveTransferredChatFromRenderer(
+        "20000000-0000-4000-8000-000000000007",
+        transferred,
+      ),
+    ).toBe(false);
+  });
+
   it("notifies only for a finished background chat", () => {
     const current = new Set([2]);
 

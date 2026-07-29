@@ -18,11 +18,14 @@ import {
 } from "@/components/ui/tooltip";
 import { useTranslation } from "react-i18next";
 import { enqueueFileSave, getFileSaveQueueKey } from "./fileSaveQueue";
+import { editorCursorAtom } from "@/atoms/viewAtoms";
+import { useAtomValue, useSetAtom } from "jotai";
 
 interface FileEditorProps {
   appId: number | null;
   filePath: string;
   initialLine?: number | null;
+  persistCursor?: boolean;
 }
 
 interface BreadcrumbProps {
@@ -136,6 +139,7 @@ export const FileEditor = ({
   appId,
   filePath,
   initialLine = null,
+  persistCursor = false,
 }: FileEditorProps) => {
   const { t } = useTranslation("home");
   const { content, loading, error } = useLoadAppFile(appId, filePath);
@@ -152,6 +156,12 @@ export const FileEditor = ({
   const hasInitializedContentRef = useRef(false);
   const isMountedRef = useRef(false);
   const releaseModelRef = useRef<(() => void) | null>(null);
+  const cursorSubscriptionRef = useRef<{ dispose(): void } | null>(null);
+  const editorCursor = useAtomValue(editorCursorAtom);
+  const setEditorCursor = useSetAtom(editorCursorAtom);
+  const cursorTargetRef = useRef({ appId, filePath, persistCursor });
+  const initialLineTargetRef = useRef({ appId, filePath, initialLine });
+  cursorTargetRef.current = { appId, filePath, persistCursor };
 
   const queryClient = useQueryClient();
 
@@ -159,6 +169,8 @@ export const FileEditor = ({
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      cursorSubscriptionRef.current?.dispose();
+      cursorSubscriptionRef.current = null;
       releaseModelRef.current?.();
       releaseModelRef.current = null;
     };
@@ -216,10 +228,37 @@ export const FileEditor = ({
       releaseModelRef.current = retainMonacoModel(modelPath, model);
     }
 
-    // Navigate to initialLine if provided (handles case when editor mounts after initialLine is set)
-    if (initialLine != null) {
+    if (
+      persistCursor &&
+      editorCursor?.appId === appId &&
+      editorCursor.path === filePath
+    ) {
+      editor.setPosition({
+        lineNumber: editorCursor.lineNumber,
+        column: editorCursor.column,
+      });
+      editor.revealPositionInCenter({
+        lineNumber: editorCursor.lineNumber,
+        column: editorCursor.column,
+      });
+    } else if (initialLine != null) {
+      // Navigate to initialLine if provided (handles case when editor mounts after initialLine is set)
       navigateToLine(initialLine);
     }
+
+    cursorSubscriptionRef.current?.dispose();
+    cursorSubscriptionRef.current = editor.onDidChangeCursorPosition(
+      ({ position }) => {
+        const target = cursorTargetRef.current;
+        if (!target.persistCursor) return;
+        setEditorCursor({
+          appId: target.appId,
+          path: target.filePath,
+          lineNumber: position.lineNumber,
+          column: position.column,
+        });
+      },
+    );
 
     // Save when the editor loses focus and the current model is dirty.
     editor.onDidBlurEditorText(() => {
@@ -228,6 +267,33 @@ export const FileEditor = ({
       }
     });
   };
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (
+      !persistCursor ||
+      !editor ||
+      editorCursor?.appId !== appId ||
+      editorCursor.path !== filePath
+    ) {
+      return;
+    }
+    const current = editor.getPosition();
+    if (
+      current?.lineNumber === editorCursor.lineNumber &&
+      current.column === editorCursor.column
+    ) {
+      return;
+    }
+    editor.setPosition({
+      lineNumber: editorCursor.lineNumber,
+      column: editorCursor.column,
+    });
+    editor.revealPositionInCenter({
+      lineNumber: editorCursor.lineNumber,
+      column: editorCursor.column,
+    });
+  }, [appId, editorCursor, filePath, persistCursor]);
 
   // Handle content change
   const handleEditorChange = (newValue: string | undefined) => {
@@ -309,10 +375,28 @@ export const FileEditor = ({
   // Include content in dependencies to ensure navigation only occurs after file content is loaded
   useEffect(() => {
     // Only navigate if content is loaded (not null) to avoid navigating in old file content
-    if (content !== null) {
+    const previousTarget = initialLineTargetRef.current;
+    const isNewSameFileLineTarget =
+      previousTarget.appId === appId &&
+      previousTarget.filePath === filePath &&
+      previousTarget.initialLine !== initialLine;
+    initialLineTargetRef.current = { appId, filePath, initialLine };
+    const hasRestoredCursor =
+      persistCursor &&
+      editorCursor?.appId === appId &&
+      editorCursor.path === filePath;
+    if (content !== null && (!hasRestoredCursor || isNewSameFileLineTarget)) {
       navigateToLine(initialLine ?? null);
     }
-  }, [initialLine, filePath, content, navigateToLine]);
+  }, [
+    appId,
+    content,
+    editorCursor,
+    filePath,
+    initialLine,
+    navigateToLine,
+    persistCursor,
+  ]);
 
   if (loading) {
     return <div className="p-4">{t("preview.loadingFileContent")}</div>;

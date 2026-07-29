@@ -9,6 +9,14 @@ type ForceClosePayload = Parameters<
 type TelemetryPayload = Parameters<
   Parameters<typeof ipc.events.system.onTelemetryEvent>[0]
 >[0];
+type ChatTabRemovalPayload = Parameters<
+  Parameters<
+    typeof ipc.events.windowInfrastructure.onRemoveTransferredChatTab
+  >[0]
+>[0];
+type ChatNavigationPayload = Parameters<
+  Parameters<typeof ipc.events.windowInfrastructure.onNavigateToChat>[0]
+>[0];
 
 export class ReplayEvent<T> {
   private readonly pending: T[] = [];
@@ -33,6 +41,9 @@ export class ReplayEvent<T> {
 export const earlyDeepLinkEvents = new ReplayEvent<DeepLinkPayload>();
 export const earlyForceCloseEvents = new ReplayEvent<ForceClosePayload>();
 export const earlyTelemetryEvents = new ReplayEvent<TelemetryPayload>();
+export const earlyChatTabRemovalEvents =
+  new ReplayEvent<ChatTabRemovalPayload>();
+export const chatNavigationEvents = new ReplayEvent<ChatNavigationPayload>();
 
 let registered = false;
 
@@ -47,5 +58,11 @@ export function registerEarlyRendererEvents(): void {
   });
   ipc.events.system.onTelemetryEvent((payload) => {
     earlyTelemetryEvents.emit(payload);
+  });
+  ipc.events.windowInfrastructure.onRemoveTransferredChatTab((payload) => {
+    earlyChatTabRemovalEvents.emit(payload);
+  });
+  ipc.events.windowInfrastructure.onNavigateToChat((payload) => {
+    chatNavigationEvents.emit(payload);
   });
 }
