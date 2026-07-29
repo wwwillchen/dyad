@@ -546,3 +546,44 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   one-shot entity IDs cannot accumulate forever, and maintain a global
   insertion-order index instead of scanning every key on each production
   trace event.
+- Capturing keyed admission before authorization must not allocate permanent
+  per-key gate metadata. Use a shared open generation (or explicitly release
+  the capture) so rejected, attacker-controlled keys cannot grow a
+  process-lifetime map.
+- When a fence snapshots work admitted before publication, settlement must
+  remove that work from the current fence's drain set even though no fence
+  existed when tracking began. Test this with controlled pre-fence work; a
+  tracker that cleans up only its originally captured fence can strand sealing.
+- A command runner that returns `void` after starting asynchronous work has not
+  provided a fence-trackable completion boundary. Until that compatibility path
+  adopts a completion promise or explicit tracked lease, destructive fencing
+  must fail closed rather than treating the handoff as command completion.
+- Prepared admission must revalidate after the last trusted synchronous domain
+  callback, not merely after asynchronous authorization. Revision policies,
+  intent conversion, and similar callbacks can reenter fencing, subscription,
+  or disposal code before final host admission.
+- A fresh subscription or actor-reference acquisition must assert that keyed
+  admission is open even when it retains an existing actor. Generation equality
+  alone is insufficient because work prepared after fencing captures the
+  current closed generation.
+- Revalidate fence identity and phase after invoking a drain-admission policy.
+  The policy is synchronous domain code and can reenter sealing, abort, or
+  replacement before returning.
+- Construction continuations enrolled for fencing must settle on every
+  post-activation exit, including host or machine disposal triggered by buffered
+  factory-time ingress, or a later fence can wait forever. Keep factory-buffered
+  events bound to that construction admission; if fencing publishes before
+  activation, do not reclassify them as cleanup allowed during draining.
+- Disposal of an admission primitive is terminal. Clearing current records
+  without a persistent disposed state lets retained references recreate open
+  admission after host teardown.
+- If a scheduler retains an execution callback and then throws or rejects, the
+  retained callback must be invalidated. Marking the batch failed while still
+  allowing that callback to run lets command side effects escape after sealing.
+- A revision-bound producer sink that supports sequential emissions must
+  advance its expected revision in the dispatcher's synchronous settlement
+  callback. Updating only from `ticket.settled.then(...)` is too late when an
+  async command continuation resumes before that Promise reaction. Events
+  buffered during synchronous construction must retain the same mutable
+  per-sink revision cursor so activation can advance the sequence after each
+  replayed event.

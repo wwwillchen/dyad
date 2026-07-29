@@ -4,7 +4,11 @@ import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import type { Clock } from "@/state_machines/clock";
 import { PendingReceiptLedger } from "@/state_machines/pending_receipt_ledger";
 import type { WindowSessionId } from "@/window_infrastructure/types";
-import { ActorAdmissionError, type ActorHost } from "./actor_host";
+import {
+  ActorAdmissionError,
+  type ActorHost,
+  type ActorHostAdmissionGeneration,
+} from "./actor_host";
 import type {
   ActorRuntimeMetadata,
   HostedActorRef,
@@ -82,10 +86,7 @@ interface PreparedDispatchIdentity {
   readonly admittedEntry: SubscriptionEntry;
   readonly actor: HostedActorRef<unknown, unknown, string>;
   readonly actorMetadata: ActorRuntimeMetadata;
-  readonly lifecycleGeneration: {
-    readonly host: number;
-    readonly machine: number;
-  };
+  readonly lifecycleGeneration: ActorHostAdmissionGeneration;
   readonly windowSessionId: WindowSessionId;
   readonly fingerprint: string;
   consumed: boolean;
@@ -95,10 +96,7 @@ interface PendingSubscription {
   readonly address: string;
   readonly webContentsId: number;
   readonly countsTowardLimit: boolean;
-  readonly lifecycleGeneration: {
-    readonly host: number;
-    readonly machine: number;
-  };
+  readonly lifecycleGeneration: ActorHostAdmissionGeneration;
   cancelled: boolean;
   accountingReleased: boolean;
   promise?: Promise<MachineSnapshotEnvelope>;
@@ -250,6 +248,7 @@ export class RemoteMachineTransport {
       address,
       !alreadySubscribedBeforeAuthorization,
       definition.id,
+      key,
     );
     const prepared: PreparedSubscribe = {
       definition,
@@ -333,14 +332,13 @@ export class RemoteMachineTransport {
           DyadErrorKind.Precondition,
         );
       }
-      prepared.consumed = true;
-
-      if (!entry) {
-        let actor: HostedActorRef<unknown, unknown, string>;
+      let admittedActor: HostedActorRef<unknown, unknown, string> | undefined;
+      if (!alreadySubscribed) {
         try {
-          actor = this.options.host.localRef(
+          admittedActor = this.options.host.localRefCaptured(
             definition,
             canonicalKey,
+            pending.lifecycleGeneration,
           ) as HostedActorRef<unknown, unknown, string>;
         } catch (error) {
           if (error instanceof ActorAdmissionError) {
@@ -352,18 +350,34 @@ export class RemoteMachineTransport {
           }
           throw error;
         }
+        if (entry && admittedActor !== entry.actor) {
+          throw new DyadError(
+            "Remote machine actor changed during subscription admission",
+            DyadErrorKind.Precondition,
+          );
+        }
+      }
+      prepared.consumed = true;
+
+      if (!entry) {
+        if (!admittedActor) {
+          throw new DyadError(
+            "Remote machine subscription admission was not retained",
+            DyadErrorKind.Precondition,
+          );
+        }
         this.actorKeys.set(address, canonicalKey);
         entry = {
           address,
           definition,
           key: canonicalKey,
           encodedKey: canonicalEncodedKey,
-          actor,
+          actor: admittedActor,
           windows: new Map(),
           unsubscribeActor: () => undefined,
         };
         this.subscriptions.set(address, entry);
-        entry.unsubscribeActor = actor.subscribe(() =>
+        entry.unsubscribeActor = admittedActor.subscribe(() =>
           this.broadcastSnapshot(entry!),
         );
       }
@@ -407,6 +421,7 @@ export class RemoteMachineTransport {
     if (
       !this.options.host.isAdmissionGenerationCurrent(
         prepared.definition.id,
+        prepared.decodedKey,
         prepared.pending.lifecycleGeneration,
       )
     ) {
@@ -687,6 +702,7 @@ export class RemoteMachineTransport {
       actorMetadata,
       lifecycleGeneration: this.options.host.captureAdmissionGeneration(
         definition.id,
+        admittedEntry.key,
       ),
       windowSessionId,
       fingerprint,
@@ -738,6 +754,7 @@ export class RemoteMachineTransport {
         if (
           !this.options.host.isAdmissionGenerationCurrent(
             definition.id,
+            key,
             prepared.lifecycleGeneration,
           )
         ) {
@@ -767,12 +784,13 @@ export class RemoteMachineTransport {
         return this.rejected(envelope.messageId, "revision-conflict");
       }
       event = intent;
-      if (
-        prepared.consumed ||
-        this.subscriptions.get(address) !== prepared.admittedEntry ||
-        this.options.host.peek(definition.id, key) !== actor
-      ) {
-        return this.rejected(envelope.messageId, "stale-actor");
+      const finalRefusal = this.revalidateLegacyPreparedDispatch(
+        sender,
+        prepared,
+        dispatchActorMetadata,
+      );
+      if (finalRefusal) {
+        return this.rejected(envelope.messageId, finalRefusal);
       }
     } else {
       const decision = await this.authorizeDispatch(definition, {
@@ -818,11 +836,12 @@ export class RemoteMachineTransport {
       }
     }
     prepared.consumed = true;
-    const ticket = this.options.host.dispatch(
+    const ticket = this.options.host.dispatchCaptured(
       definition,
       key,
       event,
-      dispatchActorMetadata.actorInstanceId,
+      prepared.lifecycleGeneration,
+      dispatchActorMetadata,
       {
         messageId: envelope.messageId,
         correlationId: envelope.correlationId,
@@ -838,6 +857,13 @@ export class RemoteMachineTransport {
       if (outcome.error instanceof ActorAdmissionError) {
         if (outcome.error.code === "stale-actor-instance") {
           return this.rejected(envelope.messageId, "stale-actor");
+        }
+        if (outcome.error.code === "stale-actor-revision") {
+          return this.rejected(
+            envelope.messageId,
+            definition.remoteIntent?.refusalMap.revisionChanged ??
+              "revision-conflict",
+          );
         }
         return this.rejected(envelope.messageId, "host-disposing");
       }
@@ -910,6 +936,51 @@ export class RemoteMachineTransport {
     }
   }
 
+  private revalidateLegacyPreparedDispatch(
+    sender: RemoteTransportEndpoint,
+    prepared: PreparedDispatchIdentity,
+    stabilizedActorMetadata: ActorRuntimeMetadata,
+  ): MachineRejectedReason | undefined {
+    const { definition, address, admittedEntry, actor, key } = prepared;
+    if (
+      prepared.consumed ||
+      this.disposed ||
+      !this.isCurrentSender(sender, prepared.windowSessionId)
+    ) {
+      return "host-disposing";
+    }
+    if (
+      this.subscriptions.get(address) !== admittedEntry ||
+      !admittedEntry.windows.has(sender.id)
+    ) {
+      return "stale-actor";
+    }
+    if (
+      !this.options.host.isAdmissionGenerationCurrent(
+        definition.id,
+        key,
+        prepared.lifecycleGeneration,
+      )
+    ) {
+      return "host-disposing";
+    }
+    const current = this.options.host.peek<unknown, unknown, string>(
+      definition.id,
+      key,
+    );
+    if (!current || current !== actor) return "stale-actor";
+    const currentMetadata = current.getMetadata();
+    if (
+      currentMetadata.actorInstanceId !==
+        stabilizedActorMetadata.actorInstanceId ||
+      currentMetadata.snapshotRevision !==
+        stabilizedActorMetadata.snapshotRevision
+    ) {
+      return "revision-conflict";
+    }
+    return undefined;
+  }
+
   private revalidatePreparedDispatch(
     sender: RemoteTransportEndpoint,
     envelope: MachineDispatchEnvelope,
@@ -934,6 +1005,7 @@ export class RemoteMachineTransport {
     if (
       !this.options.host.isAdmissionGenerationCurrent(
         definition.id,
+        key,
         prepared.lifecycleGeneration,
       )
     ) {
@@ -1348,6 +1420,7 @@ export class RemoteMachineTransport {
     address: string,
     countsTowardLimit: boolean,
     machineId: string,
+    key: unknown,
   ): PendingSubscription {
     const currentReferences = this.referencesPerWindow.get(webContentsId) ?? 0;
     const pendingReferences =
@@ -1365,8 +1438,10 @@ export class RemoteMachineTransport {
       address,
       webContentsId,
       countsTowardLimit,
-      lifecycleGeneration:
-        this.options.host.captureAdmissionGeneration(machineId),
+      lifecycleGeneration: this.options.host.captureAdmissionGeneration(
+        machineId,
+        key,
+      ),
       cancelled: false,
       accountingReleased: false,
     };

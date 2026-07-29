@@ -1,5 +1,6 @@
 export * from "./actor_host";
 export * from "./definition";
+export * from "./keyed_admission_gate";
 export * from "./react";
 export * from "./remote_client";
 export * from "./remote_manifest";

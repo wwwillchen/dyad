@@ -14,6 +14,7 @@ import type {
   TransitionResult,
 } from "@/state_machines/types";
 import type { RuntimeRemoteIntentContract } from "./remote_intent_contract";
+import type { KeyedAdmissionGeneration } from "./keyed_admission_gate";
 
 export type ActorInstanceId = string;
 
@@ -48,8 +49,24 @@ export interface MachineHostContext<Key, State, Event> {
    * dispatcher and every definition callback are installed.
    */
   send(event: Event): void;
+  /**
+   * Captures a non-creating producer sink bound to this actor instance and the
+   * current keyed admission generation.
+   */
+  captureSink(): ActorEventSink<Event>;
 }
 
+export interface ActorEventSink<Event> {
+  readonly actor: ActorRuntimeMetadata;
+  readonly admissionGeneration: KeyedAdmissionGeneration;
+  send(event: Event): void;
+}
+
+/**
+ * A returned Promise must span the complete command continuation. Returning
+ * void is retained for compatibility, but ActorHost must reject destructive
+ * fencing if that legacy runner may have detached asynchronous work.
+ */
 export type CommandRunner<Command, Event> = (
   command: Command,
   emit: (event: Event) => void,

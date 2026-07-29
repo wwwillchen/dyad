@@ -232,7 +232,6 @@ describe("remote machine transport", () => {
     await first.subscribe(address());
     await second.subscribe(address());
     await first.subscribe(address());
-
     expect(transport.inspectSubscriptions()).toEqual([
       expect.objectContaining({
         machineId: "remote-test",
@@ -1099,6 +1098,41 @@ describe("remote machine transport", () => {
     expect(actor?.getSnapshot()).toMatchObject({ value: 1 });
   });
 
+  it("maps a final host revision race to the revision refusal", async () => {
+    const { duplex, host, machine } = createHarness();
+    const renderer = duplex.connect();
+    const bootstrap = await renderer.subscribe(address());
+    const actor = host.peek(machine.id, "actor")!;
+    let reentered = false;
+    const fence = host.beginFence(machine, {
+      key: "actor",
+      allowDuringDrain(event) {
+        if (event.type === "SET" && !reentered) {
+          reentered = true;
+          actor.send({ type: "INCREMENT" });
+        }
+        return event.type === "SET" || event.type === "INCREMENT";
+      },
+    });
+
+    await expect(
+      renderer.dispatch(
+        dispatch(
+          { type: "SET", value: 10 },
+          {
+            expectedActorInstanceId: bootstrap.actorInstanceId,
+            expectedRevision: bootstrap.revision,
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "revision-conflict",
+    });
+    expect(actor.getSnapshot()).toMatchObject({ value: 1 });
+    expect(fence.abort()).toBe(true);
+  });
+
   it("rejects stale actor identities, malformed payloads, unknown routes, and unauthorized access", async () => {
     const protocolMismatch = vi.fn();
     const { duplex, host, machine } = createHarness({ protocolMismatch });
@@ -1492,6 +1526,88 @@ describe("remote machine transport", () => {
     expect(host.peek(machine.id, "actor")).toBeUndefined();
   });
 
+  it("rejects a prepared subscribe when a keyed fence publishes during authorization", async () => {
+    let releaseAuthorization!: () => void;
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const authorization = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        async authorizeSubscribe(
+          context: Parameters<typeof base.remoteIntent.authorizeSubscribe>[0],
+        ) {
+          authorizationStarted();
+          await authorization;
+          return base.remoteIntent.authorizeSubscribe(context);
+        },
+      },
+    };
+    const { duplex, host } = createHarness({ machine });
+    const renderer = duplex.connect();
+    const pending = renderer.subscribe(address());
+    await started;
+    const fence = host.beginFence(machine, {
+      key: "actor",
+      allowDuringDrain: () => false,
+    });
+    releaseAuthorization();
+
+    await expect(pending).rejects.toThrow(
+      "lifecycle changed during subscription authorization",
+    );
+    expect(host.peek(machine.id, "actor")).toBeUndefined();
+    expect(fence.abort()).toBe(true);
+  });
+
+  it("rejects a fresh window subscription while an existing actor is sealed", async () => {
+    const { duplex, host, machine, transport } = createHarness();
+    const first = duplex.connect();
+    const second = duplex.connect();
+    await first.subscribe(address());
+    const fence = host.beginFence(machine, {
+      key: "actor",
+      allowDuringDrain: () => false,
+    });
+    await fence.seal();
+
+    await expect(first.subscribe(address())).resolves.toMatchObject({
+      revision: 0,
+    });
+    await expect(second.subscribe(address())).rejects.toThrow(
+      "Remote machine subscription was refused",
+    );
+    expect(transport.inspectSubscriptions()).toEqual([
+      expect.objectContaining({
+        totalReferences: 1,
+        windows: new Map([[1, 1]]),
+      }),
+    ]);
+    expect(fence.abort()).toBe(true);
+  });
+
+  it("rejects the first remote subscription to a sealed local actor", async () => {
+    const { duplex, host, machine, transport } = createHarness();
+    host.localRef(machine, "actor");
+    const fence = host.beginFence(machine, {
+      key: "actor",
+      allowDuringDrain: () => false,
+    });
+    await fence.seal();
+
+    await expect(duplex.connect().subscribe(address())).rejects.toThrow(
+      "Remote machine subscription was refused",
+    );
+    expect(transport.inspectSubscriptions()).toEqual([]);
+    expect(fence.abort()).toBe(true);
+  });
+
   it("prevents pending and future admissions after transport disposal", async () => {
     let releaseAuthorization!: () => void;
     let authorizationStarted!: () => void;
@@ -1623,6 +1739,50 @@ describe("remote machine transport", () => {
       reason: "stale-actor",
     });
     expect(replacement.getSnapshot()).toMatchObject({ value: 0 });
+  });
+
+  it("rejects a prepared dispatch when a keyed fence publishes during authorization", async () => {
+    let releaseAuthorization!: () => void;
+    let authorizationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      authorizationStarted = resolve;
+    });
+    const authorization = new Promise<void>((resolve) => {
+      releaseAuthorization = resolve;
+    });
+    const base = createRemoteTestMachine();
+    const machine = {
+      ...base,
+      remoteIntent: {
+        ...base.remoteIntent,
+        async authorizeDispatch(
+          context: Parameters<typeof base.remoteIntent.authorizeDispatch>[0],
+        ) {
+          authorizationStarted();
+          await authorization;
+          return base.remoteIntent.authorizeDispatch(context);
+        },
+      },
+    };
+    const { duplex, host } = createHarness({ machine });
+    const renderer = duplex.connect();
+    await renderer.subscribe(address());
+    const pending = renderer.dispatch(dispatch({ type: "INCREMENT" }));
+    await started;
+    const fence = host.beginFence(machine, {
+      key: "actor",
+      allowDuringDrain: () => false,
+    });
+    releaseAuthorization();
+
+    await expect(pending).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "host-disposing",
+    });
+    expect(host.peek(machine.id, "actor")?.getSnapshot()).toMatchObject({
+      value: 0,
+    });
+    expect(fence.abort()).toBe(true);
   });
 
   it("rejects when revision changes during async authorization", async () => {
@@ -2116,5 +2276,90 @@ describe("remote machine transport", () => {
         failure: expect.objectContaining({ stage: "command" }),
       }),
     ]);
+  });
+
+  it("rejects legacy dispatch when revision policy replaces its captured gate generation", async () => {
+    let revisionPolicyReentry = () => undefined;
+    const base = createObjectKeyMachine();
+    const machine = {
+      ...base,
+      remote: {
+        ...base.remote,
+        revisionPolicy: () => {
+          revisionPolicyReentry();
+          return "allow-stale" as const;
+        },
+      },
+    } as AnyRemoteMachineDefinition;
+    const { duplex, host, transport } = createHarness({ machine });
+    const renderer = duplex.connect();
+    await renderer.subscribe(objectAddress());
+
+    revisionPolicyReentry = () => {
+      const fence = host.beginFence(machine, {
+        key: { id: "actor" },
+        allowDuringDrain: () => false,
+      });
+      expect(fence.abort()).toBe(true);
+    };
+
+    await expect(
+      renderer.dispatch({
+        ...dispatch({ type: "INCREMENT" }),
+        machineId: "object-key",
+      }),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "host-disposing",
+    });
+    expect(renderer.view(objectAddress())?.state).toEqual({ value: 0 });
+    transport.dispose();
+  });
+
+  it("revalidates the dispatching window after legacy revision policy reentry", async () => {
+    let revisionPolicyReentry = () => undefined;
+    const base = createObjectKeyMachine();
+    const machine = {
+      ...base,
+      remote: {
+        ...base.remote,
+        revisionPolicy: () => {
+          revisionPolicyReentry();
+          return "allow-stale" as const;
+        },
+      },
+    } as AnyRemoteMachineDefinition;
+    const { duplex, transport } = createHarness({ machine });
+    const first = duplex.connect();
+    const second = duplex.connect();
+    await first.subscribe(objectAddress());
+    await second.subscribe(objectAddress());
+
+    revisionPolicyReentry = () => {
+      revisionPolicyReentry = () => undefined;
+      void first.unsubscribe(objectAddress());
+    };
+    await expect(
+      first.dispatch({
+        ...dispatch({ type: "INCREMENT" }),
+        machineId: "object-key",
+      }),
+    ).resolves.toMatchObject({
+      kind: "rejected",
+      reason: "stale-actor",
+    });
+    expect(transport.inspectSubscriptions()).toEqual([
+      expect.objectContaining({
+        totalReferences: 1,
+        windows: new Map([[2, 1]]),
+      }),
+    ]);
+    await expect(
+      second.dispatch({
+        ...dispatch({ type: "INCREMENT" }),
+        machineId: "object-key",
+      }),
+    ).resolves.toMatchObject({ kind: "applied", revision: 1 });
+    transport.dispose();
   });
 });
