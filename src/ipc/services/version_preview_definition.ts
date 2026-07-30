@@ -46,6 +46,8 @@ import {
   type VersionPreviewWireEvent,
 } from "@/version_preview/transport";
 import {
+  VersionPreviewEnqueueError,
+  versionPreviewOperationKind,
   versionPreviewOperationRegistry,
   type VersionPreviewCorrelatedOutcome,
   type VersionPreviewOperationKind,
@@ -120,31 +122,6 @@ function producerError(
   event: VersionPreviewCorrelatedProducerEvent,
 ): { message: string } | undefined {
   return "error" in event ? event.error : undefined;
-}
-
-function operationKind(
-  event: Pick<VersionPreviewIntentEvent, "type">,
-): VersionPreviewOperationKind {
-  switch (event.type) {
-    case "CLOSE":
-      return "close";
-    case "APP_CHANGED":
-      return "switch-app";
-    case "SELECT_VERSION":
-      return "select-version";
-    case "SWITCH_BRANCH":
-      return "switch-branch";
-    case "RESTORE":
-      return "restore";
-    case "RESTORE_TO_MESSAGE":
-      return "restore-to-message";
-    case "RETRY_RETURN":
-      return "retry-return";
-    case "ACQUIRE_WINDOW_INTEREST":
-    case "RESTORE_WINDOW_INTEREST":
-    case "RELEASE_WINDOW_INTEREST":
-      throw new Error(`${event.type} is admission-only`);
-  }
 }
 
 function producerOperationKind(
@@ -355,7 +332,7 @@ function transitionActor(
 
   let domainState = actorState.state;
   const operation = isIntent(event)
-    ? operationKind(event)
+    ? versionPreviewOperationKind(event)
     : producerOperationKind(event);
   const requestId = "requestId" in event ? event.requestId : undefined;
   let nextInterests = interests;
@@ -1094,26 +1071,29 @@ export const versionPreviewDefinition =
               invocation(context.key.appId, event.operationId),
             assertFinalAdmission: controls.assertFinalAdmission,
             enqueue: () => {
-              const route = versionPreviewPresentationService.recordInitiator(
-                context.key.appId,
-                event.operationId,
-                context.sender.windowSessionId,
-                context.actor.actorInstanceId,
-              );
-              if (route && route.kind !== "fresh") {
-                throw new DyadError(
-                  "Version preview operation identity is already owned",
-                  DyadErrorKind.Conflict,
-                );
-              }
-              routeHandle = route?.handle;
               try {
+                const route = versionPreviewPresentationService.recordInitiator(
+                  context.key.appId,
+                  event.operationId,
+                  context.sender.windowSessionId,
+                  context.actor.actorInstanceId,
+                );
+                if (route && route.kind !== "fresh") {
+                  throw new DyadError(
+                    "Version preview operation identity is already owned",
+                    DyadErrorKind.Conflict,
+                  );
+                }
+                routeHandle = route?.handle;
                 return controls.enqueue();
               } catch (error) {
-                if (route)
-                  versionPreviewPresentationService.release(route.handle);
+                if (routeHandle)
+                  versionPreviewPresentationService.release(routeHandle);
                 routeHandle = undefined;
-                throw error;
+                throw new VersionPreviewEnqueueError(
+                  versionPreviewOperationKind(event),
+                  error,
+                );
               }
             },
             receiptOnEnqueueFailure: () => ({
@@ -1143,6 +1123,9 @@ export const versionPreviewDefinition =
         } catch (error) {
           if (routeHandle)
             versionPreviewPresentationService.release(routeHandle);
+          if (error instanceof VersionPreviewEnqueueError) {
+            throw error.originalError;
+          }
           throw error;
         }
       },

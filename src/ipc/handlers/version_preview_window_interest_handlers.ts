@@ -8,6 +8,9 @@ import { versionPreviewActorService } from "../services/version_preview_actor_se
 import { createTypedHandler } from "./base";
 
 export function registerVersionPreviewWindowInterestHandlers(): void {
+  // Retained as the protocol-v1/rollback façade for older renderer clients.
+  // Current renderers acquire the same RemoteSubscriptionLease ownership via
+  // remote-machine intents, so these handlers must not grow separate state.
   createTypedHandler(
     versionContracts.acquirePreviewWindowInterest,
     async (event, { appId }) => {

@@ -202,7 +202,10 @@ export function useVersionPreview(appId: number | null): {
       }
       const id = operationId();
       const intent = toIntent(event, id);
-      if (!intent) return;
+      if (!intent) {
+        presentationStore.send(appId, event);
+        return;
+      }
 
       try {
         if (isCleanup) {

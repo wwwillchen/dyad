@@ -5,7 +5,10 @@ import {
 } from "@/distributed_machines/operation_registry";
 import type { CorrelatedOperationOutcome } from "@/distributed_machines/operation_registry";
 import { DyadErrorKind } from "@/errors/dyad_error";
-import type { VersionPreviewInvocationRef } from "./transport";
+import type {
+  VersionPreviewIntentEvent,
+  VersionPreviewInvocationRef,
+} from "./transport";
 
 export type VersionPreviewOperationKind =
   | "close"
@@ -47,6 +50,47 @@ export type VersionPreviewCorrelatedOutcome = CorrelatedOperationOutcome<
   VersionPreviewOperationOutcome,
   VersionPreviewInvocationRef
 >;
+
+export function versionPreviewOperationKind(
+  event: Pick<VersionPreviewIntentEvent, "type">,
+): VersionPreviewOperationKind {
+  switch (event.type) {
+    case "CLOSE":
+      return "close";
+    case "APP_CHANGED":
+      return "switch-app";
+    case "SELECT_VERSION":
+      return "select-version";
+    case "SWITCH_BRANCH":
+      return "switch-branch";
+    case "RESTORE":
+      return "restore";
+    case "RESTORE_TO_MESSAGE":
+      return "restore-to-message";
+    case "RETRY_RETURN":
+      return "retry-return";
+    case "ACQUIRE_WINDOW_INTEREST":
+    case "RESTORE_WINDOW_INTEREST":
+    case "RELEASE_WINDOW_INTEREST":
+      throw new Error(`${event.type} does not create a version operation`);
+  }
+}
+
+export class VersionPreviewEnqueueError extends Error {
+  readonly name = "VersionPreviewEnqueueError";
+
+  constructor(
+    readonly operation: VersionPreviewOperationKind,
+    readonly originalError: unknown,
+  ) {
+    super(
+      originalError instanceof Error
+        ? originalError.message
+        : String(originalError),
+      { cause: originalError },
+    );
+  }
+}
 
 const versionPreviewFailureSchema = z.preprocess(
   (value) => (value instanceof Error ? undefined : value),
@@ -139,11 +183,22 @@ export const versionPreviewOperationRegistry = new OperationRegistry<
     kind: "cancelled",
     reason: "superseded",
   }),
-  enqueueFailureOutcome: (error) => ({
-    kind: "failed",
-    operation: "select-version",
-    error: {
-      message: error instanceof Error ? error.message : String(error),
-    },
-  }),
+  enqueueFailureOutcome: (error) => {
+    if (!(error instanceof VersionPreviewEnqueueError)) {
+      throw new Error(
+        "Version preview enqueue failure is missing operation context",
+        { cause: error },
+      );
+    }
+    return {
+      kind: "failed",
+      operation: error.operation,
+      error: {
+        message:
+          error.originalError instanceof Error
+            ? error.originalError.message
+            : String(error.originalError),
+      },
+    };
+  },
 });

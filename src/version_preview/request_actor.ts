@@ -16,7 +16,10 @@ import {
   type VersionPreviewIntentEvent,
   type VersionPreviewRemoteSnapshot,
 } from "./transport";
-import type { VersionPreviewOperationOutcome } from "./operations";
+import {
+  versionPreviewOperationKind,
+  type VersionPreviewOperationOutcome,
+} from "./operations";
 import { useVersionPreviewRequestScope } from "./request_scope";
 
 type VersionPreviewReason =
@@ -113,7 +116,7 @@ export function createVersionPreviewRequestActor(
     }),
     fingerprint: (_identity, input) =>
       JSON.stringify({ appId, intent: input.intent, observed: input.observed }),
-    selectOutcome: (view, requestId) => {
+    selectOutcome: (view, requestId, input) => {
       const settlement = view.state.lastSettlement;
       // Protocol-v1 snapshots retain only the historical operation identity.
       // Current correlated requests settle through the authoritative operation
@@ -125,11 +128,11 @@ export function createVersionPreviewRequestActor(
       return settlement.outcome === "succeeded"
         ? {
             kind: "succeeded" as const,
-            operation: "select-version" as const,
+            operation: versionPreviewOperationKind(input.intent),
           }
         : {
             kind: "failed" as const,
-            operation: "select-version" as const,
+            operation: versionPreviewOperationKind(input.intent),
             error: settlement.error ?? {
               message: "Version operation failed",
             },

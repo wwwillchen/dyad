@@ -172,4 +172,80 @@ describe("createVersionPreviewRequestActor", () => {
     expect(release).toHaveBeenCalledTimes(2);
     expect(scope.inspectActiveCount()).toBe(0);
   });
+
+  it("labels a matching protocol-v1 settlement from the original intent", async () => {
+    const scope = new PreparedRequestScope("window-session");
+    let listener: (() => void) | undefined;
+    let lastSettlement: {
+      operationId: string;
+      outcome: "succeeded";
+    } | null = null;
+    const actor = {
+      retain: vi.fn(() => ({
+        ready: Promise.resolve(),
+        refresh: vi.fn(async () => undefined),
+        release: vi.fn(),
+      })),
+      getView: vi.fn(() => ({
+        state: {
+          appId: 7,
+          revision: 0,
+          state: { type: "closed" },
+          activeInvocationRef: null,
+          lastSettlement,
+        },
+        connection: "ready",
+        snapshot: {
+          kind: "available",
+          observedRevision: {
+            kind: "actor",
+            actorInstanceId: "actor",
+            revision: 0,
+          },
+        },
+      })),
+      subscribe: vi.fn((next: () => void) => {
+        listener = next;
+        return () => {
+          listener = undefined;
+        };
+      }),
+      subscribeOperationOutcome: vi.fn(() => () => undefined),
+      dispatch: vi.fn(async (_intent, options) => {
+        lastSettlement = {
+          operationId: options.requestIdentity.requestId,
+          outcome: "succeeded",
+        };
+        listener?.();
+        return { kind: "applied" };
+      }),
+    };
+    const requestActor = createVersionPreviewRequestActor(
+      { actor: vi.fn(() => actor) } as never,
+      scope,
+      7,
+    );
+
+    const request = requestActor.request({
+      intent: {
+        type: "RESTORE_TO_MESSAGE",
+        chatId: 2,
+        messageId: 3,
+        restoreCodebase: true,
+        operationId: "restore-message",
+      },
+    });
+
+    await expect(request.admission).resolves.toMatchObject({
+      kind: "admitted",
+    });
+    await expect(request.settled).resolves.toEqual({
+      kind: "completed",
+      outcome: {
+        kind: "succeeded",
+        operation: "restore-to-message",
+      },
+    });
+    expect(scope.inspectActiveCount()).toBe(0);
+  });
 });

@@ -183,6 +183,80 @@ describe("VersionPreviewProvider", () => {
     await waitFor(() => expect(windowInterest.dispose).toHaveBeenCalledOnce());
   });
 
+  it("handles diff presentation controls without remote admission", async () => {
+    const queryClient = new QueryClient();
+
+    function DiffPresentationProbe() {
+      const { state, send } = useVersionPreview(1);
+      const file =
+        state.type === "viewing-diff"
+          ? state.session.selectedDiffFile?.path
+          : undefined;
+      return (
+        <div
+          data-testid="diff-presentation"
+          data-state={state.type}
+          data-file={file ?? "none"}
+        >
+          <button
+            onClick={() =>
+              send({
+                type: "VIEW_VERSION_DIFF",
+                appId: 1,
+                versionId: "v1",
+                file: { versionId: "v1", path: "src/first.ts" },
+              })
+            }
+          >
+            View
+          </button>
+          <button
+            onClick={() =>
+              send({
+                type: "SELECT_DIFF_FILE",
+                file: { versionId: "v1", path: "src/second.ts" },
+              })
+            }
+          >
+            Select file
+          </button>
+          <button onClick={() => send({ type: "CLOSE_VERSION_DIFF" })}>
+            Close diff
+          </button>
+        </div>
+      );
+    }
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <VersionPreviewProvider>
+          <DiffPresentationProbe />
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByText("View"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("diff-presentation").getAttribute("data-file"),
+      ).toBe("src/first.ts"),
+    );
+    fireEvent.click(screen.getByText("Select file"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("diff-presentation").getAttribute("data-file"),
+      ).toBe("src/second.ts"),
+    );
+    fireEvent.click(screen.getByText("Close diff"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("diff-presentation").getAttribute("data-state"),
+      ).toBe("closed"),
+    );
+    expect(actor.dispatch).not.toHaveBeenCalled();
+    expect(windowInterest.acquire).not.toHaveBeenCalled();
+  });
+
   it("keeps the request scope alive until queued window cleanup finishes", async () => {
     const cleanup = deferred<undefined>();
     windowInterest.dispose.mockReturnValueOnce(cleanup.promise);
