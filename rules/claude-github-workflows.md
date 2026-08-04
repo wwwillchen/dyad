@@ -24,6 +24,8 @@ When a headless Claude job must write local handoff artifacts, exclude project/l
 
 Both `claude-code-action` and `claude-code-base-action` read `.claude/settings.json` from the workspace after `actions/checkout`, and the project's file is committed (tracked in git). **`permissions.allow` arrays merge across scopes — they do not replace each other.** From the Claude Code docs: _"Array settings merge across scopes. When the same array-valued setting (such as `permissions.allow`) appears in multiple scopes, the arrays are concatenated and deduplicated, not replaced."_ ([source](https://code.claude.com/docs/en/settings)).
 
+When upgrading the standalone `claude-code-base-action`, do not infer its bundled Claude Code version from the latest release tag: the repository can continue receiving immutable sync commits after tagged releases stop. Inspect `action.yml` at the exact commit, pin that SHA, and annotate the bundled CLI version so model compatibility is reviewable.
+
 This has two consequences that bite in CI:
 
 1. **The `allowed_tools` action input is additive, not authoritative.** A workflow that sets `allowed_tools: "Read,Glob,Grep,Bash(git log:*)"` still inherits every entry in the project's `.claude/settings.json` — `Bash(git:*)`, `Bash(gh pr create:*)`, `Bash(npm run:*)`, `Bash(rm -f ...)`, etc. The narrow list looks tight but isn't.
