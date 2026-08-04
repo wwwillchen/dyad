@@ -1,10 +1,11 @@
-import { Check } from "lucide-react";
+import { Check, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   looksLikePackageSpec,
   type McpCatalogEntry,
 } from "@/ipc/types/mcp_catalog";
+import { catalogEntryCanConnect } from "./catalogCardStatus";
 
 // The schema already validates url, but parse defensively so one bad
 // entry can't throw during render and take down the whole section.
@@ -25,14 +26,23 @@ function sourceOf(entry: McpCatalogEntry): string {
   return hostnameOf(entry.url);
 }
 
+// What an already-added entry is doing. "Added" on its own says only
+// that a row exists, which reads as finished while an OAuth connect is
+// still running or has failed.
+export type CatalogCardStatus =
+  | "not-added"
+  | "added"
+  | "connecting"
+  | "needs-connect";
+
 export function CatalogCard({
   entry,
-  isAdded,
+  status,
   isAdding,
   onAdd,
 }: {
   entry: McpCatalogEntry;
-  isAdded: boolean;
+  status: CatalogCardStatus;
   isAdding: boolean;
   onAdd: (entry: McpCatalogEntry) => void;
 }) {
@@ -61,15 +71,36 @@ export function CatalogCard({
           <span className="text-xs text-muted-foreground truncate">
             {sourceOf(entry)}
           </span>
-          {isAdded ? (
-            <span className="flex items-center gap-1 text-xs font-medium text-green-600 dark:text-green-400 shrink-0">
-              <Check className="w-3.5 h-3.5" />
-              Added
-            </span>
-          ) : (
+          {status === "not-added" ? (
             <Button size="sm" onClick={() => onAdd(entry)} disabled={isAdding}>
               {isAdding ? "Adding…" : "Add"}
             </Button>
+          ) : (
+            // A live region only where the label can still change, so a
+            // catalog of settled entries isn't a wall of them. The icons
+            // repeat the label, so they stay out of the accessible name.
+            <span
+              role={catalogEntryCanConnect(entry) ? "status" : undefined}
+              className={`flex items-center gap-1 text-xs font-medium shrink-0 ${
+                status === "connecting"
+                  ? "text-muted-foreground"
+                  : status === "needs-connect"
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-green-600 dark:text-green-400"
+              }`}
+            >
+              {status === "connecting" && (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />
+              )}
+              {status === "added" && (
+                <Check className="w-3.5 h-3.5" aria-hidden />
+              )}
+              {status === "connecting"
+                ? "Connecting…"
+                : status === "needs-connect"
+                  ? "Not connected"
+                  : "Added"}
+            </span>
           )}
         </div>
       </CardHeader>

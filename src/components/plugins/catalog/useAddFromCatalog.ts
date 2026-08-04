@@ -15,7 +15,7 @@ export function useAddFromCatalog() {
   // consent is pending.
   const [pendingStdioEntry, setPendingStdioEntry] =
     useState<McpCatalogEntry | null>(null);
-  const { onServerCreated } = usePluginConnect();
+  const { onServerCreated, connectingServerId } = usePluginConnect();
 
   const mutation = useMutation({
     mutationFn: async (entry: McpCatalogEntry) => {
@@ -80,6 +80,14 @@ export function useAddFromCatalog() {
     // competing flow) and reuses the probed callback port; it is not
     // awaited so an abandoned browser step can't wedge the add.
     if (entry.transport === "http" && entry.oauth?.required) {
+      // Go to the server's page first, so the connect reports progress
+      // somewhere the user is looking. An entry with nothing to
+      // configure and no connect to watch stays on the catalog, which
+      // keeps adding several in a row workable.
+      navigate({
+        to: "/plugins/$serverId",
+        params: { serverId: created.id },
+      });
       void onServerCreated(created, { wantsOAuth: true });
     }
   };
@@ -106,6 +114,9 @@ export function useAddFromCatalog() {
   return {
     addFromCatalog,
     addingSlug,
+    // Passed through so the catalog can show connect progress without
+    // mounting the connect hook a second time.
+    connectingServerId,
     pendingStdioEntry,
     confirmPendingStdio,
     cancelPendingStdio,
