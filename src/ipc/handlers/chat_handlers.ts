@@ -20,6 +20,10 @@ import {
   toRendererMessage,
 } from "../utils/renderer_chat_message";
 import { createChatForApp } from "../utils/chat_creation_utils";
+import {
+  getReferencedAppsForDisplay,
+  readStoredReferencedAppIds,
+} from "../utils/mention_apps";
 import { firstPromptCreationRegistry } from "../services/first_prompt_creation_service";
 import { userInputRegistry } from "@/user_input/main";
 import {
@@ -115,6 +119,7 @@ export function registerChatHandlers() {
         title: true,
         initialCommitHash: true,
         chatMode: true,
+        referencedAppIds: true,
       },
       with: {
         messages: {
@@ -137,9 +142,55 @@ export function registerChatHandlers() {
       title: chat.title ?? "",
       initialCommitHash: chat.initialCommitHash,
       chatMode: normalizeStoredChatMode(chat.chatMode),
+      referencedApps: await getReferencedAppsForDisplay(chat.referencedAppIds),
       messages: chat.messages.map(toRendererMessage),
     };
   });
+
+  createTypedHandler(
+    chatContracts.removeChatReferencedApp,
+    async (event, { chatId, appId }) => {
+      const chat = await db.query.chats.findFirst({
+        where: eq(chats.id, chatId),
+        columns: { id: true },
+      });
+
+      if (!chat) {
+        throw new DyadError("Chat not found", DyadErrorKind.NotFound);
+      }
+
+      // Detaching revokes read access, so it has to reach the turn that is
+      // already running: an in-flight agent resolved this chat's references
+      // into its tool context up front and would keep reading the app until
+      // the turn ended. Draining cancels that turn and blocks new ones until
+      // the write lands, which also stops the stream's whole-array union
+      // (computed before the removal) from putting the id back.
+      await mutateChatAfterDrainingStreams({
+        chatId,
+        sender: event.sender,
+        mutation: async () => {
+          // Re-read inside the mutation: the drained stream may have persisted
+          // its own union on the way out.
+          const drainedChat = await db.query.chats.findFirst({
+            where: eq(chats.id, chatId),
+            columns: { referencedAppIds: true },
+          });
+          if (!drainedChat) {
+            return;
+          }
+
+          const remaining = readStoredReferencedAppIds(
+            drainedChat.referencedAppIds,
+          ).filter((id) => id !== appId);
+
+          await db
+            .update(chats)
+            .set({ referencedAppIds: remaining })
+            .where(eq(chats.id, chatId));
+        },
+      });
+    },
+  );
 
   createTypedHandler(chatContracts.getChatMetadata, async (_, chatId) => {
     const chat = await db.query.chats.findFirst({
@@ -251,7 +302,19 @@ export function registerChatHandlers() {
       chatId,
       sender: event.sender,
       mutation: async () => {
-        await db.delete(messages).where(eq(messages.chatId, chatId));
+        // Clearing the conversation clears its referenced apps too: the
+        // mentions that established them are gone, so keeping the agent's
+        // read access to other apps would outlive anything the user can see.
+        // Both writes commit together — a failure or exit between them would
+        // leave sticky cross-app read access behind an empty history, where
+        // nothing on screen explains why the agent can still read that app.
+        db.transaction((tx) => {
+          tx.delete(messages).where(eq(messages.chatId, chatId)).run();
+          tx.update(chats)
+            .set({ referencedAppIds: [] })
+            .where(eq(chats.id, chatId))
+            .run();
+        });
       },
     });
   });

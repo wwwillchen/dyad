@@ -101,7 +101,9 @@ import {
 } from "@/ipc/utils/model_refusal";
 import {
   extractMentionedAppsCodebasesFromPrompt,
-  extractMentionedAppsReferencesFromPrompt,
+  persistReferencedAppIds,
+  readStoredReferencedAppIds,
+  resolveStickyReferencedApps,
   type MentionedAppCodebaseEntry,
   type MentionedAppReference,
 } from "../utils/mention_apps";
@@ -1577,11 +1579,23 @@ ${componentSnippet}
         let mentionedAppsCodebases: MentionedAppCodebaseEntry[] = [];
         let referencedAppsForAgent: MentionedAppReference[] = [];
         if (willUseLocalAgentStream) {
-          referencedAppsForAgent =
-            await extractMentionedAppsReferencesFromPrompt(
-              req.prompt,
-              updatedChat.app.id, // Exclude current app
-            );
+          // References are sticky for the rest of the chat here: carrying a
+          // name/path pair costs nothing until the model actually reads from
+          // it, and re-typing `@app:Name` every turn to keep tool access is a
+          // trap (the mention stays visible in history after access is gone).
+          const stickyReferences = await resolveStickyReferencedApps({
+            prompt: req.prompt,
+            persistedAppIds: readStoredReferencedAppIds(
+              updatedChat.referencedAppIds,
+            ),
+            excludeCurrentAppId: updatedChat.app.id,
+          });
+          referencedAppsForAgent = stickyReferences.references;
+          if (stickyReferences.changed) {
+            // This also invalidates the chat in every window, so the composer's
+            // chip row picks the reference up now rather than when the turn ends.
+            await persistReferencedAppIds(req.chatId, stickyReferences.appIds);
+          }
         } else {
           mentionedAppsCodebases =
             await extractMentionedAppsCodebasesFromPrompt(
@@ -1599,6 +1613,13 @@ ${componentSnippet}
             ? localAgentAiUserPrompt
             : defaultAiUserPrompt;
 
+        // The referenced-apps clause only ever fires for build mode: deep
+        // context suppresses `dyadFiles` in favor of `dyadVersionedFiles`, and
+        // the engine's deep pipeline does not read `dyadMentionedApps`, so a
+        // mentioned app's codebase would silently never reach the model. Agent
+        // modes populate `referencedAppsForAgent` from the sticky set, but they
+        // return via handleLocalAgentStream before this flag is read and pass
+        // no smart context mode at all — so stickiness never reaches here.
         const isDeepContextEnabled =
           isEngineEnabled &&
           settings.enableProSmartFilesContextMode &&

@@ -238,6 +238,12 @@
   "messageHistory": "Histórico de Mensagens",
   "codebase": "Base de Código",
   "mentionedApps": "Apps Mencionados",
+  "referencedApps": {
+    "label": "Apps referenciados",
+    "description": "Estes apps continuam legíveis pelo resto deste chat. O agente pode ler os arquivos deles, mas não pode editá-los.",
+    "remove": "Parar de referenciar {{appName}}",
+    "removeDisabledWhileStreaming": "Aguarde a resposta terminar — o agente mantém os arquivos deste app pelo resto deste turno."
+  },
   "systemPrompt": "Prompt do Sistema",
   "currentInput": "Entrada Atual",
   "total": "Total",
