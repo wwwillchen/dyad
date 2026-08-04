@@ -62,6 +62,25 @@ function hasExploreCodeToolResult(
   });
 }
 
+function isMergeConflictResolutionPrompt(content: string): boolean {
+  return (
+    content.includes("Resolve the Git conflict(s) in ") ||
+    content.includes(
+      "Please resolve the Git merge conflicts in the following file",
+    )
+  );
+}
+
+function hasTool(req: Request, toolName: string): boolean {
+  return (
+    Array.isArray(req.body.tools) &&
+    req.body.tools.some(
+      (tool: any) =>
+        tool?.type === "function" && tool.function?.name === toolName,
+    )
+  );
+}
+
 function sendToolCallJson(
   res: Response,
   toolName: string,
@@ -244,6 +263,14 @@ export const createChatCompletionHandler =
       }
     }
 
+    if (
+      !localAgentFixture &&
+      isMergeConflictResolutionPrompt(userTextContent) &&
+      hasTool(req, "write_file")
+    ) {
+      localAgentFixture = "merge-conflict";
+    }
+
     fakeLlmLog(
       `[local-agent] Checking message: "${userTextContent.slice(0, 50)}", fixture: ${localAgentFixture}`,
     );
@@ -314,10 +341,7 @@ export const createChatCompletionHandler =
     if (
       lastMessage &&
       typeof lastMessage.content === "string" &&
-      (lastMessage.content.includes("Resolve the Git conflict(s) in ") ||
-        lastMessage.content.includes(
-          "Please resolve the Git merge conflicts in the following file",
-        ))
+      isMergeConflictResolutionPrompt(lastMessage.content)
     ) {
       // Extract conflict file path from different prompt formats
       let conflictPath = "conflict.txt";
