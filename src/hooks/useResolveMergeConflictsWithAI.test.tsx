@@ -110,6 +110,15 @@ describe("useResolveMergeConflictsWithAI", () => {
     expect(event.type === "submit" && event.request.prompt).toContain(
       "- src/one.ts\n- src/two.ts",
     );
+    expect(event.type === "submit" && event.request.prompt).toContain(
+      "resolve every Git conflict by editing the file in place",
+    );
+    expect(event.type === "submit" && event.request.prompt).toContain(
+      "Do not only describe the resolution or paste the file contents into chat",
+    );
+    expect(event.type === "submit" && event.request.prompt).toContain(
+      "verify that none of the listed files contain conflict markers",
+    );
     expect(result.current.isResolving).toBe(true);
 
     await act(async () => {

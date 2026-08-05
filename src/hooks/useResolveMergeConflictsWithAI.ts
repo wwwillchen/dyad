@@ -82,7 +82,7 @@ export function useResolveMergeConflictsWithAI({
 
 ${fileList}
 
-For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choose the best resolution that preserves the intended functionality from both sides. Remove all conflict markers and provide the complete resolved file content.`;
+For each listed file, resolve every Git conflict by editing the file in place. Preserve the intended behavior from both sides where compatible, and remove all conflict markers (<<<<<<<, =======, >>>>>>>). Do not only describe the resolution or paste the file contents into chat. Before finishing, verify that none of the listed files contain conflict markers.`;
 
         // Set up the chat state and navigate
         setSelectedChatId(newChatId);
