@@ -95,6 +95,14 @@ export type GithubOpsState =
       type: "conflicted";
       files: readonly string[];
       origin: ConflictOrigin;
+      resolution?:
+        | "resolving"
+        | "checking"
+        | "verification-failed"
+        | "ready-to-sync";
+      resolutionChatId?: number;
+      verificationAttempt?: number;
+      verificationError?: string;
     } & GithubOpsContext)
   | ({ type: "rebase-paused" } & GithubOpsContext)
   | ({
@@ -118,22 +126,39 @@ export type GithubOpsEvent =
       op: GithubOperation;
       failure: GithubOperationFailure;
     }
-  | { type: "CONFLICTS"; files: readonly string[] }
+  | {
+      type: "CONFLICTS";
+      files: readonly string[];
+      verificationAttempt?: number;
+    }
   | {
       type: "GIT_STATE";
       mergeInProgress: boolean;
       rebaseInProgress: boolean;
+      verificationAttempt?: number;
     }
   | { type: "ABORT_AND_SWITCH_CONFIRMED" }
   | { type: "BLOCKED_DISMISSED" }
   | { type: "RESOLVE_WITH_AI_STARTED" }
+  | { type: "CONFLICT_RESOLUTION_STARTED"; chatId: number }
+  | { type: "CONFLICT_RESOLUTION_FINISHED"; chatId: number }
+  | {
+      type: "CONFLICT_VERIFICATION_FAILED";
+      verificationAttempt: number;
+      message: string;
+    }
+  | { type: "RETRY_CONFLICT_VERIFICATION" }
   | { type: "BANNER_DISMISSED" }
   | { type: "RECONCILE_REQUESTED" };
 
 export type GithubOpsCommand =
   | { type: "run-op"; op: GithubOperation }
-  | { type: "probe-git-state" }
-  | { type: "probe-conflicts"; settleOnError?: boolean }
+  | { type: "probe-git-state"; verificationAttempt?: number }
+  | {
+      type: "probe-conflicts";
+      settleOnError?: boolean;
+      verificationAttempt?: number;
+    }
   | { type: "invalidate-branches" }
   | { type: "refresh-app" }
   | {

@@ -89,7 +89,7 @@ describe("useResolveMergeConflictsWithAI", () => {
       appId: APP_ID,
       initialChatMode: "local-agent",
     });
-    expect(mocks.onStartResolving).toHaveBeenCalledOnce();
+    expect(mocks.onStartResolving).toHaveBeenCalledExactlyOnceWith(CHAT_ID);
     expect(store.get(selectedChatIdAtom)).toBe(CHAT_ID);
     expect(store.get(selectedAppIdAtom)).toBe(APP_ID);
     expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith({
@@ -107,6 +107,15 @@ describe("useResolveMergeConflictsWithAI", () => {
     });
     expect(event.type === "submit" && event.request.prompt).toContain(
       "- src/one.ts\n- src/two.ts",
+    );
+    expect(event.type === "submit" && event.request.prompt).toContain(
+      "resolve every Git conflict by editing the file in place",
+    );
+    expect(event.type === "submit" && event.request.prompt).toContain(
+      "Do not only describe the resolution or paste the file contents into chat",
+    );
+    expect(event.type === "submit" && event.request.prompt).toContain(
+      "verify that none of the listed files contain conflict markers",
     );
     expect(result.current.isResolving).toBe(true);
 

@@ -27,7 +27,7 @@ export function transition(
     case "OP_FAILED":
       return operationFailed(state, event.op, event.failure);
     case "CONFLICTS":
-      return conflictsReceived(state, event.files);
+      return conflictsReceived(state, event);
     case "GIT_STATE":
       return gitStateReceived(state, event);
     case "ABORT_AND_SWITCH_CONFIRMED":
@@ -36,6 +36,18 @@ export function transition(
       return dismissBlocked(state);
     case "RESOLVE_WITH_AI_STARTED":
       return startResolvingConflicts(state);
+    case "CONFLICT_RESOLUTION_STARTED":
+      return conflictResolutionStarted(state, event.chatId);
+    case "CONFLICT_RESOLUTION_FINISHED":
+      return conflictResolutionFinished(state, event.chatId);
+    case "CONFLICT_VERIFICATION_FAILED":
+      return conflictVerificationFailed(
+        state,
+        event.verificationAttempt,
+        event.message,
+      );
+    case "RETRY_CONFLICT_VERIFICATION":
+      return retryConflictVerification(state);
     case "BANNER_DISMISSED":
       return dismissBanner(state);
     case "RECONCILE_REQUESTED":
@@ -55,6 +67,26 @@ function requestOperation(
     case "running":
       return ignore(state, "op-in-flight");
     case "conflicted":
+      if (state.resolution === "resolving" || state.resolution === "checking") {
+        return ignore(state, "op-in-flight");
+      }
+      if (state.resolution === "ready-to-sync") {
+        if (
+          op.type === "merge-abort" ||
+          op.type === "rebase-abort" ||
+          op.type === "switch"
+        ) {
+          return beginOperation(state, op);
+        }
+        const continuation = continuationOperation(state.origin);
+        return continuation && operationsEqual(op, continuation)
+          ? beginOperation(
+              state,
+              op,
+              continuation.type === "rebase-continue" ? PUSH_NORMAL : undefined,
+            )
+          : ignore(state, "blocked-by-conflicts");
+      }
       return op.type === "merge-abort" ||
         op.type === "rebase-abort" ||
         op.type === "switch"
@@ -77,8 +109,9 @@ function requestOperation(
 function beginOperation(
   state: GithubOpsState,
   op: GithubOperation,
+  nextOverride?: GithubOperation,
 ): GithubOpsTransitionResult {
-  const next = compositeNext(op);
+  const next = nextOverride ?? compositeNext(op);
   const blockedSwitchResume =
     op.type === "switch" ? getBlockedSwitchResume(state) : undefined;
   return {
@@ -236,8 +269,16 @@ function awaitConflicts(
 
 function conflictsReceived(
   state: GithubOpsState,
-  files: readonly string[],
+  event: Extract<GithubOpsEvent, { type: "CONFLICTS" }>,
 ): GithubOpsTransitionResult {
+  const { files } = event;
+  if (
+    state.type === "conflicted" &&
+    state.resolution === "checking" &&
+    state.verificationAttempt !== event.verificationAttempt
+  ) {
+    return ignore(state, "stale-op");
+  }
   switch (state.type) {
     case "running": {
       if (!state.awaitingConflicts) return ignore(state, "no-change");
@@ -280,11 +321,50 @@ function conflictsReceived(
     }
     case "conflicted":
       if (files.length === 0) {
-        return changed({ type: "idle", banner: state.banner });
+        if (state.resolution === "ready-to-sync") {
+          return ignore(state, "no-change");
+        }
+        if (state.resolution === "resolving") {
+          return ignore(state, "no-change");
+        }
+        if (state.resolution === "verification-failed") {
+          return ignore(state, "no-change");
+        }
+        const continuation = continuationOperation(state.origin);
+        return state.resolution === "checking" && continuation
+          ? changed({
+              ...state,
+              resolution: "ready-to-sync",
+              verificationError: undefined,
+              banner: null,
+            })
+          : changed({
+              type: "idle",
+              banner:
+                state.resolution === "checking"
+                  ? {
+                      kind: "success",
+                      message: "Merge conflicts resolved.",
+                    }
+                  : state.banner,
+            });
       }
-      return sameFiles(state.files, files)
+      if (state.resolution === "resolving") {
+        return sameFiles(state.files, files)
+          ? ignore(state, "no-change")
+          : changed({ ...state, files });
+      }
+      return sameFiles(state.files, files) && state.resolution === undefined
         ? ignore(state, "no-change")
-        : changed({ ...state, files });
+        : changed({
+            ...state,
+            files,
+            resolution: undefined,
+            resolutionChatId: undefined,
+            verificationAttempt: undefined,
+            verificationError: undefined,
+            banner: null,
+          });
     case "rebase-paused":
       return files.length > 0
         ? enterConflicted(files, { type: "rebase" }, false)
@@ -302,6 +382,13 @@ function gitStateReceived(
   state: GithubOpsState,
   event: Extract<GithubOpsEvent, { type: "GIT_STATE" }>,
 ): GithubOpsTransitionResult {
+  if (
+    state.type === "conflicted" &&
+    state.resolution === "checking" &&
+    state.verificationAttempt !== event.verificationAttempt
+  ) {
+    return ignore(state, "stale-op");
+  }
   switch (state.type) {
     case "running":
       return ignore(state, "op-in-flight");
@@ -313,18 +400,27 @@ function gitStateReceived(
       };
     case "conflicted": {
       const nextOrigin: ConflictOrigin = event.rebaseInProgress
-        ? isRebaseConflictOrigin(state.origin)
+        ? state.resolution !== undefined || isRebaseConflictOrigin(state.origin)
           ? state.origin
           : { type: "rebase" }
-        : isRebaseConflictOrigin(state.origin)
-          ? { type: "reconcile" }
-          : state.origin;
+        : state.resolution !== undefined &&
+            isResumableRebaseOrigin(state.origin)
+          ? PUSH_NORMAL
+          : state.resolution === undefined &&
+              isRebaseConflictOrigin(state.origin)
+            ? { type: "reconcile" }
+            : state.origin;
       const nextState =
         nextOrigin === state.origin ? state : { ...state, origin: nextOrigin };
       return {
         kind: "applied",
         state: nextState,
-        commands: [{ type: "probe-conflicts" }],
+        commands: [
+          {
+            type: "probe-conflicts",
+            verificationAttempt: event.verificationAttempt,
+          },
+        ],
       };
     }
     case "idle":
@@ -387,6 +483,9 @@ function startResolvingConflicts(
 ): GithubOpsTransitionResult {
   switch (state.type) {
     case "conflicted":
+      if (state.resolution !== undefined) {
+        return ignore(state, "invalid-in-current-state");
+      }
       return {
         kind: "applied",
         state,
@@ -397,6 +496,122 @@ function startResolvingConflicts(
           },
         ],
       };
+    case "idle":
+    case "running":
+    case "rebase-paused":
+    case "switch-blocked":
+      return ignore(state, "invalid-in-current-state");
+    default:
+      return assertNever(state);
+  }
+}
+
+function conflictResolutionStarted(
+  state: GithubOpsState,
+  chatId: number,
+): GithubOpsTransitionResult {
+  switch (state.type) {
+    case "conflicted":
+      if (state.resolution !== undefined) {
+        return ignore(state, "invalid-in-current-state");
+      }
+      return changed({
+        ...state,
+        resolution: "resolving",
+        resolutionChatId: chatId,
+        verificationError: undefined,
+        banner: null,
+      });
+    case "idle":
+    case "running":
+    case "rebase-paused":
+    case "switch-blocked":
+      return ignore(state, "invalid-in-current-state");
+    default:
+      return assertNever(state);
+  }
+}
+
+function conflictResolutionFinished(
+  state: GithubOpsState,
+  chatId: number,
+): GithubOpsTransitionResult {
+  switch (state.type) {
+    case "conflicted":
+      if (state.resolution !== "resolving") {
+        return ignore(state, "invalid-in-current-state");
+      }
+      if (state.resolutionChatId !== chatId) {
+        return ignore(state, "stale-op");
+      }
+      const verificationAttempt = (state.verificationAttempt ?? 0) + 1;
+      return {
+        kind: "applied",
+        state: {
+          ...state,
+          resolution: "checking",
+          verificationAttempt,
+          verificationError: undefined,
+        },
+        commands: [{ type: "probe-git-state", verificationAttempt }],
+      };
+    case "idle":
+    case "running":
+    case "rebase-paused":
+    case "switch-blocked":
+      return ignore(state, "invalid-in-current-state");
+    default:
+      return assertNever(state);
+  }
+}
+
+function conflictVerificationFailed(
+  state: GithubOpsState,
+  verificationAttempt: number,
+  message: string,
+): GithubOpsTransitionResult {
+  switch (state.type) {
+    case "conflicted":
+      if (state.resolution !== "checking") {
+        return ignore(state, "invalid-in-current-state");
+      }
+      return state.verificationAttempt === verificationAttempt
+        ? changed({
+            ...state,
+            resolution: "verification-failed",
+            verificationError: message,
+          })
+        : ignore(state, "stale-op");
+    case "idle":
+    case "running":
+    case "rebase-paused":
+    case "switch-blocked":
+      return ignore(state, "invalid-in-current-state");
+    default:
+      return assertNever(state);
+  }
+}
+
+function retryConflictVerification(
+  state: GithubOpsState,
+): GithubOpsTransitionResult {
+  switch (state.type) {
+    case "conflicted": {
+      if (state.resolution !== "verification-failed") {
+        return ignore(state, "invalid-in-current-state");
+      }
+      const verificationAttempt = (state.verificationAttempt ?? 0) + 1;
+      return {
+        kind: "applied",
+        state: {
+          ...state,
+          resolution: "checking",
+          verificationAttempt,
+          verificationError: undefined,
+        },
+        commands: [{ type: "probe-git-state", verificationAttempt }],
+      };
+    }
     case "idle":
     case "running":
     case "rebase-paused":
@@ -425,7 +640,28 @@ function dismissBanner(state: GithubOpsState): GithubOpsTransitionResult {
 function reconcile(state: GithubOpsState): GithubOpsTransitionResult {
   switch (state.type) {
     case "idle":
+      return {
+        kind: "applied",
+        state,
+        commands: [{ type: "probe-git-state" }],
+      };
     case "conflicted":
+      if (state.resolution === "verification-failed") {
+        return ignore(state, "no-change");
+      }
+      return {
+        kind: "applied",
+        state,
+        commands: [
+          {
+            type: "probe-git-state",
+            verificationAttempt:
+              state.resolution === "checking"
+                ? state.verificationAttempt
+                : undefined,
+          },
+        ],
+      };
     case "rebase-paused":
     case "switch-blocked":
       return {
@@ -469,30 +705,51 @@ function enterConflicted(
   origin: ConflictOrigin,
   notify: boolean,
 ): GithubOpsTransitionResult {
-  const message =
-    "Merge conflicts detected. Use the buttons below to resolve them.";
   return {
     kind: "applied",
     state: {
       type: "conflicted",
       files,
       origin,
-      banner: {
-        kind: "error",
-        code: "MERGE_CONFLICT",
-        message,
-      },
+      banner: null,
     },
     commands: notify
       ? [
           {
             type: "notify",
-            kind: "error",
-            message: "Merge conflicts detected while syncing to GitHub.",
+            kind: "info",
+            message: "Sync paused. Resolve merge conflicts to continue.",
           },
         ]
       : [],
   };
+}
+
+export function continuationOperation(
+  origin: ConflictOrigin,
+): GithubOperation | undefined {
+  switch (origin.type) {
+    case "push":
+      return origin;
+    case "rebase":
+    case "rebase-continue":
+      return { type: "rebase-continue" };
+    case "reconcile":
+    case "pull":
+    case "fetch":
+    case "rebase-abort":
+    case "merge-abort":
+    case "merge":
+    case "switch":
+    case "create-branch":
+    case "delete-branch":
+    case "rename-branch":
+    case "disconnect":
+    case "connect-repo":
+      return undefined;
+    default:
+      return assertNever(origin);
+  }
 }
 
 function isRebaseOperation(op: GithubOperation): boolean {
@@ -505,6 +762,10 @@ function isRebaseOperation(op: GithubOperation): boolean {
 
 function isRebaseConflictOrigin(origin: ConflictOrigin): boolean {
   return origin.type !== "reconcile" && isRebaseOperation(origin);
+}
+
+function isResumableRebaseOrigin(origin: ConflictOrigin): boolean {
+  return origin.type === "rebase" || origin.type === "rebase-continue";
 }
 
 function blockedSwitch(

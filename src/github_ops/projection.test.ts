@@ -102,4 +102,69 @@ describe("projectGithubOps", () => {
     expect(conflicted.capabilities.canDisconnect).toBe(false);
     expect(rebasePaused.capabilities.canDisconnect).toBe(false);
   });
+
+  it("projects a resolved sync conflict as a single continuation action", () => {
+    const projection = projectGithubOps({
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "ready-to-sync",
+      banner: null,
+    });
+
+    expect(projection.conflictRecoveryStage).toBe("ready-to-sync");
+    expect(projection.syncContinuationOperation).toEqual({
+      type: "push",
+      mode: "normal",
+    });
+    expect(projection.capabilities.canContinueSync).toBe(true);
+    expect(projection.capabilities.canResolveConflicts).toBe(false);
+    expect(projection.capabilities.canCancelSync).toBe(true);
+  });
+
+  it("projects Git verification separately from active chat resolution", () => {
+    const projection = projectGithubOps({
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "checking",
+      banner: null,
+    });
+
+    expect(projection.conflictRecoveryStage).toBe("checking");
+    expect(projection.syncContinuationOperation).toBeNull();
+  });
+
+  it("projects a recoverable verification failure", () => {
+    const projection = projectGithubOps({
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "verification-failed",
+      verificationError: "temporary Git-state failure",
+      banner: null,
+    });
+
+    expect(projection.conflictRecoveryStage).toBe("verification-failed");
+    expect(projection.conflictVerificationError).toBe(
+      "temporary Git-state failure",
+    );
+    expect(projection.capabilities.canRetryConflictVerification).toBe(true);
+    expect(projection.capabilities.canContinueSync).toBe(false);
+    expect(projection.capabilities.canResolveConflicts).toBe(false);
+  });
+
+  it("projects rebase recovery as rebase continuation", () => {
+    const projection = projectGithubOps({
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "rebase" },
+      resolution: "ready-to-sync",
+      banner: null,
+    });
+
+    expect(projection.syncContinuationOperation).toEqual({
+      type: "rebase-continue",
+    });
+  });
 });

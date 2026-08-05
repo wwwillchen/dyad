@@ -16,6 +16,8 @@ const UNAVAILABLE_CAPABILITIES = {
   canRebaseAndSync: false,
   canResolveConflicts: false,
   canCancelSync: false,
+  canContinueSync: false,
+  canRetryConflictVerification: false,
   canMutateBranches: false,
   canSwitchBranches: false,
   canConfirmBlockedSwitch: false,
@@ -65,6 +67,8 @@ export function useGithubOps(
         case "BLOCKED_DISMISSED":
         case "BANNER_DISMISSED":
         case "RECONCILE_REQUESTED":
+        case "RETRY_CONFLICT_VERIFICATION":
+        case "CONFLICT_RESOLUTION_FINISHED":
           intent = event;
           break;
         case "RESOLVE_WITH_AI_STARTED": {
@@ -78,6 +82,8 @@ export function useGithubOps(
         case "OP_FAILED":
         case "CONFLICTS":
         case "GIT_STATE":
+        case "CONFLICT_RESOLUTION_STARTED":
+        case "CONFLICT_VERIFICATION_FAILED":
           throw new Error(
             `${event.type} is a host-only GitHub operation event`,
           );
@@ -142,23 +148,27 @@ export function useGithubOps(
     return () => window.removeEventListener("focus", reconcile);
   }, [appId, reconcileOnMount, remote.connection, sendWithoutReceipt]);
 
-  const dispatchConflictResolutionStarted = useCallback(async () => {
-    const claimId = conflictClaimRef.current;
-    if (!claimId) {
-      throw new Error("Conflict-resolution claim is no longer available");
-    }
-    try {
-      const receipt = await remote.dispatch({
-        type: "CONFLICT_RESOLUTION_STARTED",
-        claimId,
-      });
-      if (receipt.kind !== "applied") {
-        throw new Error("Conflict-resolution claim was not accepted");
+  const dispatchConflictResolutionStarted = useCallback(
+    async (chatId: number) => {
+      const claimId = conflictClaimRef.current;
+      if (!claimId) {
+        throw new Error("Conflict-resolution claim is no longer available");
       }
-    } finally {
-      conflictClaimRef.current = null;
-    }
-  }, [remote.dispatch]);
+      try {
+        const receipt = await remote.dispatch({
+          type: "CONFLICT_RESOLUTION_STARTED",
+          claimId,
+          chatId,
+        });
+        if (receipt.kind !== "applied") {
+          throw new Error("Conflict-resolution claim was not accepted");
+        }
+      } finally {
+        conflictClaimRef.current = null;
+      }
+    },
+    [remote.dispatch],
+  );
 
   const dispatchConflictResolutionCancelled = useCallback(async () => {
     const claimId = conflictClaimRef.current;

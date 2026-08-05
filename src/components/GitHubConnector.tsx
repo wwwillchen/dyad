@@ -4,9 +4,12 @@ import {
   Github,
   Clipboard,
   Check,
+  CircleCheck,
   AlertTriangle,
   ChevronRight,
+  FileCode2,
   GitMerge,
+  LoaderCircle,
 } from "lucide-react";
 import { ipc } from "@/ipc/types";
 import { useSettings } from "@/hooks/useSettings";
@@ -30,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GithubBranchManager } from "@/components/GithubBranchManager";
 import { useResolveMergeConflictsWithAI } from "@/hooks/useResolveMergeConflictsWithAI";
+import { useChatStreamState } from "@/hooks/useChatStream";
 import { slugifyAppPath } from "@/shared/slugify";
 import {
   isAppliedGithubOpsReceipt,
@@ -95,9 +99,12 @@ function ConnectedGitHubConnector({
   } = useGithubOps(appId);
   const {
     banner,
+    state: githubOpsState,
     capabilities: {
       canAbortRebase,
       canCancelSync,
+      canContinueSync,
+      canRetryConflictVerification,
       canContinueRebase,
       canDisconnect,
       canForcePush,
@@ -109,6 +116,10 @@ function ConnectedGitHubConnector({
     isOperationInFlight,
     isSyncing,
     conflicts,
+    conflictRecoveryStage,
+    conflictResolutionChatId,
+    conflictVerificationError,
+    syncContinuationOperation,
     rebaseAction,
     showForcePush,
     showRebaseAndSync,
@@ -125,6 +136,29 @@ function ConnectedGitHubConnector({
     onStartFailed: dispatchConflictResolutionCancelled,
   });
 
+  const conflictResolutionChat = useChatStreamState(
+    conflictResolutionChatId ?? undefined,
+  );
+
+  useEffect(() => {
+    if (
+      conflictRecoveryStage !== "resolving" ||
+      conflictResolutionChatId === null ||
+      !conflictResolutionChat?.lastCompletion
+    ) {
+      return;
+    }
+    void dispatchWithErrorFeedback({
+      type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: conflictResolutionChatId,
+    });
+  }, [
+    conflictRecoveryStage,
+    conflictResolutionChatId,
+    conflictResolutionChat?.lastCompletion,
+    dispatchWithErrorFeedback,
+  ]);
+
   const startConflictResolution = useCallback(async () => {
     const receipt = await dispatchWithErrorFeedback({
       type: "RESOLVE_WITH_AI_STARTED",
@@ -136,6 +170,14 @@ function ConnectedGitHubConnector({
 
   const isDisconnecting = runningOperation?.type === "disconnect";
   const isRebaseActionPending = isOperationInFlight || !!rebaseAction;
+  const isSyncConflict =
+    githubOpsState.type === "conflicted" &&
+    (githubOpsState.origin.type === "push" ||
+      githubOpsState.origin.type === "rebase" ||
+      githubOpsState.origin.type === "rebase-continue");
+  const showErrorBanner =
+    banner?.kind === "error" &&
+    (banner.code !== "MERGE_CONFLICT" || !conflictRecoveryStage);
 
   return (
     <div className="w-full" data-testid="github-connected-repo">
@@ -210,7 +252,7 @@ function ConnectedGitHubConnector({
           {isDisconnecting ? "Disconnecting..." : "Disconnect from repo"}
         </Button>
       </div>
-      {banner?.kind === "error" && (
+      {showErrorBanner && (
         <div className="mt-2 space-y-2">
           <p className="text-red-600">
             {banner.message}{" "}
@@ -312,40 +354,184 @@ function ConnectedGitHubConnector({
           )}
         </div>
       )}
-      {conflicts.length > 0 && (
+      {conflictRecoveryStage && (
         <div
-          className="mt-3 p-3 rounded-md border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-900/20"
+          className="mt-3 rounded-lg border border-border bg-muted/35 p-3.5"
           data-testid="github-conflict-recovery"
         >
-          <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-3">
-            {conflicts.length} file{conflicts.length > 1 ? "s" : ""} with merge
-            conflicts: {conflicts.join(", ")}
-          </p>
-          <div className="flex gap-2">
-            <Button
-              onClick={() => void startConflictResolution()}
-              disabled={
-                !canResolveConflicts ||
-                conflictResolutionClaimed ||
-                isCancellingSync ||
-                isResolving
-              }
-            >
-              {isResolving
-                ? "Resolving..."
-                : conflictResolutionClaimed
-                  ? "Conflict resolution starting..."
-                  : "Resolve merge conflicts with AI"}
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() =>
-                send({ type: "OP_REQUESTED", op: { type: abortOperation } })
-              }
-              disabled={!canCancelSync || isCancellingSync || isResolving}
-            >
-              {isCancellingSync ? "Cancelling..." : "Cancel sync"}
-            </Button>
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-background text-muted-foreground ring-1 ring-border">
+              {conflictRecoveryStage === "resolving" ||
+              conflictRecoveryStage === "checking" ? (
+                <LoaderCircle
+                  className="size-4 animate-spin motion-reduce:animate-none"
+                  aria-hidden="true"
+                />
+              ) : conflictRecoveryStage === "verification-failed" ? (
+                <AlertTriangle
+                  className="size-4 text-amber-600 dark:text-amber-400"
+                  aria-hidden="true"
+                />
+              ) : conflictRecoveryStage === "ready-to-sync" ? (
+                <CircleCheck
+                  className="size-4 text-emerald-600 dark:text-emerald-400"
+                  aria-hidden="true"
+                />
+              ) : (
+                <GitMerge className="size-4" aria-hidden="true" />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div role="status" aria-live="polite" aria-atomic="true">
+                <p className="text-sm font-medium text-foreground">
+                  {conflictRecoveryStage === "resolving"
+                    ? "Resolving conflicts in chat…"
+                    : conflictRecoveryStage === "checking"
+                      ? "Verifying resolution…"
+                      : conflictRecoveryStage === "verification-failed"
+                        ? "Couldn't verify the resolution"
+                        : conflictRecoveryStage === "ready-to-sync"
+                          ? "Conflicts resolved"
+                          : isSyncConflict
+                            ? "Sync paused"
+                            : "Merge paused"}
+                </p>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  {conflictRecoveryStage === "resolving"
+                    ? "Follow progress in the chat."
+                    : conflictRecoveryStage === "checking"
+                      ? "Checking the repository for remaining conflicts."
+                      : conflictRecoveryStage === "verification-failed"
+                        ? `${conflictVerificationError ?? "Dyad couldn't check the repository."} Your resolved changes are still safe.`
+                        : conflictRecoveryStage === "ready-to-sync"
+                          ? "Your changes are ready to sync to GitHub."
+                          : `Resolve ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"} to ${isSyncConflict ? "continue syncing" : "finish merging"}.`}
+                </p>
+              </div>
+
+              {conflictRecoveryStage === "conflicted" && (
+                <ul className="mt-2 space-y-1" aria-label="Conflicted files">
+                  {conflicts.map((file) => (
+                    <li
+                      key={file}
+                      className="flex min-w-0 items-center gap-2 text-sm text-foreground"
+                    >
+                      <FileCode2
+                        className="size-4 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate font-mono text-xs" title={file}>
+                        {file}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {conflictRecoveryStage === "conflicted" && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => void startConflictResolution()}
+                    disabled={
+                      !canResolveConflicts ||
+                      conflictResolutionClaimed ||
+                      isCancellingSync ||
+                      isResolving
+                    }
+                  >
+                    {isResolving
+                      ? "Opening chat…"
+                      : conflictResolutionClaimed
+                        ? "Opening chat…"
+                        : "Resolve with AI"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      send({
+                        type: "OP_REQUESTED",
+                        op: { type: abortOperation },
+                      })
+                    }
+                    disabled={!canCancelSync || isCancellingSync || isResolving}
+                  >
+                    {isCancellingSync
+                      ? "Cancelling…"
+                      : isSyncConflict
+                        ? "Cancel sync"
+                        : "Cancel merge"}
+                  </Button>
+                </div>
+              )}
+
+              {conflictRecoveryStage === "ready-to-sync" &&
+                syncContinuationOperation && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      disabled={!canContinueSync}
+                      onClick={() =>
+                        send({
+                          type: "OP_REQUESTED",
+                          op: syncContinuationOperation,
+                        })
+                      }
+                    >
+                      Continue to Sync
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!canCancelSync || isCancellingSync}
+                      onClick={() =>
+                        send({
+                          type: "OP_REQUESTED",
+                          op: { type: abortOperation },
+                        })
+                      }
+                    >
+                      {isCancellingSync
+                        ? "Cancelling…"
+                        : isSyncConflict
+                          ? "Cancel sync"
+                          : "Cancel merge"}
+                    </Button>
+                  </div>
+                )}
+
+              {conflictRecoveryStage === "verification-failed" && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    disabled={!canRetryConflictVerification}
+                    onClick={() =>
+                      send({ type: "RETRY_CONFLICT_VERIFICATION" })
+                    }
+                  >
+                    Try again
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!canCancelSync || isCancellingSync}
+                    onClick={() =>
+                      send({
+                        type: "OP_REQUESTED",
+                        op: { type: abortOperation },
+                      })
+                    }
+                  >
+                    {isCancellingSync
+                      ? "Cancelling…"
+                      : isSyncConflict
+                        ? "Cancel sync"
+                        : "Cancel merge"}
+                  </Button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

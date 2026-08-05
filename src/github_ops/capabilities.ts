@@ -10,6 +10,8 @@ export interface GithubOpsCapabilities {
   readonly canRebaseAndSync: boolean;
   readonly canResolveConflicts: boolean;
   readonly canCancelSync: boolean;
+  readonly canContinueSync: boolean;
+  readonly canRetryConflictVerification: boolean;
   readonly canMutateBranches: boolean;
   readonly canSwitchBranches: boolean;
   readonly canConfirmBlockedSwitch: boolean;
@@ -22,6 +24,13 @@ export function selectGithubOpsCapabilities(
   state: GithubOpsState,
 ): GithubOpsCapabilities {
   const isIdle = state.type === "idle";
+  const isActionableConflict =
+    state.type === "conflicted" && state.resolution === undefined;
+  const isStableConflictRecovery =
+    state.type === "conflicted" &&
+    (state.resolution === undefined ||
+      state.resolution === "verification-failed" ||
+      state.resolution === "ready-to-sync");
   return {
     canSync: isIdle,
     canDisconnect: isIdle,
@@ -36,11 +45,15 @@ export function selectGithubOpsCapabilities(
       isIdle &&
       state.banner?.kind === "error" &&
       state.banner.code === "DIVERGENT_BRANCHES",
-    canResolveConflicts: state.type === "conflicted",
-    canCancelSync: state.type === "conflicted",
+    canResolveConflicts: isActionableConflict,
+    canCancelSync: isStableConflictRecovery,
+    canContinueSync:
+      state.type === "conflicted" && state.resolution === "ready-to-sync",
+    canRetryConflictVerification:
+      state.type === "conflicted" && state.resolution === "verification-failed",
     canMutateBranches: isIdle,
     canSwitchBranches:
-      isIdle || state.type === "conflicted" || state.type === "rebase-paused",
+      isIdle || isStableConflictRecovery || state.type === "rebase-paused",
     canConfirmBlockedSwitch: state.type === "switch-blocked",
     canDismissBlockedSwitch: state.type === "switch-blocked",
     canConnectRepository: isIdle,

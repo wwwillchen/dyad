@@ -12,7 +12,7 @@ import { useLoadApp } from "@/hooks/useLoadApp";
 interface UseResolveMergeConflictsWithAIProps {
   appId: number;
   conflicts: readonly string[];
-  onStartResolving?: () => void | Promise<void>;
+  onStartResolving?: (chatId: number) => void | Promise<void>;
   onStartFailed?: () => void | Promise<void>;
 }
 
@@ -60,7 +60,7 @@ export function useResolveMergeConflictsWithAI({
         });
         try {
           // Clear conflicts state after successful chat creation.
-          await onStartResolving?.();
+          await onStartResolving?.(newChatId);
         } catch (error) {
           // The claim can expire while durable chat creation is in flight.
           // Remove the chat if main does not accept the corresponding start.
@@ -74,14 +74,13 @@ export function useResolveMergeConflictsWithAI({
           }
           throw error;
         }
-
         // Build the prompt for resolving all conflicts
         const fileList = requestedConflicts.map((f) => `- ${f}`).join("\n");
         const prompt = `Please resolve the Git merge conflicts in the following file${requestedConflicts.length > 1 ? "s" : ""}:
 
 ${fileList}
 
-For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choose the best resolution that preserves the intended functionality from both sides. Remove all conflict markers and provide the complete resolved file content.`;
+For each listed file, resolve every Git conflict by editing the file in place. Preserve the intended behavior from both sides where compatible, and remove all conflict markers (<<<<<<<, =======, >>>>>>>). Do not only describe the resolution or paste the file contents into chat. Before finishing, verify that none of the listed files contain conflict markers.`;
 
         // Set up the chat state and navigate
         setSelectedChatId(newChatId);

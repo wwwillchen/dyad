@@ -264,6 +264,7 @@ describe("main-hosted github_ops actor", () => {
       actor.dispatch({
         type: "CONFLICT_RESOLUTION_STARTED",
         claimId: "missing-claim",
+        chatId: 42,
       }),
     ).resolves.toMatchObject({
       kind: "ignored",
@@ -279,6 +280,7 @@ describe("main-hosted github_ops actor", () => {
       actor.dispatch({
         type: "CONFLICT_RESOLUTION_STARTED",
         claimId: "claim-after-sync",
+        chatId: 42,
       }),
     ).resolves.toMatchObject({ kind: "applied" });
   });
@@ -315,7 +317,161 @@ describe("main-hosted github_ops actor", () => {
     await actorA.dispatch({
       type: "CONFLICT_RESOLUTION_STARTED",
       claimId: "claim-a",
+      chatId: 42,
     });
+    expect(actorA.getSnapshot().state).toMatchObject({
+      type: "conflicted",
+      resolution: "resolving",
+    });
+  });
+
+  it("continues a resolved rebase conflict before pushing", async () => {
+    service.getGitState.mockResolvedValue({
+      mergeInProgress: false,
+      rebaseInProgress: true,
+    });
+    const { actorA, host } = createHarness();
+    await actorA.resync();
+    const local: GithubOpsHostedActor = host.ensure(
+      githubOpsDefinition,
+      githubOpsKey(7),
+    );
+    local.send({
+      type: "GIT_STATE",
+      mergeInProgress: false,
+      rebaseInProgress: true,
+    });
+    await flush();
+    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    await flush();
+
+    await actorA.dispatch({
+      type: "RESOLVE_WITH_AI_STARTED",
+      claimId: "rebase-claim",
+    });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_STARTED",
+      claimId: "rebase-claim",
+      chatId: 42,
+    });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: 42,
+    });
+    await flush();
+    expect(actorA.getSnapshot().state).toMatchObject({
+      type: "conflicted",
+      origin: { type: "rebase" },
+      resolution: "ready-to-sync",
+    });
+
+    await actorA.dispatch({
+      type: "OP_REQUESTED",
+      op: { type: "rebase-continue" },
+      operationId: "continue-rebase-and-push",
+    });
+    await flush();
+
+    expect(service.run).toHaveBeenNthCalledWith(1, 7, {
+      type: "rebase-continue",
+    });
+    expect(service.run).toHaveBeenNthCalledWith(2, 7, {
+      type: "push",
+      mode: "normal",
+    });
+    expect(actorA.getSnapshot().state.type).toBe("idle");
+  });
+
+  it("makes a failed Git-state verification retryable without restarting AI", async () => {
+    service.getGitState.mockRejectedValueOnce(
+      new Error("temporary Git-state failure"),
+    );
+    const { actorA, host } = createHarness();
+    await actorA.resync();
+    const local: GithubOpsHostedActor = host.ensure(
+      githubOpsDefinition,
+      githubOpsKey(7),
+    );
+    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    await flush();
+
+    await actorA.dispatch({
+      type: "RESOLVE_WITH_AI_STARTED",
+      claimId: "verification-claim",
+    });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_STARTED",
+      claimId: "verification-claim",
+      chatId: 42,
+    });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: 42,
+    });
+    await flush();
+
+    expect(actorA.getSnapshot().state).toMatchObject({
+      type: "conflicted",
+      resolution: "verification-failed",
+      resolutionChatId: 42,
+      verificationError: "temporary Git-state failure",
+    });
+    expect(presentation.showError).not.toHaveBeenCalled();
+
+    await actorA.dispatch({ type: "RETRY_CONFLICT_VERIFICATION" });
+    await flush();
+
+    expect(service.getGitState).toHaveBeenCalledTimes(2);
+    expect(actorA.getSnapshot().state).toMatchObject({
+      type: "idle",
+      banner: {
+        kind: "success",
+        message: "Merge conflicts resolved.",
+      },
+    });
+  });
+
+  it("makes a failed conflict-file verification retryable", async () => {
+    service.getConflicts.mockRejectedValueOnce(
+      new Error("temporary conflict probe failure"),
+    );
+    const { actorA, host } = createHarness();
+    await actorA.resync();
+    const local: GithubOpsHostedActor = host.ensure(
+      githubOpsDefinition,
+      githubOpsKey(7),
+    );
+    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    await flush();
+
+    await actorA.dispatch({
+      type: "RESOLVE_WITH_AI_STARTED",
+      claimId: "conflict-probe-claim",
+    });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_STARTED",
+      claimId: "conflict-probe-claim",
+      chatId: 42,
+    });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: 42,
+    });
+    await flush();
+
+    expect(service.getConflicts).toHaveBeenCalledOnce();
+    expect(actorA.getSnapshot().state).toMatchObject({
+      type: "conflicted",
+      resolution: "verification-failed",
+      resolutionChatId: 42,
+      verificationError: "temporary conflict probe failure",
+    });
+    expect(presentation.showError).not.toHaveBeenCalled();
+
+    await actorA.dispatch({ type: "RETRY_CONFLICT_VERIFICATION" });
+    await flush();
+
+    expect(service.getConflicts).toHaveBeenCalledTimes(2);
     expect(actorA.getSnapshot().state.type).toBe("idle");
   });
 
@@ -372,13 +528,17 @@ describe("main-hosted github_ops actor", () => {
         encodedEvent: {
           type: "CONFLICT_RESOLUTION_STARTED",
           claimId: "claim-a",
+          chatId: 42,
         },
         messageId: "stale-claim-follow-up",
         expectedActorInstanceId: local.actorInstanceId,
         expectedRevision: staleRevision,
       }),
     ).resolves.toMatchObject({ kind: "applied" });
-    expect(local.getSnapshot().state.type).toBe("idle");
+    expect(local.getSnapshot().state).toMatchObject({
+      type: "conflicted",
+      resolution: "resolving",
+    });
   });
 
   it("rejects a follow-up from the wrong claimant", async () => {
@@ -496,6 +656,24 @@ describe("main-hosted github_ops actor", () => {
     await flush();
 
     expect(presentation.showError).not.toHaveBeenCalled();
+  });
+
+  it("shows a toast for a generic probe failure without emitting verification recovery", async () => {
+    service.getGitState.mockRejectedValueOnce(
+      new Error("temporary repository refresh failure"),
+    );
+    const { actorA } = createHarness();
+    await actorA.resync();
+
+    await actorA.dispatch({ type: "RECONCILE_REQUESTED" });
+    await flush();
+
+    expect(actorA.getSnapshot().state.type).toBe("idle");
+    expect(presentation.showError).toHaveBeenCalledExactlyOnceWith(
+      7,
+      undefined,
+      "temporary repository refresh failure",
+    );
   });
 
   it("rejects dispatch for the null-app subscription sentinel", async () => {

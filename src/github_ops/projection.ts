@@ -3,6 +3,7 @@ import {
   selectGithubOpsCapabilities,
   type GithubOpsCapabilities,
 } from "./capabilities";
+import { continuationOperation } from "./transition";
 
 export interface GithubOpsProjection {
   readonly state: GithubOpsState;
@@ -12,6 +13,16 @@ export interface GithubOpsProjection {
   readonly isOperationInFlight: boolean;
   readonly isSyncing: boolean;
   readonly conflicts: readonly string[];
+  readonly conflictRecoveryStage:
+    | "conflicted"
+    | "resolving"
+    | "checking"
+    | "verification-failed"
+    | "ready-to-sync"
+    | null;
+  readonly conflictResolutionChatId: number | null;
+  readonly conflictVerificationError: string | null;
+  readonly syncContinuationOperation: GithubOperation | null;
   readonly rebaseInProgress: boolean;
   readonly rebaseAction: "abort" | "continue" | "safe-push" | null;
   readonly showForcePush: boolean;
@@ -55,6 +66,26 @@ export function projectGithubOps(state: GithubOpsState): GithubOpsProjection {
       state.type === "running" &&
       (state.op.type === "push" || state.op.type === "rebase"),
     conflicts: state.type === "conflicted" ? state.files : EMPTY_CONFLICTS,
+    conflictRecoveryStage:
+      state.type === "conflicted"
+        ? state.resolution === "resolving"
+          ? "resolving"
+          : state.resolution === "checking"
+            ? "checking"
+            : state.resolution === "verification-failed"
+              ? "verification-failed"
+              : state.resolution === "ready-to-sync"
+                ? "ready-to-sync"
+                : "conflicted"
+        : null,
+    conflictResolutionChatId:
+      state.type === "conflicted" ? (state.resolutionChatId ?? null) : null,
+    conflictVerificationError:
+      state.type === "conflicted" ? (state.verificationError ?? null) : null,
+    syncContinuationOperation:
+      state.type === "conflicted" && state.resolution === "ready-to-sync"
+        ? (continuationOperation(state.origin) ?? null)
+        : null,
     rebaseInProgress:
       state.type === "rebase-paused" ||
       (state.type === "switch-blocked" && state.blockingOp === "rebase") ||

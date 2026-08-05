@@ -190,6 +190,31 @@ function createCommandRunner(
   let gitStateProbeGeneration = 0;
   let conflictProbeGeneration = 0;
   const emit = (event: GithubOpsProducerEvent) => context.send(event);
+  const reportProbeFailure = (
+    message: string,
+    operationId: string | undefined,
+    verificationAttempt: number | undefined,
+  ) => {
+    const state = context.getSnapshot().state;
+    if (state.type === "conflicted" && state.resolution === "checking") {
+      if (
+        verificationAttempt !== undefined &&
+        state.verificationAttempt === verificationAttempt
+      ) {
+        emit({
+          type: "CONFLICT_VERIFICATION_FAILED",
+          verificationAttempt,
+          message,
+        });
+      }
+      return;
+    }
+    githubOpsPresentationService.showError(
+      context.key.appId,
+      operationId,
+      message,
+    );
+  };
 
   return (actorCommand: GithubOpsActorCommand): void => {
     if (actorCommand.type === "schedule-conflict-claim-expiry") {
@@ -247,15 +272,20 @@ function createCommandRunner(
         void githubOpsService.getGitState(appId).then(
           (state) => {
             if (generation === gitStateProbeGeneration) {
-              emit({ type: "GIT_STATE", ...state, recoveryInvocationRef });
+              emit({
+                type: "GIT_STATE",
+                ...state,
+                recoveryInvocationRef,
+                verificationAttempt: command.verificationAttempt,
+              });
             }
           },
-          () => {
+          (error) => {
             if (generation !== gitStateProbeGeneration) return;
-            githubOpsPresentationService.showError(
-              appId,
+            reportProbeFailure(
+              errorMessage(error, "Could not refresh the repository state"),
               invocationRef?.operationId,
-              "Could not refresh the repository state",
+              command.verificationAttempt,
             );
           },
         );
@@ -272,15 +302,23 @@ function createCommandRunner(
         void githubOpsService.getConflicts(appId).then(
           (files) => {
             if (generation === conflictProbeGeneration) {
-              emit({ type: "CONFLICTS", files, recoveryInvocationRef });
+              emit({
+                type: "CONFLICTS",
+                files,
+                recoveryInvocationRef,
+                verificationAttempt: command.verificationAttempt,
+              });
             }
           },
-          () => {
+          (error) => {
             if (generation !== conflictProbeGeneration) return;
-            githubOpsPresentationService.showError(
-              appId,
+            reportProbeFailure(
+              errorMessage(
+                error,
+                "Could not check the repository for merge conflicts",
+              ),
               invocationRef?.operationId,
-              "Could not check the repository for merge conflicts",
+              command.verificationAttempt,
             );
             if (command.settleOnError) {
               emit({ type: "CONFLICTS", files: [] });

@@ -1,6 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import {
   cleanup,
@@ -25,6 +26,8 @@ type TestApp = {
   appDir: string;
 };
 
+const execFileAsync = promisify(execFile);
+
 const fixtureAppDir = path.join(
   process.cwd(),
   "e2e-tests",
@@ -47,6 +50,26 @@ function git(appDir: string, ...args: string[]): string {
     ],
     { cwd: appDir, stdio: "pipe" },
   ).toString();
+}
+
+async function gitNetwork(appDir: string, ...args: string[]): Promise<string> {
+  const result = await execFileAsync(
+    "git",
+    [
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ],
+    {
+      cwd: appDir,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    },
+  );
+  return result.stdout;
 }
 
 function slug(name: string): string {
@@ -252,27 +275,70 @@ describe("Git collaboration actions (integration)", () => {
     await mergeBranch("feature-conflict");
     await screen.findByRole(
       "button",
-      { name: "Resolve merge conflicts with AI" },
+      { name: "Resolve with AI" },
       { timeout: 15_000 },
     );
     expect(
-      screen.getAllByText(
-        `1 file with merge conflicts: ${conflict.conflictFile}`,
-      ),
+      screen.getAllByText(`Resolve 1 conflict to finish merging.`),
     ).toHaveLength(1);
+    expect(
+      screen.queryByText("Merge conflicts detected while syncing to GitHub."),
+    ).toBeNull();
     return conflict;
   }
 
-  it("resolves merge conflicts with AI", async () => {
+  async function startSyncConflict(app: TestApp) {
+    const conflictFile = "conflict.txt";
+    const conflictFilePath = path.join(app.appDir, conflictFile);
+    fs.writeFileSync(conflictFilePath, "Line 1\nLine 2\nLine 3");
+    git(app.appDir, "add", conflictFile);
+    git(app.appDir, "commit", "-m", "Add sync conflict fixture");
+    await gitNetwork(app.appDir, "push", "origin", "main");
+
+    const remoteClone = path.join(appsRoot, `${slug(app.name)}-remote`);
+    const remoteUrl = git(app.appDir, "remote", "get-url", "origin").trim();
+    await gitNetwork(appsRoot, "clone", remoteUrl, remoteClone);
+    fs.writeFileSync(
+      path.join(remoteClone, conflictFile),
+      "Line 1\nLine 2 Modified Main\nLine 3",
+    );
+    git(remoteClone, "add", conflictFile);
+    git(remoteClone, "commit", "-m", "Modify conflict fixture remotely");
+    await gitNetwork(remoteClone, "push", "origin", "main");
+
+    fs.writeFileSync(
+      conflictFilePath,
+      "Line 1\nLine 2 Modified Feature\nLine 3",
+    );
+    git(app.appDir, "add", conflictFile);
+    git(app.appDir, "commit", "-m", "Modify conflict fixture locally");
+
+    cleanup();
+    await mountAppDetails(app);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Sync to GitHub" }),
+    );
+    await screen.findByRole(
+      "button",
+      { name: "Resolve with AI" },
+      { timeout: 15_000 },
+    );
+    expect(
+      screen.getByText("Resolve 1 conflict to continue syncing."),
+    ).toBeTruthy();
+    return { conflictFilePath };
+  }
+
+  it("resolves sync conflicts with AI and continues the interrupted sync", async () => {
     const app = await setupLinkedApp(
       "git-collab-resolve",
       `test-git-conflict-resolve-hybrid-${Date.now()}`,
     );
-    const { conflictFilePath } = await startConflictMerge(app);
+    const { conflictFilePath } = await startSyncConflict(app);
 
     fireEvent.click(
       await screen.findByRole("button", {
-        name: "Resolve merge conflicts with AI",
+        name: "Resolve with AI",
       }),
     );
 
@@ -287,6 +353,49 @@ describe("Git collaboration actions (integration)", () => {
       },
       { timeout: 30_000 },
     );
+    await harness.bridge.settleInFlight();
+
+    cleanup();
+    await mountAppDetails(app);
+    await waitFor(
+      () => {
+        expect(
+          screen.getByTestId("github-connected-repo").textContent,
+        ).toContain("Conflicts resolved");
+      },
+      { timeout: 15_000 },
+    );
+    const continueButton = await screen.findByRole(
+      "button",
+      { name: "Continue to Sync" },
+      { timeout: 15_000 },
+    );
+    expect(
+      screen.queryByRole("button", { name: "Resolve with AI" }),
+    ).toBeNull();
+
+    await harness.github.clearPushEvents();
+    fireEvent.click(continueButton);
+    await waitFor(
+      async () => {
+        expect(await harness.github.pushEvents()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ operation: "push", branch: "main" }),
+          ]),
+        );
+      },
+      { timeout: 20_000 },
+    );
+    await harness.bridge.settleInFlight();
+    await gitNetwork(app.appDir, "fetch", "origin", "main");
+    expect(git(app.appDir, "branch", "--show-current").trim()).toBe("main");
+    expect(git(app.appDir, "status", "--porcelain").trim()).toBe("");
+    expect(git(app.appDir, "rev-parse", "HEAD").trim()).toBe(
+      git(app.appDir, "rev-parse", "origin/main").trim(),
+    );
+    expect(git(app.appDir, "show", "origin/main:conflict.txt")).not.toMatch(
+      /<<<<<<<|=======|>>>>>>>/,
+    );
   }, 90_000);
 
   it("cancels sync when merge conflicts occur", async () => {
@@ -296,12 +405,14 @@ describe("Git collaboration actions (integration)", () => {
     );
     await startConflictMerge(app);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel sync" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Cancel merge" }),
+    );
     await waitFor(
       () => {
         expect(
           screen.queryByRole("button", {
-            name: "Resolve merge conflicts with AI",
+            name: "Resolve with AI",
           }),
         ).toBeNull();
         expect(fs.existsSync(path.join(app.appDir, ".git", "MERGE_HEAD"))).toBe(
