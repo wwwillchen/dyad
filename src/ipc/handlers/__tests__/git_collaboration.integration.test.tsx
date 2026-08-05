@@ -387,8 +387,15 @@ describe("Git collaboration actions (integration)", () => {
       { timeout: 20_000 },
     );
     await harness.bridge.settleInFlight();
+    await gitNetwork(app.appDir, "fetch", "origin", "main");
     expect(git(app.appDir, "branch", "--show-current").trim()).toBe("main");
     expect(git(app.appDir, "status", "--porcelain").trim()).toBe("");
+    expect(git(app.appDir, "rev-parse", "HEAD").trim()).toBe(
+      git(app.appDir, "rev-parse", "origin/main").trim(),
+    );
+    expect(git(app.appDir, "show", "origin/main:conflict.txt")).not.toMatch(
+      /<<<<<<<|=======|>>>>>>>/,
+    );
   }, 90_000);
 
   it("cancels sync when merge conflicts occur", async () => {

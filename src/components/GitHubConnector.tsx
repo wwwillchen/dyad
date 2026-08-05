@@ -173,6 +173,9 @@ function ConnectedGitHubConnector({
     (githubOpsState.origin.type === "push" ||
       githubOpsState.origin.type === "rebase" ||
       githubOpsState.origin.type === "rebase-continue");
+  const showErrorBanner =
+    banner?.kind === "error" &&
+    (banner.code !== "MERGE_CONFLICT" || !conflictRecoveryStage);
 
   return (
     <div className="w-full" data-testid="github-connected-repo">
@@ -247,7 +250,7 @@ function ConnectedGitHubConnector({
           {isDisconnecting ? "Disconnecting..." : "Disconnect from repo"}
         </Button>
       </div>
-      {banner?.kind === "error" && banner.code !== "MERGE_CONFLICT" && (
+      {showErrorBanner && (
         <div className="mt-2 space-y-2">
           <p className="text-red-600">
             {banner.message}{" "}
@@ -356,7 +359,8 @@ function ConnectedGitHubConnector({
         >
           <div className="flex items-start gap-3">
             <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-background text-muted-foreground ring-1 ring-border">
-              {conflictRecoveryStage === "resolving" ? (
+              {conflictRecoveryStage === "resolving" ||
+              conflictRecoveryStage === "checking" ? (
                 <LoaderCircle
                   className="size-4 animate-spin motion-reduce:animate-none"
                   aria-hidden="true"
@@ -374,18 +378,22 @@ function ConnectedGitHubConnector({
               <p className="text-sm font-medium text-foreground">
                 {conflictRecoveryStage === "resolving"
                   ? "Resolving conflicts in chat…"
-                  : conflictRecoveryStage === "ready-to-sync"
-                    ? "Conflicts resolved"
-                    : isSyncConflict
-                      ? "Sync paused"
-                      : "Merge paused"}
+                  : conflictRecoveryStage === "checking"
+                    ? "Verifying resolution…"
+                    : conflictRecoveryStage === "ready-to-sync"
+                      ? "Conflicts resolved"
+                      : isSyncConflict
+                        ? "Sync paused"
+                        : "Merge paused"}
               </p>
               <p className="mt-0.5 text-sm text-muted-foreground">
                 {conflictRecoveryStage === "resolving"
                   ? "Follow progress in the chat."
-                  : conflictRecoveryStage === "ready-to-sync"
-                    ? "Your changes are ready to sync to GitHub."
-                    : `Resolve ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"} to ${isSyncConflict ? "continue syncing" : "finish merging"}.`}
+                  : conflictRecoveryStage === "checking"
+                    ? "Checking the repository for remaining conflicts."
+                    : conflictRecoveryStage === "ready-to-sync"
+                      ? "Your changes are ready to sync to GitHub."
+                      : `Resolve ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"} to ${isSyncConflict ? "continue syncing" : "finish merging"}.`}
               </p>
 
               {conflictRecoveryStage === "conflicted" && (

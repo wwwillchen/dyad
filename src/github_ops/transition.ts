@@ -586,7 +586,7 @@ function enterConflicted(
   };
 }
 
-function continuationOperation(
+export function continuationOperation(
   origin: ConflictOrigin,
 ): GithubOperation | undefined {
   switch (origin.type) {

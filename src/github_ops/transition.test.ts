@@ -113,6 +113,9 @@ function eventsFor(state: GithubOpsState): readonly GithubOpsEvent[] {
     { type: "BLOCKED_DISMISSED" },
     { type: "RESOLVE_WITH_AI_STARTED" },
     { type: "CONFLICT_RESOLUTION_STARTED", chatId: 42 },
+    ...(state.type === "conflicted" && state.resolution === "resolving"
+      ? ([{ type: "CONFLICT_RESOLUTION_FINISHED" }] satisfies GithubOpsEvent[])
+      : []),
     { type: "BANNER_DISMISSED" },
     { type: "RECONCILE_REQUESTED" },
   ];
@@ -125,7 +128,7 @@ describe("github_ops transition", () => {
       events: eventsFor,
       transition,
       stateKey: JSON.stringify,
-      maxStates: 500,
+      maxStates: 2_000,
     };
     assertAllStatesReachable({
       ...options,
@@ -145,7 +148,7 @@ describe("github_ops transition", () => {
       events: eventsFor,
       transition,
       stateKey: (state) => JSON.stringify(state),
-      maxStates: 500,
+      maxStates: 2_000,
     });
     const states = graph.nodes.map(({ state }) => state);
 

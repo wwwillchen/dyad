@@ -3,6 +3,7 @@ import {
   selectGithubOpsCapabilities,
   type GithubOpsCapabilities,
 } from "./capabilities";
+import { continuationOperation } from "./transition";
 
 export interface GithubOpsProjection {
   readonly state: GithubOpsState;
@@ -15,6 +16,7 @@ export interface GithubOpsProjection {
   readonly conflictRecoveryStage:
     | "conflicted"
     | "resolving"
+    | "checking"
     | "ready-to-sync"
     | null;
   readonly conflictResolutionChatId: number | null;
@@ -64,22 +66,19 @@ export function projectGithubOps(state: GithubOpsState): GithubOpsProjection {
     conflicts: state.type === "conflicted" ? state.files : EMPTY_CONFLICTS,
     conflictRecoveryStage:
       state.type === "conflicted"
-        ? state.resolution === "resolving" || state.resolution === "checking"
+        ? state.resolution === "resolving"
           ? "resolving"
-          : state.resolution === "ready-to-sync"
-            ? "ready-to-sync"
-            : "conflicted"
+          : state.resolution === "checking"
+            ? "checking"
+            : state.resolution === "ready-to-sync"
+              ? "ready-to-sync"
+              : "conflicted"
         : null,
     conflictResolutionChatId:
       state.type === "conflicted" ? (state.resolutionChatId ?? null) : null,
     syncContinuationOperation:
       state.type === "conflicted" && state.resolution === "ready-to-sync"
-        ? state.origin.type === "push"
-          ? state.origin
-          : state.origin.type === "rebase" ||
-              state.origin.type === "rebase-continue"
-            ? { type: "rebase-continue" }
-            : null
+        ? (continuationOperation(state.origin) ?? null)
         : null,
     rebaseInProgress:
       state.type === "rebase-paused" ||

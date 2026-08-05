@@ -51,6 +51,13 @@ const states: GithubOpsState[] = [
     type: "conflicted",
     files: ["src/conflicted.ts"],
     origin: { type: "push", mode: "normal" },
+    resolution: "checking",
+    banner: null,
+  },
+  {
+    type: "conflicted",
+    files: ["src/conflicted.ts"],
+    origin: { type: "push", mode: "normal" },
     resolution: "ready-to-sync",
     banner: null,
   },

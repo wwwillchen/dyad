@@ -122,6 +122,19 @@ describe("projectGithubOps", () => {
     expect(projection.capabilities.canCancelSync).toBe(false);
   });
 
+  it("projects Git verification separately from active chat resolution", () => {
+    const projection = projectGithubOps({
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "checking",
+      banner: null,
+    });
+
+    expect(projection.conflictRecoveryStage).toBe("checking");
+    expect(projection.syncContinuationOperation).toBeNull();
+  });
+
   it("projects rebase recovery as rebase continuation", () => {
     const projection = projectGithubOps({
       type: "conflicted",
