@@ -16,7 +16,7 @@ const logger = log.scope("mcp-auto-consent");
 
 // Fixed classifier model routed through the Dyad Pro engine gateway.
 const MCP_CONSENT_MODEL: LargeLanguageModel = {
-  name: "gpt-5.4-mini",
+  name: "gpt-5.6-luna",
   provider: "openai",
 };
 

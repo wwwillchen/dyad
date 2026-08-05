@@ -42,7 +42,7 @@ describe("classifyMcpToolConsent", () => {
     expect(d.decision).toBe("allow");
     expect(d.reason).toBe("safe read");
     expect(mocks.getModelClient).toHaveBeenCalledWith(
-      { name: "gpt-5.4-mini", provider: "openai" },
+      { name: "gpt-5.6-luna", provider: "openai" },
       baseInput.settings,
     );
   });
