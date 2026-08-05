@@ -851,10 +851,17 @@ export function registerAppHandlers() {
           ?.accessToken?.value) ||
       settings.supabase?.accessToken?.value;
     if (app.supabaseProjectId && hasSupabaseCredentials) {
-      supabaseProjectName = await getSupabaseProjectName(
-        app.supabaseParentProjectId || app.supabaseProjectId,
-        app.supabaseOrganizationSlug ?? undefined,
-      );
+      try {
+        supabaseProjectName = await getSupabaseProjectName(
+          app.supabaseParentProjectId || app.supabaseProjectId,
+          app.supabaseOrganizationSlug ?? undefined,
+        );
+      } catch (error) {
+        logger.warn(
+          `Failed to load Supabase project name for app ${appId}; returning the app without it.`,
+          error,
+        );
+      }
     }
 
     let vercelTeamSlug: string | null = null;
