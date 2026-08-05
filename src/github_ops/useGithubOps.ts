@@ -16,6 +16,7 @@ const UNAVAILABLE_CAPABILITIES = {
   canRebaseAndSync: false,
   canResolveConflicts: false,
   canCancelSync: false,
+  canContinueSync: false,
   canMutateBranches: false,
   canSwitchBranches: false,
   canConfirmBlockedSwitch: false,
@@ -65,6 +66,7 @@ export function useGithubOps(
         case "BLOCKED_DISMISSED":
         case "BANNER_DISMISSED":
         case "RECONCILE_REQUESTED":
+        case "CONFLICT_RESOLUTION_FINISHED":
           intent = event;
           break;
         case "RESOLVE_WITH_AI_STARTED": {
@@ -78,6 +80,7 @@ export function useGithubOps(
         case "OP_FAILED":
         case "CONFLICTS":
         case "GIT_STATE":
+        case "CONFLICT_RESOLUTION_STARTED":
           throw new Error(
             `${event.type} is a host-only GitHub operation event`,
           );

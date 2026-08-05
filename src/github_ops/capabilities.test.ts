@@ -40,6 +40,20 @@ const states: GithubOpsState[] = [
     origin: { type: "rebase" },
     banner: null,
   },
+  {
+    type: "conflicted",
+    files: ["src/conflicted.ts"],
+    origin: { type: "push", mode: "normal" },
+    resolution: "resolving",
+    banner: null,
+  },
+  {
+    type: "conflicted",
+    files: ["src/conflicted.ts"],
+    origin: { type: "push", mode: "normal" },
+    resolution: "ready-to-sync",
+    banner: null,
+  },
   { type: "rebase-paused", banner: null },
   {
     type: "switch-blocked",
@@ -117,6 +131,11 @@ describe("github_ops capabilities", () => {
                       : "merge-abort",
                 }),
               ],
+            }),
+          },
+          canContinueSync: {
+            representativeEvents: () => ({
+              valid: [request({ type: "push", mode: "normal" })],
             }),
           },
           canMutateBranches: {

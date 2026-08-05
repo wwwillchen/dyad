@@ -36,6 +36,10 @@ export function transition(
       return dismissBlocked(state);
     case "RESOLVE_WITH_AI_STARTED":
       return startResolvingConflicts(state);
+    case "CONFLICT_RESOLUTION_STARTED":
+      return conflictResolutionStarted(state);
+    case "CONFLICT_RESOLUTION_FINISHED":
+      return conflictResolutionFinished(state);
     case "BANNER_DISMISSED":
       return dismissBanner(state);
     case "RECONCILE_REQUESTED":
@@ -55,6 +59,15 @@ function requestOperation(
     case "running":
       return ignore(state, "op-in-flight");
     case "conflicted":
+      if (state.resolution === "resolving" || state.resolution === "checking") {
+        return ignore(state, "op-in-flight");
+      }
+      if (state.resolution === "ready-to-sync") {
+        const continuation = continuationOperation(state.origin);
+        return continuation && operationsEqual(op, continuation)
+          ? beginOperation(state, op)
+          : ignore(state, "blocked-by-conflicts");
+      }
       return op.type === "merge-abort" ||
         op.type === "rebase-abort" ||
         op.type === "switch"
@@ -256,7 +269,7 @@ function conflictsReceived(
             : [],
         };
       }
-      return enterConflicted(files, state.op, true);
+      return enterConflicted(files, state.op);
     }
     case "switch-blocked": {
       const hasConflicts = files.length > 0;
@@ -280,18 +293,45 @@ function conflictsReceived(
     }
     case "conflicted":
       if (files.length === 0) {
-        return changed({ type: "idle", banner: state.banner });
+        if (state.resolution === "ready-to-sync") {
+          return ignore(state, "no-change");
+        }
+        const continuation = continuationOperation(state.origin);
+        return (state.resolution === "resolving" ||
+          state.resolution === "checking") &&
+          continuation
+          ? changed({
+              ...state,
+              resolution: "ready-to-sync",
+              banner: null,
+            })
+          : changed({
+              type: "idle",
+              banner:
+                state.resolution === "resolving" ||
+                state.resolution === "checking"
+                  ? {
+                      kind: "success",
+                      message: "Merge conflicts resolved.",
+                    }
+                  : state.banner,
+            });
       }
-      return sameFiles(state.files, files)
+      if (state.resolution === "resolving") {
+        return sameFiles(state.files, files)
+          ? ignore(state, "no-change")
+          : changed({ ...state, files });
+      }
+      return sameFiles(state.files, files) && state.resolution === undefined
         ? ignore(state, "no-change")
-        : changed({ ...state, files });
+        : changed({ ...state, files, resolution: undefined, banner: null });
     case "rebase-paused":
       return files.length > 0
-        ? enterConflicted(files, { type: "rebase" }, false)
+        ? enterConflicted(files, { type: "rebase" })
         : ignore(state, "no-change");
     case "idle":
       return files.length > 0
-        ? enterConflicted(files, { type: "reconcile" }, false)
+        ? enterConflicted(files, { type: "reconcile" })
         : ignore(state, "no-change");
     default:
       return assertNever(state);
@@ -313,10 +353,10 @@ function gitStateReceived(
       };
     case "conflicted": {
       const nextOrigin: ConflictOrigin = event.rebaseInProgress
-        ? isRebaseConflictOrigin(state.origin)
+        ? state.resolution !== undefined || isRebaseConflictOrigin(state.origin)
           ? state.origin
           : { type: "rebase" }
-        : isRebaseConflictOrigin(state.origin)
+        : state.resolution === undefined && isRebaseConflictOrigin(state.origin)
           ? { type: "reconcile" }
           : state.origin;
       const nextState =
@@ -387,6 +427,9 @@ function startResolvingConflicts(
 ): GithubOpsTransitionResult {
   switch (state.type) {
     case "conflicted":
+      if (state.resolution !== undefined) {
+        return ignore(state, "invalid-in-current-state");
+      }
       return {
         kind: "applied",
         state,
@@ -396,6 +439,48 @@ function startResolvingConflicts(
             files: state.files,
           },
         ],
+      };
+    case "idle":
+    case "running":
+    case "rebase-paused":
+    case "switch-blocked":
+      return ignore(state, "invalid-in-current-state");
+    default:
+      return assertNever(state);
+  }
+}
+
+function conflictResolutionStarted(
+  state: GithubOpsState,
+): GithubOpsTransitionResult {
+  switch (state.type) {
+    case "conflicted":
+      if (state.resolution !== undefined) {
+        return ignore(state, "invalid-in-current-state");
+      }
+      return changed({ ...state, resolution: "resolving", banner: null });
+    case "idle":
+    case "running":
+    case "rebase-paused":
+    case "switch-blocked":
+      return ignore(state, "invalid-in-current-state");
+    default:
+      return assertNever(state);
+  }
+}
+
+function conflictResolutionFinished(
+  state: GithubOpsState,
+): GithubOpsTransitionResult {
+  switch (state.type) {
+    case "conflicted":
+      if (state.resolution !== "resolving") {
+        return ignore(state, "invalid-in-current-state");
+      }
+      return {
+        kind: "applied",
+        state: { ...state, resolution: "checking" },
+        commands: [{ type: "probe-git-state" }],
       };
     case "idle":
     case "running":
@@ -467,32 +552,44 @@ function abortAndSwitch(state: GithubOpsState): GithubOpsTransitionResult {
 function enterConflicted(
   files: readonly string[],
   origin: ConflictOrigin,
-  notify: boolean,
 ): GithubOpsTransitionResult {
-  const message =
-    "Merge conflicts detected. Use the buttons below to resolve them.";
   return {
     kind: "applied",
     state: {
       type: "conflicted",
       files,
       origin,
-      banner: {
-        kind: "error",
-        code: "MERGE_CONFLICT",
-        message,
-      },
+      banner: null,
     },
-    commands: notify
-      ? [
-          {
-            type: "notify",
-            kind: "error",
-            message: "Merge conflicts detected while syncing to GitHub.",
-          },
-        ]
-      : [],
+    commands: [],
   };
+}
+
+function continuationOperation(
+  origin: ConflictOrigin,
+): GithubOperation | undefined {
+  switch (origin.type) {
+    case "push":
+      return origin;
+    case "rebase":
+    case "rebase-continue":
+      return PUSH_NORMAL;
+    case "reconcile":
+    case "pull":
+    case "fetch":
+    case "rebase-abort":
+    case "merge-abort":
+    case "merge":
+    case "switch":
+    case "create-branch":
+    case "delete-branch":
+    case "rename-branch":
+    case "disconnect":
+    case "connect-repo":
+      return undefined;
+    default:
+      return assertNever(origin);
+  }
 }
 
 function isRebaseOperation(op: GithubOperation): boolean {

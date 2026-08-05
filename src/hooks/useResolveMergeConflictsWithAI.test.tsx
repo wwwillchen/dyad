@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   onStartFailed: vi.fn(),
   onStartResolving: vi.fn(),
+  onSettled: vi.fn(),
   refreshApp: vi.fn(),
   showError: vi.fn(),
 }));
@@ -77,6 +78,7 @@ describe("useResolveMergeConflictsWithAI", () => {
           appId: APP_ID,
           conflicts: ["src/one.ts", "src/two.ts"],
           onStartResolving: mocks.onStartResolving,
+          onSettled: mocks.onSettled,
         }),
       { wrapper: Wrapper },
     );
@@ -119,6 +121,7 @@ describe("useResolveMergeConflictsWithAI", () => {
     expect(result.current.isResolving).toBe(false);
     expect(mocks.invalidateChats).toHaveBeenCalledOnce();
     expect(mocks.refreshApp).toHaveBeenCalledOnce();
+    expect(mocks.onSettled).toHaveBeenCalledOnce();
   });
 
   it("blocks reentrant creation and clears resolving when chat creation fails", async () => {

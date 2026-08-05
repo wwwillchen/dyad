@@ -112,6 +112,7 @@ function eventsFor(state: GithubOpsState): readonly GithubOpsEvent[] {
     { type: "ABORT_AND_SWITCH_CONFIRMED" },
     { type: "BLOCKED_DISMISSED" },
     { type: "RESOLVE_WITH_AI_STARTED" },
+    { type: "CONFLICT_RESOLUTION_STARTED" },
     { type: "BANNER_DISMISSED" },
     { type: "RECONCILE_REQUESTED" },
   ];
@@ -324,6 +325,135 @@ describe("github_ops transition", () => {
         files: conflicted.files,
       },
     ]);
+  });
+
+  it("moves a resolved sync conflict to an explicit continuation state", () => {
+    const conflicted: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      banner: null,
+    };
+
+    const resolving = transition(conflicted, {
+      type: "CONFLICT_RESOLUTION_STARTED",
+    });
+    expect(resolving.state).toEqual({
+      ...conflicted,
+      resolution: "resolving",
+    });
+
+    const reconciling = transition(resolving.state, {
+      type: "CONFLICT_RESOLUTION_FINISHED",
+    });
+    expect(commandsOf(reconciling)).toEqual([{ type: "probe-git-state" }]);
+    const checkedGitState = transition(reconciling.state, {
+      type: "GIT_STATE",
+      mergeInProgress: false,
+      rebaseInProgress: false,
+    });
+    const ready = transition(checkedGitState.state, {
+      type: "CONFLICTS",
+      files: [],
+    });
+    expect(ready.state).toEqual({
+      ...conflicted,
+      resolution: "ready-to-sync",
+    });
+
+    const continued = transition(ready.state, {
+      type: "OP_REQUESTED",
+      op: { type: "push", mode: "normal" },
+    });
+    expect(continued.state).toMatchObject({
+      type: "running",
+      op: { type: "push", mode: "normal" },
+    });
+  });
+
+  it("keeps ready-to-sync visible across repository reconciliation", () => {
+    const ready: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "ready-to-sync",
+      banner: null,
+    };
+
+    const gitState = transition(ready, {
+      type: "GIT_STATE",
+      mergeInProgress: false,
+      rebaseInProgress: false,
+    });
+    const conflicts = transition(gitState.state, {
+      type: "CONFLICTS",
+      files: [],
+    });
+
+    expect(conflicts.state).toBe(gitState.state);
+    expect(ignoreReasonOf(conflicts)).toBe("no-change");
+  });
+
+  it("uses the dedicated recovery surface without a duplicate banner or toast", () => {
+    const push = { type: "push", mode: "normal" } as const;
+    const running = transition(INITIAL_GITHUB_OPS_STATE, {
+      type: "OP_REQUESTED",
+      op: push,
+    }).state;
+    const probing = transition(running, {
+      type: "OP_FAILED",
+      op: push,
+      failure: {
+        kind: "conflict",
+        code: "MERGE_CONFLICT",
+        message: "merge conflict",
+      },
+    }).state;
+    const conflicted = transition(probing, {
+      type: "CONFLICTS",
+      files: ["src/conflicted.ts"],
+    });
+
+    expect(conflicted.state).toMatchObject({
+      type: "conflicted",
+      banner: null,
+    });
+    expect(commandsOf(conflicted)).toEqual([]);
+  });
+
+  it("returns to actionable conflicts when AI leaves conflicts unresolved", () => {
+    const resolving: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/old.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "resolving",
+      banner: null,
+    };
+
+    const stillResolving = transition(resolving, {
+      type: "CONFLICTS",
+      files: ["src/still-conflicted.ts"],
+    });
+    expect(stillResolving.state).toEqual({
+      ...resolving,
+      files: ["src/still-conflicted.ts"],
+    });
+
+    const checking = transition(stillResolving.state, {
+      type: "CONFLICT_RESOLUTION_FINISHED",
+    });
+    expect(
+      transition(checking.state, {
+        type: "CONFLICTS",
+        files: ["src/still-conflicted.ts"],
+      }).state,
+    ).toEqual({
+      type: "conflicted",
+      files: ["src/still-conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: undefined,
+      banner: null,
+    });
   });
 
   it("atomically clears conflicted UI when abort-and-switch begins", () => {

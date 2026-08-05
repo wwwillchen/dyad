@@ -180,6 +180,9 @@ export const GithubOpsStateSchema: z.ZodType<GithubOpsState> =
         type: z.literal("conflicted"),
         files: z.array(repositoryRelativePathSchema),
         origin: conflictOriginSchema,
+        resolution: z
+          .enum(["resolving", "checking", "ready-to-sync"])
+          .optional(),
         banner: githubOpsBannerSchema.nullable(),
       })
       .strict(),
@@ -233,6 +236,7 @@ export const GithubOpsIntentEventSchema = z.union([
       claimId: conflictResolutionClaimIdSchema,
     })
     .strict(),
+  z.object({ type: z.literal("CONFLICT_RESOLUTION_FINISHED") }).strict(),
   z
     .object({
       type: z.literal("CONFLICT_RESOLUTION_CANCELLED"),
@@ -343,9 +347,10 @@ export function isGithubOpsStateSensitiveIntent(
     case "RESOLVE_WITH_AI_STARTED":
       return true;
     case "CONFLICT_RESOLUTION_STARTED":
+    case "CONFLICT_RESOLUTION_FINISHED":
     case "CONFLICT_RESOLUTION_CANCELLED":
-      // The exact claim ID is the concurrency guard, so a follow-up remains
-      // safe even when its renderer has not received the claim snapshot yet.
+      // Follow-ups validate their expected phase (and, while claiming, the
+      // exact claim ID), so they remain safe from a stale renderer snapshot.
       return false;
     case "BANNER_DISMISSED":
     case "RECONCILE_REQUESTED":
@@ -368,7 +373,9 @@ export function toGithubOpsDomainEvent(
     case "GIT_STATE":
       return event;
     case "CONFLICT_RESOLUTION_STARTED":
-      return { type: "CONFLICTS", files: [] };
+      return { type: "CONFLICT_RESOLUTION_STARTED" };
+    case "CONFLICT_RESOLUTION_FINISHED":
+      return { type: "CONFLICT_RESOLUTION_FINISHED" };
     case "CONFLICT_RESOLUTION_CANCELLED":
       return { type: "RECONCILE_REQUESTED" };
     case "CONFLICT_RESOLUTION_CLAIM_EXPIRED":

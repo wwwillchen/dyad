@@ -14,6 +14,7 @@ interface UseResolveMergeConflictsWithAIProps {
   conflicts: readonly string[];
   onStartResolving?: () => void | Promise<void>;
   onStartFailed?: () => void | Promise<void>;
+  onSettled?: () => void;
 }
 
 /**
@@ -25,6 +26,7 @@ export function useResolveMergeConflictsWithAI({
   conflicts,
   onStartResolving,
   onStartFailed,
+  onSettled,
 }: UseResolveMergeConflictsWithAIProps) {
   const setSelectedChatId = useSetAtom(selectedChatIdAtom);
   const setSelectedAppId = useSetAtom(selectedAppIdAtom);
@@ -104,6 +106,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
               setIsResolving(false);
               invalidateChats();
               void refreshApp();
+              onSettled?.();
             },
           },
         });
@@ -129,6 +132,7 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
       appId,
       onStartResolving,
       onStartFailed,
+      onSettled,
       setSelectedChatId,
       setSelectedAppId,
       navigate,

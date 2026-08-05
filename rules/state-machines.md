@@ -232,6 +232,10 @@ Background and before/after examples of why this pattern exists:
 - When a generation token suppresses superseded async probe results, apply the
   same token check to rejection handling. A stale failure must not emit a
   toast, settle newer state, or trigger recovery for the replacement probe.
+- Do not treat an ambient reconciliation probe as proof that a long-running
+  workflow finished. Preserve the in-progress phase until an explicit
+  completion event, then enter a checking phase whose probe result decides the
+  terminal or retry state.
 - When a resume event can come from a global watcher as well as explicit UI
   senders, validate the captured payload in the transition. Caller-only guards
   can be bypassed after navigation or another asynchronous detour.

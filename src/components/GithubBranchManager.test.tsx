@@ -95,7 +95,7 @@ describe("GithubBranchManager machine projection", () => {
     expect(screen.queryByTestId("branch-conflict-status")).toBeNull();
     expect(
       screen.queryByRole("button", {
-        name: "Resolve merge conflicts with AI",
+        name: "Resolve with AI",
       }),
     ).toBeNull();
     expect(screen.queryByRole("button", { name: "Cancel sync" })).toBeNull();

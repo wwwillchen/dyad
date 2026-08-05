@@ -102,4 +102,23 @@ describe("projectGithubOps", () => {
     expect(conflicted.capabilities.canDisconnect).toBe(false);
     expect(rebasePaused.capabilities.canDisconnect).toBe(false);
   });
+
+  it("projects a resolved sync conflict as a single continuation action", () => {
+    const projection = projectGithubOps({
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "ready-to-sync",
+      banner: null,
+    });
+
+    expect(projection.conflictRecoveryStage).toBe("ready-to-sync");
+    expect(projection.syncContinuationOperation).toEqual({
+      type: "push",
+      mode: "normal",
+    });
+    expect(projection.capabilities.canContinueSync).toBe(true);
+    expect(projection.capabilities.canResolveConflicts).toBe(false);
+    expect(projection.capabilities.canCancelSync).toBe(false);
+  });
 });

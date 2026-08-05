@@ -95,6 +95,7 @@ export type GithubOpsState =
       type: "conflicted";
       files: readonly string[];
       origin: ConflictOrigin;
+      resolution?: "resolving" | "checking" | "ready-to-sync";
     } & GithubOpsContext)
   | ({ type: "rebase-paused" } & GithubOpsContext)
   | ({
@@ -127,6 +128,8 @@ export type GithubOpsEvent =
   | { type: "ABORT_AND_SWITCH_CONFIRMED" }
   | { type: "BLOCKED_DISMISSED" }
   | { type: "RESOLVE_WITH_AI_STARTED" }
+  | { type: "CONFLICT_RESOLUTION_STARTED" }
+  | { type: "CONFLICT_RESOLUTION_FINISHED" }
   | { type: "BANNER_DISMISSED" }
   | { type: "RECONCILE_REQUESTED" };
 

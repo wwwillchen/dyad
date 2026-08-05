@@ -12,6 +12,12 @@ export interface GithubOpsProjection {
   readonly isOperationInFlight: boolean;
   readonly isSyncing: boolean;
   readonly conflicts: readonly string[];
+  readonly conflictRecoveryStage:
+    | "conflicted"
+    | "resolving"
+    | "ready-to-sync"
+    | null;
+  readonly syncContinuationOperation: GithubOperation | null;
   readonly rebaseInProgress: boolean;
   readonly rebaseAction: "abort" | "continue" | "safe-push" | null;
   readonly showForcePush: boolean;
@@ -55,6 +61,23 @@ export function projectGithubOps(state: GithubOpsState): GithubOpsProjection {
       state.type === "running" &&
       (state.op.type === "push" || state.op.type === "rebase"),
     conflicts: state.type === "conflicted" ? state.files : EMPTY_CONFLICTS,
+    conflictRecoveryStage:
+      state.type === "conflicted"
+        ? state.resolution === "resolving" || state.resolution === "checking"
+          ? "resolving"
+          : state.resolution === "ready-to-sync"
+            ? "ready-to-sync"
+            : "conflicted"
+        : null,
+    syncContinuationOperation:
+      state.type === "conflicted" && state.resolution === "ready-to-sync"
+        ? state.origin.type === "push"
+          ? state.origin
+          : state.origin.type === "rebase" ||
+              state.origin.type === "rebase-continue"
+            ? { type: "push", mode: "normal" }
+            : null
+        : null,
     rebaseInProgress:
       state.type === "rebase-paused" ||
       (state.type === "switch-blocked" && state.blockingOp === "rebase") ||

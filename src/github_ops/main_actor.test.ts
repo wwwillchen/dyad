@@ -316,7 +316,10 @@ describe("main-hosted github_ops actor", () => {
       type: "CONFLICT_RESOLUTION_STARTED",
       claimId: "claim-a",
     });
-    expect(actorA.getSnapshot().state.type).toBe("idle");
+    expect(actorA.getSnapshot().state).toMatchObject({
+      type: "conflicted",
+      resolution: "resolving",
+    });
   });
 
   it("preserves the claim through reconcile and rejects a second window", async () => {
@@ -378,7 +381,10 @@ describe("main-hosted github_ops actor", () => {
         expectedRevision: staleRevision,
       }),
     ).resolves.toMatchObject({ kind: "applied" });
-    expect(local.getSnapshot().state.type).toBe("idle");
+    expect(local.getSnapshot().state).toMatchObject({
+      type: "conflicted",
+      resolution: "resolving",
+    });
   });
 
   it("rejects a follow-up from the wrong claimant", async () => {
