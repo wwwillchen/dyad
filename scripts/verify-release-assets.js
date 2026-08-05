@@ -1,8 +1,101 @@
 #!/usr/bin/env node
 
 const fs = require("fs");
+const crypto = require("crypto");
 const path = require("path");
 const { isPrereleaseVersion } = require("./release-version-utils.js");
+
+const PROVENANCE_ASSET_PREFIX = "release-provenance-";
+const PROVENANCE_ASSET_SUFFIX = ".json";
+
+function sha256(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function assetDigest(asset) {
+  const match = asset.digest?.match(/^sha256:([a-f0-9]{64})$/i);
+  if (!match) {
+    throw new Error(`${asset.name} has no GitHub SHA-256 digest`);
+  }
+  return match[1].toLowerCase();
+}
+
+function isProvenanceAsset(name) {
+  return (
+    name.startsWith(PROVENANCE_ASSET_PREFIX) &&
+    name.endsWith(PROVENANCE_ASSET_SUFFIX)
+  );
+}
+
+function verifyReleaseAssetProvenance(assets, provenanceDirectory) {
+  const uploadedAssets = new Map(assets.map((asset) => [asset.name, asset]));
+  const manifestNames = assets
+    .map((asset) => asset.name)
+    .filter(isProvenanceAsset)
+    .sort();
+  const localManifestNames = fs
+    .readdirSync(provenanceDirectory)
+    .filter(isProvenanceAsset)
+    .sort();
+
+  if (
+    manifestNames.length !== localManifestNames.length ||
+    manifestNames.some((name, index) => name !== localManifestNames[index])
+  ) {
+    throw new Error(
+      "Uploaded provenance manifests do not match the locally generated manifests",
+    );
+  }
+
+  const provenArtifacts = new Map();
+  for (const manifestName of localManifestNames) {
+    const manifestPath = path.join(provenanceDirectory, manifestName);
+    const bytes = fs.readFileSync(manifestPath);
+    const uploadedManifest = uploadedAssets.get(manifestName);
+    if (
+      !uploadedManifest ||
+      uploadedManifest.size !== bytes.byteLength ||
+      assetDigest(uploadedManifest) !== sha256(bytes)
+    ) {
+      throw new Error(
+        `Uploaded provenance manifest ${manifestName} does not match the local manifest`,
+      );
+    }
+
+    const provenance = JSON.parse(bytes.toString("utf8"));
+    if (
+      !Array.isArray(provenance.artifacts) ||
+      provenance.artifacts.length === 0
+    ) {
+      throw new Error(`${manifestName} does not contain release artifacts`);
+    }
+    for (const artifact of provenance.artifacts) {
+      if (provenArtifacts.has(artifact.name)) {
+        throw new Error(
+          `Release artifact ${artifact.name} appears in multiple provenance manifests`,
+        );
+      }
+      provenArtifacts.set(artifact.name, artifact);
+    }
+  }
+
+  const releaseArtifacts = assets.filter(
+    (asset) => !isProvenanceAsset(asset.name),
+  );
+  if (releaseArtifacts.length !== provenArtifacts.size) {
+    throw new Error("Release asset set does not match provenance");
+  }
+  for (const asset of releaseArtifacts) {
+    const proven = provenArtifacts.get(asset.name);
+    if (
+      !proven ||
+      proven.sha256?.toLowerCase() !== assetDigest(asset) ||
+      proven.size !== asset.size
+    ) {
+      throw new Error(`Release asset ${asset.name} does not match provenance`);
+    }
+  }
+}
 
 /**
  * Verifies that all expected binary assets are present in the GitHub release
@@ -147,6 +240,8 @@ async function verifyReleaseAssets() {
       process.exit(1);
     }
 
+    verifyReleaseAssetProvenance(assets, path.join(__dirname, "..", "out"));
+
     console.log("✅ VERIFICATION PASSED!");
     console.log(
       `🎉 All ${expectedAssets.length} expected assets are present in release ${tagName}`,
@@ -163,5 +258,8 @@ async function verifyReleaseAssets() {
   }
 }
 
-// Run the verification
-verifyReleaseAssets();
+if (require.main === module) {
+  verifyReleaseAssets();
+}
+
+module.exports = { verifyReleaseAssetProvenance };
