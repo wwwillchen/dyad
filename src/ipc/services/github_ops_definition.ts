@@ -193,18 +193,26 @@ function createCommandRunner(
   const reportProbeFailure = (
     message: string,
     operationId: string | undefined,
+    verificationAttempt: number | undefined,
   ) => {
     const state = context.getSnapshot().state;
-    const isConflictVerification =
-      state.type === "conflicted" && state.resolution === "checking";
-    if (!isConflictVerification) {
-      githubOpsPresentationService.showError(
-        context.key.appId,
-        operationId,
-        message,
-      );
+    if (state.type === "conflicted" && state.resolution === "checking") {
+      if (
+        verificationAttempt !== undefined &&
+        state.verificationAttempt === verificationAttempt
+      ) {
+        emit({
+          type: "CONFLICT_VERIFICATION_FAILED",
+          verificationAttempt,
+        });
+      }
+      return;
     }
-    emit({ type: "CONFLICT_VERIFICATION_FAILED" });
+    githubOpsPresentationService.showError(
+      context.key.appId,
+      operationId,
+      message,
+    );
   };
 
   return (actorCommand: GithubOpsActorCommand): void => {
@@ -263,7 +271,12 @@ function createCommandRunner(
         void githubOpsService.getGitState(appId).then(
           (state) => {
             if (generation === gitStateProbeGeneration) {
-              emit({ type: "GIT_STATE", ...state, recoveryInvocationRef });
+              emit({
+                type: "GIT_STATE",
+                ...state,
+                recoveryInvocationRef,
+                verificationAttempt: command.verificationAttempt,
+              });
             }
           },
           () => {
@@ -271,6 +284,7 @@ function createCommandRunner(
             reportProbeFailure(
               "Could not refresh the repository state",
               invocationRef?.operationId,
+              command.verificationAttempt,
             );
           },
         );
@@ -287,7 +301,12 @@ function createCommandRunner(
         void githubOpsService.getConflicts(appId).then(
           (files) => {
             if (generation === conflictProbeGeneration) {
-              emit({ type: "CONFLICTS", files, recoveryInvocationRef });
+              emit({
+                type: "CONFLICTS",
+                files,
+                recoveryInvocationRef,
+                verificationAttempt: command.verificationAttempt,
+              });
             }
           },
           () => {
@@ -295,6 +314,7 @@ function createCommandRunner(
             reportProbeFailure(
               "Could not check the repository for merge conflicts",
               invocationRef?.operationId,
+              command.verificationAttempt,
             );
             if (command.settleOnError) {
               emit({ type: "CONFLICTS", files: [] });

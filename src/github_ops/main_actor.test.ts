@@ -354,7 +354,10 @@ describe("main-hosted github_ops actor", () => {
       claimId: "rebase-claim",
       chatId: 42,
     });
-    await actorA.dispatch({ type: "CONFLICT_RESOLUTION_FINISHED" });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: 42,
+    });
     await flush();
     expect(actorA.getSnapshot().state).toMatchObject({
       type: "conflicted",
@@ -401,7 +404,10 @@ describe("main-hosted github_ops actor", () => {
       claimId: "verification-claim",
       chatId: 42,
     });
-    await actorA.dispatch({ type: "CONFLICT_RESOLUTION_FINISHED" });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: 42,
+    });
     await flush();
 
     expect(actorA.getSnapshot().state).toMatchObject({
@@ -446,7 +452,10 @@ describe("main-hosted github_ops actor", () => {
       claimId: "conflict-probe-claim",
       chatId: 42,
     });
-    await actorA.dispatch({ type: "CONFLICT_RESOLUTION_FINISHED" });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: 42,
+    });
     await flush();
 
     expect(service.getConflicts).toHaveBeenCalledOnce();
@@ -456,6 +465,12 @@ describe("main-hosted github_ops actor", () => {
       resolutionChatId: 42,
     });
     expect(presentation.showError).not.toHaveBeenCalled();
+
+    await actorA.dispatch({ type: "RECONCILE_REQUESTED" });
+    await flush();
+
+    expect(service.getConflicts).toHaveBeenCalledTimes(2);
+    expect(actorA.getSnapshot().state.type).toBe("idle");
   });
 
   it("preserves the claim through reconcile and rejects a second window", async () => {
@@ -639,6 +654,24 @@ describe("main-hosted github_ops actor", () => {
     await flush();
 
     expect(presentation.showError).not.toHaveBeenCalled();
+  });
+
+  it("shows a toast for a generic probe failure without emitting verification recovery", async () => {
+    service.getGitState.mockRejectedValueOnce(
+      new Error("temporary repository refresh failure"),
+    );
+    const { actorA } = createHarness();
+    await actorA.resync();
+
+    await actorA.dispatch({ type: "RECONCILE_REQUESTED" });
+    await flush();
+
+    expect(actorA.getSnapshot().state.type).toBe("idle");
+    expect(presentation.showError).toHaveBeenCalledExactlyOnceWith(
+      7,
+      undefined,
+      "Could not refresh the repository state",
+    );
   });
 
   it("rejects dispatch for the null-app subscription sentinel", async () => {

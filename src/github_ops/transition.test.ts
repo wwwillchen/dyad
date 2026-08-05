@@ -62,6 +62,12 @@ const COMMAND_KINDS = [
   "start-conflict-resolution",
 ] as const satisfies readonly GithubOpsCommand["type"][];
 
+function explorationStateKey(state: GithubOpsState): string {
+  return JSON.stringify(state, (key, value) =>
+    key === "verificationAttempt" && value !== undefined ? 1 : value,
+  );
+}
+
 function eventsFor(state: GithubOpsState): readonly GithubOpsEvent[] {
   const activeOp =
     state.type === "running"
@@ -114,10 +120,20 @@ function eventsFor(state: GithubOpsState): readonly GithubOpsEvent[] {
     { type: "RESOLVE_WITH_AI_STARTED" },
     { type: "CONFLICT_RESOLUTION_STARTED", chatId: 42 },
     ...(state.type === "conflicted" && state.resolution === "resolving"
-      ? ([{ type: "CONFLICT_RESOLUTION_FINISHED" }] satisfies GithubOpsEvent[])
+      ? ([
+          {
+            type: "CONFLICT_RESOLUTION_FINISHED",
+            chatId: state.resolutionChatId ?? 42,
+          },
+        ] satisfies GithubOpsEvent[])
       : []),
     ...(state.type === "conflicted" && state.resolution === "checking"
-      ? ([{ type: "CONFLICT_VERIFICATION_FAILED" }] satisfies GithubOpsEvent[])
+      ? ([
+          {
+            type: "CONFLICT_VERIFICATION_FAILED",
+            verificationAttempt: state.verificationAttempt ?? 1,
+          },
+        ] satisfies GithubOpsEvent[])
       : []),
     { type: "BANNER_DISMISSED" },
     { type: "RECONCILE_REQUESTED" },
@@ -130,7 +146,7 @@ describe("github_ops transition", () => {
       initialState: INITIAL_GITHUB_OPS_STATE,
       events: eventsFor,
       transition,
-      stateKey: JSON.stringify,
+      stateKey: explorationStateKey,
       maxStates: 2_000,
     };
     assertAllStatesReachable({
@@ -150,7 +166,7 @@ describe("github_ops transition", () => {
       initialState: INITIAL_GITHUB_OPS_STATE,
       events: eventsFor,
       transition,
-      stateKey: (state) => JSON.stringify(state),
+      stateKey: explorationStateKey,
       maxStates: 2_000,
     });
     const states = graph.nodes.map(({ state }) => state);
@@ -353,21 +369,27 @@ describe("github_ops transition", () => {
 
     const reconciling = transition(resolving.state, {
       type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: 42,
     });
-    expect(commandsOf(reconciling)).toEqual([{ type: "probe-git-state" }]);
+    expect(commandsOf(reconciling)).toEqual([
+      { type: "probe-git-state", verificationAttempt: 1 },
+    ]);
     const checkedGitState = transition(reconciling.state, {
       type: "GIT_STATE",
       mergeInProgress: false,
       rebaseInProgress: false,
+      verificationAttempt: 1,
     });
     const ready = transition(checkedGitState.state, {
       type: "CONFLICTS",
       files: [],
+      verificationAttempt: 1,
     });
     expect(ready.state).toEqual({
       ...conflicted,
       resolution: "ready-to-sync",
       resolutionChatId: 42,
+      verificationAttempt: 1,
     });
 
     const continued = transition(ready.state, {
@@ -395,6 +417,25 @@ describe("github_ops transition", () => {
     expect(ignoreReasonOf(result)).toBe("no-change");
   });
 
+  it("rejects completion from an older conflict-resolution chat", () => {
+    const resolving: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "resolving",
+      resolutionChatId: 42,
+      banner: null,
+    };
+
+    const result = transition(resolving, {
+      type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: 41,
+    });
+
+    expect(result.state).toBe(resolving);
+    expect(ignoreReasonOf(result)).toBe("stale-op");
+  });
+
   it("offers an explicit retry when conflict verification fails", () => {
     const checking: GithubOpsState = {
       type: "conflicted",
@@ -402,11 +443,13 @@ describe("github_ops transition", () => {
       origin: { type: "push", mode: "normal" },
       resolution: "checking",
       resolutionChatId: 42,
+      verificationAttempt: 1,
       banner: null,
     };
 
     const failed = transition(checking, {
       type: "CONFLICT_VERIFICATION_FAILED",
+      verificationAttempt: 1,
     });
     expect(failed.state).toEqual({
       ...checking,
@@ -422,8 +465,41 @@ describe("github_ops transition", () => {
     expect(ignoreReasonOf(ambientProbe)).toBe("no-change");
 
     const retry = transition(failed.state, { type: "RECONCILE_REQUESTED" });
-    expect(retry.state).toEqual(checking);
-    expect(commandsOf(retry)).toEqual([{ type: "probe-git-state" }]);
+    expect(retry.state).toEqual({
+      ...checking,
+      verificationAttempt: 2,
+    });
+    expect(commandsOf(retry)).toEqual([
+      { type: "probe-git-state", verificationAttempt: 2 },
+    ]);
+  });
+
+  it("rejects results from an older verification attempt", () => {
+    const checking: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "checking",
+      resolutionChatId: 42,
+      verificationAttempt: 2,
+      banner: null,
+    };
+    const staleEvents: GithubOpsEvent[] = [
+      { type: "CONFLICT_VERIFICATION_FAILED", verificationAttempt: 1 },
+      {
+        type: "GIT_STATE",
+        mergeInProgress: false,
+        rebaseInProgress: false,
+        verificationAttempt: 1,
+      },
+      { type: "CONFLICTS", files: [], verificationAttempt: 1 },
+    ];
+
+    for (const event of staleEvents) {
+      const result = transition(checking, event);
+      expect(result.state).toBe(checking);
+      expect(ignoreReasonOf(result)).toBe("stale-op");
+    }
   });
 
   it("continues an active rebase before pushing resolved changes", () => {
@@ -532,6 +608,7 @@ describe("github_ops transition", () => {
       files: ["src/old.ts"],
       origin: { type: "push", mode: "normal" },
       resolution: "resolving",
+      resolutionChatId: 42,
       banner: null,
     };
 
@@ -546,17 +623,21 @@ describe("github_ops transition", () => {
 
     const checking = transition(stillResolving.state, {
       type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: 42,
     });
     expect(
       transition(checking.state, {
         type: "CONFLICTS",
         files: ["src/still-conflicted.ts"],
+        verificationAttempt: 1,
       }).state,
     ).toEqual({
       type: "conflicted",
       files: ["src/still-conflicted.ts"],
       origin: { type: "push", mode: "normal" },
       resolution: undefined,
+      resolutionChatId: undefined,
+      verificationAttempt: undefined,
       banner: null,
     });
   });

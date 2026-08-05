@@ -133,8 +133,11 @@ function ConnectedGitHubConnector({
     conflicts,
     onStartResolving: dispatchConflictResolutionStarted,
     onStartFailed: dispatchConflictResolutionCancelled,
-    onSettled: () => {
-      void dispatchWithErrorFeedback({ type: "CONFLICT_RESOLUTION_FINISHED" });
+    onSettled: (chatId) => {
+      void dispatchWithErrorFeedback({
+        type: "CONFLICT_RESOLUTION_FINISHED",
+        chatId,
+      });
     },
   });
 
@@ -145,15 +148,18 @@ function ConnectedGitHubConnector({
   useEffect(() => {
     if (
       conflictRecoveryStage !== "resolving" ||
+      conflictResolutionChatId === null ||
       !conflictResolutionChat?.lastCompletion
     ) {
       return;
     }
     void dispatchWithErrorFeedback({
       type: "CONFLICT_RESOLUTION_FINISHED",
+      chatId: conflictResolutionChatId,
     });
   }, [
     conflictRecoveryStage,
+    conflictResolutionChatId,
     conflictResolutionChat?.lastCompletion,
     dispatchWithErrorFeedback,
   ]);

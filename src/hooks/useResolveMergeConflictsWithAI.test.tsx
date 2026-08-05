@@ -130,7 +130,7 @@ describe("useResolveMergeConflictsWithAI", () => {
     expect(result.current.isResolving).toBe(false);
     expect(mocks.invalidateChats).toHaveBeenCalledOnce();
     expect(mocks.refreshApp).toHaveBeenCalledOnce();
-    expect(mocks.onSettled).toHaveBeenCalledOnce();
+    expect(mocks.onSettled).toHaveBeenCalledExactlyOnceWith(CHAT_ID);
   });
 
   it("blocks reentrant creation and clears resolving when chat creation fails", async () => {

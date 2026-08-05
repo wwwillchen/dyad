@@ -27,7 +27,7 @@ export function transition(
     case "OP_FAILED":
       return operationFailed(state, event.op, event.failure);
     case "CONFLICTS":
-      return conflictsReceived(state, event.files);
+      return conflictsReceived(state, event);
     case "GIT_STATE":
       return gitStateReceived(state, event);
     case "ABORT_AND_SWITCH_CONFIRMED":
@@ -39,9 +39,9 @@ export function transition(
     case "CONFLICT_RESOLUTION_STARTED":
       return conflictResolutionStarted(state, event.chatId);
     case "CONFLICT_RESOLUTION_FINISHED":
-      return conflictResolutionFinished(state);
+      return conflictResolutionFinished(state, event.chatId);
     case "CONFLICT_VERIFICATION_FAILED":
-      return conflictVerificationFailed(state);
+      return conflictVerificationFailed(state, event.verificationAttempt);
     case "BANNER_DISMISSED":
       return dismissBanner(state);
     case "RECONCILE_REQUESTED":
@@ -256,8 +256,16 @@ function awaitConflicts(
 
 function conflictsReceived(
   state: GithubOpsState,
-  files: readonly string[],
+  event: Extract<GithubOpsEvent, { type: "CONFLICTS" }>,
 ): GithubOpsTransitionResult {
+  const { files } = event;
+  if (
+    state.type === "conflicted" &&
+    state.resolution === "checking" &&
+    state.verificationAttempt !== event.verificationAttempt
+  ) {
+    return ignore(state, "stale-op");
+  }
   switch (state.type) {
     case "running": {
       if (!state.awaitingConflicts) return ignore(state, "no-change");
@@ -339,6 +347,7 @@ function conflictsReceived(
             files,
             resolution: undefined,
             resolutionChatId: undefined,
+            verificationAttempt: undefined,
             banner: null,
           });
     case "rebase-paused":
@@ -358,6 +367,13 @@ function gitStateReceived(
   state: GithubOpsState,
   event: Extract<GithubOpsEvent, { type: "GIT_STATE" }>,
 ): GithubOpsTransitionResult {
+  if (
+    state.type === "conflicted" &&
+    state.resolution === "checking" &&
+    state.verificationAttempt !== event.verificationAttempt
+  ) {
+    return ignore(state, "stale-op");
+  }
   switch (state.type) {
     case "running":
       return ignore(state, "op-in-flight");
@@ -384,7 +400,12 @@ function gitStateReceived(
       return {
         kind: "applied",
         state: nextState,
-        commands: [{ type: "probe-conflicts" }],
+        commands: [
+          {
+            type: "probe-conflicts",
+            verificationAttempt: event.verificationAttempt,
+          },
+        ],
       };
     }
     case "idle":
@@ -497,16 +518,21 @@ function conflictResolutionStarted(
 
 function conflictResolutionFinished(
   state: GithubOpsState,
+  chatId: number,
 ): GithubOpsTransitionResult {
   switch (state.type) {
     case "conflicted":
       if (state.resolution !== "resolving") {
         return ignore(state, "invalid-in-current-state");
       }
+      if (state.resolutionChatId !== chatId) {
+        return ignore(state, "stale-op");
+      }
+      const verificationAttempt = (state.verificationAttempt ?? 0) + 1;
       return {
         kind: "applied",
-        state: { ...state, resolution: "checking" },
-        commands: [{ type: "probe-git-state" }],
+        state: { ...state, resolution: "checking", verificationAttempt },
+        commands: [{ type: "probe-git-state", verificationAttempt }],
       };
     case "idle":
     case "running":
@@ -520,12 +546,16 @@ function conflictResolutionFinished(
 
 function conflictVerificationFailed(
   state: GithubOpsState,
+  verificationAttempt: number,
 ): GithubOpsTransitionResult {
   switch (state.type) {
     case "conflicted":
-      return state.resolution === "checking"
+      if (state.resolution !== "checking") {
+        return ignore(state, "invalid-in-current-state");
+      }
+      return state.verificationAttempt === verificationAttempt
         ? changed({ ...state, resolution: "verification-failed" })
-        : ignore(state, "invalid-in-current-state");
+        : ignore(state, "stale-op");
     case "idle":
     case "running":
     case "rebase-paused":
@@ -561,16 +591,25 @@ function reconcile(state: GithubOpsState): GithubOpsTransitionResult {
       };
     case "conflicted":
       if (state.resolution === "verification-failed") {
+        const verificationAttempt = (state.verificationAttempt ?? 0) + 1;
         return {
           kind: "applied",
-          state: { ...state, resolution: "checking" },
-          commands: [{ type: "probe-git-state" }],
+          state: { ...state, resolution: "checking", verificationAttempt },
+          commands: [{ type: "probe-git-state", verificationAttempt }],
         };
       }
       return {
         kind: "applied",
         state,
-        commands: [{ type: "probe-git-state" }],
+        commands: [
+          {
+            type: "probe-git-state",
+            verificationAttempt:
+              state.resolution === "checking"
+                ? state.verificationAttempt
+                : undefined,
+          },
+        ],
       };
     case "rebase-paused":
     case "switch-blocked":

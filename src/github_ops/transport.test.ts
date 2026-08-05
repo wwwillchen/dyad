@@ -34,12 +34,24 @@ describe("github_ops wire contracts", () => {
         callback: () => undefined,
       }).success,
     ).toBe(false);
+    expect(
+      GithubOpsIntentEventSchema.safeParse({
+        type: "CONFLICT_RESOLUTION_FINISHED",
+        chatId: 42,
+      }).success,
+    ).toBe(true);
+    expect(
+      GithubOpsIntentEventSchema.safeParse({
+        type: "CONFLICT_RESOLUTION_FINISHED",
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects Error instances and absolute conflict paths", () => {
     expect(
       GithubOpsProducerEventSchema.safeParse({
         type: "CONFLICT_VERIFICATION_FAILED",
+        verificationAttempt: 1,
       }).success,
     ).toBe(true);
     expect(

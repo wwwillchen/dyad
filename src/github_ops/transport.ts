@@ -189,6 +189,7 @@ export const GithubOpsStateSchema: z.ZodType<GithubOpsState> =
           ])
           .optional(),
         resolutionChatId: z.number().int().positive().optional(),
+        verificationAttempt: z.number().int().positive().optional(),
         banner: githubOpsBannerSchema.nullable(),
       })
       .strict(),
@@ -243,7 +244,12 @@ export const GithubOpsIntentEventSchema = z.union([
       chatId: z.number().int().positive(),
     })
     .strict(),
-  z.object({ type: z.literal("CONFLICT_RESOLUTION_FINISHED") }).strict(),
+  z
+    .object({
+      type: z.literal("CONFLICT_RESOLUTION_FINISHED"),
+      chatId: z.number().int().positive(),
+    })
+    .strict(),
   z
     .object({
       type: z.literal("CONFLICT_RESOLUTION_CANCELLED"),
@@ -282,6 +288,7 @@ export const GithubOpsProducerEventSchema = z.union([
       type: z.literal("CONFLICTS"),
       files: z.array(repositoryRelativePathSchema),
       recoveryInvocationRef: GithubOpsInvocationRefSchema.optional(),
+      verificationAttempt: z.number().int().positive().optional(),
     })
     .strict(),
   z
@@ -290,6 +297,7 @@ export const GithubOpsProducerEventSchema = z.union([
       mergeInProgress: z.boolean(),
       rebaseInProgress: z.boolean(),
       recoveryInvocationRef: GithubOpsInvocationRefSchema.optional(),
+      verificationAttempt: z.number().int().positive().optional(),
     })
     .strict(),
   z
@@ -298,7 +306,12 @@ export const GithubOpsProducerEventSchema = z.union([
       claimId: conflictResolutionClaimIdSchema,
     })
     .strict(),
-  z.object({ type: z.literal("CONFLICT_VERIFICATION_FAILED") }).strict(),
+  z
+    .object({
+      type: z.literal("CONFLICT_VERIFICATION_FAILED"),
+      verificationAttempt: z.number().int().positive(),
+    })
+    .strict(),
 ]);
 export type GithubOpsProducerEvent = z.infer<
   typeof GithubOpsProducerEventSchema
@@ -383,9 +396,12 @@ export function toGithubOpsDomainEvent(
     case "CONFLICT_RESOLUTION_STARTED":
       return { type: "CONFLICT_RESOLUTION_STARTED", chatId: event.chatId };
     case "CONFLICT_RESOLUTION_FINISHED":
-      return { type: "CONFLICT_RESOLUTION_FINISHED" };
+      return { type: "CONFLICT_RESOLUTION_FINISHED", chatId: event.chatId };
     case "CONFLICT_VERIFICATION_FAILED":
-      return { type: "CONFLICT_VERIFICATION_FAILED" };
+      return {
+        type: "CONFLICT_VERIFICATION_FAILED",
+        verificationAttempt: event.verificationAttempt,
+      };
     case "CONFLICT_RESOLUTION_CANCELLED":
       return { type: "RECONCILE_REQUESTED" };
     case "CONFLICT_RESOLUTION_CLAIM_EXPIRED":

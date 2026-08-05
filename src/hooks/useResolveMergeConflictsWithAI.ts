@@ -14,7 +14,7 @@ interface UseResolveMergeConflictsWithAIProps {
   conflicts: readonly string[];
   onStartResolving?: (chatId: number) => void | Promise<void>;
   onStartFailed?: () => void | Promise<void>;
-  onSettled?: () => void;
+  onSettled?: (chatId: number) => void;
 }
 
 /**
@@ -103,7 +103,7 @@ For each listed file, resolve every Git conflict by editing the file in place. P
             onSettled: () => {
               isResolvingRef.current = false;
               setIsResolving(false);
-              onSettled?.();
+              onSettled?.(newChatId);
               invalidateChats();
               void refreshApp();
             },

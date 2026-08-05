@@ -600,6 +600,10 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
   tests; new machines may instead use `exploreReachableStates` when a finite
   event generator can discover the reachable graph. Existing bespoke suites
   need not be migrated mechanically.
+- If reachable states contain an unbounded correlation counter (such as a
+  retry attempt), normalize only that counter in the explorer's `stateKey` so
+  the graph stays finite; keep direct transition tests for exact stale-token
+  acceptance and rejection.
 - Use `assertCapabilityTransitionConsistency` with domain-supplied
   representative valid events for every capability. Every enabled
   capability/state pair must supply at least one valid representative so the
