@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SupabaseManagementAPIError } from "@dyad-sh/supabase-management-js";
 import {
+  classifyManagementApiError,
+  getProjectApiKeys,
   listSupabaseOrganizations,
   refreshSupabaseToken,
 } from "./supabase_management_client";
+import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import { readSettings } from "@/main/settings";
 
 vi.mock("@/main/settings", () => ({
@@ -100,5 +104,174 @@ describe("refreshSupabaseToken", () => {
       undefined,
       undefined,
     ]);
+  });
+});
+
+describe("getProjectApiKeys", () => {
+  beforeEach(() => {
+    vi.mocked(readSettings).mockReturnValue({
+      supabase: {
+        organizations: {
+          "org-1": {
+            accessToken: { value: "org-token" },
+            expiresIn: 3600,
+            tokenTimestamp: Math.floor(Date.now() / 1000),
+          },
+        },
+      },
+    } as unknown as ReturnType<typeof readSettings>);
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Supabase redacts secret key VALUES unless the request asks to reveal them,
+  // so an admin caller that forgets the flag can only ever use the legacy JWT.
+  it("reveals secret key values only when asked", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("[]", { status: 200 })),
+    );
+
+    await getProjectApiKeys({
+      projectId: "proj-1",
+      organizationSlug: "org-1",
+      reveal: true,
+    });
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe(
+      "https://api.supabase.com/v1/projects/proj-1/api-keys?reveal=true",
+    );
+
+    await getProjectApiKeys({ projectId: "proj-1", organizationSlug: "org-1" });
+    expect(vi.mocked(fetch).mock.calls[1][0]).toBe(
+      "https://api.supabase.com/v1/projects/proj-1/api-keys",
+    );
+  });
+
+  // This response decides which key the app authenticates with. A 200 carrying
+  // something other than an array would otherwise surface as an unclassified
+  // TypeError from `keys.find` — and inside detectLegacyAppKey, which swallows
+  // failures, it would silently suppress the legacy-key warning entirely.
+  it("rejects a 200 whose body isn't a list of keys", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ message: "something went wrong" }), {
+            status: 200,
+          }),
+      ),
+    );
+
+    const error = await getProjectApiKeys({
+      projectId: "proj-1",
+      organizationSlug: "org-1",
+    }).catch((thrown) => thrown);
+
+    expect(isDyadError(error)).toBe(true);
+    expect((error as DyadError).kind).toBe(DyadErrorKind.External);
+  });
+
+  // Without `reveal`, Supabase lists secret keys but withholds their values.
+  // That is the common path (client generation, legacy-key detection), so
+  // rejecting it would fail key loading for a perfectly valid response and
+  // silently suppress the migration warning.
+  it.each([
+    ["null", null],
+    ["omitted", undefined],
+  ])(
+    "accepts a secret entry whose value is redacted (%s)",
+    async (_l, value) => {
+      const secret: Record<string, unknown> = {
+        name: "default",
+        type: "secret",
+      };
+      if (value !== undefined) {
+        secret.api_key = value;
+      }
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify([
+                {
+                  name: "anon",
+                  type: "publishable",
+                  api_key: "sb_publishable_a",
+                },
+                secret,
+              ]),
+              { status: 200 },
+            ),
+        ),
+      );
+
+      const keys = await getProjectApiKeys({
+        projectId: "proj-1",
+        organizationSlug: "org-1",
+      });
+
+      expect(keys).toHaveLength(2);
+      expect(keys[0].api_key).toBe("sb_publishable_a");
+    },
+  );
+
+  // Supabase may add key types; an unknown one must not fail the whole request,
+  // because the keys around it are still what the app authenticates with.
+  it("passes through keys carrying an unfamiliar type", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify([
+              { name: "default", type: "something-new", api_key: "sb_x" },
+            ]),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    await expect(
+      getProjectApiKeys({ projectId: "proj-1", organizationSlug: "org-1" }),
+    ).resolves.toEqual([
+      { name: "default", type: "something-new", api_key: "sb_x" },
+    ]);
+  });
+});
+
+describe("classifyManagementApiError", () => {
+  it("maps a Management API 401/403 to an Auth DyadError", () => {
+    for (const status of [401, 403]) {
+      const error = classifyManagementApiError(
+        new SupabaseManagementAPIError(
+          // Built from `status`, so the 401 iteration doesn't carry a message
+          // claiming 403 — a mislabelled fixture can't catch a regression that
+          // depends on the reported status, and makes failures harder to read.
+          `Failed to get project api keys: ${
+            status === 401 ? "Unauthorized" : "Forbidden"
+          } (${status})`,
+          new Response(null, { status }),
+        ),
+        "update this app's API key",
+      );
+
+      expect(isDyadError(error)).toBe(true);
+      // Auth is telemetry-filtered and drives the reconnect path; an
+      // unclassified error would be reported as a product exception instead.
+      expect((error as DyadError).kind).toBe(DyadErrorKind.Auth);
+    }
+  });
+
+  it("preserves an already-classified DyadError", () => {
+    const original = new DyadError("nope", DyadErrorKind.Precondition);
+
+    expect(classifyManagementApiError(original, "do a thing")).toBe(original);
+  });
+
+  it("leaves unrelated failures alone", () => {
+    const original = new Error("socket hang up");
+
+    expect(classifyManagementApiError(original, "do a thing")).toBe(original);
   });
 });

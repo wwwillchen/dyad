@@ -342,6 +342,21 @@ export const queryKeys = {
     all: ["supabase"] as const,
     organizations: ["supabase", "organizations"] as const,
     projects: ["supabase", "projects"] as const,
+    /**
+     * Scoped by project too: the answer is about one app/project pairing, so
+     * repointing an app at another project (or branch) must not reuse the old
+     * project's verdict. Invalidate with `legacyAppKeyForApp` to clear every
+     * project's entry for an app.
+     */
+    legacyAppKey: ({
+      appId,
+      projectId,
+    }: {
+      appId: number | null;
+      projectId: string | null;
+    }) => ["supabase", "legacyAppKey", appId, projectId] as const,
+    legacyAppKeyForApp: ({ appId }: { appId: number | null }) =>
+      ["supabase", "legacyAppKey", appId] as const,
     branches: ({
       projectId,
       organizationSlug,

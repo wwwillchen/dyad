@@ -1,4 +1,5 @@
 import { useAtomValue, useSetAtom, useStore } from "jotai";
+import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   memo,
@@ -48,6 +49,7 @@ import type { TestCase, TestCaseResult, FileAttachment } from "@/ipc/types";
 import { ipc } from "@/ipc/types";
 import { useDeleteAppTest } from "@/hooks/useDeleteAppTest";
 import { useLoadApp } from "@/hooks/useLoadApp";
+import { useSwitchToPublishableKey } from "@/hooks/useLegacySupabaseKey";
 import { runAppLifecycleInBackground, useRunApp } from "@/hooks/useRunApp";
 import { useSetTestingEnabled } from "@/hooks/useSetTestingEnabled";
 import { useSettings } from "@/hooks/useSettings";
@@ -68,7 +70,7 @@ import { AgentModeRequiredDialog } from "./AgentModeRequiredDialog";
 import { MigrateTestsBanner } from "./MigrateTestsBanner";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
-import { showInfo } from "@/lib/toast";
+import { showError, showInfo, showSuccess } from "@/lib/toast";
 import { findCaseResult, statusLabel, testKey } from "@/lib/testResultUtils";
 
 function StatusIcon({ status }: { status: TestStatus }) {
@@ -609,6 +611,7 @@ function FileRow({
 }
 
 export function TestsPanel() {
+  const { t } = useTranslation("home");
   const selectedAppId = useAtomValue(selectedAppIdAtom);
   const specs = useAtomValue(currentTestSpecsAtom);
   const runState = useAtomValue(currentTestRunStateAtom);
@@ -751,6 +754,67 @@ export function TestsPanel() {
   // spinners/cleared-output chrome.
   const applyRunStarted = useSetAtom(applyTestRunStartedAtom);
   const applyRunFinished = useSetAtom(applyTestRunFinishedAtom);
+
+  // One-click swap of an app's generated Supabase client off the legacy anon
+  // key it was created with. Offered beside the setup warning that detected it.
+  // Shares the connector card's mutation so both surfaces stay on one code path
+  // and a switch here also invalidates the connector's legacy-key query.
+  const switchKey = useSwitchToPublishableKey();
+  // Keyed by app, and holding the isolation snapshot the switch answered, so
+  // this survives the panel switching between apps: run state is retained per
+  // app, and a single "which app did I just switch?" id would let a migrated
+  // app's warning come back as soon as the user touched another one.
+  //
+  // Storing the snapshot rather than a bare flag is what keeps a FRESH run
+  // authoritative: a new run produces a new isolation object, which no longer
+  // matches, so its own verdict governs the button again.
+  const [switchedKeyRuns, setSwitchedKeyRuns] = useState<
+    ReadonlyMap<number, unknown>
+  >(() => new Map());
+  const keySwitched =
+    selectedAppId != null &&
+    runState.isolation != null &&
+    switchedKeyRuns.get(selectedAppId) === runState.isolation;
+  const isSwitchingKey =
+    switchKey.isPending && switchKey.variables?.appId === selectedAppId;
+  // Clears as soon as the user takes the fix, so the sentence claiming the key
+  // is still legacy never sits next to a button that says it's been updated.
+  const showLegacyKeyWarning =
+    !!runState.isolation?.canSwitchToPublishableKey && !keySwitched;
+
+  // Depends on mutateAsync, not the mutation object: useMutation returns a new
+  // object every render, which would rebuild this callback each time.
+  const switchKeyAsync = switchKey.mutateAsync;
+  const switchedIsolation = runState.isolation;
+  const switchToPublishableKey = useCallback(async () => {
+    if (selectedAppId == null) return;
+    const appId = selectedAppId;
+    // Captured before the await: a switch resolving after the user selects
+    // another app must record the run it actually answered, not whatever is
+    // on screen by then.
+    const isolation = switchedIsolation;
+    const markSwitched = () =>
+      setSwitchedKeyRuns((current) =>
+        new Map(current).set(appId, isolation ?? null),
+      );
+    try {
+      const { outcome } = await switchKeyAsync({ appId });
+      // Only a real switch (or a key that was already current) may retire the
+      // warning. "not-applicable" means the key is still legacy and Dyad
+      // couldn't act on it, so the offer has to stay on screen.
+      if (outcome === "switched") {
+        markSwitched();
+        showSuccess(t("integrations.supabase.apiKeyUpdated"));
+      } else if (outcome === "already-current") {
+        markSwitched();
+        showInfo(t("integrations.supabase.apiKeyAlreadyCurrent"));
+      } else {
+        showInfo(t("integrations.supabase.apiKeyNotUpdated"));
+      }
+    } catch (error) {
+      showError(error);
+    }
+  }, [selectedAppId, switchKeyAsync, switchedIsolation, t]);
 
   const runTests = useCallback(
     async (file?: string, line?: number) => {
@@ -1251,10 +1315,31 @@ export function TestsPanel() {
           {!isRunning &&
             !runState.runError &&
             runState.isolation?.mode !== "neon-branch" &&
-            runState.isolation?.reason && (
+            (runState.isolation?.reason || showLegacyKeyWarning) && (
               <div className="flex items-start gap-2 px-4 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800 text-sm text-amber-800 dark:text-amber-200">
                 <AlertTriangle size={15} className="shrink-0 mt-0.5" />
-                <span className="flex-1">{runState.isolation.reason}</span>
+                <span className="flex-1">
+                  {runState.isolation?.reason}
+                  {/* Rendered here rather than folded into `reason` upstream:
+                  it's the one warning the user can retire without re-running,
+                  and the renderer is where it can be localized. */}
+                  {showLegacyKeyWarning &&
+                    (runState.isolation?.reason ? " " : "") +
+                      t("integrations.supabase.legacyApiKeyTestWarning")}
+                </span>
+                {runState.isolation?.canSwitchToPublishableKey && (
+                  <button
+                    onClick={switchToPublishableKey}
+                    disabled={isSwitchingKey || keySwitched}
+                    className="shrink-0 px-2 py-1 rounded-md bg-amber-200 dark:bg-amber-800 hover:bg-amber-300 dark:hover:bg-amber-700 disabled:opacity-60 disabled:cursor-default cursor-pointer text-xs font-medium"
+                  >
+                    {keySwitched
+                      ? t("integrations.supabase.apiKeyUpdatedShort")
+                      : isSwitchingKey
+                        ? t("integrations.supabase.updatingApiKey")
+                        : t("integrations.supabase.updateApiKeyShort")}
+                  </button>
+                )}
               </div>
             )}
 

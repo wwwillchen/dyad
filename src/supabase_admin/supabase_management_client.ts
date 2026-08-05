@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import { withLock } from "../ipc/utils/lock_utils";
 import { readSettings, writeSettings } from "../main/settings";
 import {
@@ -14,7 +15,7 @@ import {
   RateLimitError,
   retryWithRateLimit,
 } from "../ipc/utils/retryWithRateLimit";
-import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import { enqueueSupabaseDeploy } from "./supabase_deploy_queue";
 
 const fsPromises = fs.promises;
@@ -565,6 +566,96 @@ export async function getSupabaseProjectName(
   );
   const project = projects?.find((p) => p.id === projectId);
   return project?.name || `<project not found for: ${projectId}>`;
+}
+
+/**
+ * A project API key as returned by the Management API. A project can carry both
+ * the new-format keys (`publishable` / `secret`) and the legacy JWT pair
+ * (`anon` / `service_role`, typed `legacy`) — and Supabase keeps listing the
+ * legacy pair after it's been disabled in the dashboard, so presence here says
+ * nothing about whether a key still works.
+ */
+export interface SupabaseApiKey {
+  name: string;
+  /**
+   * Absent or null for a secret key fetched without `reveal` — Supabase lists
+   * the entry but withholds its value. Every consumer has to guard before using
+   * it; a redacted entry is a key that exists, not a key you can authenticate
+   * with.
+   */
+  api_key?: string | null;
+  type?: "publishable" | "secret" | "legacy" | null;
+}
+
+/**
+ * Validated at the boundary rather than asserted, because this response decides
+ * which key the app authenticates with and which key admin calls use. A 200
+ * carrying something other than an array (an error envelope, a paginated
+ * wrapper) would otherwise surface as an unclassified `TypeError` from
+ * `keys.find` — and inside `detectLegacyAppKey`, which swallows failures, it
+ * would silently suppress the very warning this exists to raise.
+ *
+ * Loose on purpose: only `name` is required, unknown `type` values pass through
+ * as-is (Supabase may add more), and `api_key` may be absent or null — that is
+ * exactly what a secret key looks like on the common no-reveal path, and
+ * rejecting it would fail key loading for a response that is perfectly valid.
+ * Consumers already guard the value before use.
+ */
+const SupabaseApiKeySchema = z.object({
+  name: z.string(),
+  api_key: z.string().nullish(),
+  type: z.string().nullish(),
+});
+const SupabaseApiKeysSchema = z.array(SupabaseApiKeySchema);
+
+/**
+ * Fetch a project's API keys.
+ *
+ * Deliberately not `SupabaseManagementAPI.getProjectApiKeys()`: that helper
+ * can't send `reveal`, and without it Supabase redacts the VALUE of every
+ * `secret` key while returning the legacy `service_role` JWT in full — so the
+ * new-format admin key comes back unusable.
+ *
+ * `reveal` is opt-in: revealing exposes every secret key on the project and is
+ * recorded in the organization's audit log, so only pass it where an admin key
+ * is genuinely needed.
+ */
+export async function getProjectApiKeys({
+  projectId,
+  organizationSlug,
+  reveal = false,
+}: {
+  projectId: string;
+  organizationSlug: string | null;
+  reveal?: boolean;
+}): Promise<SupabaseApiKey[]> {
+  const supabase = await getSupabaseClient({ organizationSlug });
+
+  const response = await fetchWithRetry(
+    `https://api.supabase.com/v1/projects/${encodeURIComponent(
+      projectId,
+    )}/api-keys${reveal ? "?reveal=true" : ""}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${(supabase as any).options.accessToken}`,
+      },
+    },
+    `Get API keys for ${projectId}`,
+  );
+
+  if (response.status !== 200) {
+    throw await createResponseError(response, "get project api keys");
+  }
+
+  const parsed = SupabaseApiKeysSchema.safeParse(await response.json());
+  if (!parsed.success) {
+    throw new DyadError(
+      `Supabase returned an unexpected API-keys response for project ${projectId}: ${parsed.error.message}`,
+      DyadErrorKind.External,
+    );
+  }
+  return parsed.data as SupabaseApiKey[];
 }
 
 export async function getSupabaseProjectLogs(
@@ -1185,6 +1276,35 @@ function guessMimeType(filePath: string): string {
 // ─────────────────────────────────────────────────────────────────────
 // Error handling helpers
 // ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Classify a Management API failure before it crosses the IPC boundary.
+ *
+ * Existing `DyadError`s pass through with their kind intact. A 401/403 means the
+ * organization's token was revoked or no longer has access to the project — an
+ * auth/setup problem the user fixes by reconnecting, so it must reach the
+ * renderer as `Auth` rather than as an unclassified product exception (see
+ * `rules/dyad-errors.md`).
+ */
+export function classifyManagementApiError(
+  error: unknown,
+  action: string,
+): unknown {
+  if (isDyadError(error)) {
+    return error;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    error instanceof SupabaseManagementAPIError &&
+    (error.response.status === 401 || error.response.status === 403)
+  ) {
+    return new DyadError(
+      `Supabase would not authorize Dyad to ${action}. Reconnect your Supabase account in Settings, or check that this organization still has access to the project. Original error: ${message}`,
+      DyadErrorKind.Auth,
+    );
+  }
+  return error;
+}
 
 async function createResponseError(response: Response, action: string) {
   const errorBody = await safeParseErrorResponseBody(response);

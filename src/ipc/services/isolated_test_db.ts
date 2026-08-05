@@ -13,6 +13,7 @@ import {
   deleteTempTestUser,
   type TempTestUser,
 } from "../utils/supabase_test_user";
+import { detectLegacyAppKey } from "../../supabase_admin/supabase_app_key";
 import {
   getEnvFilePath,
   readEnvFileIfExists,
@@ -267,10 +268,6 @@ async function prepareSupabaseTestUserIsolation({
     };
   }
 
-  // RLS gate (warn, don't refuse): surface unprotected tables to the user.
-  const rls = await checkRls({ projectId, organizationSlug });
-  const warning = buildRlsWarning(rls);
-
   let testUser: TempTestUser | undefined;
   const teardown = async () => {
     if (testUser) {
@@ -288,16 +285,46 @@ async function prepareSupabaseTestUserIsolation({
   };
 
   try {
-    // checkRls and createTempTestUser each make network requests that can take
-    // several seconds; honor a Stop pressed in between them so cancellation
-    // takes effect promptly instead of only after they complete.
+    // checkRls, detectLegacyAppKey and createTempTestUser each make network
+    // requests that can take several seconds; honor a Stop pressed between any
+    // two of them so cancellation takes effect promptly instead of only after
+    // the whole setup completes.
+    if (signal?.aborted) {
+      throw new Error("Test run stopped.");
+    }
+    // RLS gate (warn, don't refuse): surface unprotected tables to the user.
+    const rls = await checkRls({ projectId, organizationSlug });
+
+    if (signal?.aborted) {
+      throw new Error("Test run stopped.");
+    }
+    // The test signs the isolated user in through the app's OWN login UI, so a
+    // legacy key in the app's generated client is a test failure waiting to
+    // happen — and one that reads as "my login is broken" rather than "my key
+    // was retired". Warn (never block) and let the panel offer the switch.
+    const legacyKey = await detectLegacyAppKey({
+      appPath: getDyadAppPath(app.path),
+      projectId,
+      organizationSlug,
+    });
+    // The legacy-key half is NOT folded into `reason`. It travels as the
+    // structured `canSwitchToPublishableKey` flag so the panel can render it in
+    // the user's own language (`reason` is main-process English), and can drop
+    // it the moment the user takes the fix — a warning that outlives the
+    // problem it describes reads as the fix not having worked.
+    const warning = buildRlsWarning(rls);
+
     if (signal?.aborted) {
       throw new Error("Test run stopped.");
     }
     emit("Creating an isolated test user…\n", "setup");
     testUser = await createTempTestUser(app);
     return {
-      isolation: { mode: "supabase-test-user", reason: warning },
+      isolation: {
+        mode: "supabase-test-user",
+        reason: warning,
+        canSwitchToPublishableKey: !!legacyKey,
+      },
       testCredentials: {
         DYAD_TEST_USER_EMAIL: testUser.email,
         DYAD_TEST_USER_PASSWORD: testUser.password,

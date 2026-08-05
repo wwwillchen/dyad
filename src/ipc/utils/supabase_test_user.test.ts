@@ -15,9 +15,7 @@ const mocks = vi.hoisted(() => {
     select,
     from,
     selectWhere,
-    getProjectApiKeys: vi
-      .fn()
-      .mockResolvedValue([{ type: "secret", api_key: "service-role-key" }]),
+    getProjectApiKeys: vi.fn(),
     executeSupabaseSql: vi.fn().mockResolvedValue("[]"),
   };
 });
@@ -44,9 +42,7 @@ vi.mock("@/ipc/utils/retryWithRateLimit", () => ({
   ),
 }));
 vi.mock("../../supabase_admin/supabase_management_client", () => ({
-  getSupabaseClientForOrganization: vi.fn(async () => ({
-    getProjectApiKeys: mocks.getProjectApiKeys,
-  })),
+  getProjectApiKeys: mocks.getProjectApiKeys,
   executeSupabaseSql: mocks.executeSupabaseSql,
 }));
 vi.mock("electron-log", () => ({
@@ -66,10 +62,25 @@ import {
   deleteTempTestUser,
   reconcileOrphanTestUsers,
 } from "./supabase_test_user";
+import { DyadErrorKind } from "@/errors/dyad_error";
 
 type AppRow = any;
 
 const UUID = "00000000-0000-4000-8000-000000000000";
+const SECRET_KEY = "sb_secret_xyz789";
+
+// What a migrated project actually returns: the legacy pair is still listed
+// after it's been disabled in the dashboard, alongside the new-format keys.
+const PROJECT_API_KEYS = [
+  { name: "anon", type: "legacy", api_key: "eyJhbGciOiJIUzI1NiJ9.legacy-anon" },
+  {
+    name: "service_role",
+    type: "legacy",
+    api_key: "eyJhbGciOiJIUzI1NiJ9.legacy-service-role",
+  },
+  { name: "default", type: "publishable", api_key: "sb_publishable_abc123" },
+  { name: "default", type: "secret", api_key: SECRET_KEY },
+];
 
 function makeApp(overrides: Partial<AppRow> = {}): AppRow {
   return {
@@ -95,9 +106,7 @@ beforeEach(() => {
   vi.unstubAllGlobals();
   mocks.where.mockResolvedValue(undefined);
   mocks.selectWhere.mockResolvedValue([]);
-  mocks.getProjectApiKeys.mockResolvedValue([
-    { type: "secret", api_key: "service-role-key" },
-  ]);
+  mocks.getProjectApiKeys.mockResolvedValue(PROJECT_API_KEYS);
   mocks.executeSupabaseSql.mockResolvedValue("[]");
 });
 
@@ -113,7 +122,7 @@ describe("createTempTestUser", () => {
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe("https://proj-1.supabase.co/auth/v1/admin/users");
     expect(init.method).toBe("POST");
-    expect(init.headers.Authorization).toBe("Bearer service-role-key");
+    expect(init.headers.apikey).toBe(SECRET_KEY);
     const body = JSON.parse(init.body);
     expect(body.email_confirm).toBe(true);
     expect(body.app_metadata).toMatchObject({ dyad_test: true });
@@ -175,14 +184,154 @@ describe("createTempTestUser", () => {
     ).rejects.toThrow(/not connected to a Supabase organization/);
   });
 
-  it("throws when no service_role key is available", async () => {
+  it("throws when no secret or service_role key is available", async () => {
     mockFetch(() => new Response(JSON.stringify({ id: UUID })));
     mocks.getProjectApiKeys.mockResolvedValue([
-      { type: "publishable", api_key: "anon" },
+      { name: "default", type: "publishable", api_key: "sb_publishable_abc" },
     ]);
     await expect(createTempTestUser(makeApp())).rejects.toThrow(
-      /service_role key/,
+      /No secret key \(or legacy service_role key\)/,
     );
+  });
+
+  // Supabase doesn't document the ordering of /api-keys, so the secret key must
+  // win on type, never on position. Picking by position is what sent a DISABLED
+  // legacy service_role JWT and 401'd every isolated run.
+  it.each([
+    ["legacy keys first", PROJECT_API_KEYS],
+    ["new-format keys first", [...PROJECT_API_KEYS].reverse()],
+  ])(
+    "authenticates with the new-format secret key when the response lists %s",
+    async (_label, keys) => {
+      mocks.getProjectApiKeys.mockResolvedValue(keys);
+      const fetchSpy = mockFetch(
+        () => new Response(JSON.stringify({ id: UUID })),
+      );
+
+      await createTempTestUser(makeApp());
+
+      const [, init] = fetchSpy.mock.calls[0];
+      expect(init.headers.apikey).toBe(SECRET_KEY);
+      // A new-format secret key is not a JWT. Supabase parses whatever is on
+      // Authorization: Bearer as one and rejects the call with "Invalid JWT",
+      // so the key has to travel on `apikey` alone.
+      expect(init.headers.Authorization).toBeUndefined();
+    },
+  );
+
+  // `type` is optional on the Management API response. Requiring it alongside
+  // the prefix would drop a perfectly good sb_secret_ key straight to the legacy
+  // tier, silently un-migrating a project that had already moved.
+  it("picks the new-format secret key even when the response omits its type", async () => {
+    mocks.getProjectApiKeys.mockResolvedValue([
+      { name: "anon", type: "legacy", api_key: "eyJ.legacy-anon" },
+      {
+        name: "service_role",
+        type: "legacy",
+        api_key: "eyJ.legacy-service-role",
+      },
+      { name: "default", api_key: SECRET_KEY },
+    ]);
+    const fetchSpy = mockFetch(
+      () => new Response(JSON.stringify({ id: UUID })),
+    );
+
+    await createTempTestUser(makeApp());
+
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(init.headers.apikey).toBe(SECRET_KEY);
+    expect(init.headers.Authorization).toBeUndefined();
+  });
+
+  // A JWT can never carry the sb_secret_ prefix, so the prefix classifies this
+  // on its own. Consulting `type` too could only add false negatives — this
+  // shape would lose its bearer header and 401 every Auth Admin call.
+  it("still sends the bearer header for a legacy JWT labelled as a secret key", async () => {
+    mocks.getProjectApiKeys.mockResolvedValue([
+      { name: "anon", type: "legacy", api_key: "eyJ.legacy-anon" },
+      {
+        name: "service_role",
+        type: "secret",
+        api_key: "eyJ.legacy-service-role",
+      },
+    ]);
+    const fetchSpy = mockFetch(
+      () => new Response(JSON.stringify({ id: UUID })),
+    );
+
+    await createTempTestUser(makeApp());
+
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(init.headers.apikey).toBe("eyJ.legacy-service-role");
+    expect(init.headers.Authorization).toBe("Bearer eyJ.legacy-service-role");
+  });
+
+  it("reveals the secret key value when fetching the project's keys", async () => {
+    mockFetch(() => new Response(JSON.stringify({ id: UUID })));
+
+    await createTempTestUser(makeApp());
+
+    // Without reveal, Supabase redacts every secret key value and the legacy
+    // JWT is the only usable key left on the project.
+    expect(mocks.getProjectApiKeys).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "proj-1", reveal: true }),
+    );
+  });
+
+  it("falls back to the legacy service_role key on an unmigrated project", async () => {
+    mocks.getProjectApiKeys.mockResolvedValue([
+      { name: "anon", type: "legacy", api_key: "eyJ.legacy-anon" },
+      {
+        name: "service_role",
+        type: "legacy",
+        api_key: "eyJ.legacy-service-role",
+      },
+    ]);
+    const fetchSpy = mockFetch(
+      () => new Response(JSON.stringify({ id: UUID })),
+    );
+
+    await createTempTestUser(makeApp());
+
+    // The legacy service_role key IS a JWT, so it still needs the bearer
+    // header — that's what authorizes the admin call on an unmigrated project.
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(init.headers.Authorization).toBe("Bearer eyJ.legacy-service-role");
+    expect(init.headers.apikey).toBe("eyJ.legacy-service-role");
+  });
+
+  it("explains how to fix a project whose legacy keys are disabled", async () => {
+    // Reproduce the precondition the 401 actually needs: the project has no
+    // new-format secret key, so pickSecretKey falls back to the legacy
+    // service_role JWT — which the project has since disabled. With the
+    // default sb_secret_ fixture in place this branch could never fire.
+    mocks.getProjectApiKeys.mockResolvedValue([
+      { name: "anon", type: "legacy", api_key: "eyJ.legacy-anon" },
+      {
+        name: "service_role",
+        type: "legacy",
+        api_key: "eyJ.legacy-service-role",
+      },
+    ]);
+    const fetchSpy = mockFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            message: "Legacy API keys are disabled",
+            hint: "Your legacy API keys (anon, service_role) were disabled on 2026-07-19T03:56:05.137208+00:00.",
+          }),
+          { status: 401 },
+        ),
+    );
+
+    const error = await createTempTestUser(makeApp()).catch((e) => e);
+
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(init.headers.apikey).toBe("eyJ.legacy-service-role");
+
+    expect(error.message).toMatch(/Create a secret key in Supabase/);
+    // User-fixable setup problem, not a Dyad failure worth reporting.
+    expect(error.kind).toBe(DyadErrorKind.Precondition);
   });
 });
 
