@@ -37,11 +37,6 @@ jobs:
       REVIEW_PROMPT_PATH: tmp/pr-review/claude-prompt.txt
       REVIEW_OUTPUT_PATH: tmp/pr-review/claude-review.md
       REVIEW_FINDINGS_PATH: tmp/pr-review/claude-findings.json
-      REVIEW_SUBAGENT_INSTRUCTIONS: >-
-        Use exactly 1 review sub-agent total. That single sub-agent must apply
-        all three personas together: Correctness & Debugging Expert, Code
-        Health Expert, and UX Wizard. Do not spawn one sub-agent per persona,
-        and do not spawn any additional review sub-agents.
     steps:
       - name: Checkout trusted workflow repo
         uses: actions/checkout@v5
@@ -106,7 +101,7 @@ jobs:
           claude_args: |
             --model claude-opus-5
             --setting-sources user
-            --allowedTools "Agent,Read,Glob,Grep,Edit(tmp/pr-review/**)"
+            --allowedTools "Read,Glob,Grep,Edit(tmp/pr-review/**)"
 
       - name: Verify Claude review outputs
         run: |

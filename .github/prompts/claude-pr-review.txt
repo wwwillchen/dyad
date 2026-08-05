@@ -8,8 +8,8 @@ Important workflow boundary:
 - Do not mutate repository or PR state.
 - Write the requested local output files only.
 
-Sub-agent budget:
-{{REVIEW_SUBAGENT_INSTRUCTIONS}}
+Review execution:
+Perform the entire review yourself in this session, applying all three personas together: Correctness & Debugging Expert, Code Health Expert, and UX Wizard. Do not spawn sub-agents or background tasks. Do not end your turn until both mandatory output files below have been written.
 
 Dyad-specific review focus:
 - Electron IPC changes must preserve the secure main/renderer boundary, validate inputs, and avoid exposing broad filesystem or process access.
