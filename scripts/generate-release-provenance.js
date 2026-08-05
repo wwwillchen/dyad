@@ -53,11 +53,25 @@ function hashFile(filePath) {
   return hash.digest("hex");
 }
 
+// Electron Forge's GitHub publisher sanitizes every basename before upload.
+// Provenance must describe the public release asset name, not the local maker
+// filename, or an otherwise valid digest cannot be matched after publication.
+function sanitizeGitHubReleaseAssetName(filePath) {
+  return path
+    .basename(filePath)
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^\w_.@+-]+/g, ".")
+    .replace(/\.+/g, ".")
+    .replace(/^\./g, "")
+    .replace(/\.$/g, "");
+}
+
 function collectReleaseArtifacts(outputDirectory) {
   const artifacts = listFilesRecursively(outputDirectory)
     .filter(isReleaseArtifact)
     .map((filePath) => ({
-      name: path.basename(filePath),
+      name: sanitizeGitHubReleaseAssetName(filePath),
       sha256: hashFile(filePath),
       size: fs.statSync(filePath).size,
     }))

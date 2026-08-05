@@ -29,6 +29,24 @@ afterEach(() => {
 });
 
 describe("release provenance generator", () => {
+  it("uses the exact asset names produced by Electron Forge's GitHub publisher", () => {
+    const directory = createTemporaryDirectory();
+    fs.writeFileSync(
+      path.join(directory, "dyad-1.10.0-beta.1 Setup.exe"),
+      "windows",
+    );
+    fs.writeFileSync(
+      path.join(directory, "dyad_1.10.0~beta.1_amd64.deb"),
+      "linux",
+    );
+
+    expect(
+      collectReleaseArtifacts(directory).map(
+        (artifact: { name: string }) => artifact.name,
+      ),
+    ).toEqual(["dyad-1.10.0-beta.1.Setup.exe", "dyad_1.10.0.beta.1_amd64.deb"]);
+  });
+
   it("hashes and sorts only published release artifact types", () => {
     const directory = createTemporaryDirectory();
     fs.mkdirSync(path.join(directory, "nested"));
