@@ -436,7 +436,7 @@ async function wasClientFileClean({
  * Only runs when the file held nothing but committed content beforehand — see
  * `wasClientFileClean`. A user mid-edit in `client.ts` keeps their work in the
  * working tree, where the key change simply joins it as one more line to
- * review; that is the honest outcome, and far better than a "[dyad]" commit
+ * review; that is the honest outcome, and far better than an automatic commit
  * that quietly carries their edits.
  *
  * The pathspec scopes the commit to that one file, so edits and staged changes
@@ -458,7 +458,7 @@ async function commitKeySwitch({
     await gitAdd({ path: appPath, filepath: relativePath });
     await gitCommit({
       path: appPath,
-      message: "[dyad] switch Supabase client to publishable API key",
+      message: "switch Supabase client to publishable API key",
       paths: [relativePath],
     });
   } catch (error) {

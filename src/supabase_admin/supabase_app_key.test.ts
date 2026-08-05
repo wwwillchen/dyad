@@ -263,7 +263,7 @@ describe("switchAppToPublishableKey", () => {
     // changes (and their staged index) out of this commit.
     expect(gitCommitMock).toHaveBeenCalledWith({
       path: appPath,
-      message: expect.stringContaining("[dyad]"),
+      message: "switch Supabase client to publishable API key",
       paths: [relativePath],
     });
   });

@@ -298,7 +298,7 @@ describe("applyPnpmVersionMigration", () => {
       });
       expect(gitCommitMock).toHaveBeenCalledWith({
         path: appPath,
-        message: `[dyad] migrate to pnpm ${getManagedPnpmMajorVersion()}`,
+        message: `migrate to pnpm ${getManagedPnpmMajorVersion()}`,
       });
       expect(sendTelemetryEventMock).toHaveBeenCalledWith(
         "pnpm:version-migration-applied",

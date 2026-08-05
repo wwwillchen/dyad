@@ -302,7 +302,7 @@ describe("processFullResponseActions add dependency errors", () => {
 
     expect(gitCommit).toHaveBeenCalledWith({
       path: "/mock/apps/test-app",
-      message: "[dyad] wrote 1 file(s), installed or updated react package(s)",
+      message: "wrote 1 file(s), installed or updated react package(s)",
     });
   });
 
@@ -328,7 +328,7 @@ describe("processFullResponseActions add dependency errors", () => {
 
     expect(gitCommit).toHaveBeenCalledWith({
       path: "/mock/apps/test-app",
-      message: "[dyad] wrote 1 file(s), installed or updated react package(s)",
+      message: "wrote 1 file(s), installed or updated react package(s)",
     });
     const contentUpdate = dbUpdates.find(
       (update) => typeof update.content === "string",

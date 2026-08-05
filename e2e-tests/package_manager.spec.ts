@@ -661,6 +661,6 @@ realPnpmStrictBuildsTestSkipIfWindows(
       ["log", "-1", "--format=%s"],
       { cwd: appPath, encoding: "utf8" },
     ).trim();
-    expect(lastCommitSubject).toContain("[dyad] migrate to pnpm");
+    expect(lastCommitSubject).toContain("migrate to pnpm");
   },
 );

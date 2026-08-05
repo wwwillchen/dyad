@@ -110,7 +110,7 @@ Caveat (accepted): a manual `pnpm approve-builds` run rewrites `pnpm-workspace.y
 
 ### 3. Commit
 
-Reuse the `commitPnpmAllowBuildsConfigIfChanged` pattern: `gitAdd` + `gitCommit("[dyad] record denied pnpm dependency builds")`. This is what makes the fix travel with exports/deploys.
+Reuse the `commitPnpmAllowBuildsConfigIfChanged` pattern: `gitAdd` + `gitCommit("record denied pnpm dependency builds")`. This is what makes the fix travel with exports/deploys.
 
 ### 4. Telemetry
 

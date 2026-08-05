@@ -131,7 +131,7 @@ describe("tests:delete", () => {
     expect(removeFileAndCommitMock).toHaveBeenCalledWith({
       path: path.join(TEMP_BASE, "app"),
       filepath: "e2e-tests/signup.spec.ts",
-      message: "[dyad] delete test e2e-tests/signup.spec.ts",
+      message: "delete test e2e-tests/signup.spec.ts",
     });
     expect(queueCloudSandboxSnapshotSyncMock).toHaveBeenCalledWith({
       appId,

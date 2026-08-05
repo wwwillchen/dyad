@@ -58,7 +58,7 @@ export function registerPortalHandlers() {
       try {
         const commitHash = await gitService.stageAllAndCommit({
           path: appPath,
-          message: "[dyad] Generate database migration file",
+          message: "Generate database migration file",
         });
 
         logger.info(`Successfully committed migration changes: ${commitHash}`);
