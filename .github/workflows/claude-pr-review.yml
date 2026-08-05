@@ -95,6 +95,12 @@ jobs:
           track_progress: false
           display_report: false
 
+          # Log the full Claude transcript so flaky runs where Claude exits
+          # without writing the review output files can be diagnosed.
+          # Review inputs/outputs are derived from public PR data, so the
+          # logs do not expose anything sensitive.
+          show_full_output: true
+
           prompt: ${{ steps.render-prompt.outputs.prompt }}
 
           claude_args: |
