@@ -67,6 +67,7 @@ export function useGithubOps(
         case "BLOCKED_DISMISSED":
         case "BANNER_DISMISSED":
         case "RECONCILE_REQUESTED":
+        case "RETRY_CONFLICT_VERIFICATION":
         case "CONFLICT_RESOLUTION_FINISHED":
           intent = event;
           break;

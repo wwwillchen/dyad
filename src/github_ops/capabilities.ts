@@ -26,6 +26,11 @@ export function selectGithubOpsCapabilities(
   const isIdle = state.type === "idle";
   const isActionableConflict =
     state.type === "conflicted" && state.resolution === undefined;
+  const isStableConflictRecovery =
+    state.type === "conflicted" &&
+    (state.resolution === undefined ||
+      state.resolution === "verification-failed" ||
+      state.resolution === "ready-to-sync");
   return {
     canSync: isIdle,
     canDisconnect: isIdle,
@@ -41,14 +46,14 @@ export function selectGithubOpsCapabilities(
       state.banner?.kind === "error" &&
       state.banner.code === "DIVERGENT_BRANCHES",
     canResolveConflicts: isActionableConflict,
-    canCancelSync: isActionableConflict,
+    canCancelSync: isStableConflictRecovery,
     canContinueSync:
       state.type === "conflicted" && state.resolution === "ready-to-sync",
     canRetryConflictVerification:
       state.type === "conflicted" && state.resolution === "verification-failed",
     canMutateBranches: isIdle,
     canSwitchBranches:
-      isIdle || isActionableConflict || state.type === "rebase-paused",
+      isIdle || isStableConflictRecovery || state.type === "rebase-paused",
     canConfirmBlockedSwitch: state.type === "switch-blocked",
     canDismissBlockedSwitch: state.type === "switch-blocked",
     canConnectRepository: isIdle,

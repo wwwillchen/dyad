@@ -119,7 +119,7 @@ describe("projectGithubOps", () => {
     });
     expect(projection.capabilities.canContinueSync).toBe(true);
     expect(projection.capabilities.canResolveConflicts).toBe(false);
-    expect(projection.capabilities.canCancelSync).toBe(false);
+    expect(projection.capabilities.canCancelSync).toBe(true);
   });
 
   it("projects Git verification separately from active chat resolution", () => {
@@ -141,10 +141,14 @@ describe("projectGithubOps", () => {
       files: ["src/conflicted.ts"],
       origin: { type: "push", mode: "normal" },
       resolution: "verification-failed",
+      verificationError: "temporary Git-state failure",
       banner: null,
     });
 
     expect(projection.conflictRecoveryStage).toBe("verification-failed");
+    expect(projection.conflictVerificationError).toBe(
+      "temporary Git-state failure",
+    );
     expect(projection.capabilities.canRetryConflictVerification).toBe(true);
     expect(projection.capabilities.canContinueSync).toBe(false);
     expect(projection.capabilities.canResolveConflicts).toBe(false);

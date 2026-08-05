@@ -132,10 +132,12 @@ function eventsFor(state: GithubOpsState): readonly GithubOpsEvent[] {
           {
             type: "CONFLICT_VERIFICATION_FAILED",
             verificationAttempt: state.verificationAttempt ?? 1,
+            message: "Could not verify the resolved conflicts",
           },
         ] satisfies GithubOpsEvent[])
       : []),
     { type: "BANNER_DISMISSED" },
+    { type: "RETRY_CONFLICT_VERIFICATION" },
     { type: "RECONCILE_REQUESTED" },
   ];
 }
@@ -450,10 +452,12 @@ describe("github_ops transition", () => {
     const failed = transition(checking, {
       type: "CONFLICT_VERIFICATION_FAILED",
       verificationAttempt: 1,
+      message: "temporary Git-state failure",
     });
     expect(failed.state).toEqual({
       ...checking,
       resolution: "verification-failed",
+      verificationError: "temporary Git-state failure",
     });
     expect(commandsOf(failed)).toEqual([]);
 
@@ -464,10 +468,13 @@ describe("github_ops transition", () => {
     expect(ambientProbe.state).toBe(failed.state);
     expect(ignoreReasonOf(ambientProbe)).toBe("no-change");
 
-    const retry = transition(failed.state, { type: "RECONCILE_REQUESTED" });
+    const retry = transition(failed.state, {
+      type: "RETRY_CONFLICT_VERIFICATION",
+    });
     expect(retry.state).toEqual({
       ...checking,
       verificationAttempt: 2,
+      verificationError: undefined,
     });
     expect(commandsOf(retry)).toEqual([
       { type: "probe-git-state", verificationAttempt: 2 },
@@ -485,7 +492,11 @@ describe("github_ops transition", () => {
       banner: null,
     };
     const staleEvents: GithubOpsEvent[] = [
-      { type: "CONFLICT_VERIFICATION_FAILED", verificationAttempt: 1 },
+      {
+        type: "CONFLICT_VERIFICATION_FAILED",
+        verificationAttempt: 1,
+        message: "stale failure",
+      },
       {
         type: "GIT_STATE",
         mergeInProgress: false,
@@ -575,7 +586,7 @@ describe("github_ops transition", () => {
     expect(ignoreReasonOf(conflicts)).toBe("no-change");
   });
 
-  it("uses the dedicated recovery surface without a duplicate banner or toast", () => {
+  it("uses the dedicated recovery surface with one background-sync notice", () => {
     const push = { type: "push", mode: "normal" } as const;
     const running = transition(INITIAL_GITHUB_OPS_STATE, {
       type: "OP_REQUESTED",
@@ -599,7 +610,13 @@ describe("github_ops transition", () => {
       type: "conflicted",
       banner: null,
     });
-    expect(commandsOf(conflicted)).toEqual([]);
+    expect(commandsOf(conflicted)).toEqual([
+      {
+        type: "notify",
+        kind: "info",
+        message: "Sync paused. Resolve merge conflicts to continue.",
+      },
+    ]);
   });
 
   it("returns to actionable conflicts when AI leaves conflicts unresolved", () => {

@@ -102,6 +102,7 @@ export type GithubOpsState =
         | "ready-to-sync";
       resolutionChatId?: number;
       verificationAttempt?: number;
+      verificationError?: string;
     } & GithubOpsContext)
   | ({ type: "rebase-paused" } & GithubOpsContext)
   | ({
@@ -141,7 +142,12 @@ export type GithubOpsEvent =
   | { type: "RESOLVE_WITH_AI_STARTED" }
   | { type: "CONFLICT_RESOLUTION_STARTED"; chatId: number }
   | { type: "CONFLICT_RESOLUTION_FINISHED"; chatId: number }
-  | { type: "CONFLICT_VERIFICATION_FAILED"; verificationAttempt: number }
+  | {
+      type: "CONFLICT_VERIFICATION_FAILED";
+      verificationAttempt: number;
+      message: string;
+    }
+  | { type: "RETRY_CONFLICT_VERIFICATION" }
   | { type: "BANNER_DISMISSED" }
   | { type: "RECONCILE_REQUESTED" };
 

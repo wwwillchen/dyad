@@ -14,7 +14,6 @@ interface UseResolveMergeConflictsWithAIProps {
   conflicts: readonly string[];
   onStartResolving?: (chatId: number) => void | Promise<void>;
   onStartFailed?: () => void | Promise<void>;
-  onSettled?: (chatId: number) => void;
 }
 
 /**
@@ -26,7 +25,6 @@ export function useResolveMergeConflictsWithAI({
   conflicts,
   onStartResolving,
   onStartFailed,
-  onSettled,
 }: UseResolveMergeConflictsWithAIProps) {
   const setSelectedChatId = useSetAtom(selectedChatIdAtom);
   const setSelectedAppId = useSetAtom(selectedAppIdAtom);
@@ -103,7 +101,6 @@ For each listed file, resolve every Git conflict by editing the file in place. P
             onSettled: () => {
               isResolvingRef.current = false;
               setIsResolving(false);
-              onSettled?.(newChatId);
               invalidateChats();
               void refreshApp();
             },
@@ -131,7 +128,6 @@ For each listed file, resolve every Git conflict by editing the file in place. P
       appId,
       onStartResolving,
       onStartFailed,
-      onSettled,
       setSelectedChatId,
       setSelectedAppId,
       navigate,

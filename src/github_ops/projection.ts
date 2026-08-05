@@ -21,6 +21,7 @@ export interface GithubOpsProjection {
     | "ready-to-sync"
     | null;
   readonly conflictResolutionChatId: number | null;
+  readonly conflictVerificationError: string | null;
   readonly syncContinuationOperation: GithubOperation | null;
   readonly rebaseInProgress: boolean;
   readonly rebaseAction: "abort" | "continue" | "safe-push" | null;
@@ -79,6 +80,8 @@ export function projectGithubOps(state: GithubOpsState): GithubOpsProjection {
         : null,
     conflictResolutionChatId:
       state.type === "conflicted" ? (state.resolutionChatId ?? null) : null,
+    conflictVerificationError:
+      state.type === "conflicted" ? (state.verificationError ?? null) : null,
     syncContinuationOperation:
       state.type === "conflicted" && state.resolution === "ready-to-sync"
         ? (continuationOperation(state.origin) ?? null)

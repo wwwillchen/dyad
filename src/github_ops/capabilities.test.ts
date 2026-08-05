@@ -154,7 +154,11 @@ describe("github_ops capabilities", () => {
           },
           canRetryConflictVerification: {
             representativeEvents: () => ({
-              valid: [{ type: "RECONCILE_REQUESTED" } satisfies GithubOpsEvent],
+              valid: [
+                {
+                  type: "RETRY_CONFLICT_VERIFICATION",
+                } satisfies GithubOpsEvent,
+              ],
             }),
           },
           canMutateBranches: {

@@ -52,6 +52,7 @@ describe("github_ops wire contracts", () => {
       GithubOpsProducerEventSchema.safeParse({
         type: "CONFLICT_VERIFICATION_FAILED",
         verificationAttempt: 1,
+        message: "Could not verify the resolved conflicts",
       }).success,
     ).toBe(true);
     expect(

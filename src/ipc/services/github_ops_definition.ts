@@ -204,6 +204,7 @@ function createCommandRunner(
         emit({
           type: "CONFLICT_VERIFICATION_FAILED",
           verificationAttempt,
+          message,
         });
       }
       return;
@@ -279,10 +280,10 @@ function createCommandRunner(
               });
             }
           },
-          () => {
+          (error) => {
             if (generation !== gitStateProbeGeneration) return;
             reportProbeFailure(
-              "Could not refresh the repository state",
+              errorMessage(error, "Could not refresh the repository state"),
               invocationRef?.operationId,
               command.verificationAttempt,
             );
@@ -309,10 +310,13 @@ function createCommandRunner(
               });
             }
           },
-          () => {
+          (error) => {
             if (generation !== conflictProbeGeneration) return;
             reportProbeFailure(
-              "Could not check the repository for merge conflicts",
+              errorMessage(
+                error,
+                "Could not check the repository for merge conflicts",
+              ),
               invocationRef?.operationId,
               command.verificationAttempt,
             );

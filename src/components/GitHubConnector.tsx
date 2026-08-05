@@ -118,6 +118,7 @@ function ConnectedGitHubConnector({
     conflicts,
     conflictRecoveryStage,
     conflictResolutionChatId,
+    conflictVerificationError,
     syncContinuationOperation,
     rebaseAction,
     showForcePush,
@@ -133,12 +134,6 @@ function ConnectedGitHubConnector({
     conflicts,
     onStartResolving: dispatchConflictResolutionStarted,
     onStartFailed: dispatchConflictResolutionCancelled,
-    onSettled: (chatId) => {
-      void dispatchWithErrorFeedback({
-        type: "CONFLICT_RESOLUTION_FINISHED",
-        chatId,
-      });
-    },
   });
 
   const conflictResolutionChat = useChatStreamState(
@@ -387,30 +382,32 @@ function ConnectedGitHubConnector({
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-foreground">
-                {conflictRecoveryStage === "resolving"
-                  ? "Resolving conflicts in chat…"
-                  : conflictRecoveryStage === "checking"
-                    ? "Verifying resolution…"
-                    : conflictRecoveryStage === "verification-failed"
-                      ? "Couldn't verify the resolution"
-                      : conflictRecoveryStage === "ready-to-sync"
-                        ? "Conflicts resolved"
-                        : isSyncConflict
-                          ? "Sync paused"
-                          : "Merge paused"}
-              </p>
-              <p className="mt-0.5 text-sm text-muted-foreground">
-                {conflictRecoveryStage === "resolving"
-                  ? "Follow progress in the chat."
-                  : conflictRecoveryStage === "checking"
-                    ? "Checking the repository for remaining conflicts."
-                    : conflictRecoveryStage === "verification-failed"
-                      ? "Your resolved changes are still safe. Try checking the repository again."
-                      : conflictRecoveryStage === "ready-to-sync"
-                        ? "Your changes are ready to sync to GitHub."
-                        : `Resolve ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"} to ${isSyncConflict ? "continue syncing" : "finish merging"}.`}
-              </p>
+              <div role="status" aria-live="polite" aria-atomic="true">
+                <p className="text-sm font-medium text-foreground">
+                  {conflictRecoveryStage === "resolving"
+                    ? "Resolving conflicts in chat…"
+                    : conflictRecoveryStage === "checking"
+                      ? "Verifying resolution…"
+                      : conflictRecoveryStage === "verification-failed"
+                        ? "Couldn't verify the resolution"
+                        : conflictRecoveryStage === "ready-to-sync"
+                          ? "Conflicts resolved"
+                          : isSyncConflict
+                            ? "Sync paused"
+                            : "Merge paused"}
+                </p>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  {conflictRecoveryStage === "resolving"
+                    ? "Follow progress in the chat."
+                    : conflictRecoveryStage === "checking"
+                      ? "Checking the repository for remaining conflicts."
+                      : conflictRecoveryStage === "verification-failed"
+                        ? `${conflictVerificationError ?? "Dyad couldn't check the repository."} Your resolved changes are still safe.`
+                        : conflictRecoveryStage === "ready-to-sync"
+                          ? "Your changes are ready to sync to GitHub."
+                          : `Resolve ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"} to ${isSyncConflict ? "continue syncing" : "finish merging"}.`}
+                </p>
+              </div>
 
               {conflictRecoveryStage === "conflicted" && (
                 <ul className="mt-2 space-y-1" aria-label="Conflicted files">
@@ -471,30 +468,68 @@ function ConnectedGitHubConnector({
 
               {conflictRecoveryStage === "ready-to-sync" &&
                 syncContinuationOperation && (
-                  <Button
-                    className="mt-3"
-                    size="sm"
-                    disabled={!canContinueSync}
-                    onClick={() =>
-                      send({
-                        type: "OP_REQUESTED",
-                        op: syncContinuationOperation,
-                      })
-                    }
-                  >
-                    Continue to Sync
-                  </Button>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      disabled={!canContinueSync}
+                      onClick={() =>
+                        send({
+                          type: "OP_REQUESTED",
+                          op: syncContinuationOperation,
+                        })
+                      }
+                    >
+                      Continue to Sync
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!canCancelSync || isCancellingSync}
+                      onClick={() =>
+                        send({
+                          type: "OP_REQUESTED",
+                          op: { type: abortOperation },
+                        })
+                      }
+                    >
+                      {isCancellingSync
+                        ? "Cancelling…"
+                        : isSyncConflict
+                          ? "Cancel sync"
+                          : "Cancel merge"}
+                    </Button>
+                  </div>
                 )}
 
               {conflictRecoveryStage === "verification-failed" && (
-                <Button
-                  className="mt-3"
-                  size="sm"
-                  disabled={!canRetryConflictVerification}
-                  onClick={() => send({ type: "RECONCILE_REQUESTED" })}
-                >
-                  Try again
-                </Button>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    disabled={!canRetryConflictVerification}
+                    onClick={() =>
+                      send({ type: "RETRY_CONFLICT_VERIFICATION" })
+                    }
+                  >
+                    Try again
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!canCancelSync || isCancellingSync}
+                    onClick={() =>
+                      send({
+                        type: "OP_REQUESTED",
+                        op: { type: abortOperation },
+                      })
+                    }
+                  >
+                    {isCancellingSync
+                      ? "Cancelling…"
+                      : isSyncConflict
+                        ? "Cancel sync"
+                        : "Cancel merge"}
+                  </Button>
+                </div>
               )}
             </div>
           </div>

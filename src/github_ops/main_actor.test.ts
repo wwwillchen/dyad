@@ -414,10 +414,11 @@ describe("main-hosted github_ops actor", () => {
       type: "conflicted",
       resolution: "verification-failed",
       resolutionChatId: 42,
+      verificationError: "temporary Git-state failure",
     });
     expect(presentation.showError).not.toHaveBeenCalled();
 
-    await actorA.dispatch({ type: "RECONCILE_REQUESTED" });
+    await actorA.dispatch({ type: "RETRY_CONFLICT_VERIFICATION" });
     await flush();
 
     expect(service.getGitState).toHaveBeenCalledTimes(2);
@@ -463,10 +464,11 @@ describe("main-hosted github_ops actor", () => {
       type: "conflicted",
       resolution: "verification-failed",
       resolutionChatId: 42,
+      verificationError: "temporary conflict probe failure",
     });
     expect(presentation.showError).not.toHaveBeenCalled();
 
-    await actorA.dispatch({ type: "RECONCILE_REQUESTED" });
+    await actorA.dispatch({ type: "RETRY_CONFLICT_VERIFICATION" });
     await flush();
 
     expect(service.getConflicts).toHaveBeenCalledTimes(2);
@@ -670,7 +672,7 @@ describe("main-hosted github_ops actor", () => {
     expect(presentation.showError).toHaveBeenCalledExactlyOnceWith(
       7,
       undefined,
-      "Could not refresh the repository state",
+      "temporary repository refresh failure",
     );
   });
 

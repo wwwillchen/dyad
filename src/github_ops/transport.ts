@@ -190,6 +190,7 @@ export const GithubOpsStateSchema: z.ZodType<GithubOpsState> =
           .optional(),
         resolutionChatId: z.number().int().positive().optional(),
         verificationAttempt: z.number().int().positive().optional(),
+        verificationError: z.string().max(1_000).optional(),
         banner: githubOpsBannerSchema.nullable(),
       })
       .strict(),
@@ -237,6 +238,7 @@ export const GithubOpsIntentEventSchema = z.union([
     .strict(),
   z.object({ type: z.literal("BANNER_DISMISSED") }).strict(),
   z.object({ type: z.literal("RECONCILE_REQUESTED") }).strict(),
+  z.object({ type: z.literal("RETRY_CONFLICT_VERIFICATION") }).strict(),
   z
     .object({
       type: z.literal("CONFLICT_RESOLUTION_STARTED"),
@@ -310,6 +312,7 @@ export const GithubOpsProducerEventSchema = z.union([
     .object({
       type: z.literal("CONFLICT_VERIFICATION_FAILED"),
       verificationAttempt: z.number().int().positive(),
+      message: z.string().max(1_000),
     })
     .strict(),
 ]);
@@ -375,6 +378,7 @@ export function isGithubOpsStateSensitiveIntent(
       return false;
     case "BANNER_DISMISSED":
     case "RECONCILE_REQUESTED":
+    case "RETRY_CONFLICT_VERIFICATION":
       return false;
   }
 }
@@ -401,6 +405,7 @@ export function toGithubOpsDomainEvent(
       return {
         type: "CONFLICT_VERIFICATION_FAILED",
         verificationAttempt: event.verificationAttempt,
+        message: event.message,
       };
     case "CONFLICT_RESOLUTION_CANCELLED":
       return { type: "RECONCILE_REQUESTED" };
@@ -411,6 +416,7 @@ export function toGithubOpsDomainEvent(
     case "RESOLVE_WITH_AI_STARTED":
     case "BANNER_DISMISSED":
     case "RECONCILE_REQUESTED":
+    case "RETRY_CONFLICT_VERIFICATION":
       return { type: event.type };
   }
 }
