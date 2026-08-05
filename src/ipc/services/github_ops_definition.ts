@@ -190,6 +190,22 @@ function createCommandRunner(
   let gitStateProbeGeneration = 0;
   let conflictProbeGeneration = 0;
   const emit = (event: GithubOpsProducerEvent) => context.send(event);
+  const reportProbeFailure = (
+    message: string,
+    operationId: string | undefined,
+  ) => {
+    const state = context.getSnapshot().state;
+    const isConflictVerification =
+      state.type === "conflicted" && state.resolution === "checking";
+    if (!isConflictVerification) {
+      githubOpsPresentationService.showError(
+        context.key.appId,
+        operationId,
+        message,
+      );
+    }
+    emit({ type: "CONFLICT_VERIFICATION_FAILED" });
+  };
 
   return (actorCommand: GithubOpsActorCommand): void => {
     if (actorCommand.type === "schedule-conflict-claim-expiry") {
@@ -252,10 +268,9 @@ function createCommandRunner(
           },
           () => {
             if (generation !== gitStateProbeGeneration) return;
-            githubOpsPresentationService.showError(
-              appId,
-              invocationRef?.operationId,
+            reportProbeFailure(
               "Could not refresh the repository state",
+              invocationRef?.operationId,
             );
           },
         );
@@ -277,10 +292,9 @@ function createCommandRunner(
           },
           () => {
             if (generation !== conflictProbeGeneration) return;
-            githubOpsPresentationService.showError(
-              appId,
-              invocationRef?.operationId,
+            reportProbeFailure(
               "Could not check the repository for merge conflicts",
+              invocationRef?.operationId,
             );
             if (command.settleOnError) {
               emit({ type: "CONFLICTS", files: [] });

@@ -104,6 +104,7 @@ function ConnectedGitHubConnector({
       canAbortRebase,
       canCancelSync,
       canContinueSync,
+      canRetryConflictVerification,
       canContinueRebase,
       canDisconnect,
       canForcePush,
@@ -365,6 +366,11 @@ function ConnectedGitHubConnector({
                   className="size-4 animate-spin motion-reduce:animate-none"
                   aria-hidden="true"
                 />
+              ) : conflictRecoveryStage === "verification-failed" ? (
+                <AlertTriangle
+                  className="size-4 text-amber-600 dark:text-amber-400"
+                  aria-hidden="true"
+                />
               ) : conflictRecoveryStage === "ready-to-sync" ? (
                 <CircleCheck
                   className="size-4 text-emerald-600 dark:text-emerald-400"
@@ -380,20 +386,24 @@ function ConnectedGitHubConnector({
                   ? "Resolving conflicts in chat…"
                   : conflictRecoveryStage === "checking"
                     ? "Verifying resolution…"
-                    : conflictRecoveryStage === "ready-to-sync"
-                      ? "Conflicts resolved"
-                      : isSyncConflict
-                        ? "Sync paused"
-                        : "Merge paused"}
+                    : conflictRecoveryStage === "verification-failed"
+                      ? "Couldn't verify the resolution"
+                      : conflictRecoveryStage === "ready-to-sync"
+                        ? "Conflicts resolved"
+                        : isSyncConflict
+                          ? "Sync paused"
+                          : "Merge paused"}
               </p>
               <p className="mt-0.5 text-sm text-muted-foreground">
                 {conflictRecoveryStage === "resolving"
                   ? "Follow progress in the chat."
                   : conflictRecoveryStage === "checking"
                     ? "Checking the repository for remaining conflicts."
-                    : conflictRecoveryStage === "ready-to-sync"
-                      ? "Your changes are ready to sync to GitHub."
-                      : `Resolve ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"} to ${isSyncConflict ? "continue syncing" : "finish merging"}.`}
+                    : conflictRecoveryStage === "verification-failed"
+                      ? "Your resolved changes are still safe. Try checking the repository again."
+                      : conflictRecoveryStage === "ready-to-sync"
+                        ? "Your changes are ready to sync to GitHub."
+                        : `Resolve ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"} to ${isSyncConflict ? "continue syncing" : "finish merging"}.`}
               </p>
 
               {conflictRecoveryStage === "conflicted" && (
@@ -469,6 +479,17 @@ function ConnectedGitHubConnector({
                     Continue to Sync
                   </Button>
                 )}
+
+              {conflictRecoveryStage === "verification-failed" && (
+                <Button
+                  className="mt-3"
+                  size="sm"
+                  disabled={!canRetryConflictVerification}
+                  onClick={() => send({ type: "RECONCILE_REQUESTED" })}
+                >
+                  Try again
+                </Button>
+              )}
             </div>
           </div>
         </div>

@@ -379,6 +379,85 @@ describe("main-hosted github_ops actor", () => {
     expect(actorA.getSnapshot().state.type).toBe("idle");
   });
 
+  it("makes a failed Git-state verification retryable without restarting AI", async () => {
+    service.getGitState.mockRejectedValueOnce(
+      new Error("temporary Git-state failure"),
+    );
+    const { actorA, host } = createHarness();
+    await actorA.resync();
+    const local: GithubOpsHostedActor = host.ensure(
+      githubOpsDefinition,
+      githubOpsKey(7),
+    );
+    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    await flush();
+
+    await actorA.dispatch({
+      type: "RESOLVE_WITH_AI_STARTED",
+      claimId: "verification-claim",
+    });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_STARTED",
+      claimId: "verification-claim",
+      chatId: 42,
+    });
+    await actorA.dispatch({ type: "CONFLICT_RESOLUTION_FINISHED" });
+    await flush();
+
+    expect(actorA.getSnapshot().state).toMatchObject({
+      type: "conflicted",
+      resolution: "verification-failed",
+      resolutionChatId: 42,
+    });
+    expect(presentation.showError).not.toHaveBeenCalled();
+
+    await actorA.dispatch({ type: "RECONCILE_REQUESTED" });
+    await flush();
+
+    expect(service.getGitState).toHaveBeenCalledTimes(2);
+    expect(actorA.getSnapshot().state).toMatchObject({
+      type: "idle",
+      banner: {
+        kind: "success",
+        message: "Merge conflicts resolved.",
+      },
+    });
+  });
+
+  it("makes a failed conflict-file verification retryable", async () => {
+    service.getConflicts.mockRejectedValueOnce(
+      new Error("temporary conflict probe failure"),
+    );
+    const { actorA, host } = createHarness();
+    await actorA.resync();
+    const local: GithubOpsHostedActor = host.ensure(
+      githubOpsDefinition,
+      githubOpsKey(7),
+    );
+    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    await flush();
+
+    await actorA.dispatch({
+      type: "RESOLVE_WITH_AI_STARTED",
+      claimId: "conflict-probe-claim",
+    });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_STARTED",
+      claimId: "conflict-probe-claim",
+      chatId: 42,
+    });
+    await actorA.dispatch({ type: "CONFLICT_RESOLUTION_FINISHED" });
+    await flush();
+
+    expect(service.getConflicts).toHaveBeenCalledOnce();
+    expect(actorA.getSnapshot().state).toMatchObject({
+      type: "conflicted",
+      resolution: "verification-failed",
+      resolutionChatId: 42,
+    });
+    expect(presentation.showError).not.toHaveBeenCalled();
+  });
+
   it("preserves the claim through reconcile and rejects a second window", async () => {
     service.getConflicts.mockResolvedValue(["src/conflicted.ts"]);
     const { actorA, actorB, host } = createHarness();

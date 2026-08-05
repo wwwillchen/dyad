@@ -58,6 +58,13 @@ const states: GithubOpsState[] = [
     type: "conflicted",
     files: ["src/conflicted.ts"],
     origin: { type: "push", mode: "normal" },
+    resolution: "verification-failed",
+    banner: null,
+  },
+  {
+    type: "conflicted",
+    files: ["src/conflicted.ts"],
+    origin: { type: "push", mode: "normal" },
     resolution: "ready-to-sync",
     banner: null,
   },
@@ -143,6 +150,11 @@ describe("github_ops capabilities", () => {
           canContinueSync: {
             representativeEvents: () => ({
               valid: [request({ type: "push", mode: "normal" })],
+            }),
+          },
+          canRetryConflictVerification: {
+            representativeEvents: () => ({
+              valid: [{ type: "RECONCILE_REQUESTED" } satisfies GithubOpsEvent],
             }),
           },
           canMutateBranches: {

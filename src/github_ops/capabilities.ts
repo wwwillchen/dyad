@@ -11,6 +11,7 @@ export interface GithubOpsCapabilities {
   readonly canResolveConflicts: boolean;
   readonly canCancelSync: boolean;
   readonly canContinueSync: boolean;
+  readonly canRetryConflictVerification: boolean;
   readonly canMutateBranches: boolean;
   readonly canSwitchBranches: boolean;
   readonly canConfirmBlockedSwitch: boolean;
@@ -43,6 +44,8 @@ export function selectGithubOpsCapabilities(
     canCancelSync: isActionableConflict,
     canContinueSync:
       state.type === "conflicted" && state.resolution === "ready-to-sync",
+    canRetryConflictVerification:
+      state.type === "conflicted" && state.resolution === "verification-failed",
     canMutateBranches: isIdle,
     canSwitchBranches:
       isIdle || isActionableConflict || state.type === "rebase-paused",

@@ -116,6 +116,9 @@ function eventsFor(state: GithubOpsState): readonly GithubOpsEvent[] {
     ...(state.type === "conflicted" && state.resolution === "resolving"
       ? ([{ type: "CONFLICT_RESOLUTION_FINISHED" }] satisfies GithubOpsEvent[])
       : []),
+    ...(state.type === "conflicted" && state.resolution === "checking"
+      ? ([{ type: "CONFLICT_VERIFICATION_FAILED" }] satisfies GithubOpsEvent[])
+      : []),
     { type: "BANNER_DISMISSED" },
     { type: "RECONCILE_REQUESTED" },
   ];
@@ -390,6 +393,37 @@ describe("github_ops transition", () => {
 
     expect(result.state).toBe(resolving);
     expect(ignoreReasonOf(result)).toBe("no-change");
+  });
+
+  it("offers an explicit retry when conflict verification fails", () => {
+    const checking: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "checking",
+      resolutionChatId: 42,
+      banner: null,
+    };
+
+    const failed = transition(checking, {
+      type: "CONFLICT_VERIFICATION_FAILED",
+    });
+    expect(failed.state).toEqual({
+      ...checking,
+      resolution: "verification-failed",
+    });
+    expect(commandsOf(failed)).toEqual([]);
+
+    const ambientProbe = transition(failed.state, {
+      type: "CONFLICTS",
+      files: [],
+    });
+    expect(ambientProbe.state).toBe(failed.state);
+    expect(ignoreReasonOf(ambientProbe)).toBe("no-change");
+
+    const retry = transition(failed.state, { type: "RECONCILE_REQUESTED" });
+    expect(retry.state).toEqual(checking);
+    expect(commandsOf(retry)).toEqual([{ type: "probe-git-state" }]);
   });
 
   it("continues an active rebase before pushing resolved changes", () => {

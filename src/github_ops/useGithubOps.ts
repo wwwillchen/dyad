@@ -17,6 +17,7 @@ const UNAVAILABLE_CAPABILITIES = {
   canResolveConflicts: false,
   canCancelSync: false,
   canContinueSync: false,
+  canRetryConflictVerification: false,
   canMutateBranches: false,
   canSwitchBranches: false,
   canConfirmBlockedSwitch: false,
@@ -81,6 +82,7 @@ export function useGithubOps(
         case "CONFLICTS":
         case "GIT_STATE":
         case "CONFLICT_RESOLUTION_STARTED":
+        case "CONFLICT_VERIFICATION_FAILED":
           throw new Error(
             `${event.type} is a host-only GitHub operation event`,
           );

@@ -95,7 +95,11 @@ export type GithubOpsState =
       type: "conflicted";
       files: readonly string[];
       origin: ConflictOrigin;
-      resolution?: "resolving" | "checking" | "ready-to-sync";
+      resolution?:
+        | "resolving"
+        | "checking"
+        | "verification-failed"
+        | "ready-to-sync";
       resolutionChatId?: number;
     } & GithubOpsContext)
   | ({ type: "rebase-paused" } & GithubOpsContext)
@@ -131,6 +135,7 @@ export type GithubOpsEvent =
   | { type: "RESOLVE_WITH_AI_STARTED" }
   | { type: "CONFLICT_RESOLUTION_STARTED"; chatId: number }
   | { type: "CONFLICT_RESOLUTION_FINISHED" }
+  | { type: "CONFLICT_VERIFICATION_FAILED" }
   | { type: "BANNER_DISMISSED" }
   | { type: "RECONCILE_REQUESTED" };
 

@@ -40,6 +40,8 @@ export function transition(
       return conflictResolutionStarted(state, event.chatId);
     case "CONFLICT_RESOLUTION_FINISHED":
       return conflictResolutionFinished(state);
+    case "CONFLICT_VERIFICATION_FAILED":
+      return conflictVerificationFailed(state);
     case "BANNER_DISMISSED":
       return dismissBanner(state);
     case "RECONCILE_REQUESTED":
@@ -304,6 +306,9 @@ function conflictsReceived(
         if (state.resolution === "resolving") {
           return ignore(state, "no-change");
         }
+        if (state.resolution === "verification-failed") {
+          return ignore(state, "no-change");
+        }
         const continuation = continuationOperation(state.origin);
         return state.resolution === "checking" && continuation
           ? changed({
@@ -513,6 +518,24 @@ function conflictResolutionFinished(
   }
 }
 
+function conflictVerificationFailed(
+  state: GithubOpsState,
+): GithubOpsTransitionResult {
+  switch (state.type) {
+    case "conflicted":
+      return state.resolution === "checking"
+        ? changed({ ...state, resolution: "verification-failed" })
+        : ignore(state, "invalid-in-current-state");
+    case "idle":
+    case "running":
+    case "rebase-paused":
+    case "switch-blocked":
+      return ignore(state, "invalid-in-current-state");
+    default:
+      return assertNever(state);
+  }
+}
+
 function dismissBanner(state: GithubOpsState): GithubOpsTransitionResult {
   switch (state.type) {
     case "idle":
@@ -531,7 +554,24 @@ function dismissBanner(state: GithubOpsState): GithubOpsTransitionResult {
 function reconcile(state: GithubOpsState): GithubOpsTransitionResult {
   switch (state.type) {
     case "idle":
+      return {
+        kind: "applied",
+        state,
+        commands: [{ type: "probe-git-state" }],
+      };
     case "conflicted":
+      if (state.resolution === "verification-failed") {
+        return {
+          kind: "applied",
+          state: { ...state, resolution: "checking" },
+          commands: [{ type: "probe-git-state" }],
+        };
+      }
+      return {
+        kind: "applied",
+        state,
+        commands: [{ type: "probe-git-state" }],
+      };
     case "rebase-paused":
     case "switch-blocked":
       return {

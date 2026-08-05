@@ -17,6 +17,7 @@ export interface GithubOpsProjection {
     | "conflicted"
     | "resolving"
     | "checking"
+    | "verification-failed"
     | "ready-to-sync"
     | null;
   readonly conflictResolutionChatId: number | null;
@@ -70,9 +71,11 @@ export function projectGithubOps(state: GithubOpsState): GithubOpsProjection {
           ? "resolving"
           : state.resolution === "checking"
             ? "checking"
-            : state.resolution === "ready-to-sync"
-              ? "ready-to-sync"
-              : "conflicted"
+            : state.resolution === "verification-failed"
+              ? "verification-failed"
+              : state.resolution === "ready-to-sync"
+                ? "ready-to-sync"
+                : "conflicted"
         : null,
     conflictResolutionChatId:
       state.type === "conflicted" ? (state.resolutionChatId ?? null) : null,

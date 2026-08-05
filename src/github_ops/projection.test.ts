@@ -135,6 +135,21 @@ describe("projectGithubOps", () => {
     expect(projection.syncContinuationOperation).toBeNull();
   });
 
+  it("projects a recoverable verification failure", () => {
+    const projection = projectGithubOps({
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "verification-failed",
+      banner: null,
+    });
+
+    expect(projection.conflictRecoveryStage).toBe("verification-failed");
+    expect(projection.capabilities.canRetryConflictVerification).toBe(true);
+    expect(projection.capabilities.canContinueSync).toBe(false);
+    expect(projection.capabilities.canResolveConflicts).toBe(false);
+  });
+
   it("projects rebase recovery as rebase continuation", () => {
     const projection = projectGithubOps({
       type: "conflicted",

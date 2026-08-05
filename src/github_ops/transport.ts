@@ -181,7 +181,12 @@ export const GithubOpsStateSchema: z.ZodType<GithubOpsState> =
         files: z.array(repositoryRelativePathSchema),
         origin: conflictOriginSchema,
         resolution: z
-          .enum(["resolving", "checking", "ready-to-sync"])
+          .enum([
+            "resolving",
+            "checking",
+            "verification-failed",
+            "ready-to-sync",
+          ])
           .optional(),
         resolutionChatId: z.number().int().positive().optional(),
         banner: githubOpsBannerSchema.nullable(),
@@ -293,6 +298,7 @@ export const GithubOpsProducerEventSchema = z.union([
       claimId: conflictResolutionClaimIdSchema,
     })
     .strict(),
+  z.object({ type: z.literal("CONFLICT_VERIFICATION_FAILED") }).strict(),
 ]);
 export type GithubOpsProducerEvent = z.infer<
   typeof GithubOpsProducerEventSchema
@@ -378,6 +384,8 @@ export function toGithubOpsDomainEvent(
       return { type: "CONFLICT_RESOLUTION_STARTED", chatId: event.chatId };
     case "CONFLICT_RESOLUTION_FINISHED":
       return { type: "CONFLICT_RESOLUTION_FINISHED" };
+    case "CONFLICT_VERIFICATION_FAILED":
+      return { type: "CONFLICT_VERIFICATION_FAILED" };
     case "CONFLICT_RESOLUTION_CANCELLED":
       return { type: "RECONCILE_REQUESTED" };
     case "CONFLICT_RESOLUTION_CLAIM_EXPIRED":

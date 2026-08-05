@@ -39,6 +39,11 @@ describe("github_ops wire contracts", () => {
   it("rejects Error instances and absolute conflict paths", () => {
     expect(
       GithubOpsProducerEventSchema.safeParse({
+        type: "CONFLICT_VERIFICATION_FAILED",
+      }).success,
+    ).toBe(true);
+    expect(
+      GithubOpsProducerEventSchema.safeParse({
         type: "OP_FAILED",
         op: { type: "pull" },
         failure: new Error("not encodable"),
