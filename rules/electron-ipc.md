@@ -151,6 +151,7 @@ pre-hydration atoms can erase unrelated restored entities.
 ## Handler expectations
 
 - Handlers should `throw new Error("...")` on failure instead of returning `{ success: false }` style payloads.
+- Entity-loading handlers that enrich a valid local row with optional external metadata must catch enrichment failures and return the base entity with nullable enrichment fields. Letting an OAuth/API failure reject the whole load can make renderer queries misreport an existing entity as missing.
 - For **non-bug** failures (validation, not found, auth, user refusal, etc.), prefer `DyadError` with the right `DyadErrorKind` so PostHog does not flood with `$exception` events — see [rules/dyad-errors.md](dyad-errors.md).
 - Use `createTypedHandler(contract, handler)` which validates inputs at runtime via Zod.
 - Production invoke handlers must register through `createTypedHandler`, `createLoggedHandler`, or `registerTrustedIpcHandler`; never call `ipcMain.handle` or `ipcMain.handleOnce` directly outside `trusted_handle.ts`. The facade enforces the trusted-main-frame policy for both contract and legacy channels.
