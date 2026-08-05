@@ -121,4 +121,18 @@ describe("projectGithubOps", () => {
     expect(projection.capabilities.canResolveConflicts).toBe(false);
     expect(projection.capabilities.canCancelSync).toBe(false);
   });
+
+  it("projects rebase recovery as rebase continuation", () => {
+    const projection = projectGithubOps({
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "rebase" },
+      resolution: "ready-to-sync",
+      banner: null,
+    });
+
+    expect(projection.syncContinuationOperation).toEqual({
+      type: "rebase-continue",
+    });
+  });
 });

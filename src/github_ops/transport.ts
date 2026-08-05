@@ -183,6 +183,7 @@ export const GithubOpsStateSchema: z.ZodType<GithubOpsState> =
         resolution: z
           .enum(["resolving", "checking", "ready-to-sync"])
           .optional(),
+        resolutionChatId: z.number().int().positive().optional(),
         banner: githubOpsBannerSchema.nullable(),
       })
       .strict(),
@@ -234,6 +235,7 @@ export const GithubOpsIntentEventSchema = z.union([
     .object({
       type: z.literal("CONFLICT_RESOLUTION_STARTED"),
       claimId: conflictResolutionClaimIdSchema,
+      chatId: z.number().int().positive(),
     })
     .strict(),
   z.object({ type: z.literal("CONFLICT_RESOLUTION_FINISHED") }).strict(),
@@ -373,7 +375,7 @@ export function toGithubOpsDomainEvent(
     case "GIT_STATE":
       return event;
     case "CONFLICT_RESOLUTION_STARTED":
-      return { type: "CONFLICT_RESOLUTION_STARTED" };
+      return { type: "CONFLICT_RESOLUTION_STARTED", chatId: event.chatId };
     case "CONFLICT_RESOLUTION_FINISHED":
       return { type: "CONFLICT_RESOLUTION_FINISHED" };
     case "CONFLICT_RESOLUTION_CANCELLED":

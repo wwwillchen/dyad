@@ -33,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GithubBranchManager } from "@/components/GithubBranchManager";
 import { useResolveMergeConflictsWithAI } from "@/hooks/useResolveMergeConflictsWithAI";
+import { useChatStreamState } from "@/hooks/useChatStream";
 import { slugifyAppPath } from "@/shared/slugify";
 import {
   isAppliedGithubOpsReceipt,
@@ -115,6 +116,7 @@ function ConnectedGitHubConnector({
     isSyncing,
     conflicts,
     conflictRecoveryStage,
+    conflictResolutionChatId,
     syncContinuationOperation,
     rebaseAction,
     showForcePush,
@@ -134,6 +136,26 @@ function ConnectedGitHubConnector({
       void dispatchWithErrorFeedback({ type: "CONFLICT_RESOLUTION_FINISHED" });
     },
   });
+
+  const conflictResolutionChat = useChatStreamState(
+    conflictResolutionChatId ?? undefined,
+  );
+
+  useEffect(() => {
+    if (
+      conflictRecoveryStage !== "resolving" ||
+      !conflictResolutionChat?.lastCompletion
+    ) {
+      return;
+    }
+    void dispatchWithErrorFeedback({
+      type: "CONFLICT_RESOLUTION_FINISHED",
+    });
+  }, [
+    conflictRecoveryStage,
+    conflictResolutionChat?.lastCompletion,
+    dispatchWithErrorFeedback,
+  ]);
 
   const startConflictResolution = useCallback(async () => {
     const receipt = await dispatchWithErrorFeedback({

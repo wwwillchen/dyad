@@ -386,6 +386,9 @@ describe("Git collaboration actions (integration)", () => {
       },
       { timeout: 20_000 },
     );
+    await harness.bridge.settleInFlight();
+    expect(git(app.appDir, "branch", "--show-current").trim()).toBe("main");
+    expect(git(app.appDir, "status", "--porcelain").trim()).toBe("");
   }, 90_000);
 
   it("cancels sync when merge conflicts occur", async () => {

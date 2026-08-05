@@ -145,23 +145,27 @@ export function useGithubOps(
     return () => window.removeEventListener("focus", reconcile);
   }, [appId, reconcileOnMount, remote.connection, sendWithoutReceipt]);
 
-  const dispatchConflictResolutionStarted = useCallback(async () => {
-    const claimId = conflictClaimRef.current;
-    if (!claimId) {
-      throw new Error("Conflict-resolution claim is no longer available");
-    }
-    try {
-      const receipt = await remote.dispatch({
-        type: "CONFLICT_RESOLUTION_STARTED",
-        claimId,
-      });
-      if (receipt.kind !== "applied") {
-        throw new Error("Conflict-resolution claim was not accepted");
+  const dispatchConflictResolutionStarted = useCallback(
+    async (chatId: number) => {
+      const claimId = conflictClaimRef.current;
+      if (!claimId) {
+        throw new Error("Conflict-resolution claim is no longer available");
       }
-    } finally {
-      conflictClaimRef.current = null;
-    }
-  }, [remote.dispatch]);
+      try {
+        const receipt = await remote.dispatch({
+          type: "CONFLICT_RESOLUTION_STARTED",
+          claimId,
+          chatId,
+        });
+        if (receipt.kind !== "applied") {
+          throw new Error("Conflict-resolution claim was not accepted");
+        }
+      } finally {
+        conflictClaimRef.current = null;
+      }
+    },
+    [remote.dispatch],
+  );
 
   const dispatchConflictResolutionCancelled = useCallback(async () => {
     const claimId = conflictClaimRef.current;

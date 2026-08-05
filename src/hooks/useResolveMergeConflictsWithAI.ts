@@ -12,7 +12,7 @@ import { useLoadApp } from "@/hooks/useLoadApp";
 interface UseResolveMergeConflictsWithAIProps {
   appId: number;
   conflicts: readonly string[];
-  onStartResolving?: () => void | Promise<void>;
+  onStartResolving?: (chatId: number) => void | Promise<void>;
   onStartFailed?: () => void | Promise<void>;
   onSettled?: () => void;
 }
@@ -62,7 +62,7 @@ export function useResolveMergeConflictsWithAI({
         });
         try {
           // Clear conflicts state after successful chat creation.
-          await onStartResolving?.();
+          await onStartResolving?.(newChatId);
         } catch (error) {
           // The claim can expire while durable chat creation is in flight.
           // Remove the chat if main does not accept the corresponding start.
@@ -76,7 +76,6 @@ export function useResolveMergeConflictsWithAI({
           }
           throw error;
         }
-
         // Build the prompt for resolving all conflicts
         const fileList = requestedConflicts.map((f) => `- ${f}`).join("\n");
         const prompt = `Please resolve the Git merge conflicts in the following file${requestedConflicts.length > 1 ? "s" : ""}:
@@ -104,9 +103,9 @@ For each file, review the conflict markers (<<<<<<<, =======, >>>>>>>) and choos
             onSettled: () => {
               isResolvingRef.current = false;
               setIsResolving(false);
+              onSettled?.();
               invalidateChats();
               void refreshApp();
-              onSettled?.();
             },
           },
         });

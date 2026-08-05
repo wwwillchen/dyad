@@ -264,6 +264,7 @@ describe("main-hosted github_ops actor", () => {
       actor.dispatch({
         type: "CONFLICT_RESOLUTION_STARTED",
         claimId: "missing-claim",
+        chatId: 42,
       }),
     ).resolves.toMatchObject({
       kind: "ignored",
@@ -279,6 +280,7 @@ describe("main-hosted github_ops actor", () => {
       actor.dispatch({
         type: "CONFLICT_RESOLUTION_STARTED",
         claimId: "claim-after-sync",
+        chatId: 42,
       }),
     ).resolves.toMatchObject({ kind: "applied" });
   });
@@ -315,11 +317,66 @@ describe("main-hosted github_ops actor", () => {
     await actorA.dispatch({
       type: "CONFLICT_RESOLUTION_STARTED",
       claimId: "claim-a",
+      chatId: 42,
     });
     expect(actorA.getSnapshot().state).toMatchObject({
       type: "conflicted",
       resolution: "resolving",
     });
+  });
+
+  it("continues a resolved rebase conflict before pushing", async () => {
+    service.getGitState.mockResolvedValue({
+      mergeInProgress: false,
+      rebaseInProgress: true,
+    });
+    const { actorA, host } = createHarness();
+    await actorA.resync();
+    const local: GithubOpsHostedActor = host.ensure(
+      githubOpsDefinition,
+      githubOpsKey(7),
+    );
+    local.send({
+      type: "GIT_STATE",
+      mergeInProgress: false,
+      rebaseInProgress: true,
+    });
+    await flush();
+    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    await flush();
+
+    await actorA.dispatch({
+      type: "RESOLVE_WITH_AI_STARTED",
+      claimId: "rebase-claim",
+    });
+    await actorA.dispatch({
+      type: "CONFLICT_RESOLUTION_STARTED",
+      claimId: "rebase-claim",
+      chatId: 42,
+    });
+    await actorA.dispatch({ type: "CONFLICT_RESOLUTION_FINISHED" });
+    await flush();
+    expect(actorA.getSnapshot().state).toMatchObject({
+      type: "conflicted",
+      origin: { type: "rebase" },
+      resolution: "ready-to-sync",
+    });
+
+    await actorA.dispatch({
+      type: "OP_REQUESTED",
+      op: { type: "rebase-continue" },
+      operationId: "continue-rebase-and-push",
+    });
+    await flush();
+
+    expect(service.run).toHaveBeenNthCalledWith(1, 7, {
+      type: "rebase-continue",
+    });
+    expect(service.run).toHaveBeenNthCalledWith(2, 7, {
+      type: "push",
+      mode: "normal",
+    });
+    expect(actorA.getSnapshot().state.type).toBe("idle");
   });
 
   it("preserves the claim through reconcile and rejects a second window", async () => {
@@ -375,6 +432,7 @@ describe("main-hosted github_ops actor", () => {
         encodedEvent: {
           type: "CONFLICT_RESOLUTION_STARTED",
           claimId: "claim-a",
+          chatId: 42,
         },
         messageId: "stale-claim-follow-up",
         expectedActorInstanceId: local.actorInstanceId,

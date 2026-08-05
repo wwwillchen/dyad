@@ -37,7 +37,7 @@ export function transition(
     case "RESOLVE_WITH_AI_STARTED":
       return startResolvingConflicts(state);
     case "CONFLICT_RESOLUTION_STARTED":
-      return conflictResolutionStarted(state);
+      return conflictResolutionStarted(state, event.chatId);
     case "CONFLICT_RESOLUTION_FINISHED":
       return conflictResolutionFinished(state);
     case "BANNER_DISMISSED":
@@ -65,7 +65,11 @@ function requestOperation(
       if (state.resolution === "ready-to-sync") {
         const continuation = continuationOperation(state.origin);
         return continuation && operationsEqual(op, continuation)
-          ? beginOperation(state, op)
+          ? beginOperation(
+              state,
+              op,
+              continuation.type === "rebase-continue" ? PUSH_NORMAL : undefined,
+            )
           : ignore(state, "blocked-by-conflicts");
       }
       return op.type === "merge-abort" ||
@@ -90,8 +94,9 @@ function requestOperation(
 function beginOperation(
   state: GithubOpsState,
   op: GithubOperation,
+  nextOverride?: GithubOperation,
 ): GithubOpsTransitionResult {
-  const next = compositeNext(op);
+  const next = nextOverride ?? compositeNext(op);
   const blockedSwitchResume =
     op.type === "switch" ? getBlockedSwitchResume(state) : undefined;
   return {
@@ -296,10 +301,11 @@ function conflictsReceived(
         if (state.resolution === "ready-to-sync") {
           return ignore(state, "no-change");
         }
+        if (state.resolution === "resolving") {
+          return ignore(state, "no-change");
+        }
         const continuation = continuationOperation(state.origin);
-        return (state.resolution === "resolving" ||
-          state.resolution === "checking") &&
-          continuation
+        return state.resolution === "checking" && continuation
           ? changed({
               ...state,
               resolution: "ready-to-sync",
@@ -308,7 +314,6 @@ function conflictsReceived(
           : changed({
               type: "idle",
               banner:
-                state.resolution === "resolving" ||
                 state.resolution === "checking"
                   ? {
                       kind: "success",
@@ -324,7 +329,13 @@ function conflictsReceived(
       }
       return sameFiles(state.files, files) && state.resolution === undefined
         ? ignore(state, "no-change")
-        : changed({ ...state, files, resolution: undefined, banner: null });
+        : changed({
+            ...state,
+            files,
+            resolution: undefined,
+            resolutionChatId: undefined,
+            banner: null,
+          });
     case "rebase-paused":
       return files.length > 0
         ? enterConflicted(files, { type: "rebase" })
@@ -356,9 +367,13 @@ function gitStateReceived(
         ? state.resolution !== undefined || isRebaseConflictOrigin(state.origin)
           ? state.origin
           : { type: "rebase" }
-        : state.resolution === undefined && isRebaseConflictOrigin(state.origin)
-          ? { type: "reconcile" }
-          : state.origin;
+        : state.resolution !== undefined &&
+            isResumableRebaseOrigin(state.origin)
+          ? PUSH_NORMAL
+          : state.resolution === undefined &&
+              isRebaseConflictOrigin(state.origin)
+            ? { type: "reconcile" }
+            : state.origin;
       const nextState =
         nextOrigin === state.origin ? state : { ...state, origin: nextOrigin };
       return {
@@ -452,13 +467,19 @@ function startResolvingConflicts(
 
 function conflictResolutionStarted(
   state: GithubOpsState,
+  chatId: number,
 ): GithubOpsTransitionResult {
   switch (state.type) {
     case "conflicted":
       if (state.resolution !== undefined) {
         return ignore(state, "invalid-in-current-state");
       }
-      return changed({ ...state, resolution: "resolving", banner: null });
+      return changed({
+        ...state,
+        resolution: "resolving",
+        resolutionChatId: chatId,
+        banner: null,
+      });
     case "idle":
     case "running":
     case "rebase-paused":
@@ -573,7 +594,7 @@ function continuationOperation(
       return origin;
     case "rebase":
     case "rebase-continue":
-      return PUSH_NORMAL;
+      return { type: "rebase-continue" };
     case "reconcile":
     case "pull":
     case "fetch":
@@ -602,6 +623,10 @@ function isRebaseOperation(op: GithubOperation): boolean {
 
 function isRebaseConflictOrigin(origin: ConflictOrigin): boolean {
   return origin.type !== "reconcile" && isRebaseOperation(origin);
+}
+
+function isResumableRebaseOrigin(origin: ConflictOrigin): boolean {
+  return origin.type === "rebase" || origin.type === "rebase-continue";
 }
 
 function blockedSwitch(

@@ -112,7 +112,7 @@ function eventsFor(state: GithubOpsState): readonly GithubOpsEvent[] {
     { type: "ABORT_AND_SWITCH_CONFIRMED" },
     { type: "BLOCKED_DISMISSED" },
     { type: "RESOLVE_WITH_AI_STARTED" },
-    { type: "CONFLICT_RESOLUTION_STARTED" },
+    { type: "CONFLICT_RESOLUTION_STARTED", chatId: 42 },
     { type: "BANNER_DISMISSED" },
     { type: "RECONCILE_REQUESTED" },
   ];
@@ -337,10 +337,12 @@ describe("github_ops transition", () => {
 
     const resolving = transition(conflicted, {
       type: "CONFLICT_RESOLUTION_STARTED",
+      chatId: 42,
     });
     expect(resolving.state).toEqual({
       ...conflicted,
       resolution: "resolving",
+      resolutionChatId: 42,
     });
 
     const reconciling = transition(resolving.state, {
@@ -359,6 +361,7 @@ describe("github_ops transition", () => {
     expect(ready.state).toEqual({
       ...conflicted,
       resolution: "ready-to-sync",
+      resolutionChatId: 42,
     });
 
     const continued = transition(ready.state, {
@@ -368,6 +371,71 @@ describe("github_ops transition", () => {
     expect(continued.state).toMatchObject({
       type: "running",
       op: { type: "push", mode: "normal" },
+    });
+  });
+
+  it("keeps ambient clean probes in resolving until the chat finishes", () => {
+    const resolving: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "push", mode: "normal" },
+      resolution: "resolving",
+      banner: null,
+    };
+
+    const result = transition(resolving, { type: "CONFLICTS", files: [] });
+
+    expect(result.state).toBe(resolving);
+    expect(ignoreReasonOf(result)).toBe("no-change");
+  });
+
+  it("continues an active rebase before pushing resolved changes", () => {
+    const checking: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "rebase" },
+      resolution: "checking",
+      banner: null,
+    };
+    const gitState = transition(checking, {
+      type: "GIT_STATE",
+      mergeInProgress: false,
+      rebaseInProgress: true,
+    });
+    const ready = transition(gitState.state, {
+      type: "CONFLICTS",
+      files: [],
+    });
+    const continued = transition(ready.state, {
+      type: "OP_REQUESTED",
+      op: { type: "rebase-continue" },
+    });
+
+    expect(continued.state).toMatchObject({
+      type: "running",
+      op: { type: "rebase-continue" },
+      next: { type: "push", mode: "normal" },
+    });
+  });
+
+  it("pushes directly when the AI already completed the rebase", () => {
+    const checking: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "rebase" },
+      resolution: "checking",
+      banner: null,
+    };
+
+    const gitState = transition(checking, {
+      type: "GIT_STATE",
+      mergeInProgress: false,
+      rebaseInProgress: false,
+    });
+
+    expect(gitState.state).toMatchObject({
+      type: "conflicted",
+      origin: { type: "push", mode: "normal" },
     });
   });
 
