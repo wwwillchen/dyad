@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   shouldCreateWindowOnActivate,
+  shouldRequestRelaunchOnActivate,
   shouldRetainClosedWindowForActivation,
   shouldQuitAfterAllWindowsClosed,
 } from "@/main/window_lifecycle_policy";
@@ -40,22 +41,59 @@ describe("window lifecycle policy", () => {
   it("ignores activation until startup owns the initial window", () => {
     expect(
       shouldCreateWindowOnActivate({
+        isAppQuitting: false,
         hasCreatedInitialWindow: false,
         openWindowCount: 0,
       }),
     ).toBe(false);
     expect(
       shouldCreateWindowOnActivate({
+        isAppQuitting: false,
         hasCreatedInitialWindow: true,
         openWindowCount: 1,
       }),
     ).toBe(false);
     expect(
       shouldCreateWindowOnActivate({
+        isAppQuitting: false,
         hasCreatedInitialWindow: true,
         openWindowCount: 0,
       }),
     ).toBe(true);
+  });
+
+  it("does not resurrect a window after shutdown begins", () => {
+    expect(
+      shouldCreateWindowOnActivate({
+        isAppQuitting: true,
+        hasCreatedInitialWindow: true,
+        openWindowCount: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("requests a relaunch only when activation finds no window during shutdown", () => {
+    expect(
+      shouldRequestRelaunchOnActivate({
+        isAppQuitting: true,
+        hasCreatedInitialWindow: true,
+        openWindowCount: 0,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRequestRelaunchOnActivate({
+        isAppQuitting: true,
+        hasCreatedInitialWindow: true,
+        openWindowCount: 1,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRequestRelaunchOnActivate({
+        isAppQuitting: false,
+        hasCreatedInitialWindow: true,
+        openWindowCount: 0,
+      }),
+    ).toBe(false);
   });
 
   it.each(["win32", "linux"] as const)(

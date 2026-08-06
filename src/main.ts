@@ -105,8 +105,10 @@ import {
 } from "./paths/paths";
 import { createDeepLinkQueue } from "./main/deep_link_queue";
 import { DeepLinkWindowReadiness } from "./main/deep_link_window_readiness";
+import { appRelaunchRequest } from "./main/app_relaunch_request";
 import {
   shouldCreateWindowOnActivate,
+  shouldRequestRelaunchOnActivate,
   shouldRetainClosedWindowForActivation,
   shouldQuitAfterAllWindowsClosed,
 } from "./main/window_lifecycle_policy";
@@ -651,6 +653,12 @@ let pendingCrashDetected = false;
 let isAppQuitting = false;
 let safeStorageKeychainUnlockRetryScheduled = false;
 
+function requestRelaunchAfterQuit(deepLinkUrl?: string): void {
+  if (appRelaunchRequest.request({ deepLinkUrl })) {
+    logger.info("Reopen requested during shutdown; relaunching after cleanup");
+  }
+}
+
 function deliverPendingCrashRecovery(target: BrowserWindow): void {
   if (!pendingCrashDetected || target !== mainWindow || target.isDestroyed()) {
     return;
@@ -724,6 +732,10 @@ const createWindow = ({
   browserWindow: BrowserWindow;
   rendererLoad: Promise<void>;
 } => {
+  if (isAppQuitting) {
+    throw new DyadError("Dyad is shutting down", DyadErrorKind.Precondition);
+  }
+
   // Create the browser window.
   const browserWindow = new BrowserWindow({
     width: process.env.NODE_ENV === "development" ? 1280 : 960,
@@ -1017,6 +1029,10 @@ async function createFreshStartupWindow(): Promise<void> {
       error,
     );
   }
+  if (isAppQuitting) {
+    logger.info("Skipping initial window creation during shutdown");
+    return;
+  }
   createWindow({ windowSessionId: PRIMARY_WINDOW_SESSION_ID });
   hasCreatedInitialWindow = true;
 }
@@ -1185,13 +1201,17 @@ if (IS_TEST_BUILD) {
     app.quit();
   } else {
     app.on("second-instance", (_event, commandLine, _workingDirectory) => {
+      const url = commandLine.find((arg) => arg.startsWith("dyad://"));
+      if (isAppQuitting) {
+        requestRelaunchAfterQuit(url);
+        return;
+      }
+
       // Someone tried to run a second instance, we should focus our window.
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore();
         mainWindow.focus();
       }
-      // the commandLine is array of strings in which last element is deep link url
-      const url = commandLine.at(-1);
       if (url) {
         deepLinkQueue.handle(url);
       }
@@ -1203,6 +1223,10 @@ if (IS_TEST_BUILD) {
 
 // Handle the protocol. In this case, we choose to show an Error Box.
 app.on("open-url", (event, url) => {
+  if (isAppQuitting) {
+    requestRelaunchAfterQuit(url);
+    return;
+  }
   deepLinkQueue.handle(url);
 });
 
@@ -1437,7 +1461,12 @@ app.on("window-all-closed", () => {
 // cleanup in will-quit cannot race against OS-imposed termination timeouts
 // (e.g. Windows WM_ENDSESSION) and leave the sentinel behind as a false positive.
 const handleMcpBeforeQuit = createMcpBeforeQuitHandler({
-  quit: () => app.quit(),
+  quit: () =>
+    appRelaunchRequest.finish({
+      currentArgs: process.argv.slice(1),
+      relaunch: (options) => app.relaunch(options),
+      quit: () => app.quit(),
+    }),
   cleanup: async () => {
     await Promise.all([
       disposeMcpClientsForShutdown(),
@@ -1474,14 +1503,19 @@ app.on("will-quit", () => {
 });
 
 app.on("activate", () => {
+  const activationContext = {
+    isAppQuitting,
+    hasCreatedInitialWindow,
+    openWindowCount: BrowserWindow.getAllWindows().length,
+  };
+  if (shouldRequestRelaunchOnActivate(activationContext)) {
+    requestRelaunchAfterQuit();
+  }
+  if (isAppQuitting) return;
+
   // On OS X it's common to re-create a window in the app when the
   // dock icon is clicked and there are no other windows open.
-  if (
-    shouldCreateWindowOnActivate({
-      hasCreatedInitialWindow,
-      openWindowCount: BrowserWindow.getAllWindows().length,
-    })
-  ) {
+  if (shouldCreateWindowOnActivate(activationContext)) {
     const descriptor = lastClosedWindowSession ?? {
       windowSessionId: PRIMARY_WINDOW_SESSION_ID,
     };

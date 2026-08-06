@@ -59,6 +59,7 @@ import { getPtySessionManager } from "../utils/pty_session_manager";
 import { sameInvocationRef } from "@/state_machines/invocation_ref";
 import { userInputRegistry } from "@/user_input/main";
 import { clearLegacyWindowSessionPersistence } from "@/window_infrastructure/main/window_session";
+import { appRelaunchRequest } from "@/main/app_relaunch_request";
 
 /**
  * Read screenshot entries for a single app directory, filtered by filename
@@ -587,7 +588,7 @@ export function registerAppHandlers() {
   registerCloudSandboxSyncUpdateListener();
 
   createTypedHandler(systemContracts.restartDyad, async () => {
-    app.relaunch();
+    appRelaunchRequest.request();
     app.quit();
   });
 
