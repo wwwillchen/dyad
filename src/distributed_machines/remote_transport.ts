@@ -431,11 +431,15 @@ export class RemoteMachineTransport {
         return this.snapshotEnvelope(entry);
       } catch (error) {
         if (!alreadySubscribed) {
-          this.removeWindowReference(
-            entry,
-            sender.id,
-            prepared.rendererConnectionId,
-          );
+          if (subscribedConnectionId !== undefined) {
+            entry.windows.set(sender.id, subscribedConnectionId);
+          } else {
+            this.removeWindowReference(
+              entry,
+              sender.id,
+              prepared.rendererConnectionId,
+            );
+          }
         }
         throw error;
       }

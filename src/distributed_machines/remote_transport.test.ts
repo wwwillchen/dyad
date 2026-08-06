@@ -2127,6 +2127,52 @@ describe("remote machine transport", () => {
     expect(transport.inspectSubscriptions()).toEqual([]);
   });
 
+  it("restores prior connection ownership when replacement bootstrap fails", async () => {
+    const base = createRemoteTestMachine();
+    let projectionCount = 0;
+    const machine = {
+      ...base,
+      remote: {
+        ...base.remote,
+        projectSnapshot(
+          ...args: Parameters<typeof base.remote.projectSnapshot>
+        ) {
+          projectionCount += 1;
+          if (projectionCount === 2) {
+            throw new Error("synthetic replacement projection failure");
+          }
+          return base.remote.projectSnapshot(...args);
+        },
+      },
+    } as AnyRemoteMachineDefinition;
+    const { transport, windows } = createHarness({ machine });
+    const sessionId = windows.createTrustedRendererWindow();
+    const endpoint = windows.endpoint(sessionId);
+    const priorConnectionId = "00000000-0000-4000-8000-000000000001";
+    const replacementConnectionId = "00000000-0000-4000-8000-000000000002";
+
+    const bootstrap = await transport.subscribe(
+      endpoint,
+      address(),
+      priorConnectionId,
+    );
+    await expect(
+      transport.subscribe(endpoint, address(), replacementConnectionId),
+    ).rejects.toThrow("synthetic replacement projection failure");
+
+    await expect(
+      transport.dispatch(
+        endpoint,
+        {
+          ...dispatch({ type: "INCREMENT" }),
+          expectedActorInstanceId: bootstrap.actorInstanceId,
+          expectedRevision: bootstrap.revision,
+        },
+        priorConnectionId,
+      ),
+    ).resolves.toMatchObject({ kind: "applied", revision: 1 });
+  });
+
   it("does not retain a canonical key when key encoding fails", async () => {
     let decodeSequence = 0;
     let failEncoding = true;

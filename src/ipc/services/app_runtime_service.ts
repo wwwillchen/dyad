@@ -430,6 +430,10 @@ export async function ensureProxyForRunningApp({
   if (appInfo.proxyWorker) {
     await appInfo.proxyWorker.terminate();
     appInfo.proxyWorker = undefined;
+    // Replacing the worker invalidates readiness until the replacement's
+    // onStarted callback publishes its live endpoint. In particular, cloud
+    // in-place restarts may retain the same original URL with new auth.
+    appInfo.proxyUrl = undefined;
   }
 
   // Prefer the deterministic port so the iframe origin stays stable across
