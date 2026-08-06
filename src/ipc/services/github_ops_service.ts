@@ -32,6 +32,16 @@ import {
 // main Git services without any renderer IPC round trip.
 const MAIN_SERVICE_EVENT = undefined as unknown as IpcMainInvokeEvent;
 
+export function getGithubOperationResources(op: GithubOperation) {
+  if (op.type === "disconnect") {
+    return ["metadata"] as const;
+  }
+  if (op.type === "connect-repo") {
+    return [readAppResource("app-path"), "metadata", "repository"] as const;
+  }
+  return [readAppResource("app-path"), "repository"] as const;
+}
+
 export class GithubOpsService {
   private readonly deletionFences = new Map<number, number>();
   private readonly pendingByApp = new Map<number, Set<Promise<unknown>>>();
@@ -51,7 +61,7 @@ export class GithubOpsService {
         {
           appId,
           operation: `github:${op.type}`,
-          resources: [readAppResource("app-path"), "repository"],
+          resources: getGithubOperationResources(op),
         },
         () => {
           this.assertAcceptingOperations(appId);

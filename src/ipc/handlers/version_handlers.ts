@@ -1236,14 +1236,21 @@ export function registerVersionHandlers() {
         {
           appId,
           operation: "restore-to-message",
-          resources: [
-            readAppResource("app-path"),
-            "chat-content",
-            "chat-membership",
-            "provider",
-            "repository",
-            "runtime-config",
-          ],
+          resources: restoreCodebase
+            ? [
+                readAppResource("app-path"),
+                "chat-content",
+                "chat-membership",
+                "provider",
+                "repository",
+                "runtime-config",
+              ]
+            : [
+                readAppResource("app-path"),
+                "chat-content",
+                "chat-membership",
+                readAppResource("repository"),
+              ],
         },
         async () => {
           const latestApp = await db.query.apps.findFirst({

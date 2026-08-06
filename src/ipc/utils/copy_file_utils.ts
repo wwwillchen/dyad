@@ -4,6 +4,7 @@ import log from "electron-log";
 import { assertMutationPathAllowed, safeJoin } from "./path_utils";
 import { gitAdd } from "./git_utils";
 import {
+  DYAD_MEDIA_DIR_NAME,
   isWithinDyadMediaDir,
   resolveAttachmentLogicalPath,
 } from "./media_path_utils";
@@ -18,6 +19,10 @@ import {
   extractFunctionNameFromPath,
 } from "../../supabase_admin/supabase_utils";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { db } from "@/db";
+import { apps } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { getDyadAppPath } from "@/paths/paths";
 
 const logger = log.scope("copy_file_utils");
 
@@ -42,19 +47,19 @@ export async function executeCopyFile({
   from,
   to,
   appId,
-  appPath,
-  supabaseProjectId,
-  supabaseOrganizationSlug,
   isSharedModulesChanged,
 }: {
   from: string;
   to: string;
   appId: number;
-  appPath: string;
-  supabaseProjectId?: string | null;
-  supabaseOrganizationSlug?: string | null;
   isSharedModulesChanged?: boolean;
 }): Promise<CopyFileResult> {
+  const normalizedSource = from.replaceAll("\\", "/");
+  const readsMedia =
+    from.startsWith("attachments:") ||
+    path.isAbsolute(from) ||
+    normalizedSource === DYAD_MEDIA_DIR_NAME ||
+    normalizedSource.startsWith(`${DYAD_MEDIA_DIR_NAME}/`);
   return appOperationCoordinator.run(
     {
       appId,
@@ -62,10 +67,20 @@ export async function executeCopyFile({
       resources: [
         readAppResource("app-path"),
         readAppResource("provider"),
+        ...(readsMedia ? [readAppResource("media")] : []),
         "repository",
       ],
     },
     async () => {
+      const app = await db.query.apps.findFirst({
+        where: eq(apps.id, appId),
+      });
+      if (!app) {
+        throw new DyadError("App not found", DyadErrorKind.NotFound);
+      }
+      const appPath = getDyadAppPath(app.path);
+      const { supabaseProjectId, supabaseOrganizationSlug } = app;
+
       // Resolve the source path: allow both .dyad/media paths and app-relative paths
       let fromFullPath: string;
       if (from.startsWith("attachments:")) {

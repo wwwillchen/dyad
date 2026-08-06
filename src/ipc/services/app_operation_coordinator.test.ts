@@ -214,4 +214,23 @@ describe("AppOperationCoordinator", () => {
       ),
     ).resolves.toBe("ok");
   });
+
+  it("rejects overlapping deletion-exclusive operations", async () => {
+    const coordinator = new AppOperationCoordinator();
+    const deletion = coordinator.beginAppDeletion(1);
+    const release = deferred();
+    await deletion.drain();
+
+    const first = deletion.runExclusive(() => release.promise);
+    await expect(deletion.runExclusive(async () => undefined)).rejects.toThrow(
+      "exclusive operation in progress",
+    );
+    expect(() => deletion.release()).toThrow(
+      "cannot be released during an exclusive operation",
+    );
+
+    release.resolve();
+    await first;
+    deletion.release();
+  });
 });

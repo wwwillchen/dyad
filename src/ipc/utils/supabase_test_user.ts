@@ -310,19 +310,19 @@ export async function createTempTestUser(
  * user on Supabase, and clear the persisted `supabaseTestUserId`. Safe to call
  * when no user is set.
  */
-export async function deleteTempTestUser(appData: AppRow): Promise<void> {
+export async function deleteTempTestUser(appData: AppRow): Promise<boolean> {
   const userId = appData.supabaseTestUserId;
   const projectId = appData.supabaseProjectId;
   const organizationSlug = appData.supabaseOrganizationSlug;
   if (!userId || !projectId || !organizationSlug) {
-    return;
+    return true;
   }
   if (IS_TEST_BUILD) {
     await db
       .update(apps)
       .set({ supabaseTestUserId: null })
       .where(eq(apps.id, appData.id));
-    return;
+    return true;
   }
 
   // Sweep the user's rows FIRST so a `restrict`/`no action` FK to auth.users
@@ -345,6 +345,7 @@ export async function deleteTempTestUser(appData: AppRow): Promise<void> {
       .set({ supabaseTestUserId: null })
       .where(eq(apps.id, appData.id));
   }
+  return deleted;
 }
 
 /**

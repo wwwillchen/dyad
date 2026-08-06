@@ -73,8 +73,10 @@ async function getMediaFilesForApp(
 async function withMediaLock<T>(
   appIds: number[],
   fn: () => Promise<T>,
+  repositoryAppIds: readonly number[] = [],
 ): Promise<T> {
   const uniqueSortedIds = [...new Set(appIds)].sort((a, b) => a - b);
+  const repositoryIds = new Set(repositoryAppIds);
 
   const runWithLock = async (index: number): Promise<T> => {
     if (index >= uniqueSortedIds.length) {
@@ -85,7 +87,13 @@ async function withMediaLock<T>(
       {
         appId: uniqueSortedIds[index],
         operation: "mutate-media",
-        resources: [readAppResource("app-path"), "media"],
+        resources: [
+          readAppResource("app-path"),
+          "media",
+          ...(repositoryIds.has(uniqueSortedIds[index])
+            ? (["repository"] as const)
+            : []),
+        ],
       },
       () => runWithLock(index + 1),
     );
@@ -299,63 +307,67 @@ export function registerMediaHandlers() {
       );
     }
 
-    await withMediaLock([params.sourceAppId, params.targetAppId], async () => {
-      const sourceApp = await getAppOrThrow(params.sourceAppId);
-      const targetApp = await getAppOrThrow(params.targetAppId);
+    await withMediaLock(
+      [params.sourceAppId, params.targetAppId],
+      async () => {
+        const sourceApp = await getAppOrThrow(params.sourceAppId);
+        const targetApp = await getAppOrThrow(params.targetAppId);
 
-      const sourceAppPath = getDyadAppPath(sourceApp.path);
-      const targetAppPath = getDyadAppPath(targetApp.path);
+        const sourceAppPath = getDyadAppPath(sourceApp.path);
+        const targetAppPath = getDyadAppPath(targetApp.path);
 
-      const sourcePath = getMediaFilePath(sourceAppPath, params.fileName);
-      if (!fs.existsSync(sourcePath)) {
-        throw new DyadError("Media file not found", DyadErrorKind.NotFound);
-      }
-
-      await ensureDyadGitignored(targetAppPath);
-      const targetMediaDirectoryPath = getMediaDirectoryPath(targetAppPath);
-      await fs.promises.mkdir(targetMediaDirectoryPath, { recursive: true });
-
-      const destinationPath = safeJoin(
-        targetAppPath,
-        DYAD_MEDIA_DIR_NAME,
-        params.fileName,
-      );
-
-      if (fs.existsSync(destinationPath)) {
-        throw new Error(
-          `Target app already has a media file named "${params.fileName}"`,
-        );
-      }
-
-      try {
-        await fs.promises.rename(sourcePath, destinationPath);
-      } catch (e: any) {
-        if (e?.code === "EXDEV") {
-          // Cross-device move (e.g. different drives on Windows): copy then delete.
-          await fs.promises.copyFile(sourcePath, destinationPath);
-          try {
-            await fs.promises.unlink(sourcePath);
-          } catch (unlinkError: any) {
-            // Source delete failed after copy succeeded — remove the copy
-            // so we don't end up with duplicates.
-            try {
-              await fs.promises.unlink(destinationPath);
-            } catch {
-              // Best-effort cleanup; destination may already be gone.
-            }
-            throw unlinkError;
-          }
-        } else if (e?.code === "ENOENT") {
-          throw new Error(
-            "File was modified or deleted before the move could complete",
-          );
-        } else {
-          throw e;
+        const sourcePath = getMediaFilePath(sourceAppPath, params.fileName);
+        if (!fs.existsSync(sourcePath)) {
+          throw new DyadError("Media file not found", DyadErrorKind.NotFound);
         }
-      }
 
-      await invalidateThumbnail(sourcePath);
-      logger.log(`Moved media file: ${sourcePath} -> ${destinationPath}`);
-    });
+        await ensureDyadGitignored(targetAppPath);
+        const targetMediaDirectoryPath = getMediaDirectoryPath(targetAppPath);
+        await fs.promises.mkdir(targetMediaDirectoryPath, { recursive: true });
+
+        const destinationPath = safeJoin(
+          targetAppPath,
+          DYAD_MEDIA_DIR_NAME,
+          params.fileName,
+        );
+
+        if (fs.existsSync(destinationPath)) {
+          throw new Error(
+            `Target app already has a media file named "${params.fileName}"`,
+          );
+        }
+
+        try {
+          await fs.promises.rename(sourcePath, destinationPath);
+        } catch (e: any) {
+          if (e?.code === "EXDEV") {
+            // Cross-device move (e.g. different drives on Windows): copy then delete.
+            await fs.promises.copyFile(sourcePath, destinationPath);
+            try {
+              await fs.promises.unlink(sourcePath);
+            } catch (unlinkError: any) {
+              // Source delete failed after copy succeeded — remove the copy
+              // so we don't end up with duplicates.
+              try {
+                await fs.promises.unlink(destinationPath);
+              } catch {
+                // Best-effort cleanup; destination may already be gone.
+              }
+              throw unlinkError;
+            }
+          } else if (e?.code === "ENOENT") {
+            throw new Error(
+              "File was modified or deleted before the move could complete",
+            );
+          } else {
+            throw e;
+          }
+        }
+
+        await invalidateThumbnail(sourcePath);
+        logger.log(`Moved media file: ${sourcePath} -> ${destinationPath}`);
+      },
+      [params.targetAppId],
+    );
   });
 }

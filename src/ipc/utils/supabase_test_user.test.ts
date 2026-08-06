@@ -350,7 +350,9 @@ describe("deleteTempTestUser", () => {
     );
     const fetchSpy = mockFetch(() => new Response(null, { status: 200 }));
 
-    await deleteTempTestUser(makeApp({ supabaseTestUserId: UUID }));
+    await expect(
+      deleteTempTestUser(makeApp({ supabaseTestUserId: UUID })),
+    ).resolves.toBe(true);
 
     // Scoped DELETE ran against the discovered table/column. The cleanup SQL is
     // a `DO $dyad_cleanup$ ... EXECUTE format('DELETE FROM ...') ...` block, so match on
@@ -374,7 +376,9 @@ describe("deleteTempTestUser", () => {
 
   it("does not clear the column when the user delete fails", async () => {
     mockFetch(() => new Response("nope", { status: 500 }));
-    await deleteTempTestUser(makeApp({ supabaseTestUserId: UUID }));
+    await expect(
+      deleteTempTestUser(makeApp({ supabaseTestUserId: UUID })),
+    ).resolves.toBe(false);
     expect(mocks.set).not.toHaveBeenCalledWith({ supabaseTestUserId: null });
   });
 

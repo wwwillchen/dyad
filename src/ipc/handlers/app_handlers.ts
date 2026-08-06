@@ -63,6 +63,7 @@ import { sameInvocationRef } from "@/state_machines/invocation_ref";
 import { userInputRegistry } from "@/user_input/main";
 import { clearLegacyWindowSessionPersistence } from "@/window_infrastructure/main/window_session";
 import { appRelaunchRequest } from "@/main/app_relaunch_request";
+import { deleteTempTestUser } from "../utils/supabase_test_user";
 
 /**
  * Read screenshot entries for a single app directory, filtered by filename
@@ -499,6 +500,13 @@ async function deleteAppByIdExclusive(
 
       await appRunDeletion.seal();
       try {
+        const testUserDeleted = await deleteTempTestUser(app);
+        if (!testUserDeleted) {
+          throw new DyadError(
+            "Failed to delete the app's temporary Supabase test user. Please retry app deletion.",
+            DyadErrorKind.External,
+          );
+        }
         await db.delete(apps).where(eq(apps.id, appId));
         appRunDeletion.commit();
         deletionCommitted = true;
@@ -2152,15 +2160,6 @@ export function registerAppHandlers() {
       );
     }
 
-    const appRecord = await db.query.apps.findFirst({
-      where: eq(apps.id, appId),
-    });
-    if (!appRecord) {
-      throw new DyadError("App not found", DyadErrorKind.NotFound);
-    }
-
-    const appPath = getDyadAppPath(appRecord.path);
-
     if (!SCREENSHOT_FILENAME_REGEX.test(`${commitHash}.png`)) {
       logger.warn(
         `Skipping screenshot save for app ${appId}: unexpected commit hash format`,
@@ -2168,28 +2167,44 @@ export function registerAppHandlers() {
       return;
     }
 
-    const screenshotDir = path.join(appPath, DYAD_SCREENSHOT_DIR_NAME);
-    await fsPromises.mkdir(screenshotDir, { recursive: true });
+    await appOperationCoordinator.run(
+      {
+        appId,
+        operation: "save-app-screenshot",
+        resources: [readAppResource("app-path"), "media"],
+      },
+      async () => {
+        const appRecord = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
+        });
+        if (!appRecord) {
+          throw new DyadError("App not found", DyadErrorKind.NotFound);
+        }
 
-    const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, "");
-    const buffer = Buffer.from(base64Data, "base64");
-    await fsPromises.writeFile(
-      path.join(screenshotDir, `${commitHash}.png`),
-      buffer,
+        const appPath = getDyadAppPath(appRecord.path);
+        const screenshotDir = path.join(appPath, DYAD_SCREENSHOT_DIR_NAME);
+        await fsPromises.mkdir(screenshotDir, { recursive: true });
+
+        const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, "");
+        const buffer = Buffer.from(base64Data, "base64");
+        await fsPromises.writeFile(
+          path.join(screenshotDir, `${commitHash}.png`),
+          buffer,
+        );
+
+        // Prune: keep only the newest MAX_SCREENSHOTS_PER_APP by mtime.
+        try {
+          const screenshots = await readScreenshotEntries(screenshotDir);
+          for (const extra of screenshots.slice(MAX_SCREENSHOTS_PER_APP)) {
+            await fsPromises
+              .unlink(path.join(screenshotDir, extra.name))
+              .catch(() => {});
+          }
+        } catch (err) {
+          logger.warn(`Failed to prune screenshots for app ${appId}`, err);
+        }
+      },
     );
-
-    // Prune: keep only the newest MAX_SCREENSHOTS_PER_APP by mtime.
-    // Swallow ENOENT on unlink to tolerate concurrent saves.
-    try {
-      const screenshots = await readScreenshotEntries(screenshotDir);
-      for (const extra of screenshots.slice(MAX_SCREENSHOTS_PER_APP)) {
-        await fsPromises
-          .unlink(path.join(screenshotDir, extra.name))
-          .catch(() => {});
-      }
-    } catch (err) {
-      logger.warn(`Failed to prune screenshots for app ${appId}`, err);
-    }
   });
 
   createTypedHandler(appContracts.listAppScreenshots, async (_, params) => {

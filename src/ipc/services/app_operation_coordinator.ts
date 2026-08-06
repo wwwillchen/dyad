@@ -153,6 +153,7 @@ export class AppOperationCoordinator {
     state.deletion = { token, drainWaiters: new Set() };
     let drained = false;
     let released = false;
+    let exclusiveRunning = false;
 
     const assertOwner = () => {
       if (released || state.deletion?.token !== token) {
@@ -178,11 +179,26 @@ export class AppOperationCoordinator {
             `App ${appId} deletion must drain admitted operations before running exclusively`,
           );
         }
-        return operation();
+        if (exclusiveRunning) {
+          throw new Error(
+            `App ${appId} deletion already has an exclusive operation in progress`,
+          );
+        }
+        exclusiveRunning = true;
+        try {
+          return await operation();
+        } finally {
+          exclusiveRunning = false;
+        }
       },
       release: () => {
         if (released) return;
         assertOwner();
+        if (exclusiveRunning) {
+          throw new Error(
+            `App ${appId} deletion cannot be released during an exclusive operation`,
+          );
+        }
         released = true;
         state.deletion = undefined;
         this.removeStateIfIdle(appId, state);
