@@ -106,6 +106,7 @@ import {
 import { createDeepLinkQueue } from "./main/deep_link_queue";
 import { DeepLinkWindowReadiness } from "./main/deep_link_window_readiness";
 import {
+  finishAppQuit,
   shouldCreateWindowOnActivate,
   shouldRetainClosedWindowForActivation,
   shouldQuitAfterAllWindowsClosed,
@@ -649,7 +650,15 @@ let pendingForceCloseData: any = null;
 let pendingActiveChatId: number | null = null;
 let pendingCrashDetected = false;
 let isAppQuitting = false;
+let relaunchRequestedAfterQuit = false;
 let safeStorageKeychainUnlockRetryScheduled = false;
+
+function requestRelaunchAfterQuit(): void {
+  if (!relaunchRequestedAfterQuit) {
+    logger.info("Reopen requested during shutdown; relaunching after cleanup");
+  }
+  relaunchRequestedAfterQuit = true;
+}
 
 function deliverPendingCrashRecovery(target: BrowserWindow): void {
   if (!pendingCrashDetected || target !== mainWindow || target.isDestroyed()) {
@@ -724,6 +733,10 @@ const createWindow = ({
   browserWindow: BrowserWindow;
   rendererLoad: Promise<void>;
 } => {
+  if (isAppQuitting) {
+    throw new Error("Cannot create a window after shutdown has begun");
+  }
+
   // Create the browser window.
   const browserWindow = new BrowserWindow({
     width: process.env.NODE_ENV === "development" ? 1280 : 960,
@@ -1185,6 +1198,11 @@ if (IS_TEST_BUILD) {
     app.quit();
   } else {
     app.on("second-instance", (_event, commandLine, _workingDirectory) => {
+      if (isAppQuitting) {
+        requestRelaunchAfterQuit();
+        return;
+      }
+
       // Someone tried to run a second instance, we should focus our window.
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore();
@@ -1437,7 +1455,12 @@ app.on("window-all-closed", () => {
 // cleanup in will-quit cannot race against OS-imposed termination timeouts
 // (e.g. Windows WM_ENDSESSION) and leave the sentinel behind as a false positive.
 const handleMcpBeforeQuit = createMcpBeforeQuitHandler({
-  quit: () => app.quit(),
+  quit: () =>
+    finishAppQuit({
+      relaunchRequested: relaunchRequestedAfterQuit,
+      relaunch: () => app.relaunch(),
+      quit: () => app.quit(),
+    }),
   cleanup: async () => {
     await Promise.all([
       disposeMcpClientsForShutdown(),
@@ -1474,10 +1497,16 @@ app.on("will-quit", () => {
 });
 
 app.on("activate", () => {
+  if (isAppQuitting) {
+    requestRelaunchAfterQuit();
+    return;
+  }
+
   // On OS X it's common to re-create a window in the app when the
   // dock icon is clicked and there are no other windows open.
   if (
     shouldCreateWindowOnActivate({
+      isAppQuitting,
       hasCreatedInitialWindow,
       openWindowCount: BrowserWindow.getAllWindows().length,
     })
