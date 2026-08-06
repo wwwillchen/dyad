@@ -1,0 +1,283 @@
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+
+export const APP_OPERATION_RESOURCES = [
+  "app-path", // The app row's path and the identity/location of its directory.
+  "chat-content", // Messages within the app's chats.
+  "chat-membership", // Which chats belong to the app.
+  "media", // Uploaded, generated, and screenshot files in the media library.
+  "metadata", // General app fields not owned by a more specific resource.
+  "provider", // Supabase/Neon associations and provider lifecycle state.
+  "repository", // Code files plus Git commits, refs, index, and working tree.
+  "runtime", // The preview process, port, proxy, and sandbox lifecycle.
+  "runtime-config", // Environment/configuration consumed by the runtime.
+  "test-files", // Test inputs, generated configuration, and test artifacts.
+] as const;
+
+export type AppOperationResource = (typeof APP_OPERATION_RESOURCES)[number];
+export type AppOperationAccessMode = "read" | "write";
+
+export interface AppOperationAccess {
+  resource: AppOperationResource;
+  mode: AppOperationAccessMode;
+}
+
+export interface AppOperationRequest {
+  appId: number;
+  operation: string;
+  resources: readonly (AppOperationResource | AppOperationAccess)[];
+}
+
+interface NormalizedAppOperationRequest {
+  appId: number;
+  operation: string;
+  resources: readonly AppOperationAccess[];
+}
+
+interface PendingOperation {
+  request: NormalizedAppOperationRequest;
+  execute: () => Promise<unknown>;
+  resolve: (result: unknown) => void;
+  reject: (error: unknown) => void;
+}
+
+interface AppOperationState {
+  active: Set<PendingOperation>;
+  queue: PendingOperation[];
+  deletion?: {
+    token: symbol;
+    drainWaiters: Set<() => void>;
+  };
+}
+
+export interface AppOperationDeletion {
+  drain(): Promise<void>;
+  runExclusive<Result>(operation: () => Promise<Result>): Promise<Result>;
+  release(): void;
+}
+
+function normalizeResources(
+  resources: AppOperationRequest["resources"],
+): readonly AppOperationAccess[] {
+  const normalized = new Map<AppOperationResource, AppOperationAccessMode>();
+  for (const access of resources) {
+    const resource = typeof access === "string" ? access : access.resource;
+    const mode = typeof access === "string" ? "write" : access.mode;
+    const current = normalized.get(resource);
+    if (current === "write" || current === mode) continue;
+    normalized.set(resource, mode);
+  }
+  return [...normalized.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([resource, mode]) => ({ resource, mode }));
+}
+
+function requestsConflict(
+  left: NormalizedAppOperationRequest,
+  right: NormalizedAppOperationRequest,
+): boolean {
+  for (const leftAccess of left.resources) {
+    const rightAccess = right.resources.find(
+      ({ resource }) => resource === leftAccess.resource,
+    );
+    if (
+      rightAccess &&
+      (leftAccess.mode === "write" || rightAccess.mode === "write")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Coordinates main-process work by the app resources it actually touches.
+ *
+ * Operations acquire all declared resources atomically. A blocked writer is a
+ * barrier only for later work that conflicts with it, so unrelated domains can
+ * continue without starving the writer. App deletion closes admission before
+ * draining both active and queued operations.
+ */
+export class AppOperationCoordinator {
+  private readonly states = new Map<number, AppOperationState>();
+
+  run<Result>(
+    request: AppOperationRequest,
+    operation: () => Promise<Result>,
+  ): Promise<Result> {
+    const state = this.getOrCreateState(request.appId);
+    if (state.deletion) {
+      return Promise.reject(
+        new DyadError(
+          "App is temporarily unavailable",
+          DyadErrorKind.Precondition,
+        ),
+      );
+    }
+
+    const normalizedRequest: NormalizedAppOperationRequest = {
+      ...request,
+      resources: normalizeResources(request.resources),
+    };
+
+    return new Promise<Result>((resolve, reject) => {
+      state.queue.push({
+        request: normalizedRequest,
+        execute: operation,
+        resolve: (result) => resolve(result as Result),
+        reject,
+      });
+      this.pump(request.appId, state);
+    });
+  }
+
+  isBusy(appId: number, resources: AppOperationRequest["resources"]): boolean {
+    const state = this.states.get(appId);
+    if (!state) return false;
+    const request: NormalizedAppOperationRequest = {
+      appId,
+      operation: "inspect",
+      resources: normalizeResources(resources),
+    };
+    return [...state.active, ...state.queue].some((pending) =>
+      requestsConflict(pending.request, request),
+    );
+  }
+
+  beginAppDeletion(appId: number): AppOperationDeletion {
+    const state = this.getOrCreateState(appId);
+    if (state.deletion) {
+      throw new Error(`App ${appId} deletion is already in progress`);
+    }
+
+    const token = Symbol(`app-deletion:${appId}`);
+    state.deletion = { token, drainWaiters: new Set() };
+    let drained = false;
+    let released = false;
+    let exclusiveRunning = false;
+
+    const assertOwner = () => {
+      if (released || state.deletion?.token !== token) {
+        throw new Error(`App ${appId} deletion ownership is no longer active`);
+      }
+    };
+
+    return {
+      drain: async () => {
+        assertOwner();
+        if (state.active.size > 0 || state.queue.length > 0) {
+          await new Promise<void>((resolve) => {
+            state.deletion!.drainWaiters.add(resolve);
+          });
+        }
+        assertOwner();
+        drained = true;
+      },
+      runExclusive: async <Result>(operation: () => Promise<Result>) => {
+        assertOwner();
+        if (!drained || state.active.size > 0 || state.queue.length > 0) {
+          throw new Error(
+            `App ${appId} deletion must drain admitted operations before running exclusively`,
+          );
+        }
+        if (exclusiveRunning) {
+          throw new Error(
+            `App ${appId} deletion already has an exclusive operation in progress`,
+          );
+        }
+        exclusiveRunning = true;
+        try {
+          return await operation();
+        } finally {
+          exclusiveRunning = false;
+        }
+      },
+      release: () => {
+        if (released) return;
+        assertOwner();
+        if (exclusiveRunning) {
+          throw new Error(
+            `App ${appId} deletion cannot be released during an exclusive operation`,
+          );
+        }
+        released = true;
+        state.deletion = undefined;
+        this.removeStateIfIdle(appId, state);
+      },
+    };
+  }
+
+  private getOrCreateState(appId: number): AppOperationState {
+    let state = this.states.get(appId);
+    if (!state) {
+      state = { active: new Set(), queue: [] };
+      this.states.set(appId, state);
+    }
+    return state;
+  }
+
+  private pump(appId: number, state: AppOperationState): void {
+    const blocked: PendingOperation[] = [];
+    const ready: PendingOperation[] = [];
+
+    for (const pending of state.queue) {
+      const conflictsWithActive = [...state.active, ...ready].some((active) =>
+        requestsConflict(active.request, pending.request),
+      );
+      const wouldBypassBlocked = blocked.some((earlier) =>
+        requestsConflict(earlier.request, pending.request),
+      );
+      if (conflictsWithActive || wouldBypassBlocked) {
+        blocked.push(pending);
+      } else {
+        ready.push(pending);
+      }
+    }
+
+    if (ready.length === 0) {
+      this.resolveDeletionDrainIfIdle(state);
+      this.removeStateIfIdle(appId, state);
+      return;
+    }
+
+    const readySet = new Set(ready);
+    state.queue = state.queue.filter((pending) => !readySet.has(pending));
+    for (const pending of ready) {
+      state.active.add(pending);
+      void Promise.resolve()
+        .then(pending.execute)
+        .then(pending.resolve, pending.reject)
+        .finally(() => {
+          state.active.delete(pending);
+          this.pump(appId, state);
+        });
+    }
+  }
+
+  private resolveDeletionDrainIfIdle(state: AppOperationState): void {
+    if (!state.deletion || state.active.size > 0 || state.queue.length > 0) {
+      return;
+    }
+    const waiters = [...state.deletion.drainWaiters];
+    state.deletion.drainWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
+  private removeStateIfIdle(appId: number, state: AppOperationState): void {
+    if (
+      !state.deletion &&
+      state.active.size === 0 &&
+      state.queue.length === 0 &&
+      this.states.get(appId) === state
+    ) {
+      this.states.delete(appId);
+    }
+  }
+}
+
+export const appOperationCoordinator = new AppOperationCoordinator();
+
+export function readAppResource(
+  resource: AppOperationResource,
+): AppOperationAccess {
+  return { resource, mode: "read" };
+}

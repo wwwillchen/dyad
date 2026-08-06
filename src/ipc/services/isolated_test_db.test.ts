@@ -57,9 +57,6 @@ vi.mock("../utils/app_env_var_utils", () => ({
 vi.mock("../utils/framework_utils", () => ({
   detectFrameworkType: vi.fn(() => "nextjs"),
 }));
-vi.mock("../utils/lock_utils", () => ({
-  withLock: (_id: number, fn: () => Promise<unknown>) => fn(),
-}));
 vi.mock("../utils/process_manager", () => ({
   runningApps: mocks.runningApps,
   stopAppByInfo: mocks.stopAppByInfo,

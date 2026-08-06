@@ -5,9 +5,11 @@ import type { RuntimeMode2 } from "@/lib/schemas";
 import type { RunningAppInfo } from "@/ipc/utils/process_manager";
 import {
   AppRuntimeService,
+  getAppRuntimeOperationResources,
   type AppRuntimeOutput,
   type AppRuntimeServiceDependencies,
 } from "./app_runtime_service";
+import { AppOperationCoordinator } from "./app_operation_coordinator";
 
 const APP_ID = 42;
 const REF: AppRunInvocationRef = {
@@ -32,9 +34,13 @@ function createHarness() {
   let runtimeMode: RuntimeMode2 = "host";
   let id = 0;
   const dependencies: AppRuntimeServiceDependencies = {
-    withLock: async (_appId, operation) => {
-      calls.push("lock");
-      return operation();
+    runSerialized: async (_appId, lifecycle, operation) => {
+      calls.push(`lock:${lifecycle}`);
+      try {
+        return await operation();
+      } finally {
+        calls.push(`unlock:${lifecycle}`);
+      }
     },
     findApp: vi.fn(async () => ({
       id: APP_ID,
@@ -104,6 +110,19 @@ describe("AppRuntimeService", () => {
     vi.clearAllMocks();
   });
 
+  it("claims only the resources each lifecycle operation touches", () => {
+    expect(getAppRuntimeOperationResources("stop")).toEqual(["runtime"]);
+    expect(getAppRuntimeOperationResources("start")).toEqual([
+      { resource: "app-path", mode: "read" },
+      { resource: "repository", mode: "read" },
+      "runtime",
+      { resource: "runtime-config", mode: "read" },
+    ]);
+    expect(getAppRuntimeOperationResources("restart")).toEqual(
+      getAppRuntimeOperationResources("start"),
+    );
+  });
+
   it("serializes start, restart, and stop through one lifecycle seam", async () => {
     const harness = createHarness();
     const { output } = createOutput();
@@ -119,18 +138,81 @@ describe("AppRuntimeService", () => {
     await harness.service.stop(APP_ID);
 
     expect(harness.calls).toEqual([
-      "lock",
+      "lock:start",
       "clean-port",
       "start:app-run:test",
-      "lock",
+      "ready",
+      "unlock:start",
+      "lock:restart",
       "stop",
       "clean-port",
       "remove-node-modules",
       "clear-logs",
       "start:app-run:test",
-      "lock",
+      "ready",
+      "unlock:restart",
+      "lock:stop",
       "stop",
+      "unlock:stop",
     ]);
+  });
+
+  it("holds repository coordination until startup becomes ready", async () => {
+    const harness = createHarness();
+    const coordinator = new AppOperationCoordinator();
+    const { output } = createOutput();
+    let releaseReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      releaseReady = resolve;
+    });
+    vi.mocked(harness.dependencies.waitForReady).mockImplementation(
+      async () => ready,
+    );
+    harness.dependencies.runSerialized = (appId, lifecycle, operation) =>
+      coordinator.run(
+        {
+          appId,
+          operation: `runtime:${lifecycle}`,
+          resources: getAppRuntimeOperationResources(lifecycle),
+        },
+        operation,
+      );
+
+    const start = harness.service.start({ appId: APP_ID, output });
+    await vi.waitFor(() =>
+      expect(harness.dependencies.startProcess).toHaveBeenCalledOnce(),
+    );
+
+    const repositoryWriter = vi.fn();
+    const write = coordinator.run(
+      {
+        appId: APP_ID,
+        operation: "restore-version",
+        resources: ["repository"],
+      },
+      async () => repositoryWriter(),
+    );
+    await Promise.resolve();
+    expect(repositoryWriter).not.toHaveBeenCalled();
+
+    releaseReady();
+    await Promise.all([start, write]);
+    expect(repositoryWriter).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a spawned process tracked when readiness times out", async () => {
+    const harness = createHarness();
+    const { output } = createOutput();
+    vi.mocked(harness.dependencies.waitForReady).mockRejectedValue(
+      new Error("readiness timed out"),
+    );
+
+    await expect(
+      harness.service.start({ appId: APP_ID, output }),
+    ).rejects.toThrow("readiness timed out");
+
+    expect(harness.calls).not.toContain("delete");
+    expect(harness.service.isRunning(APP_ID)).toBe(true);
   });
 
   it("binds a cached proxy response to the requesting invocation", async () => {
@@ -208,12 +290,13 @@ describe("AppRuntimeService", () => {
       }),
     ]);
     expect(harness.calls).toEqual([
-      "lock",
+      "lock:restart",
       "clean-port",
       "remove-node-modules",
       "clear-logs",
       "start:app-run:test",
       "ready",
+      "unlock:restart",
     ]);
     expect(harness.dependencies.waitForReady).toHaveBeenCalledWith(
       APP_ID,

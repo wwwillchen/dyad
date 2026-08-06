@@ -31,7 +31,10 @@ import {
   resolveUniqueAppName,
   resolveUniqueFolderName,
 } from "../utils/app_name_resolution";
-import { withLock } from "../utils/lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "../services/app_operation_coordinator";
 import { getFilesRecursively } from "../utils/file_utils";
 import {
   runningApps,
@@ -60,6 +63,7 @@ import { sameInvocationRef } from "@/state_machines/invocation_ref";
 import { userInputRegistry } from "@/user_input/main";
 import { clearLegacyWindowSessionPersistence } from "@/window_infrastructure/main/window_session";
 import { appRelaunchRequest } from "@/main/app_relaunch_request";
+import { deleteTempTestUser } from "../utils/supabase_test_user";
 
 /**
  * Read screenshot entries for a single app directory, filtered by filename
@@ -428,6 +432,7 @@ async function deleteAppByIdExclusive(
     commit(): void;
   },
 ): Promise<void> {
+  const appOperationDeletion = appOperationCoordinator.beginAppDeletion(appId);
   let versionPreviewDeletionStarted = false;
   let githubDeletionStarted = false;
   let releaseStreamAdmissionBlock: (() => void) | undefined;
@@ -451,10 +456,11 @@ async function deleteAppByIdExclusive(
     await imageGenerationActorService.prepareAppDeletion(
       imageGenerationDeletion,
     );
-    // Actor cancellation can wait for an in-flight stream to finish writes
-    // under this app's lock. Drain before taking the lock, while the admission
-    // barrier prevents another turn from entering behind us.
-    const appChats = await withLock(appId, () =>
+    await appOperationDeletion.drain();
+    // Actor cancellation can wait for an in-flight stream to finish writes.
+    // Coordinator and actor admission are closed before either snapshot, so a
+    // late child or turn cannot enter behind deletion.
+    const appChats = await appOperationDeletion.runExclusive(() =>
       db.select({ id: chats.id }).from(chats).where(eq(chats.appId, appId)),
     );
     releaseChatActorAdmission.push(
@@ -466,7 +472,7 @@ async function deleteAppByIdExclusive(
       ),
     );
 
-    const appPath = await withLock(appId, async () => {
+    const appPath = await appOperationDeletion.runExclusive(async () => {
       const app = await db.query.apps.findFirst({
         where: eq(apps.id, appId),
       });
@@ -494,6 +500,13 @@ async function deleteAppByIdExclusive(
 
       await appRunDeletion.seal();
       try {
+        const testUserDeleted = await deleteTempTestUser(app);
+        if (!testUserDeleted) {
+          throw new DyadError(
+            "Failed to delete the app's temporary Supabase test user. Please retry app deletion.",
+            DyadErrorKind.External,
+          );
+        }
         await db.delete(apps).where(eq(apps.id, appId));
         appRunDeletion.commit();
         deletionCommitted = true;
@@ -576,7 +589,11 @@ async function deleteAppByIdExclusive(
             versionPreviewActorService.endAppDeletion(appId);
           }
         } finally {
-          releaseStreamAdmissionBlock?.();
+          try {
+            releaseStreamAdmissionBlock?.();
+          } finally {
+            appOperationDeletion.release();
+          }
         }
       }
     }
@@ -1194,311 +1211,335 @@ export function registerAppHandlers() {
 
   createTypedHandler(appContracts.addToFavorite, async (_, params) => {
     const { appId } = params;
-    return withLock(appId, async () => {
-      try {
-        // Fetch the current isFavorite value
-        const result = await db
-          .select({ isFavorite: apps.isFavorite })
-          .from(apps)
-          .where(eq(apps.id, appId))
-          .limit(1);
+    return appOperationCoordinator.run(
+      {
+        appId,
+        operation: "toggle-favorite",
+        resources: ["metadata"],
+      },
+      async () => {
+        try {
+          // Fetch the current isFavorite value
+          const result = await db
+            .select({ isFavorite: apps.isFavorite })
+            .from(apps)
+            .where(eq(apps.id, appId))
+            .limit(1);
 
-        if (result.length === 0) {
+          if (result.length === 0) {
+            throw new DyadError(
+              `App with ID ${appId} not found.`,
+              DyadErrorKind.NotFound,
+            );
+          }
+
+          const currentIsFavorite = result[0].isFavorite;
+
+          // Toggle the isFavorite value
+          const updated = await db
+            .update(apps)
+            .set({ isFavorite: !currentIsFavorite })
+            .where(eq(apps.id, appId))
+            .returning({ isFavorite: apps.isFavorite });
+
+          if (updated.length === 0) {
+            throw new Error(
+              `Failed to update favorite status for app ID ${appId}.`,
+            );
+          }
+
+          // Return the updated isFavorite value
+          return { isFavorite: updated[0].isFavorite };
+        } catch (error: any) {
+          logger.error(
+            `Error in add-to-favorite handler for app ID ${appId}:`,
+            error,
+          );
+          throw new DyadError(
+            `Failed to toggle favorite status: ${error.message}`,
+            DyadErrorKind.External,
+          );
+        }
+      },
+    );
+  });
+
+  createTypedHandler(appContracts.setTestingEnabled, async (_, params) => {
+    const { appId, enabled } = params;
+    return appOperationCoordinator.run(
+      {
+        appId,
+        operation: "set-testing-enabled",
+        resources: ["metadata"],
+      },
+      async () => {
+        const updated = await db
+          .update(apps)
+          .set({ testingEnabled: enabled })
+          .where(eq(apps.id, appId))
+          .returning({ testingEnabled: apps.testingEnabled });
+
+        if (updated.length === 0) {
           throw new DyadError(
             `App with ID ${appId} not found.`,
             DyadErrorKind.NotFound,
           );
         }
 
-        const currentIsFavorite = result[0].isFavorite;
-
-        // Toggle the isFavorite value
-        const updated = await db
-          .update(apps)
-          .set({ isFavorite: !currentIsFavorite })
-          .where(eq(apps.id, appId))
-          .returning({ isFavorite: apps.isFavorite });
-
-        if (updated.length === 0) {
-          throw new Error(
-            `Failed to update favorite status for app ID ${appId}.`,
-          );
-        }
-
-        // Return the updated isFavorite value
-        return { isFavorite: updated[0].isFavorite };
-      } catch (error: any) {
-        logger.error(
-          `Error in add-to-favorite handler for app ID ${appId}:`,
-          error,
-        );
-        throw new DyadError(
-          `Failed to toggle favorite status: ${error.message}`,
-          DyadErrorKind.External,
-        );
-      }
-    });
-  });
-
-  createTypedHandler(appContracts.setTestingEnabled, async (_, params) => {
-    const { appId, enabled } = params;
-    return withLock(appId, async () => {
-      const updated = await db
-        .update(apps)
-        .set({ testingEnabled: enabled })
-        .where(eq(apps.id, appId))
-        .returning({ testingEnabled: apps.testingEnabled });
-
-      if (updated.length === 0) {
-        throw new DyadError(
-          `App with ID ${appId} not found.`,
-          DyadErrorKind.NotFound,
-        );
-      }
-
-      return { testingEnabled: updated[0].testingEnabled };
-    });
+        return { testingEnabled: updated[0].testingEnabled };
+      },
+    );
   });
 
   createTypedHandler(appContracts.renameApp, async (_, params) => {
     const { appId, autoResolveConflicts } = params;
-    return withLock(appId, async () => {
-      let appName = sanitizeAppDisplayName(params.appName);
-      let appPath = params.appPath;
-      // Check if app exists
-      const app = await db.query.apps.findFirst({
-        where: eq(apps.id, appId),
-      });
+    return appOperationCoordinator.run(
+      {
+        appId,
+        operation: "rename-app",
+        resources: ["app-path", "repository", "runtime"],
+      },
+      async () => {
+        let appName = sanitizeAppDisplayName(params.appName);
+        let appPath = params.appPath;
+        // Check if app exists
+        const app = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
+        });
 
-      if (!app) {
-        throw new DyadError("App not found", DyadErrorKind.NotFound);
-      }
-
-      // Security: reject NEW absolute paths - rename-app should only accept relative paths for new paths
-      // Absolute paths should only be set through change-app-location handler
-      // If the path is changing and it's absolute, reject it
-      if (appPath !== app.path && path.isAbsolute(appPath)) {
-        throw new Error(
-          "Absolute paths are not allowed when renaming an app folder. Please use a relative folder name only. To change the storage location, use the 'Change location' button.",
-        );
-      }
-
-      // Validate the folder name only when the path changes — a
-      // display-name-only rename passes the existing path back unchanged, and
-      // legacy folders that predate the naming policy must keep working.
-      if (appPath !== app.path) {
-        const validationError = validateAppFolderName(appPath);
-        if (validationError) {
-          throw new DyadError(validationError, DyadErrorKind.Validation);
+        if (!app) {
+          throw new DyadError("App not found", DyadErrorKind.NotFound);
         }
-      }
 
-      // If the current path is absolute, preserve the directory and only
-      // change the folder name. Otherwise, resolve against the base path.
-      const resolveCandidatePath = (folderName: string) =>
-        path.isAbsolute(app.path)
-          ? path.join(path.dirname(app.path), folderName)
-          : getDyadAppPath(folderName);
-
-      if (autoResolveConflicts) {
-        // Blueprint approval: resolve the display-name suffix first, then
-        // derive the folder from the final name so they track each other.
-        const resolvedName = await resolveUniqueAppName(appName, {
-          excludeAppId: appId,
-        });
-        if (resolvedName !== appName) {
-          appName = resolvedName;
-          appPath = slugifyAppFolderName(resolvedName);
-        }
-        appPath = await resolveUniqueFolderName(appPath, {
-          excludeAppId: appId,
-          resolveCandidate: resolveCandidatePath,
-        });
-      } else {
-        // Check for conflicts with existing apps
-        const nameConflict = await db.query.apps.findFirst({
-          where: eq(apps.name, appName),
-        });
-
-        if (nameConflict && nameConflict.id !== appId) {
-          throw new DyadError(
-            `An app with the name '${appName}' already exists`,
-            DyadErrorKind.Conflict,
-          );
-        }
-      }
-
-      const pathChanged = appPath !== app.path;
-      const currentResolvedPath = getDyadAppPath(app.path);
-      const newAppPath = resolveCandidatePath(appPath);
-
-      let hasPathConflict = false;
-      if (!autoResolveConflicts && pathChanged) {
-        const allApps = await db.query.apps.findMany();
-        // Compare case-insensitively: macOS and Windows filesystems are
-        // case-insensitive by default, so `My-App` and `my-app` collide.
-        hasPathConflict = allApps.some((existingApp) => {
-          if (existingApp.id === appId) {
-            return false;
-          }
-          return (
-            getDyadAppPath(existingApp.path).toLowerCase() ===
-            newAppPath.toLowerCase()
-          );
-        });
-      }
-
-      if (hasPathConflict) {
-        throw new DyadError(
-          `An app with the path '${newAppPath}' already exists`,
-          DyadErrorKind.Conflict,
-        );
-      }
-
-      // Stop the app if it's running
-      if (runningApps.has(appId)) {
-        const appInfo = runningApps.get(appId)!;
-        try {
-          await stopAppByInfo(appId, appInfo);
-        } catch (error: any) {
-          logger.error(`Error stopping app ${appId} before renaming:`, error);
+        // Security: reject NEW absolute paths - rename-app should only accept relative paths for new paths
+        // Absolute paths should only be set through change-app-location handler
+        // If the path is changing and it's absolute, reject it
+        if (appPath !== app.path && path.isAbsolute(appPath)) {
           throw new Error(
-            `Failed to stop app before renaming: ${error.message}`,
+            "Absolute paths are not allowed when renaming an app folder. Please use a relative folder name only. To change the storage location, use the 'Change location' button.",
           );
         }
-      }
 
-      const oldAppPath = currentResolvedPath;
-      // A case-only rename (e.g. `MyApp` -> `myapp`) targets the same
-      // physical directory on case-insensitive filesystems (macOS/Windows
-      // defaults), so copy-then-delete would destroy the app. fs.rename
-      // handles case-only changes correctly on those filesystems.
-      const isCaseOnlyRename =
-        newAppPath !== oldAppPath &&
-        newAppPath.toLowerCase() === oldAppPath.toLowerCase();
-      // Only move files if needed
-      if (isCaseOnlyRename) {
-        try {
-          await renameDirectoryWithCaseHop(oldAppPath, newAppPath);
-        } catch (error: any) {
-          logger.error(
-            `Error renaming app directory from ${oldAppPath} to ${newAppPath}:`,
-            error,
-          );
-          throw new DyadError(
-            `Failed to move app files: ${error.message}`,
-            DyadErrorKind.External,
-          );
+        // Validate the folder name only when the path changes — a
+        // display-name-only rename passes the existing path back unchanged, and
+        // legacy folders that predate the naming policy must keep working.
+        if (appPath !== app.path) {
+          const validationError = validateAppFolderName(appPath);
+          if (validationError) {
+            throw new DyadError(validationError, DyadErrorKind.Validation);
+          }
         }
-      } else if (newAppPath !== oldAppPath) {
-        // Move app files
-        try {
-          // Check if destination directory already exists
-          if (fs.existsSync(newAppPath)) {
+
+        // If the current path is absolute, preserve the directory and only
+        // change the folder name. Otherwise, resolve against the base path.
+        const resolveCandidatePath = (folderName: string) =>
+          path.isAbsolute(app.path)
+            ? path.join(path.dirname(app.path), folderName)
+            : getDyadAppPath(folderName);
+
+        if (autoResolveConflicts) {
+          // Blueprint approval: resolve the display-name suffix first, then
+          // derive the folder from the final name so they track each other.
+          const resolvedName = await resolveUniqueAppName(appName, {
+            excludeAppId: appId,
+          });
+          if (resolvedName !== appName) {
+            appName = resolvedName;
+            appPath = slugifyAppFolderName(resolvedName);
+          }
+          appPath = await resolveUniqueFolderName(appPath, {
+            excludeAppId: appId,
+            resolveCandidate: resolveCandidatePath,
+          });
+        } else {
+          // Check for conflicts with existing apps
+          const nameConflict = await db.query.apps.findFirst({
+            where: eq(apps.name, appName),
+          });
+
+          if (nameConflict && nameConflict.id !== appId) {
             throw new DyadError(
-              `Destination path '${newAppPath}' already exists`,
+              `An app with the name '${appName}' already exists`,
               DyadErrorKind.Conflict,
             );
           }
+        }
 
-          // Create parent directory if it doesn't exist
-          await fsPromises.mkdir(path.dirname(newAppPath), {
-            recursive: true,
-          });
+        const pathChanged = appPath !== app.path;
+        const currentResolvedPath = getDyadAppPath(app.path);
+        const newAppPath = resolveCandidatePath(appPath);
 
-          // Copy the directory without node_modules
-          await copyDir(oldAppPath, newAppPath, undefined, {
-            excludeNodeModules: true,
-          });
-        } catch (error: any) {
-          logger.error(
-            `Error moving app files from ${oldAppPath} to ${newAppPath}:`,
-            error,
-          );
-          if (isDyadError(error)) {
-            throw error;
-          }
-          // Attempt cleanup if destination exists (partial copy may have occurred)
-          if (fs.existsSync(newAppPath)) {
-            try {
-              await fsPromises.rm(newAppPath, {
-                recursive: true,
-                force: true,
-              });
-            } catch (cleanupError) {
-              logger.warn(
-                `Failed to clean up partial move at ${newAppPath}:`,
-                cleanupError,
-              );
+        let hasPathConflict = false;
+        if (!autoResolveConflicts && pathChanged) {
+          const allApps = await db.query.apps.findMany();
+          // Compare case-insensitively: macOS and Windows filesystems are
+          // case-insensitive by default, so `My-App` and `my-app` collide.
+          hasPathConflict = allApps.some((existingApp) => {
+            if (existingApp.id === appId) {
+              return false;
             }
-          }
+            return (
+              getDyadAppPath(existingApp.path).toLowerCase() ===
+              newAppPath.toLowerCase()
+            );
+          });
+        }
+
+        if (hasPathConflict) {
           throw new DyadError(
-            `Failed to move app files: ${error.message}`,
-            DyadErrorKind.External,
+            `An app with the path '${newAppPath}' already exists`,
+            DyadErrorKind.Conflict,
           );
         }
 
-        try {
-          // Delete the old directory
-          await fsPromises.rm(oldAppPath, { recursive: true, force: true });
-        } catch (error: any) {
-          // Why is this just a warning? This happens quite often on Windows
-          // because it has an aggressive file lock.
-          //
-          // Not deleting the old directory is annoying, but not a big deal
-          // since the user can do it themselves if they need to.
-          logger.warn(`Error deleting old app directory ${oldAppPath}:`, error);
+        // Stop the app if it's running
+        if (runningApps.has(appId)) {
+          const appInfo = runningApps.get(appId)!;
+          try {
+            await stopAppByInfo(appId, appInfo);
+          } catch (error: any) {
+            logger.error(`Error stopping app ${appId} before renaming:`, error);
+            throw new Error(
+              `Failed to stop app before renaming: ${error.message}`,
+            );
+          }
         }
-      }
 
-      // Update app in database
-      // If the current path was absolute, store the new absolute path; otherwise store the relative path
-      const pathToStore = path.isAbsolute(app.path) ? newAppPath : appPath;
-      try {
-        await db
-          .update(apps)
-          .set({
-            name: appName,
-            path: pathToStore,
-          })
-          .where(eq(apps.id, appId))
-          .returning();
-
-        return { name: appName, path: pathToStore };
-      } catch (error: any) {
-        // Attempt to rollback the file move
+        const oldAppPath = currentResolvedPath;
+        // A case-only rename (e.g. `MyApp` -> `myapp`) targets the same
+        // physical directory on case-insensitive filesystems (macOS/Windows
+        // defaults), so copy-then-delete would destroy the app. fs.rename
+        // handles case-only changes correctly on those filesystems.
+        const isCaseOnlyRename =
+          newAppPath !== oldAppPath &&
+          newAppPath.toLowerCase() === oldAppPath.toLowerCase();
+        // Only move files if needed
         if (isCaseOnlyRename) {
           try {
-            await renameDirectoryWithCaseHop(newAppPath, oldAppPath);
-          } catch (rollbackError) {
+            await renameDirectoryWithCaseHop(oldAppPath, newAppPath);
+          } catch (error: any) {
             logger.error(
-              `Failed to rollback case-only rename during rename error:`,
-              rollbackError,
+              `Error renaming app directory from ${oldAppPath} to ${newAppPath}:`,
+              error,
+            );
+            throw new DyadError(
+              `Failed to move app files: ${error.message}`,
+              DyadErrorKind.External,
             );
           }
         } else if (newAppPath !== oldAppPath) {
+          // Move app files
           try {
-            // Copy back from new to old
-            await copyDir(newAppPath, oldAppPath, undefined, {
+            // Check if destination directory already exists
+            if (fs.existsSync(newAppPath)) {
+              throw new DyadError(
+                `Destination path '${newAppPath}' already exists`,
+                DyadErrorKind.Conflict,
+              );
+            }
+
+            // Create parent directory if it doesn't exist
+            await fsPromises.mkdir(path.dirname(newAppPath), {
+              recursive: true,
+            });
+
+            // Copy the directory without node_modules
+            await copyDir(oldAppPath, newAppPath, undefined, {
               excludeNodeModules: true,
             });
-            // Delete the new directory
-            await fsPromises.rm(newAppPath, { recursive: true, force: true });
-          } catch (rollbackError) {
+          } catch (error: any) {
             logger.error(
-              `Failed to rollback file move during rename error:`,
-              rollbackError,
+              `Error moving app files from ${oldAppPath} to ${newAppPath}:`,
+              error,
+            );
+            if (isDyadError(error)) {
+              throw error;
+            }
+            // Attempt cleanup if destination exists (partial copy may have occurred)
+            if (fs.existsSync(newAppPath)) {
+              try {
+                await fsPromises.rm(newAppPath, {
+                  recursive: true,
+                  force: true,
+                });
+              } catch (cleanupError) {
+                logger.warn(
+                  `Failed to clean up partial move at ${newAppPath}:`,
+                  cleanupError,
+                );
+              }
+            }
+            throw new DyadError(
+              `Failed to move app files: ${error.message}`,
+              DyadErrorKind.External,
+            );
+          }
+
+          try {
+            // Delete the old directory
+            await fsPromises.rm(oldAppPath, { recursive: true, force: true });
+          } catch (error: any) {
+            // Why is this just a warning? This happens quite often on Windows
+            // because it has an aggressive file lock.
+            //
+            // Not deleting the old directory is annoying, but not a big deal
+            // since the user can do it themselves if they need to.
+            logger.warn(
+              `Error deleting old app directory ${oldAppPath}:`,
+              error,
             );
           }
         }
 
-        logger.error(`Error updating app ${appId} in database:`, error);
-        throw new DyadError(
-          `Failed to update app in database: ${error.message}`,
-          DyadErrorKind.External,
-        );
-      }
-    });
+        // Update app in database
+        // If the current path was absolute, store the new absolute path; otherwise store the relative path
+        const pathToStore = path.isAbsolute(app.path) ? newAppPath : appPath;
+        try {
+          await db
+            .update(apps)
+            .set({
+              name: appName,
+              path: pathToStore,
+            })
+            .where(eq(apps.id, appId))
+            .returning();
+
+          return { name: appName, path: pathToStore };
+        } catch (error: any) {
+          // Attempt to rollback the file move
+          if (isCaseOnlyRename) {
+            try {
+              await renameDirectoryWithCaseHop(newAppPath, oldAppPath);
+            } catch (rollbackError) {
+              logger.error(
+                `Failed to rollback case-only rename during rename error:`,
+                rollbackError,
+              );
+            }
+          } else if (newAppPath !== oldAppPath) {
+            try {
+              // Copy back from new to old
+              await copyDir(newAppPath, oldAppPath, undefined, {
+                excludeNodeModules: true,
+              });
+              // Delete the new directory
+              await fsPromises.rm(newAppPath, { recursive: true, force: true });
+            } catch (rollbackError) {
+              logger.error(
+                `Failed to rollback file move during rename error:`,
+                rollbackError,
+              );
+            }
+          }
+
+          logger.error(`Error updating app ${appId} in database:`, error);
+          throw new DyadError(
+            `Failed to update app in database: ${error.message}`,
+            DyadErrorKind.External,
+          );
+        }
+      },
+    );
   });
 
   // Resolves a display name to the exact folder name it would produce
@@ -1634,55 +1675,60 @@ export function registerAppHandlers() {
 
   createTypedHandler(appContracts.renameBranch, async (_, params) => {
     const { appId, oldBranchName, newBranchName } = params;
-    const app = await db.query.apps.findFirst({
-      where: eq(apps.id, appId),
-    });
-
-    if (!app) {
-      throw new DyadError("App not found", DyadErrorKind.NotFound);
-    }
-
-    const appPath = getDyadAppPath(app.path);
-
-    return withLock(appId, async () => {
-      try {
-        // Check if the old branch exists
-        const branches = await gitListBranches({ path: appPath });
-        if (!branches.includes(oldBranchName)) {
-          throw new DyadError(
-            `Branch '${oldBranchName}' not found.`,
-            DyadErrorKind.NotFound,
-          );
-        }
-
-        // Check if the new branch name already exists
-        if (branches.includes(newBranchName)) {
-          // If newBranchName is 'main' and oldBranchName is 'master',
-          // and 'main' already exists, we might want to allow this if 'main' is the current branch
-          // and just switch to it, or delete 'master'.
-          // For now, let's keep it simple and throw an error.
-          throw new Error(
-            `Branch '${newBranchName}' already exists. Cannot rename.`,
-          );
-        }
-
-        await gitRenameBranch({
-          path: appPath,
-          oldBranch: oldBranchName,
-          newBranch: newBranchName,
+    return appOperationCoordinator.run(
+      {
+        appId,
+        operation: "rename-branch",
+        resources: [readAppResource("app-path"), "repository"],
+      },
+      async () => {
+        const app = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
         });
-        logger.info(
-          `Branch renamed from '${oldBranchName}' to '${newBranchName}' for app ${appId}`,
-        );
-      } catch (error: any) {
-        logger.error(
-          `Failed to rename branch for app ${appId}: ${error.message}`,
-        );
-        throw new Error(
-          `Failed to rename branch '${oldBranchName}' to '${newBranchName}': ${error.message}`,
-        );
-      }
-    });
+        if (!app) {
+          throw new DyadError("App not found", DyadErrorKind.NotFound);
+        }
+        const appPath = getDyadAppPath(app.path);
+
+        try {
+          // Check if the old branch exists
+          const branches = await gitListBranches({ path: appPath });
+          if (!branches.includes(oldBranchName)) {
+            throw new DyadError(
+              `Branch '${oldBranchName}' not found.`,
+              DyadErrorKind.NotFound,
+            );
+          }
+
+          // Check if the new branch name already exists
+          if (branches.includes(newBranchName)) {
+            // If newBranchName is 'main' and oldBranchName is 'master',
+            // and 'main' already exists, we might want to allow this if 'main' is the current branch
+            // and just switch to it, or delete 'master'.
+            // For now, let's keep it simple and throw an error.
+            throw new Error(
+              `Branch '${newBranchName}' already exists. Cannot rename.`,
+            );
+          }
+
+          await gitRenameBranch({
+            path: appPath,
+            oldBranch: oldBranchName,
+            newBranch: newBranchName,
+          });
+          logger.info(
+            `Branch renamed from '${oldBranchName}' to '${newBranchName}' for app ${appId}`,
+          );
+        } catch (error: any) {
+          logger.error(
+            `Failed to rename branch for app ${appId}: ${error.message}`,
+          );
+          throw new Error(
+            `Failed to rename branch '${oldBranchName}' to '${newBranchName}': ${error.message}`,
+          );
+        }
+      },
+    );
   });
 
   createTypedHandler(appContracts.respondToAppInput, async (_, params) => {
@@ -1923,136 +1969,143 @@ export function registerAppHandlers() {
 
     const normalizedParentDir = path.normalize(parentDirectory);
 
-    return withLock(appId, async () => {
-      const app = await db.query.apps.findFirst({
-        where: eq(apps.id, appId),
-      });
+    return appOperationCoordinator.run(
+      {
+        appId,
+        operation: "change-app-location",
+        resources: ["app-path", "repository", "runtime"],
+      },
+      async () => {
+        const app = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
+        });
 
-      if (!app) {
-        throw new DyadError("App not found", DyadErrorKind.NotFound);
-      }
+        if (!app) {
+          throw new DyadError("App not found", DyadErrorKind.NotFound);
+        }
 
-      const currentResolvedPath = getDyadAppPath(app.path);
-      // Extract app folder name from current path (works for both absolute and relative paths)
-      const appFolderName = path.basename(
-        path.isAbsolute(app.path) ? app.path : currentResolvedPath,
-      );
-      const nextResolvedPath = path.join(normalizedParentDir, appFolderName);
+        const currentResolvedPath = getDyadAppPath(app.path);
+        // Extract app folder name from current path (works for both absolute and relative paths)
+        const appFolderName = path.basename(
+          path.isAbsolute(app.path) ? app.path : currentResolvedPath,
+        );
+        const nextResolvedPath = path.join(normalizedParentDir, appFolderName);
 
-      if (currentResolvedPath === nextResolvedPath) {
-        // Path hasn't changed, but we should update to absolute path format if needed
-        if (!path.isAbsolute(app.path)) {
+        if (currentResolvedPath === nextResolvedPath) {
+          // Path hasn't changed, but we should update to absolute path format if needed
+          if (!path.isAbsolute(app.path)) {
+            await db
+              .update(apps)
+              .set({ path: nextResolvedPath })
+              .where(eq(apps.id, appId));
+          }
+          return {
+            resolvedPath: nextResolvedPath,
+          };
+        }
+
+        const allApps = await db.query.apps.findMany();
+        const conflict = allApps.some(
+          (existingApp) =>
+            existingApp.id !== appId &&
+            getDyadAppPath(existingApp.path) === nextResolvedPath,
+        );
+
+        if (conflict) {
+          throw new Error(
+            `Another app already exists at '${nextResolvedPath}'. Please choose a different folder.`,
+          );
+        }
+
+        if (fs.existsSync(nextResolvedPath)) {
+          throw new Error(
+            `Destination path '${nextResolvedPath}' already exists. Please choose an empty folder.`,
+          );
+        }
+
+        // Check if source path exists - if not, just update the DB path without copying
+        const sourceExists = fs.existsSync(currentResolvedPath);
+        if (!sourceExists) {
+          logger.warn(
+            `Source path ${currentResolvedPath} does not exist. Updating database path only.`,
+          );
           await db
             .update(apps)
             .set({ path: nextResolvedPath })
             .where(eq(apps.id, appId));
-        }
-        return {
-          resolvedPath: nextResolvedPath,
-        };
-      }
-
-      const allApps = await db.query.apps.findMany();
-      const conflict = allApps.some(
-        (existingApp) =>
-          existingApp.id !== appId &&
-          getDyadAppPath(existingApp.path) === nextResolvedPath,
-      );
-
-      if (conflict) {
-        throw new Error(
-          `Another app already exists at '${nextResolvedPath}'. Please choose a different folder.`,
-        );
-      }
-
-      if (fs.existsSync(nextResolvedPath)) {
-        throw new Error(
-          `Destination path '${nextResolvedPath}' already exists. Please choose an empty folder.`,
-        );
-      }
-
-      // Check if source path exists - if not, just update the DB path without copying
-      const sourceExists = fs.existsSync(currentResolvedPath);
-      if (!sourceExists) {
-        logger.warn(
-          `Source path ${currentResolvedPath} does not exist. Updating database path only.`,
-        );
-        await db
-          .update(apps)
-          .set({ path: nextResolvedPath })
-          .where(eq(apps.id, appId));
-        return {
-          resolvedPath: nextResolvedPath,
-        };
-      }
-
-      if (runningApps.has(appId)) {
-        const appInfo = runningApps.get(appId)!;
-        try {
-          await stopAppByInfo(appId, appInfo);
-        } catch (error: any) {
-          logger.error(`Error stopping app ${appId} before moving:`, error);
-          throw new DyadError(
-            `Failed to stop app before moving: ${error.message}`,
-            DyadErrorKind.External,
-          );
-        }
-      }
-
-      await fsPromises.mkdir(normalizedParentDir, { recursive: true });
-
-      try {
-        // Copy the directory without node_modules
-        await copyDir(currentResolvedPath, nextResolvedPath, undefined, {
-          excludeNodeModules: true,
-        });
-
-        // Update path to absolute path
-        await db
-          .update(apps)
-          .set({ path: nextResolvedPath })
-          .where(eq(apps.id, appId));
-
-        try {
-          await fsPromises.rm(currentResolvedPath, {
-            recursive: true,
-            force: true,
-          });
-        } catch (error: any) {
-          logger.warn(
-            `Error deleting old app directory ${currentResolvedPath}:`,
-            error,
-          );
+          return {
+            resolvedPath: nextResolvedPath,
+          };
         }
 
-        return {
-          resolvedPath: nextResolvedPath,
-        };
-      } catch (error: any) {
-        // Attempt cleanup if destination exists (partial copy may have occurred)
-        if (fs.existsSync(nextResolvedPath)) {
+        if (runningApps.has(appId)) {
+          const appInfo = runningApps.get(appId)!;
           try {
-            await fsPromises.rm(nextResolvedPath, {
-              recursive: true,
-              force: true,
-            });
-          } catch (cleanupError) {
-            logger.warn(
-              `Failed to clean up partial move at ${nextResolvedPath}:`,
-              cleanupError,
+            await stopAppByInfo(appId, appInfo);
+          } catch (error: any) {
+            logger.error(`Error stopping app ${appId} before moving:`, error);
+            throw new DyadError(
+              `Failed to stop app before moving: ${error.message}`,
+              DyadErrorKind.External,
             );
           }
         }
-        logger.error(
-          `Error moving app files from ${currentResolvedPath} to ${nextResolvedPath}:`,
-          error,
-        );
-        throw new DyadError(
-          `Failed to move app files: ${error.message}`,
-          DyadErrorKind.External,
-        );
-      }
-    });
+
+        await fsPromises.mkdir(normalizedParentDir, { recursive: true });
+
+        try {
+          // Copy the directory without node_modules
+          await copyDir(currentResolvedPath, nextResolvedPath, undefined, {
+            excludeNodeModules: true,
+          });
+
+          // Update path to absolute path
+          await db
+            .update(apps)
+            .set({ path: nextResolvedPath })
+            .where(eq(apps.id, appId));
+
+          try {
+            await fsPromises.rm(currentResolvedPath, {
+              recursive: true,
+              force: true,
+            });
+          } catch (error: any) {
+            logger.warn(
+              `Error deleting old app directory ${currentResolvedPath}:`,
+              error,
+            );
+          }
+
+          return {
+            resolvedPath: nextResolvedPath,
+          };
+        } catch (error: any) {
+          // Attempt cleanup if destination exists (partial copy may have occurred)
+          if (fs.existsSync(nextResolvedPath)) {
+            try {
+              await fsPromises.rm(nextResolvedPath, {
+                recursive: true,
+                force: true,
+              });
+            } catch (cleanupError) {
+              logger.warn(
+                `Failed to clean up partial move at ${nextResolvedPath}:`,
+                cleanupError,
+              );
+            }
+          }
+          logger.error(
+            `Error moving app files from ${currentResolvedPath} to ${nextResolvedPath}:`,
+            error,
+          );
+          throw new DyadError(
+            `Failed to move app files: ${error.message}`,
+            DyadErrorKind.External,
+          );
+        }
+      },
+    );
   });
 
   // Handler for selecting an app for preview (updates lastViewedAt to prevent GC)
@@ -2107,15 +2160,6 @@ export function registerAppHandlers() {
       );
     }
 
-    const appRecord = await db.query.apps.findFirst({
-      where: eq(apps.id, appId),
-    });
-    if (!appRecord) {
-      throw new DyadError("App not found", DyadErrorKind.NotFound);
-    }
-
-    const appPath = getDyadAppPath(appRecord.path);
-
     if (!SCREENSHOT_FILENAME_REGEX.test(`${commitHash}.png`)) {
       logger.warn(
         `Skipping screenshot save for app ${appId}: unexpected commit hash format`,
@@ -2123,28 +2167,44 @@ export function registerAppHandlers() {
       return;
     }
 
-    const screenshotDir = path.join(appPath, DYAD_SCREENSHOT_DIR_NAME);
-    await fsPromises.mkdir(screenshotDir, { recursive: true });
+    await appOperationCoordinator.run(
+      {
+        appId,
+        operation: "save-app-screenshot",
+        resources: [readAppResource("app-path"), "media"],
+      },
+      async () => {
+        const appRecord = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
+        });
+        if (!appRecord) {
+          throw new DyadError("App not found", DyadErrorKind.NotFound);
+        }
 
-    const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, "");
-    const buffer = Buffer.from(base64Data, "base64");
-    await fsPromises.writeFile(
-      path.join(screenshotDir, `${commitHash}.png`),
-      buffer,
+        const appPath = getDyadAppPath(appRecord.path);
+        const screenshotDir = path.join(appPath, DYAD_SCREENSHOT_DIR_NAME);
+        await fsPromises.mkdir(screenshotDir, { recursive: true });
+
+        const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, "");
+        const buffer = Buffer.from(base64Data, "base64");
+        await fsPromises.writeFile(
+          path.join(screenshotDir, `${commitHash}.png`),
+          buffer,
+        );
+
+        // Prune: keep only the newest MAX_SCREENSHOTS_PER_APP by mtime.
+        try {
+          const screenshots = await readScreenshotEntries(screenshotDir);
+          for (const extra of screenshots.slice(MAX_SCREENSHOTS_PER_APP)) {
+            await fsPromises
+              .unlink(path.join(screenshotDir, extra.name))
+              .catch(() => {});
+          }
+        } catch (err) {
+          logger.warn(`Failed to prune screenshots for app ${appId}`, err);
+        }
+      },
     );
-
-    // Prune: keep only the newest MAX_SCREENSHOTS_PER_APP by mtime.
-    // Swallow ENOENT on unlink to tolerate concurrent saves.
-    try {
-      const screenshots = await readScreenshotEntries(screenshotDir);
-      for (const extra of screenshots.slice(MAX_SCREENSHOTS_PER_APP)) {
-        await fsPromises
-          .unlink(path.join(screenshotDir, extra.name))
-          .catch(() => {});
-      }
-    } catch (err) {
-      logger.warn(`Failed to prune screenshots for app ${appId}`, err);
-    }
   });
 
   createTypedHandler(appContracts.listAppScreenshots, async (_, params) => {

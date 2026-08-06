@@ -5,7 +5,6 @@ import type { ChatSearchResult, ChatSummary } from "../../lib/schemas";
 
 import log from "electron-log";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
-import { withLock } from "../utils/lock_utils";
 import { createTypedHandler } from "./base";
 import { entityDisposalBus } from "@/window_infrastructure/main/entity_disposal_bus";
 import { chatContracts } from "../types/chat";
@@ -31,6 +30,7 @@ import {
   settleChatActorsForDeletion,
 } from "@/ipc/services/chat_actor_deletion_service";
 import { waitForChatActorIdle } from "@/ipc/services/chat_actor_service";
+import { appOperationCoordinator } from "@/ipc/services/app_operation_coordinator";
 
 const logger = log.scope("chat_handlers");
 
@@ -63,7 +63,14 @@ async function mutateChatAfterDrainingStreams({
       // after draining so another turn cannot enter around the mutation.
       await waitForChatActorIdle(chatId, { cancelActive: true });
       await cancelActiveStreamsForChat(chatId, sender);
-      await withLock(chat.appId, mutation);
+      await appOperationCoordinator.run(
+        {
+          appId: chat.appId,
+          operation: "mutate-chat-content",
+          resources: ["chat-content"],
+        },
+        mutation,
+      );
     } finally {
       releaseStreamAdmissionBlock();
     }

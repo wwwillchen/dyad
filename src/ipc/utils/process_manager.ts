@@ -3,7 +3,7 @@ import treeKill from "tree-kill";
 import log from "electron-log";
 import type { Worker } from "node:worker_threads";
 import type { RuntimeMode2 } from "@/lib/schemas";
-import { withLock } from "./lock_utils";
+import { appOperationCoordinator } from "../services/app_operation_coordinator";
 import {
   destroyCloudSandbox,
   stopCloudSandboxFileSync,
@@ -296,27 +296,34 @@ export async function garbageCollectIdleApps(): Promise<void> {
   // Stop idle apps (acquire per-app lock to avoid racing with runApp/stopApp/restartApp)
   for (const appId of appsToStop) {
     try {
-      await withLock(appId, async () => {
-        // Re-check: the user may have selected this app while we were stopping others
-        if (appId === currentlySelectedAppId) {
-          logger.info(
-            `Skipping GC for app ${appId}: it became the selected app during this GC cycle`,
-          );
-          return;
-        }
-        const appInfo = runningApps.get(appId);
-        if (!appInfo) return;
-        // Re-check idle time under lock in case the app was viewed/restarted
-        const recheckIdle = Date.now() - appInfo.lastViewedAt;
-        if (recheckIdle < IDLE_TIMEOUT_MS) {
-          logger.info(
-            `Skipping GC for app ${appId}: idle time refreshed during lock wait`,
-          );
-          return;
-        }
-        logger.info(`Garbage collecting idle app ${appId}`);
-        await stopAppByInfo(appId, appInfo);
-      });
+      await appOperationCoordinator.run(
+        {
+          appId,
+          operation: "garbage-collect-app-runtime",
+          resources: ["runtime"],
+        },
+        async () => {
+          // Re-check: the user may have selected this app while we were stopping others
+          if (appId === currentlySelectedAppId) {
+            logger.info(
+              `Skipping GC for app ${appId}: it became the selected app during this GC cycle`,
+            );
+            return;
+          }
+          const appInfo = runningApps.get(appId);
+          if (!appInfo) return;
+          // Re-check idle time under lock in case the app was viewed/restarted
+          const recheckIdle = Date.now() - appInfo.lastViewedAt;
+          if (recheckIdle < IDLE_TIMEOUT_MS) {
+            logger.info(
+              `Skipping GC for app ${appId}: idle time refreshed during lock wait`,
+            );
+            return;
+          }
+          logger.info(`Garbage collecting idle app ${appId}`);
+          await stopAppByInfo(appId, appInfo);
+        },
+      );
     } catch (error) {
       logger.error(`Failed to garbage collect app ${appId}:`, error);
     }

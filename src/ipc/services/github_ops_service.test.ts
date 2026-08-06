@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DyadErrorKind } from "@/errors/dyad_error";
-import { GithubOpsService } from "./github_ops_service";
+import {
+  getGithubOperationResources,
+  GithubOpsService,
+} from "./github_ops_service";
 
 const handlers = vi.hoisted(() => ({
   push: vi.fn<() => Promise<void>>(),
@@ -32,6 +35,26 @@ vi.mock("../handlers/git_branch_handlers", () => ({
 describe("GithubOpsService lifecycle", () => {
   beforeEach(() => {
     handlers.push.mockReset();
+  });
+
+  it("coordinates metadata-only disconnects without claiming the repository", () => {
+    expect(getGithubOperationResources({ type: "disconnect" })).toEqual([
+      "metadata",
+    ]);
+    expect(
+      getGithubOperationResources({
+        type: "connect-repo",
+        mode: "create",
+        org: "dyad",
+        repo: "app",
+        branch: "main",
+        thenAutoPush: false,
+      }),
+    ).toEqual([
+      { resource: "app-path", mode: "read" },
+      "metadata",
+      "repository",
+    ]);
   });
 
   it("rejects queued operations after the deletion fence is raised", async () => {

@@ -71,6 +71,7 @@ import {
   deleteTempTestBranch,
   reconcileOrphanTestBranches,
 } from "./neon_test_branch";
+import { appOperationCoordinator } from "../services/app_operation_coordinator";
 
 type AppRow = any;
 
@@ -335,5 +336,24 @@ describe("reconcileOrphanTestBranches", () => {
   it("never throws when the query fails", async () => {
     mocks.selectWhere.mockRejectedValue(new Error("db down"));
     await expect(reconcileOrphanTestBranches()).resolves.toBeUndefined();
+  });
+
+  it("continues reconciling other apps when one app rejects admission", async () => {
+    mocks.selectWhere.mockResolvedValue([
+      makeApp({ id: 7, neonTestBranchId: "blocked-branch" }),
+      makeApp({ id: 8, path: "/apps/8", neonTestBranchId: "next-branch" }),
+    ]);
+    const deletion = appOperationCoordinator.beginAppDeletion(7);
+    try {
+      await reconcileOrphanTestBranches();
+    } finally {
+      deletion.release();
+    }
+
+    expect(mocks.deleteProjectBranch).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteProjectBranch).toHaveBeenCalledWith(
+      "proj-1",
+      "next-branch",
+    );
   });
 });

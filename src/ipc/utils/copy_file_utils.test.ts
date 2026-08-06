@@ -4,10 +4,14 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeCopyFile } from "./copy_file_utils";
 
-const { deploySupabaseFunction, gitAdd } = vi.hoisted(() => ({
-  deploySupabaseFunction: vi.fn(),
-  gitAdd: vi.fn(),
-}));
+const { deploySupabaseFunction, findApp, gitAdd, resolveAppPath } = vi.hoisted(
+  () => ({
+    deploySupabaseFunction: vi.fn(),
+    findApp: vi.fn(),
+    gitAdd: vi.fn(),
+    resolveAppPath: vi.fn(),
+  }),
+);
 
 vi.mock("electron-log", () => ({
   default: {
@@ -20,6 +24,10 @@ vi.mock("electron-log", () => ({
 }));
 
 vi.mock("./git_utils", () => ({ gitAdd }));
+vi.mock("@/db", () => ({
+  db: { query: { apps: { findFirst: findApp } } },
+}));
+vi.mock("@/paths/paths", () => ({ getDyadAppPath: resolveAppPath }));
 vi.mock("../../supabase_admin/supabase_management_client", () => ({
   deploySupabaseFunction,
 }));
@@ -39,6 +47,13 @@ describe.runIf(process.platform !== "win32")(
       await fs.symlink(".", path.join(appPath, "self"), "dir");
       gitAdd.mockResolvedValue(undefined);
       deploySupabaseFunction.mockResolvedValue(undefined);
+      findApp.mockResolvedValue({
+        id: 987654,
+        path: appPath,
+        supabaseProjectId: "project-id",
+        supabaseOrganizationSlug: null,
+      });
+      resolveAppPath.mockImplementation((value: string) => value);
     });
 
     afterEach(async () => {
@@ -51,8 +66,6 @@ describe.runIf(process.platform !== "win32")(
         from: "source.txt",
         to: "self/supabase/functions/hello-world/index.ts",
         appId: 987654,
-        appPath,
-        supabaseProjectId: "project-id",
       });
 
       await expect(

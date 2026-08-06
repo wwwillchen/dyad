@@ -30,7 +30,10 @@ import { db } from "../../db";
 import { apps } from "../../db/schema";
 import { eq } from "drizzle-orm";
 import log from "electron-log";
-import { withLock } from "../utils/lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "../services/app_operation_coordinator";
 import { updateAppGithubRepo, ensureCleanWorkspace } from "./github_handlers";
 import { createTypedHandler } from "./base";
 import { githubContracts, gitContracts } from "../types/github";
@@ -382,27 +385,34 @@ async function withAppGitOp<T>(
   operation: string,
   fn: (appPath: string) => Promise<T>,
 ): Promise<T> {
-  const app = await db.query.apps.findFirst({ where: eq(apps.id, appId) });
-  if (!app) throw new DyadError("App not found", DyadErrorKind.NotFound);
-  const appPath = getDyadAppPath(app.path);
+  return appOperationCoordinator.run(
+    {
+      appId,
+      operation: `git:${operation}`,
+      resources: [readAppResource("app-path"), "repository"],
+    },
+    async () => {
+      const app = await db.query.apps.findFirst({ where: eq(apps.id, appId) });
+      if (!app) throw new DyadError("App not found", DyadErrorKind.NotFound);
+      const appPath = getDyadAppPath(app.path);
 
-  return withLock(appId, async () => {
-    if (isGitMergeInProgress({ path: appPath })) {
-      throw GitStateError(
-        `Cannot ${operation}: merge in progress. Please complete or abort the merge first.`,
-        GIT_ERROR_CODES.MERGE_IN_PROGRESS,
-      );
-    }
+      if (isGitMergeInProgress({ path: appPath })) {
+        throw GitStateError(
+          `Cannot ${operation}: merge in progress. Please complete or abort the merge first.`,
+          GIT_ERROR_CODES.MERGE_IN_PROGRESS,
+        );
+      }
 
-    if (isGitRebaseInProgress({ path: appPath })) {
-      throw GitStateError(
-        `Cannot ${operation}: rebase in progress. Please complete or abort the rebase first.`,
-        GIT_ERROR_CODES.REBASE_IN_PROGRESS,
-      );
-    }
+      if (isGitRebaseInProgress({ path: appPath })) {
+        throw GitStateError(
+          `Cannot ${operation}: rebase in progress. Please complete or abort the rebase first.`,
+          GIT_ERROR_CODES.REBASE_IN_PROGRESS,
+        );
+      }
 
-    return fn(appPath);
-  });
+      return fn(appPath);
+    },
+  );
 }
 
 async function handleCommitChanges(

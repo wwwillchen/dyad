@@ -47,7 +47,11 @@ import {
   stopAppByInfo,
   type RunningAppInfo,
 } from "@/ipc/utils/process_manager";
-import { withLock } from "@/ipc/utils/lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+  type AppOperationRequest,
+} from "@/ipc/services/app_operation_coordinator";
 import { APP_RUN_INVOCATION_KIND } from "@/app_run/state";
 import {
   ensurePnpmAllowBuildsConfigured,
@@ -793,7 +797,7 @@ function listenToProcess({
         // ignored builds can be read and recorded.
         if (appPath && !ignoredBuildsRecordedAfterInstall) {
           ignoredBuildsRecordedAfterInstall = true;
-          void recordIgnoredBuildsAfterInstall(appPath);
+          await recordIgnoredBuildsAfterInstall(appPath);
         }
         await ensureProxyForRunningApp({
           appId,
@@ -1298,11 +1302,19 @@ export function startCloudSandboxLogStream(input: {
       try {
         // Output-only on purpose: the install ran remotely, so the local
         // .modules.yaml (if any) does not describe this sandbox.
-        await recordAndReportDeniedPnpmBuilds({
-          appPath,
-          ignoredBuilds,
-          source: "cloud-sandbox",
-        });
+        await appOperationCoordinator.run(
+          {
+            appId: input.appId,
+            operation: "record-cloud-pnpm-build-policy",
+            resources: [readAppResource("app-path"), "repository"],
+          },
+          () =>
+            recordAndReportDeniedPnpmBuilds({
+              appPath,
+              ignoredBuilds,
+              source: "cloud-sandbox",
+            }),
+        );
       } catch (error) {
         logger.warn(
           "Failed to record ignored pnpm builds from cloud sandbox logs:",
@@ -1432,7 +1444,11 @@ interface RuntimeAppRecord {
 }
 
 export interface AppRuntimeServiceDependencies {
-  withLock<T>(appId: number, operation: () => Promise<T>): Promise<T>;
+  runSerialized<T>(
+    appId: number,
+    lifecycle: AppRuntimeLifecycle,
+    operation: () => Promise<T>,
+  ): Promise<T>;
   findApp(appId: number): Promise<RuntimeAppRecord | undefined>;
   resolveAppPath(relativePath: string): string;
   getRunningApp(appId: number): RunningAppInfo | undefined;
@@ -1477,10 +1493,25 @@ export interface AppRuntimeServiceDependencies {
   now(): number;
 }
 
+export type AppRuntimeLifecycle = "start" | "restart" | "stop";
+
+export function getAppRuntimeOperationResources(
+  lifecycle: AppRuntimeLifecycle,
+): AppOperationRequest["resources"] {
+  if (lifecycle === "stop") return ["runtime"];
+  return [
+    readAppResource("app-path"),
+    readAppResource("repository"),
+    "runtime",
+    readAppResource("runtime-config"),
+  ];
+}
+
 export interface StartAppRuntimeOptions {
   appId: number;
   output: AppRuntimeOutput;
   invocationRef?: AppRunInvocationRef;
+  readyTimeoutMs?: number;
 }
 
 export interface RestartAppRuntimeOptions extends StartAppRuntimeOptions {
@@ -1532,7 +1563,7 @@ export class AppRuntimeService {
 
   async start(options: StartAppRuntimeOptions): Promise<void> {
     const { appId, output, invocationRef } = options;
-    return this.dependencies.withLock(appId, async () => {
+    return this.dependencies.runSerialized(appId, "start", async () => {
       const existing = this.dependencies.getRunningApp(appId);
       if (existing) {
         logger.debug(`App ${appId} is already running.`);
@@ -1552,17 +1583,22 @@ export class AppRuntimeService {
       const app = await this.requireApp(appId);
       const appPath = this.dependencies.resolveAppPath(app.path);
       logger.debug(`Starting app ${appId} in path ${app.path}`);
+      let processStarted = false;
       try {
         await this.dependencies.cleanPort(getAppPort(appId));
         await this.startProcess(app, appPath, options);
+        processStarted = true;
+        await this.dependencies.waitForReady(appId, options.readyTimeoutMs);
       } catch (error) {
         logger.error(`Error running app ${appId}:`, error);
-        const latest = this.dependencies.getRunningApp(appId);
-        if (
-          latest &&
-          latest.processId === this.dependencies.getProcessCounter()
-        ) {
-          this.dependencies.deleteRunningApp(appId);
+        if (!processStarted) {
+          const latest = this.dependencies.getRunningApp(appId);
+          if (
+            latest &&
+            latest.processId === this.dependencies.getProcessCounter()
+          ) {
+            this.dependencies.deleteRunningApp(appId);
+          }
         }
         throw new DyadError(
           `Failed to run app ${appId}: ${errorMessage(error)}`,
@@ -1582,7 +1618,7 @@ export class AppRuntimeService {
       clearRuntimeLogs = false,
     } = options;
     logger.log(`Restarting app ${appId}`);
-    return this.dependencies.withLock(appId, async () => {
+    return this.dependencies.runSerialized(appId, "restart", async () => {
       const app = await this.requireApp(appId);
       const appPath = this.dependencies.resolveAppPath(app.path);
       const appInfo = this.dependencies.getRunningApp(appId);
@@ -1600,6 +1636,7 @@ export class AppRuntimeService {
           clearRuntimeLogs,
           appInfo,
         });
+        await this.dependencies.waitForReady(appId, options.readyTimeoutMs);
         return;
       }
 
@@ -1630,6 +1667,7 @@ export class AppRuntimeService {
         this.dependencies.clearLogs(appId);
       }
       await this.startProcess(app, appPath, options);
+      await this.dependencies.waitForReady(appId, options.readyTimeoutMs);
     });
   }
 
@@ -1637,7 +1675,7 @@ export class AppRuntimeService {
     logger.log(
       `Attempting to stop app ${appId}. Current running apps: ${runningApps.size}`,
     );
-    return this.dependencies.withLock(appId, async () => {
+    return this.dependencies.runSerialized(appId, "stop", async () => {
       const appInfo = this.dependencies.getRunningApp(appId);
       if (!appInfo) {
         logger.log(`App ${appId} is already stopped.`);
@@ -1685,6 +1723,10 @@ export class AppRuntimeService {
     options: { timeoutMs?: number } = {},
   ): Promise<void> {
     return this.dependencies.waitForReady(appId, options.timeoutMs);
+  }
+
+  isRunning(appId: number): boolean {
+    return this.dependencies.getRunningApp(appId) !== undefined;
   }
 
   createExternalLifecycleRef(appId: number): AppRunInvocationRef {
@@ -1757,7 +1799,6 @@ export class AppRuntimeService {
         DyadErrorKind.UserCancelled,
       );
     }
-    let runtimeMayBeLive = false;
     try {
       await this.restart({
         appId: options.appId,
@@ -1766,18 +1807,14 @@ export class AppRuntimeService {
         removeNodeModules: options.operation === "rebuild",
         recreateSandbox: options.operation === "rebuild",
         clearRuntimeLogs: true,
-      });
-      runtimeMayBeLive = true;
-      await this.waitForReady(options.appId, {
-        timeoutMs: options.timeoutMs,
+        readyTimeoutMs: options.timeoutMs,
       });
       this.settleExternalClaim(claim);
     } catch (error) {
       this.settleExternalClaim(
         claim,
         error,
-        runtimeMayBeLive &&
-          this.dependencies.getRunningApp(options.appId) !== undefined,
+        this.dependencies.getRunningApp(options.appId) !== undefined,
       );
       throw error;
     }
@@ -1928,7 +1965,15 @@ async function waitForAppReady(
 }
 
 export const appRuntimeService = new AppRuntimeService({
-  withLock,
+  runSerialized: (appId, lifecycle, operation) =>
+    appOperationCoordinator.run(
+      {
+        appId,
+        operation: `app-runtime:${lifecycle}`,
+        resources: getAppRuntimeOperationResources(lifecycle),
+      },
+      operation,
+    ),
   findApp: (appId) =>
     db.query.apps.findFirst({
       where: eq(apps.id, appId),

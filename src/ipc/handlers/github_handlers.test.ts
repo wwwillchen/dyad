@@ -26,7 +26,7 @@ import {
   normalizeGitHubRepoName,
   prepareLocalBranch,
 } from "@/ipc/handlers/github_handlers";
-import { createAppMutationLock } from "@/ipc/utils/app_mutation_lock";
+import { createAppOperationHandler } from "@/ipc/utils/app_mutation_lock";
 import { db } from "@/db";
 import {
   gitCheckout,
@@ -89,7 +89,9 @@ describe("prepareLocalBranch locking", () => {
   });
 
   it("completes when called by a whole-operation locked handler", async () => {
-    const lockedConnectHandler = createAppMutationLock(
+    const lockedConnectHandler = createAppOperationHandler(
+      "test-connect",
+      ["repository"],
       async (_event: unknown, input: { appId: number }) => {
         await prepareLocalBranch(input);
       },

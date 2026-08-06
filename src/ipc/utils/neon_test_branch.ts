@@ -11,7 +11,10 @@ import { readEnvVarsOrEmpty, updateNeonEnvVars } from "./app_env_var_utils";
 import { detectFrameworkType } from "./framework_utils";
 import { retryOnLocked } from "./retryOnLocked";
 import { ensureNeonAuth, getOrCreateNeonAuthCookieSecret } from "./neon_utils";
-import { withLock } from "./lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "../services/app_operation_coordinator";
 import { getDyadAppPath } from "@/paths/paths";
 
 const logger = log.scope("neon_test_branch");
@@ -384,17 +387,35 @@ export async function reconcileOrphanTestBranches(): Promise<void> {
       `Reconciling ${rows.length} orphaned Neon test branch(es) from a previous session`,
     );
     for (const appData of rows) {
-      // Serialize against user-initiated test runs on the same app: both this
-      // sweep and a run swap .env.local and restart the dev server, so an
-      // interleaving could leave the run pointed at the real database. The run
-      // path acquires the same per-app lock.
-      await withLock(appData.id, async () => {
-        const restored = await restoreRealBranchEnvVars(appData);
-        if (!restored) {
-          return;
-        }
-        await deleteTempTestBranch(appData);
-      });
+      try {
+        // Serialize against user-initiated test runs on the same app: both this
+        // sweep and a run swap .env.local and restart the dev server, so an
+        // interleaving could leave the run pointed at the real database. The run
+        // path acquires the same per-app lock.
+        await appOperationCoordinator.run(
+          {
+            appId: appData.id,
+            operation: "reconcile-neon-test-branch",
+            resources: [
+              readAppResource("app-path"),
+              "provider",
+              "runtime",
+              "runtime-config",
+            ],
+          },
+          async () => {
+            const restored = await restoreRealBranchEnvVars(appData);
+            if (!restored) {
+              return;
+            }
+            await deleteTempTestBranch(appData);
+          },
+        );
+      } catch (error) {
+        logger.warn(
+          `Failed to reconcile orphaned test branch for app ${appData.id}: ${error}`,
+        );
+      }
     }
   } catch (error) {
     logger.error(`Failed to reconcile orphaned test branches: ${error}`);

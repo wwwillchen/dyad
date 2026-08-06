@@ -587,9 +587,6 @@ export async function processFullResponseActions(
           from: tag.from,
           to: tag.to,
           appId: chatWithApp.app.id,
-          appPath,
-          supabaseProjectId: chatWithApp.app.supabaseProjectId,
-          supabaseOrganizationSlug: chatWithApp.app.supabaseOrganizationSlug,
           isSharedModulesChanged: sharedModulesChanged,
         });
 

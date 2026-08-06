@@ -22,12 +22,25 @@ import {
   handleRenameBranch,
   handleSwitchBranch,
 } from "../handlers/git_branch_handlers";
-import { withLock } from "../utils/lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "./app_operation_coordinator";
 
 // The extracted handler cores do not inspect the Electron event. Keeping the
 // placeholder confined to this compatibility seam lets the hosted actor call
 // main Git services without any renderer IPC round trip.
 const MAIN_SERVICE_EVENT = undefined as unknown as IpcMainInvokeEvent;
+
+export function getGithubOperationResources(op: GithubOperation) {
+  if (op.type === "disconnect") {
+    return ["metadata"] as const;
+  }
+  if (op.type === "connect-repo") {
+    return [readAppResource("app-path"), "metadata", "repository"] as const;
+  }
+  return [readAppResource("app-path"), "repository"] as const;
+}
 
 export class GithubOpsService {
   private readonly deletionFences = new Map<number, number>();
@@ -44,10 +57,17 @@ export class GithubOpsService {
     }
     return this.track(
       appId,
-      withLock(appId, () => {
-        this.assertAcceptingOperations(appId);
-        return this.runUnlocked(appId, op);
-      }),
+      appOperationCoordinator.run(
+        {
+          appId,
+          operation: `github:${op.type}`,
+          resources: getGithubOperationResources(op),
+        },
+        () => {
+          this.assertAcceptingOperations(appId);
+          return this.runUnlocked(appId, op);
+        },
+      ),
     );
   }
 

@@ -7,7 +7,7 @@ import { apps } from "../../db/schema";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { IS_TEST_BUILD } from "@/ipc/utils/test_utils";
 import { fetchWithRetry } from "@/ipc/utils/retryWithRateLimit";
-import { withLock } from "@/ipc/utils/lock_utils";
+import { appOperationCoordinator } from "@/ipc/services/app_operation_coordinator";
 import {
   executeSupabaseSql,
   getProjectApiKeys,
@@ -310,19 +310,19 @@ export async function createTempTestUser(
  * user on Supabase, and clear the persisted `supabaseTestUserId`. Safe to call
  * when no user is set.
  */
-export async function deleteTempTestUser(appData: AppRow): Promise<void> {
+export async function deleteTempTestUser(appData: AppRow): Promise<boolean> {
   const userId = appData.supabaseTestUserId;
   const projectId = appData.supabaseProjectId;
   const organizationSlug = appData.supabaseOrganizationSlug;
   if (!userId || !projectId || !organizationSlug) {
-    return;
+    return true;
   }
   if (IS_TEST_BUILD) {
     await db
       .update(apps)
       .set({ supabaseTestUserId: null })
       .where(eq(apps.id, appData.id));
-    return;
+    return true;
   }
 
   // Sweep the user's rows FIRST so a `restrict`/`no action` FK to auth.users
@@ -345,6 +345,7 @@ export async function deleteTempTestUser(appData: AppRow): Promise<void> {
       .set({ supabaseTestUserId: null })
       .where(eq(apps.id, appData.id));
   }
+  return deleted;
 }
 
 /**
@@ -370,7 +371,14 @@ export async function reconcileOrphanTestUsers(): Promise<void> {
         // Serialize against a user-initiated test run on the same app so this
         // sweep can't race the run's teardown on the shared supabaseTestUserId
         // column. The run path acquires the same per-app lock.
-        await withLock(appData.id, () => deleteTempTestUser(appData));
+        await appOperationCoordinator.run(
+          {
+            appId: appData.id,
+            operation: "reconcile-supabase-test-user",
+            resources: ["provider", "runtime-config"],
+          },
+          () => deleteTempTestUser(appData),
+        );
       } catch (error) {
         logger.warn(
           `Failed to reconcile orphaned test user for app ${appData.id}: ${error}`,

@@ -5,7 +5,7 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import { apps } from "@/db/schema";
 import { DyadErrorKind } from "@/errors/dyad_error";
-import { withLock } from "@/ipc/utils/lock_utils";
+import { appOperationCoordinator } from "@/ipc/services/app_operation_coordinator";
 import {
   type HandlerTestHarness,
   setupHandlerTestHarness,
@@ -392,17 +392,24 @@ describe("ImageGenerationService", () => {
     );
     const appLockAcquired = deferred<void>();
     const releaseAppLock = deferred<void>();
-    const relocation = withLock(appId, async () => {
-      appLockAcquired.resolve();
-      await releaseAppLock.promise;
-      const movedAppPath = path.join(tempBase, "moved-app");
-      await fs.promises.mkdir(movedAppPath, { recursive: true });
-      harness.db
-        .update(apps)
-        .set({ path: "moved-app", name: "Moved app" })
-        .where(eq(apps.id, appId))
-        .run();
-    });
+    const relocation = appOperationCoordinator.run(
+      {
+        appId,
+        operation: "test-relocation",
+        resources: ["app-path"],
+      },
+      async () => {
+        appLockAcquired.resolve();
+        await releaseAppLock.promise;
+        const movedAppPath = path.join(tempBase, "moved-app");
+        await fs.promises.mkdir(movedAppPath, { recursive: true });
+        harness.db
+          .update(apps)
+          .set({ path: "moved-app", name: "Moved app" })
+          .where(eq(apps.id, appId))
+          .run();
+      },
+    );
     await appLockAcquired.promise;
 
     const generation = generate("move-during-generation");
@@ -424,6 +431,56 @@ describe("ImageGenerationService", () => {
     expect(
       fs.existsSync(path.join(tempBase, "test-app", ".dyad", "media")),
     ).toBe(false);
+  });
+
+  it("waits for repository writers before committing a generated image", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            created: 1,
+            data: [{ b64_json: Buffer.from("image").toString("base64") }],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    const repositoryAcquired = deferred<void>();
+    const releaseRepository = deferred<void>();
+    const repositoryMutation = appOperationCoordinator.run(
+      {
+        appId,
+        operation: "test-repository-mutation",
+        resources: ["repository"],
+      },
+      async () => {
+        repositoryAcquired.resolve();
+        await releaseRepository.promise;
+      },
+    );
+    await repositoryAcquired.promise;
+
+    const generation = generate("repository-during-save");
+    let settled = false;
+    void generation.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseRepository.resolve();
+    await repositoryMutation;
+    await expect(generation).resolves.toMatchObject({
+      appPath: "test-app",
+      filePath: expect.stringContaining(path.join("test-app", ".dyad")),
+    });
   });
 
   it("removes failed requests from the active controller registry", async () => {
