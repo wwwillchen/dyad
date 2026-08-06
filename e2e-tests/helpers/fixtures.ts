@@ -155,7 +155,11 @@ export const test = base.extend<{
 
       // After the test we can check whether the test passed or failed.
       if (testInfo.status !== testInfo.expectedStatus) {
-        const page = await electronApp.firstWindow();
+        const page = electronApp.windows()[0];
+        if (!page) {
+          console.error("Unable to take failure screenshot: no window is open");
+          return;
+        }
         try {
           const screenshot = await page.screenshot({ timeout: 5_000 });
           await testInfo.attach("screenshot", {

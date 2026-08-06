@@ -38,6 +38,10 @@ describe("window lifecycle policy", () => {
     expect(shouldQuitAfterAllWindowsClosed("darwin")).toBe(false);
   });
 
+  it("continues an in-progress macOS quit after the last window closes", () => {
+    expect(shouldQuitAfterAllWindowsClosed("darwin", true)).toBe(true);
+  });
+
   it("ignores activation until startup owns the initial window", () => {
     expect(
       shouldCreateWindowOnActivate({

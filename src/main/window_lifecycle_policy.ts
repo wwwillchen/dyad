@@ -10,8 +10,9 @@ export function shouldRetainClosedWindowForActivation({
 
 export function shouldQuitAfterAllWindowsClosed(
   platform: NodeJS.Platform,
+  isAppQuitting = false,
 ): boolean {
-  return platform !== "darwin";
+  return isAppQuitting || platform !== "darwin";
 }
 
 export function shouldCreateWindowOnActivate({
