@@ -242,7 +242,7 @@ describe("processFullResponseActions add dependency errors", () => {
       '<dyad-add-dependency packages="react"></dyad-add-dependency>',
       1,
       {
-        chatSummary: undefined,
+        chatSummary: "   ",
         messageId: 1,
       },
     );
@@ -302,7 +302,7 @@ describe("processFullResponseActions add dependency errors", () => {
 
     expect(gitCommit).toHaveBeenCalledWith({
       path: "/mock/apps/test-app",
-      message: "[dyad] wrote 1 file(s), installed or updated react package(s)",
+      message: "wrote 1 file(s), installed or updated react package(s)",
     });
   });
 
@@ -328,7 +328,7 @@ describe("processFullResponseActions add dependency errors", () => {
 
     expect(gitCommit).toHaveBeenCalledWith({
       path: "/mock/apps/test-app",
-      message: "[dyad] wrote 1 file(s), installed or updated react package(s)",
+      message: "wrote 1 file(s), installed or updated react package(s)",
     });
     const contentUpdate = dbUpdates.find(
       (update) => typeof update.content === "string",
@@ -336,6 +336,26 @@ describe("processFullResponseActions add dependency errors", () => {
     expect(contentUpdate?.content).toContain(
       'message="Partially installed or updated dependencies: react. zod failed"',
     );
+  });
+
+  it("uses a fallback subject when a failed dependency operation stages project files", async () => {
+    executeAddDependencyMock.mockRejectedValue(new Error("install failed"));
+    vi.mocked(fs.existsSync).mockReturnValueOnce(true);
+    vi.mocked(hasStagedChanges).mockResolvedValueOnce(true);
+
+    await processFullResponseActions(
+      '<dyad-add-dependency packages="react"></dyad-add-dependency>',
+      1,
+      {
+        chatSummary: undefined,
+        messageId: 1,
+      },
+    );
+
+    expect(gitCommit).toHaveBeenCalledWith({
+      path: "/mock/apps/test-app",
+      message: "updated project files",
+    });
   });
 
   it("queues delete tags for cloud sync even when the local path is already missing", async () => {

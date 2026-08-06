@@ -228,7 +228,7 @@ export async function applyPnpmVersionMigration({
     }
     await gitCommit({
       path: appPath,
-      message: `[dyad] migrate to pnpm ${migrationMajor}`,
+      message: `migrate to pnpm ${migrationMajor}`,
     });
   } catch (error) {
     logger.warn("Failed to commit pnpm migration changes:", error);

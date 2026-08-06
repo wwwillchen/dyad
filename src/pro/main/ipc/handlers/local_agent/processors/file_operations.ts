@@ -129,9 +129,9 @@ export async function commitAllChanges(
     const uncommittedFiles = await getGitUncommittedFiles({
       path: ctx.appPath,
     });
-    const message = chatSummary
-      ? `[dyad] ${chatSummary}`
-      : `[dyad] (${uncommittedFiles.length} files changed)`;
+    const trimmedChatSummary = chatSummary?.trim();
+    const message =
+      trimmedChatSummary || `(${uncommittedFiles.length} files changed)`;
     let commitHash: string | undefined;
 
     if (uncommittedFiles.length > 0) {

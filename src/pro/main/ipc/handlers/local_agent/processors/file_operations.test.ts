@@ -1,8 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  getGitUncommittedFiles: vi.fn(),
+  gitAddAll: vi.fn(),
+  gitCommit: vi.fn(),
   deployAffectedSupabaseFunctions: vi.fn(),
   readSettings: vi.fn(),
+}));
+
+vi.mock("electron-log", () => ({
+  default: {
+    scope: () => ({
+      error: vi.fn(),
+    }),
+  },
+}));
+
+vi.mock("@/ipc/utils/git_utils", () => ({
+  getGitUncommittedFiles: mocks.getGitUncommittedFiles,
+  gitAddAll: mocks.gitAddAll,
+  gitCommit: mocks.gitCommit,
 }));
 
 vi.mock("../../../../../../supabase_admin/supabase_utils", async () => {
@@ -20,7 +37,35 @@ vi.mock("../../../../../../main/settings", () => ({
   readSettings: mocks.readSettings,
 }));
 
-import { deployAllFunctionsIfNeeded } from "./file_operations";
+import {
+  commitAllChanges,
+  deployAllFunctionsIfNeeded,
+} from "./file_operations";
+
+describe("commitAllChanges", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getGitUncommittedFiles.mockResolvedValue(["src/App.tsx"]);
+    mocks.gitCommit.mockResolvedValue("commit-hash");
+  });
+
+  it("uses the file-count fallback for a whitespace-only chat summary", async () => {
+    const result = await commitAllChanges(
+      {
+        appPath: "/mock/app",
+        supabaseProjectId: null,
+      },
+      "   ",
+    );
+
+    expect(mocks.gitAddAll).toHaveBeenCalledWith({ path: "/mock/app" });
+    expect(mocks.gitCommit).toHaveBeenCalledWith({
+      path: "/mock/app",
+      message: "(1 files changed)",
+    });
+    expect(result).toEqual({ commitHash: "commit-hash" });
+  });
+});
 
 describe("deployAllFunctionsIfNeeded", () => {
   beforeEach(() => {

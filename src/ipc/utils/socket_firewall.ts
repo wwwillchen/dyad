@@ -813,7 +813,7 @@ export async function commitPnpmAllowBuildsConfigIfChanged(
     await gitAdd({ path: appPath, filepath: "pnpm-workspace.yaml" });
     await gitCommit({
       path: appPath,
-      message: "[dyad] approve pnpm dependency builds",
+      message: "approve pnpm dependency builds",
     });
   } catch (error) {
     logger.warn("Failed to commit pnpm allowBuilds config:", error);
@@ -1090,7 +1090,7 @@ export async function recordDeniedPnpmBuilds({
       await gitAdd({ path: appPath, filepath: "pnpm-workspace.yaml" });
       await gitCommit({
         path: appPath,
-        message: "[dyad] record denied pnpm dependency builds",
+        message: "record denied pnpm dependency builds",
       });
     } catch (error) {
       logger.warn("Failed to commit denied pnpm builds config:", error);

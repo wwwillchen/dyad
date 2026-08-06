@@ -859,7 +859,7 @@ export function registerTestsHandlers() {
         await gitService.removeFileAndCommit({
           path: appPath,
           filepath: testFile,
-          message: `[dyad] delete test ${testFile}`,
+          message: `delete test ${testFile}`,
         });
       if (uncommittedReason === "untracked") {
         // Git removed nothing (untracked spec, or the app isn't a repo), so the
