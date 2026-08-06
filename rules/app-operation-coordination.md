@@ -19,10 +19,13 @@ actually touches; never use a raw numeric `appId` with `withLock`.
 | `runtime-config`  | Environment/configuration consumed when starting the runtime. Runtime lifecycle reads it; test/provider environment swaps write it.                  |
 | `test-files`      | Test execution inputs and test artifact mutations.                                                                                                   |
 
-Operations acquire all resources atomically, so callers must declare the full
-set up front rather than nesting another coordinated app operation. Use direct
-unlocked service primitives only when the outer operation already owns the
-required resources, and document that ownership at the call site.
+For one app, operations acquire all resources atomically, so callers must
+declare the full set up front rather than nesting another operation for that
+app. Cross-app operations may compose per-app acquisitions only in ascending
+numeric app-ID order, after deduplicating the IDs, so every caller uses the
+same global order. Use direct unlocked service primitives only when the outer
+operation already owns the required resources, and document that ownership at
+the call site.
 
 App deletion closes coordinator admission before draining admitted work. Every
 new app-scoped main-process mutation must therefore use the coordinator unless

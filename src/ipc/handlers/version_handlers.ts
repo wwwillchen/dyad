@@ -910,6 +910,7 @@ export function registerVersionHandlers() {
         operation: "revert-version",
         resources: [
           readAppResource("app-path"),
+          "chat-content",
           "provider",
           "repository",
           "runtime-config",

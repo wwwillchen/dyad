@@ -32,8 +32,8 @@ function createHarness() {
   let runtimeMode: RuntimeMode2 = "host";
   let id = 0;
   const dependencies: AppRuntimeServiceDependencies = {
-    runSerialized: async (_appId, operation) => {
-      calls.push("lock");
+    runSerialized: async (_appId, lifecycle, operation) => {
+      calls.push(`lock:${lifecycle}`);
       return operation();
     },
     findApp: vi.fn(async () => ({
@@ -119,16 +119,16 @@ describe("AppRuntimeService", () => {
     await harness.service.stop(APP_ID);
 
     expect(harness.calls).toEqual([
-      "lock",
+      "lock:start",
       "clean-port",
       "start:app-run:test",
-      "lock",
+      "lock:restart",
       "stop",
       "clean-port",
       "remove-node-modules",
       "clear-logs",
       "start:app-run:test",
-      "lock",
+      "lock:stop",
       "stop",
     ]);
   });
@@ -208,7 +208,7 @@ describe("AppRuntimeService", () => {
       }),
     ]);
     expect(harness.calls).toEqual([
-      "lock",
+      "lock:restart",
       "clean-port",
       "remove-node-modules",
       "clear-logs",

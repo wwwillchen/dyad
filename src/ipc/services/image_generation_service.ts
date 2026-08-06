@@ -288,7 +288,7 @@ export class ImageGenerationService {
       {
         appId: params.targetAppId,
         operation: "save-generated-image",
-        resources: [readAppResource("app-path"), "media"],
+        resources: [readAppResource("app-path"), "media", "repository"],
       },
       async () => {
         this.assertAcceptingGenerations(params.targetAppId);

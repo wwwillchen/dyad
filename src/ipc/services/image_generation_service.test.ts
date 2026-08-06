@@ -433,6 +433,56 @@ describe("ImageGenerationService", () => {
     ).toBe(false);
   });
 
+  it("waits for repository writers before committing a generated image", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            created: 1,
+            data: [{ b64_json: Buffer.from("image").toString("base64") }],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    const repositoryAcquired = deferred<void>();
+    const releaseRepository = deferred<void>();
+    const repositoryMutation = appOperationCoordinator.run(
+      {
+        appId,
+        operation: "test-repository-mutation",
+        resources: ["repository"],
+      },
+      async () => {
+        repositoryAcquired.resolve();
+        await releaseRepository.promise;
+      },
+    );
+    await repositoryAcquired.promise;
+
+    const generation = generate("repository-during-save");
+    let settled = false;
+    void generation.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseRepository.resolve();
+    await repositoryMutation;
+    await expect(generation).resolves.toMatchObject({
+      appPath: "test-app",
+      filePath: expect.stringContaining(path.join("test-app", ".dyad")),
+    });
+  });
+
   it("removes failed requests from the active controller registry", async () => {
     vi.stubGlobal(
       "fetch",

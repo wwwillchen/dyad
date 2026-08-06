@@ -46,8 +46,15 @@ import {
 import { getDyadAppPath } from "@/paths/paths";
 import { createAppOperationHandler } from "@/ipc/utils/app_mutation_lock";
 import { readAppResource } from "@/ipc/services/app_operation_coordinator";
+import type { AppOperationRequest } from "@/ipc/services/app_operation_coordinator";
 
 const testOnlyHandle = createTestOnlyLoggedHandler(logger);
+const NEON_APP_MUTATION_RESOURCES = [
+  readAppResource("app-path"),
+  "provider",
+  "repository",
+  "runtime-config",
+] as const;
 
 function createLockedHandler<
   TChannel extends string,
@@ -59,14 +66,11 @@ function createLockedHandler<
     event: IpcMainInvokeEvent,
     input: z.infer<TInput>,
   ) => Promise<z.infer<TOutput>>,
+  resources: AppOperationRequest["resources"] = NEON_APP_MUTATION_RESOURCES,
 ): void {
   createTypedHandler(
     contract,
-    createAppOperationHandler(
-      `neon:${contract.channel}`,
-      [readAppResource("app-path"), "provider", "repository", "runtime-config"],
-      handler,
-    ),
+    createAppOperationHandler(`neon:${contract.channel}`, resources, handler),
   );
 }
 
@@ -974,6 +978,7 @@ export function registerNeonHandlers() {
 
       return { success: true };
     },
+    ["provider"],
   );
 
   testOnlyHandle("neon:fake-connect", async () => {

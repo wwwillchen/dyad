@@ -1435,7 +1435,11 @@ interface RuntimeAppRecord {
 }
 
 export interface AppRuntimeServiceDependencies {
-  runSerialized<T>(appId: number, operation: () => Promise<T>): Promise<T>;
+  runSerialized<T>(
+    appId: number,
+    lifecycle: "start" | "restart" | "stop",
+    operation: () => Promise<T>,
+  ): Promise<T>;
   findApp(appId: number): Promise<RuntimeAppRecord | undefined>;
   resolveAppPath(relativePath: string): string;
   getRunningApp(appId: number): RunningAppInfo | undefined;
@@ -1535,7 +1539,7 @@ export class AppRuntimeService {
 
   async start(options: StartAppRuntimeOptions): Promise<void> {
     const { appId, output, invocationRef } = options;
-    return this.dependencies.runSerialized(appId, async () => {
+    return this.dependencies.runSerialized(appId, "start", async () => {
       const existing = this.dependencies.getRunningApp(appId);
       if (existing) {
         logger.debug(`App ${appId} is already running.`);
@@ -1585,7 +1589,7 @@ export class AppRuntimeService {
       clearRuntimeLogs = false,
     } = options;
     logger.log(`Restarting app ${appId}`);
-    return this.dependencies.runSerialized(appId, async () => {
+    return this.dependencies.runSerialized(appId, "restart", async () => {
       const app = await this.requireApp(appId);
       const appPath = this.dependencies.resolveAppPath(app.path);
       const appInfo = this.dependencies.getRunningApp(appId);
@@ -1640,7 +1644,7 @@ export class AppRuntimeService {
     logger.log(
       `Attempting to stop app ${appId}. Current running apps: ${runningApps.size}`,
     );
-    return this.dependencies.runSerialized(appId, async () => {
+    return this.dependencies.runSerialized(appId, "stop", async () => {
       const appInfo = this.dependencies.getRunningApp(appId);
       if (!appInfo) {
         logger.log(`App ${appId} is already stopped.`);
@@ -1931,13 +1935,14 @@ async function waitForAppReady(
 }
 
 export const appRuntimeService = new AppRuntimeService({
-  runSerialized: (appId, operation) =>
+  runSerialized: (appId, lifecycle, operation) =>
     appOperationCoordinator.run(
       {
         appId,
-        operation: "app-runtime",
+        operation: `app-runtime:${lifecycle}`,
         resources: [
           readAppResource("app-path"),
+          ...(lifecycle === "stop" ? [] : [readAppResource("repository")]),
           "runtime",
           readAppResource("runtime-config"),
         ],
