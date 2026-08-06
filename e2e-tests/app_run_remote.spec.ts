@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { expect } from "@playwright/test";
 import { testSkipIfWindows, Timeout } from "./helpers/test_helper";
@@ -7,15 +8,27 @@ testSkipIfWindows(
   async ({ electronApp, po }, testInfo) => {
     testInfo.setTimeout(Timeout.EXTRA_LONG);
     await po.setUp({ autoApprove: true });
-    await po.importApp("minimal");
+    await po.importApp("gated-preview");
     const appName = await po.appManagement.getCurrentAppName();
-    await expect(po.previewPanel.locatePreviewLoadingScreen()).toBeVisible({
+    const appPath = await po.appManagement.getCurrentAppPath();
+    if (!appPath) throw new Error("Imported app path was not available");
+    const releasePath = path.join(appPath, ".release-preview-server");
+
+    // The fixture cannot become ready until the sentinel exists. Observing
+    // the command-runner log first proves START is in flight before reload.
+    await expect(
+      po.page
+        .getByTestId("preview-loading-log-list")
+        .getByText("Connecting to app...", { exact: true }),
+    ).toBeVisible({
       timeout: Timeout.MEDIUM,
     });
 
-    const appPath = await electronApp.evaluate(({ app }) => app.getAppPath());
+    const electronAppPath = await electronApp.evaluate(({ app }) =>
+      app.getAppPath(),
+    );
     const rendererIndexPath = path.join(
-      appPath,
+      electronAppPath,
       ".vite/renderer/main_window/index.html",
     );
     await po.page.waitForLoadState("load");
@@ -29,6 +42,8 @@ testSkipIfWindows(
       }
     }, rendererIndexPath);
     await po.page.waitForLoadState("load");
+
+    fs.writeFileSync(releasePath, "ready\n");
 
     await expect
       .poll(() => po.appManagement.getCurrentAppName(), {
