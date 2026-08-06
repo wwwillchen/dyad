@@ -30,15 +30,13 @@ export function createAppRelaunchRequest() {
       pendingRequest = undefined;
 
       try {
-        if (request?.deepLinkUrl) {
+        if (request) {
           relaunch({
             args: [
               ...currentArgs.filter((arg) => !arg.startsWith("dyad://")),
-              request.deepLinkUrl,
+              ...(request.deepLinkUrl ? [request.deepLinkUrl] : []),
             ],
           });
-        } else if (request) {
-          relaunch();
         }
       } finally {
         quit();

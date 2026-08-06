@@ -15,17 +15,20 @@ describe("app relaunch request", () => {
 
   it("coalesces generic reopen requests into one relaunch", () => {
     const request = createAppRelaunchRequest();
-    const calls: string[] = [];
+    const relaunch = vi.fn();
+    const quit = vi.fn();
 
     expect(request.request()).toBe(true);
     expect(request.request()).toBe(false);
     request.finish({
-      currentArgs: ["--original-argument"],
-      relaunch: (options) => calls.push(`relaunch:${String(options)}`),
-      quit: () => calls.push("quit"),
+      currentArgs: ["--original-argument", "dyad://stale"],
+      relaunch,
+      quit,
     });
 
-    expect(calls).toEqual(["relaunch:undefined", "quit"]);
+    expect(relaunch).toHaveBeenCalledOnce();
+    expect(relaunch).toHaveBeenCalledWith({ args: ["--original-argument"] });
+    expect(quit).toHaveBeenCalledOnce();
   });
 
   it("preserves a shutdown-time deep link in the replacement process", () => {
