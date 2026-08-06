@@ -25,18 +25,3 @@ export function shouldCreateWindowOnActivate({
 }): boolean {
   return !isAppQuitting && hasCreatedInitialWindow && openWindowCount === 0;
 }
-
-export function finishAppQuit({
-  relaunchRequested,
-  relaunch,
-  quit,
-}: {
-  relaunchRequested: boolean;
-  relaunch: () => void;
-  quit: () => void;
-}): void {
-  if (relaunchRequested) {
-    relaunch();
-  }
-  quit();
-}

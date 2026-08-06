@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  finishAppQuit,
   shouldCreateWindowOnActivate,
   shouldRetainClosedWindowForActivation,
   shouldQuitAfterAllWindowsClosed,
@@ -70,30 +69,6 @@ describe("window lifecycle policy", () => {
         openWindowCount: 0,
       }),
     ).toBe(false);
-  });
-
-  it("relaunches before completing a quit interrupted by activation", () => {
-    const calls: string[] = [];
-
-    finishAppQuit({
-      relaunchRequested: true,
-      relaunch: () => calls.push("relaunch"),
-      quit: () => calls.push("quit"),
-    });
-
-    expect(calls).toEqual(["relaunch", "quit"]);
-  });
-
-  it("completes an uninterrupted quit without relaunching", () => {
-    const calls: string[] = [];
-
-    finishAppQuit({
-      relaunchRequested: false,
-      relaunch: () => calls.push("relaunch"),
-      quit: () => calls.push("quit"),
-    });
-
-    expect(calls).toEqual(["quit"]);
   });
 
   it.each(["win32", "linux"] as const)(

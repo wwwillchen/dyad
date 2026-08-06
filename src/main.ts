@@ -105,8 +105,8 @@ import {
 } from "./paths/paths";
 import { createDeepLinkQueue } from "./main/deep_link_queue";
 import { DeepLinkWindowReadiness } from "./main/deep_link_window_readiness";
+import { appRelaunchRequest } from "./main/app_relaunch_request";
 import {
-  finishAppQuit,
   shouldCreateWindowOnActivate,
   shouldRetainClosedWindowForActivation,
   shouldQuitAfterAllWindowsClosed,
@@ -650,14 +650,12 @@ let pendingForceCloseData: any = null;
 let pendingActiveChatId: number | null = null;
 let pendingCrashDetected = false;
 let isAppQuitting = false;
-let relaunchRequestedAfterQuit = false;
 let safeStorageKeychainUnlockRetryScheduled = false;
 
-function requestRelaunchAfterQuit(): void {
-  if (!relaunchRequestedAfterQuit) {
+function requestRelaunchAfterQuit(deepLinkUrl?: string): void {
+  if (appRelaunchRequest.request({ deepLinkUrl })) {
     logger.info("Reopen requested during shutdown; relaunching after cleanup");
   }
-  relaunchRequestedAfterQuit = true;
 }
 
 function deliverPendingCrashRecovery(target: BrowserWindow): void {
@@ -1198,8 +1196,9 @@ if (IS_TEST_BUILD) {
     app.quit();
   } else {
     app.on("second-instance", (_event, commandLine, _workingDirectory) => {
+      const url = commandLine.find((arg) => arg.startsWith("dyad://"));
       if (isAppQuitting) {
-        requestRelaunchAfterQuit();
+        requestRelaunchAfterQuit(url);
         return;
       }
 
@@ -1208,8 +1207,6 @@ if (IS_TEST_BUILD) {
         if (mainWindow.isMinimized()) mainWindow.restore();
         mainWindow.focus();
       }
-      // the commandLine is array of strings in which last element is deep link url
-      const url = commandLine.at(-1);
       if (url) {
         deepLinkQueue.handle(url);
       }
@@ -1221,6 +1218,10 @@ if (IS_TEST_BUILD) {
 
 // Handle the protocol. In this case, we choose to show an Error Box.
 app.on("open-url", (event, url) => {
+  if (isAppQuitting) {
+    requestRelaunchAfterQuit(url);
+    return;
+  }
   deepLinkQueue.handle(url);
 });
 
@@ -1456,9 +1457,9 @@ app.on("window-all-closed", () => {
 // (e.g. Windows WM_ENDSESSION) and leave the sentinel behind as a false positive.
 const handleMcpBeforeQuit = createMcpBeforeQuitHandler({
   quit: () =>
-    finishAppQuit({
-      relaunchRequested: relaunchRequestedAfterQuit,
-      relaunch: () => app.relaunch(),
+    appRelaunchRequest.finish({
+      currentArgs: process.argv.slice(1),
+      relaunch: (options) => app.relaunch(options),
       quit: () => app.quit(),
     }),
   cleanup: async () => {
