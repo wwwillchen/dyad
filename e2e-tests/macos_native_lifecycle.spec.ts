@@ -4,6 +4,14 @@ import path from "node:path";
 import { test, Timeout } from "./helpers/test_helper";
 
 test.skip(process.platform !== "darwin", "macOS native lifecycle behavior");
+test.skip(
+  process.env.DYAD_E2E_NATIVE_LIFECYCLE !== "1",
+  "requires an opt-in macOS host with Accessibility permission",
+);
+test.skip(
+  Number.parseInt(process.env.PLAYWRIGHT_PARALLELISM ?? "1", 10) !== 1,
+  "native bundle activation must run with PLAYWRIGHT_PARALLELISM=1",
+);
 
 function postNativeCommandQ(pid: number) {
   const script = `

@@ -12,9 +12,11 @@ behavior, screenshots/visual layout, or a complete app-shell user journey.
 
 On macOS, Playwright `page.keyboard.press("Meta+Q")` only sends a renderer key
 event and does not exercise Electron's native Quit menu path. For lifecycle
-coverage, post a native `CGEvent` directly to the Electron PID; reopen a closed
-app window with `/usr/bin/open <bundle>` so the test uses LaunchServices/Dock
-activation semantics rather than calling main-process handlers directly.
+coverage, opt into `macos_native_lifecycle.spec.ts` with
+`DYAD_E2E_NATIVE_LIFECYCLE=1` on an Accessibility-authorized host and keep
+`PLAYWRIGHT_PARALLELISM=1`; LaunchServices bundle activation is ambiguous when
+multiple packaged Dyad instances are running. Post Command-Q directly to the
+Electron PID so another process cannot receive it.
 
 Do NOT write lots of e2e test cases for one feature. Each e2e test case adds a significant amount of overhead, so instead prefer just one or two E2E test cases that each have broad coverage of the feature in question.
 
