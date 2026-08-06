@@ -25,3 +25,15 @@ export function shouldCreateWindowOnActivate({
 }): boolean {
   return !isAppQuitting && hasCreatedInitialWindow && openWindowCount === 0;
 }
+
+export function shouldRequestRelaunchOnActivate({
+  isAppQuitting,
+  hasCreatedInitialWindow,
+  openWindowCount,
+}: {
+  isAppQuitting: boolean;
+  hasCreatedInitialWindow: boolean;
+  openWindowCount: number;
+}): boolean {
+  return isAppQuitting && hasCreatedInitialWindow && openWindowCount === 0;
+}

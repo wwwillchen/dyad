@@ -108,6 +108,7 @@ import { DeepLinkWindowReadiness } from "./main/deep_link_window_readiness";
 import { appRelaunchRequest } from "./main/app_relaunch_request";
 import {
   shouldCreateWindowOnActivate,
+  shouldRequestRelaunchOnActivate,
   shouldRetainClosedWindowForActivation,
   shouldQuitAfterAllWindowsClosed,
 } from "./main/window_lifecycle_policy";
@@ -732,7 +733,7 @@ const createWindow = ({
   rendererLoad: Promise<void>;
 } => {
   if (isAppQuitting) {
-    throw new Error("Cannot create a window after shutdown has begun");
+    throw new DyadError("Dyad is shutting down", DyadErrorKind.Precondition);
   }
 
   // Create the browser window.
@@ -1027,6 +1028,10 @@ async function createFreshStartupWindow(): Promise<void> {
       "Failed to clear legacy window sessions; continuing with one fresh window:",
       error,
     );
+  }
+  if (isAppQuitting) {
+    logger.info("Skipping initial window creation during shutdown");
+    return;
   }
   createWindow({ windowSessionId: PRIMARY_WINDOW_SESSION_ID });
   hasCreatedInitialWindow = true;
@@ -1498,20 +1503,19 @@ app.on("will-quit", () => {
 });
 
 app.on("activate", () => {
-  if (isAppQuitting) {
+  const activationContext = {
+    isAppQuitting,
+    hasCreatedInitialWindow,
+    openWindowCount: BrowserWindow.getAllWindows().length,
+  };
+  if (shouldRequestRelaunchOnActivate(activationContext)) {
     requestRelaunchAfterQuit();
-    return;
   }
+  if (isAppQuitting) return;
 
   // On OS X it's common to re-create a window in the app when the
   // dock icon is clicked and there are no other windows open.
-  if (
-    shouldCreateWindowOnActivate({
-      isAppQuitting,
-      hasCreatedInitialWindow,
-      openWindowCount: BrowserWindow.getAllWindows().length,
-    })
-  ) {
+  if (shouldCreateWindowOnActivate(activationContext)) {
     const descriptor = lastClosedWindowSession ?? {
       windowSessionId: PRIMARY_WINDOW_SESSION_ID,
     };

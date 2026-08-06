@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   shouldCreateWindowOnActivate,
+  shouldRequestRelaunchOnActivate,
   shouldRetainClosedWindowForActivation,
   shouldQuitAfterAllWindowsClosed,
 } from "@/main/window_lifecycle_policy";
@@ -65,6 +66,30 @@ describe("window lifecycle policy", () => {
     expect(
       shouldCreateWindowOnActivate({
         isAppQuitting: true,
+        hasCreatedInitialWindow: true,
+        openWindowCount: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("requests a relaunch only when activation finds no window during shutdown", () => {
+    expect(
+      shouldRequestRelaunchOnActivate({
+        isAppQuitting: true,
+        hasCreatedInitialWindow: true,
+        openWindowCount: 0,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRequestRelaunchOnActivate({
+        isAppQuitting: true,
+        hasCreatedInitialWindow: true,
+        openWindowCount: 1,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRequestRelaunchOnActivate({
+        isAppQuitting: false,
         hasCreatedInitialWindow: true,
         openWindowCount: 0,
       }),
