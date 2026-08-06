@@ -106,7 +106,8 @@ import {
 import { createDeepLinkQueue } from "./main/deep_link_queue";
 import { DeepLinkWindowReadiness } from "./main/deep_link_window_readiness";
 import {
-  closedWindowSessionDisposition,
+  shouldCreateWindowOnActivate,
+  shouldRetainClosedWindowForActivation,
   shouldQuitAfterAllWindowsClosed,
 } from "./main/window_lifecycle_policy";
 import { registerDyadProtocolLinux } from "./main/linux_protocol_registration";
@@ -139,22 +140,20 @@ import {
 } from "./main/window_security";
 import { pathToFileURL } from "node:url";
 import { windowRegistry } from "./window_infrastructure/main/window_registry";
-import type { WindowSessionId } from "./window_infrastructure/types";
+import {
+  PRIMARY_WINDOW_SESSION_ID,
+  type WindowSessionId,
+} from "./window_infrastructure/types";
 import {
   awaitProductWindowRenderer,
   configureWindowProductController,
 } from "./window_infrastructure/main/window_product_controller";
 import {
-  forgetWindowSessionBestEffort,
-  getWindowSessionFilePath,
+  clearLegacyWindowSessionPersistence,
   MAX_PRODUCT_WINDOWS,
-  prepareWindowSessionForCreation,
-  rememberWindowSessionBestEffort,
   restorableVisibleEntity,
-  WindowSessionPersistence,
-  type WindowSessionPersistenceFailurePolicy,
   type WindowSessionDescriptor,
-} from "./window_infrastructure/main/window_session_persistence";
+} from "./window_infrastructure/main/window_session";
 import { DyadError, DyadErrorKind, isDyadError } from "./errors/dyad_error";
 
 log.errorHandler.startCatching();
@@ -538,7 +537,7 @@ export async function onReady() {
   }
 
   await onFirstRunMaybe(settings);
-  restoreWindowSessions();
+  await createFreshStartupWindow();
   createApplicationMenu();
 
   sendTelemetryEvent("runtime_source", {
@@ -640,8 +639,12 @@ declare global {
 
 let mainWindow: BrowserWindow | null = null;
 const productWindows = new Map<WindowSessionId, BrowserWindow>();
-let windowSessionPersistence: WindowSessionPersistence | undefined;
+const productWindowDescriptors = new Map<
+  WindowSessionId,
+  WindowSessionDescriptor
+>();
 let lastClosedWindowSession: WindowSessionDescriptor | undefined;
+let hasCreatedInitialWindow = false;
 let pendingForceCloseData: any = null;
 let pendingActiveChatId: number | null = null;
 let pendingCrashDetected = false;
@@ -713,73 +716,44 @@ function deliverPendingCrashRecovery(target: BrowserWindow): void {
   pendingCrashDetected = false;
 }
 
-function getWindowSessionPersistence(): WindowSessionPersistence {
-  windowSessionPersistence ??= new WindowSessionPersistence(
-    getWindowSessionFilePath(app.getPath("userData")),
-  );
-  return windowSessionPersistence;
-}
-
 const createWindow = ({
   windowSessionId = randomUUID() as WindowSessionId,
   visibleEntity,
-  persistenceFailurePolicy = "throw",
-}: Partial<WindowSessionDescriptor> & {
-  persistenceFailurePolicy?: WindowSessionPersistenceFailurePolicy;
-} = {}): {
+}: Partial<WindowSessionDescriptor> = {}): {
   windowSessionId: WindowSessionId;
   browserWindow: BrowserWindow;
   rendererLoad: Promise<void>;
 } => {
-  const persistence = getWindowSessionPersistence();
-  const { wasAlreadyPersisted, wasPersisted } = prepareWindowSessionForCreation(
-    {
-      persistence,
-      descriptor: { windowSessionId, visibleEntity },
-      failurePolicy: persistenceFailurePolicy,
-      onFailure: (error) => {
-        logger.error(
-          "Failed to persist startup window session; continuing with an unpersisted window:",
-          error,
-        );
-      },
-    },
-  );
-
   // Create the browser window.
-  let browserWindow: BrowserWindow;
-  try {
-    browserWindow = new BrowserWindow({
-      width: process.env.NODE_ENV === "development" ? 1280 : 960,
-      minWidth: 800,
-      height: 700,
-      minHeight: 500,
-      titleBarStyle: "hidden",
-      titleBarOverlay: false,
-      trafficLightPosition: {
-        x: 13,
-        y: 13,
-      },
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        preload: path.join(__dirname, "preload.js"),
-        // transparent: true,
-      },
-      icon: path.join(app.getAppPath(), "assets/icon/logo.png"),
-      // backgroundColor: "#00000001",
-      // frame: false,
-    });
-  } catch (error) {
-    if (!wasAlreadyPersisted && wasPersisted) {
-      persistence.forget(windowSessionId);
-    }
-    throw error;
-  }
+  const browserWindow = new BrowserWindow({
+    width: process.env.NODE_ENV === "development" ? 1280 : 960,
+    minWidth: 800,
+    height: 700,
+    minHeight: 500,
+    titleBarStyle: "hidden",
+    titleBarOverlay: false,
+    trafficLightPosition: {
+      x: 13,
+      y: 13,
+    },
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, "preload.js"),
+      // transparent: true,
+    },
+    icon: path.join(app.getAppPath(), "assets/icon/logo.png"),
+    // backgroundColor: "#00000001",
+    // frame: false,
+  });
   mainWindow = browserWindow;
   deepLinkWindowReadiness.setTarget(browserWindow);
   crashRecoveryWindowReadiness.setTarget(browserWindow);
   productWindows.set(windowSessionId, browserWindow);
+  productWindowDescriptors.set(windowSessionId, {
+    windowSessionId,
+    visibleEntity,
+  });
   windowRegistry.register(browserWindow.webContents, windowSessionId);
   browserWindow.on("focus", () => {
     mainWindow = browserWindow;
@@ -788,26 +762,14 @@ const createWindow = ({
     windowRegistry.setFocused(windowSessionId);
   });
   browserWindow.once("closed", () => {
-    const descriptor = getWindowSessionPersistence()
-      .read()
-      .find((candidate) => candidate.windowSessionId === windowSessionId);
-    const sessionDisposition = closedWindowSessionDisposition({
+    const descriptor = productWindowDescriptors.get(windowSessionId);
+    const retainForActivation = shouldRetainClosedWindowForActivation({
       isAppQuitting,
       openWindowCountBeforeClose: productWindows.size,
     });
     productWindows.delete(windowSessionId);
-    if (sessionDisposition === "forget") {
-      forgetWindowSessionBestEffort({
-        persistence: getWindowSessionPersistence(),
-        windowSessionId,
-        onFailure: (error) => {
-          logger.error(
-            "Failed to remove closed window restoration state; continuing in-memory cleanup:",
-            error,
-          );
-        },
-      });
-    } else if (descriptor) {
+    productWindowDescriptors.delete(windowSessionId);
+    if (retainForActivation && descriptor) {
       lastClosedWindowSession = descriptor;
     }
     if (mainWindow === browserWindow) {
@@ -907,7 +869,7 @@ const createWindow = ({
     // reported in app:crash_detected.
     processNativeCrashDumps();
     // Crash recovery follows the focused/current product window and waits for
-    // its post-DevTools-reload renderer. Background restored windows cannot
+    // its post-DevTools-reload renderer. Background product windows cannot
     // consume the one-shot dialog or telemetry event.
     crashRecoveryWindowReadiness.markReady(browserWindow);
 
@@ -1046,15 +1008,17 @@ const createWindow = ({
   return { windowSessionId, browserWindow, rendererLoad: initialLoad };
 };
 
-function restoreWindowSessions(): void {
-  const sessions = getWindowSessionPersistence().read();
-  if (sessions.length === 0) {
-    createWindow({ persistenceFailurePolicy: "continue" });
-    return;
+async function createFreshStartupWindow(): Promise<void> {
+  try {
+    await clearLegacyWindowSessionPersistence(app.getPath("userData"));
+  } catch (error) {
+    logger.error(
+      "Failed to clear legacy window sessions; continuing with one fresh window:",
+      error,
+    );
   }
-  for (const session of sessions) {
-    createWindow({ ...session, persistenceFailurePolicy: "continue" });
-  }
+  createWindow({ windowSessionId: PRIMARY_WINDOW_SESSION_ID });
+  hasCreatedInitialWindow = true;
 }
 
 configureWindowProductController({
@@ -1079,17 +1043,10 @@ configureWindowProductController({
             browserWindow: failedWindow,
           } = created;
           const failedWebContentsId = failedWindow.webContents.id;
+          productWindows.delete(failedSessionId);
+          productWindowDescriptors.delete(failedSessionId);
           if (!failedWindow.isDestroyed()) failedWindow.destroy();
           windowRegistry.unregister(failedWebContentsId);
-          productWindows.delete(failedSessionId);
-          try {
-            getWindowSessionPersistence().forget(failedSessionId);
-          } catch (rollbackError) {
-            logger.error(
-              "Failed to remove a window session after renderer load failure:",
-              rollbackError,
-            );
-          }
         },
       });
     } catch (error) {
@@ -1103,31 +1060,18 @@ configureWindowProductController({
     }
   },
   initialEntityForSession: (windowSessionId) =>
-    getWindowSessionPersistence()
-      .read()
-      .find((window) => window.windowSessionId === windowSessionId)
-      ?.visibleEntity,
+    productWindowDescriptors.get(windowSessionId)?.visibleEntity,
   setVisibleEntities: (windowSessionId, entities) => {
-    const visibleEntity = restorableVisibleEntity(entities);
-    rememberWindowSessionBestEffort({
-      persistence: getWindowSessionPersistence(),
-      windowSessionId,
-      visibleEntity,
-      onFailure: (error) => {
-        logger.error(
-          "Failed to persist visible window route; continuing without updating restoration state:",
-          error,
-        );
-      },
+    const descriptor = productWindowDescriptors.get(windowSessionId);
+    if (!descriptor) return;
+    productWindowDescriptors.set(windowSessionId, {
+      ...descriptor,
+      visibleEntity: restorableVisibleEntity(entities),
     });
   },
   mayMigrateLegacyChatTabSession: (windowSessionId) =>
-    getWindowSessionPersistence().read()[0]?.windowSessionId ===
-    windowSessionId,
-  restorableWindowSessionIds: () =>
-    getWindowSessionPersistence()
-      .read()
-      .map((session) => session.windowSessionId),
+    productWindows.keys().next().value === windowSessionId,
+  restorableWindowSessionIds: () => [...productWindows.keys()],
 });
 
 /**
@@ -1532,11 +1476,17 @@ app.on("will-quit", () => {
 app.on("activate", () => {
   // On OS X it's common to re-create a window in the app when the
   // dock icon is clicked and there are no other windows open.
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow({
-      ...lastClosedWindowSession,
-      persistenceFailurePolicy: "continue",
-    });
+  if (
+    shouldCreateWindowOnActivate({
+      hasCreatedInitialWindow,
+      openWindowCount: BrowserWindow.getAllWindows().length,
+    })
+  ) {
+    const descriptor = lastClosedWindowSession ?? {
+      windowSessionId: PRIMARY_WINDOW_SESSION_ID,
+    };
+    lastClosedWindowSession = undefined;
+    createWindow(descriptor);
   }
 });
 

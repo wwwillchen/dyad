@@ -7,20 +7,31 @@ import {
   type ElectronConfig,
 } from "./helpers/test_helper";
 
+const staleWindowSessionIds = [
+  "10000000-0000-4000-8000-000000000001",
+  "10000000-0000-4000-8000-000000000002",
+];
+
 const electronConfig: ElectronConfig = {
   preLaunchHook: async ({ userDataDir }) => {
     await fs.mkdir(userDataDir, { recursive: true });
-    await fs.writeFile(
-      path.join(userDataDir, "window-sessions.json"),
-      "{malformed-session-state",
-      "utf8",
-    );
+    const staleState = JSON.stringify({
+      version: 1,
+      windows: staleWindowSessionIds.map((windowSessionId) => ({
+        windowSessionId,
+      })),
+    });
+    const legacySessionPath = path.join(userDataDir, "window-sessions.json");
+    await Promise.all([
+      fs.writeFile(legacySessionPath, staleState, "utf8"),
+      fs.writeFile(`${legacySessionPath}.tmp`, staleState, "utf8"),
+    ]);
   },
 };
 
 const test = testWithConfig(electronConfig);
 
-test("falls back to one usable restorable window when session state is corrupt", async ({
+test("starts with one fresh window instead of restoring saved product windows", async ({
   electronApp,
   po,
 }) => {
@@ -28,6 +39,12 @@ test("falls back to one usable restorable window when session state is corrupt",
   await expect
     .poll(() => electronApp.windows().length, { timeout: Timeout.MEDIUM })
     .toBe(1);
+  const userDataDir = await electronApp.evaluate(({ app }) =>
+    app.getPath("userData"),
+  );
+  const legacySessionPath = path.join(userDataDir, "window-sessions.json");
+  await expect(fs.access(legacySessionPath)).rejects.toThrow();
+  await expect(fs.access(`${legacySessionPath}.tmp`)).rejects.toThrow();
 
   await po.importApp("minimal");
   const appName = await po.appManagement.getCurrentAppName();

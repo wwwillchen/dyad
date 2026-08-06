@@ -1,33 +1,61 @@
 import { describe, expect, it } from "vitest";
 import {
-  closedWindowSessionDisposition,
+  shouldCreateWindowOnActivate,
+  shouldRetainClosedWindowForActivation,
   shouldQuitAfterAllWindowsClosed,
 } from "@/main/window_lifecycle_policy";
 
 describe("window lifecycle policy", () => {
-  it("forgets explicitly closed peer windows but retains shutdown sessions", () => {
+  it("does not retain explicitly closed peer windows or shutdown sessions", () => {
     expect(
-      closedWindowSessionDisposition({
+      shouldRetainClosedWindowForActivation({
         isAppQuitting: false,
         openWindowCountBeforeClose: 2,
       }),
-    ).toBe("forget");
+    ).toBe(false);
     expect(
-      closedWindowSessionDisposition({
+      shouldRetainClosedWindowForActivation({
         isAppQuitting: true,
         openWindowCountBeforeClose: 2,
       }),
-    ).toBe("retain");
+    ).toBe(false);
+    expect(
+      shouldRetainClosedWindowForActivation({
+        isAppQuitting: true,
+        openWindowCountBeforeClose: 1,
+      }),
+    ).toBe(false);
   });
 
-  it("retains the last window for macOS activation and future launches", () => {
+  it("retains the last window for macOS activation within the current launch", () => {
     expect(
-      closedWindowSessionDisposition({
+      shouldRetainClosedWindowForActivation({
         isAppQuitting: false,
         openWindowCountBeforeClose: 1,
       }),
-    ).toBe("retain");
+    ).toBe(true);
     expect(shouldQuitAfterAllWindowsClosed("darwin")).toBe(false);
+  });
+
+  it("ignores activation until startup owns the initial window", () => {
+    expect(
+      shouldCreateWindowOnActivate({
+        hasCreatedInitialWindow: false,
+        openWindowCount: 0,
+      }),
+    ).toBe(false);
+    expect(
+      shouldCreateWindowOnActivate({
+        hasCreatedInitialWindow: true,
+        openWindowCount: 1,
+      }),
+    ).toBe(false);
+    expect(
+      shouldCreateWindowOnActivate({
+        hasCreatedInitialWindow: true,
+        openWindowCount: 0,
+      }),
+    ).toBe(true);
   });
 
   it.each(["win32", "linux"] as const)(

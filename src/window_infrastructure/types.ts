@@ -6,6 +6,13 @@ declare const tabInstanceIdBrand: unique symbol;
 export type WindowSessionId = string & {
   readonly [windowSessionIdBrand]: true;
 };
+
+// The first product window keeps one deterministic identity across launches so
+// its renderer-local presentation state remains addressable without requiring
+// main-process window-session persistence.
+export const PRIMARY_WINDOW_SESSION_ID =
+  "00000000-0000-4000-8000-000000000001" as WindowSessionId;
+
 export type TabInstanceId = string & {
   readonly [tabInstanceIdBrand]: true;
 };
