@@ -242,7 +242,7 @@ describe("processFullResponseActions add dependency errors", () => {
       '<dyad-add-dependency packages="react"></dyad-add-dependency>',
       1,
       {
-        chatSummary: undefined,
+        chatSummary: "   ",
         messageId: 1,
       },
     );

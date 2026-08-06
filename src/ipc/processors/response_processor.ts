@@ -737,10 +737,11 @@ export async function processFullResponseActions(
         changes.push(`executed ${dyadExecuteSqlQueries.length} SQL queries`);
 
       const changeSummary = changes.join(", ");
-      const message = chatSummary
+      const trimmedChatSummary = chatSummary?.trim();
+      const message = trimmedChatSummary
         ? changeSummary
-          ? `${chatSummary} - ${changeSummary}`
-          : chatSummary
+          ? `${trimmedChatSummary} - ${changeSummary}`
+          : trimmedChatSummary
         : changeSummary || "updated project files";
 
       // Verify there are actual staged changes before committing.
