@@ -262,8 +262,8 @@ Automated `pnpm add` commands that run in an app root with a generated `pnpm-wor
 When creating hooks/components that call IPC handlers:
 
 - When diagnosing a preview stuck at `Waiting for server logs…`, distinguish the
-  ordinary selection IPC from the app-run actor transport: `App <id> selected
-for preview` without a later `Starting app`, `already running`, or
+  ordinary selection IPC from the app-run actor transport: `App <id> selected for preview`
+  without a later `Starting app`, `already running`, or
   `Restarting app` entry means selection succeeded but lifecycle dispatch never
   reached main. Switching apps cannot repair a renderer-owned app-run manager
   that is stuck in that state.

@@ -15,16 +15,17 @@ const staleWindowSessionIds = [
 const electronConfig: ElectronConfig = {
   preLaunchHook: async ({ userDataDir }) => {
     await fs.mkdir(userDataDir, { recursive: true });
-    await fs.writeFile(
-      path.join(userDataDir, "window-sessions.json"),
-      JSON.stringify({
-        version: 1,
-        windows: staleWindowSessionIds.map((windowSessionId) => ({
-          windowSessionId,
-        })),
-      }),
-      "utf8",
-    );
+    const staleState = JSON.stringify({
+      version: 1,
+      windows: staleWindowSessionIds.map((windowSessionId) => ({
+        windowSessionId,
+      })),
+    });
+    const legacySessionPath = path.join(userDataDir, "window-sessions.json");
+    await Promise.all([
+      fs.writeFile(legacySessionPath, staleState, "utf8"),
+      fs.writeFile(`${legacySessionPath}.tmp`, staleState, "utf8"),
+    ]);
   },
 };
 
@@ -41,13 +42,9 @@ test("starts with one fresh window instead of restoring saved product windows", 
   const userDataDir = await electronApp.evaluate(({ app }) =>
     app.getPath("userData"),
   );
-  const persistedWindowSessions = JSON.parse(
-    await fs.readFile(path.join(userDataDir, "window-sessions.json"), "utf8"),
-  ) as { windows: Array<{ windowSessionId: string }> };
-  expect(persistedWindowSessions.windows).toHaveLength(1);
-  expect(staleWindowSessionIds).not.toContain(
-    persistedWindowSessions.windows[0].windowSessionId,
-  );
+  const legacySessionPath = path.join(userDataDir, "window-sessions.json");
+  await expect(fs.access(legacySessionPath)).rejects.toThrow();
+  await expect(fs.access(`${legacySessionPath}.tmp`)).rejects.toThrow();
 
   await po.importApp("minimal");
   const appName = await po.appManagement.getCurrentAppName();

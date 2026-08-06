@@ -46,6 +46,7 @@ import {
 } from "./atoms/chatAtoms";
 import {
   configureChatTabWindowSession,
+  promoteMostRecentChatTabSession,
   pruneChatTabWindowSessions,
 } from "./window_infrastructure/chat_tab_session_storage";
 import type { VisibleEntity } from "./window_infrastructure/types";
@@ -231,6 +232,12 @@ function RendererServices() {
             mayMigrateLegacySession: bootstrap.mayMigrateLegacyChatTabSession,
           });
           try {
+            if (bootstrap.mayMigrateLegacyChatTabSession) {
+              promoteMostRecentChatTabSession(
+                window.localStorage,
+                bootstrap.windowSessionId,
+              );
+            }
             pruneChatTabWindowSessions(
               window.localStorage,
               bootstrap.restorableWindowSessionIds,

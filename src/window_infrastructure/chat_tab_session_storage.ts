@@ -1,7 +1,8 @@
 import type { ChatTabSession } from "@/atoms/chatAtoms";
-import type {
-  TabInstanceId,
-  WindowSessionId,
+import {
+  PRIMARY_WINDOW_SESSION_ID,
+  type TabInstanceId,
+  type WindowSessionId,
 } from "@/window_infrastructure/types";
 
 export const CHAT_TAB_SESSION_STORAGE_PREFIX = "chat-tab-session-v2:";
@@ -25,10 +26,7 @@ export interface StoredWindowChatTabSession {
   updatedAt: number;
 }
 
-const LEGACY_SINGLE_WINDOW_SESSION_ID =
-  "00000000-0000-4000-8000-000000000001" as WindowSessionId;
-
-let activeWindowSessionId: WindowSessionId = LEGACY_SINGLE_WINDOW_SESSION_ID;
+let activeWindowSessionId: WindowSessionId = PRIMARY_WINDOW_SESSION_ID;
 let mayMigrateLegacySession = false;
 
 export function configureChatTabWindowSession(
@@ -394,6 +392,61 @@ export function pruneChatTabWindowSessions(
     for (const key of staleTransferKeys) storage.removeItem(key);
   } catch (error) {
     console.error("Failed to prune chat tab window sessions", error);
+  }
+}
+
+export function promoteMostRecentChatTabSession(
+  storage: Storage,
+  targetWindowSessionId: WindowSessionId,
+): void {
+  try {
+    const targetKey = chatTabSessionStorageKey(targetWindowSessionId);
+    if (
+      parseStoredSession(storage.getItem(targetKey), targetWindowSessionId) !==
+      null
+    ) {
+      return;
+    }
+
+    let mostRecent:
+      | { key: string; session: StoredWindowChatTabSession }
+      | undefined;
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (
+        !key?.startsWith(CHAT_TAB_SESSION_STORAGE_PREFIX) ||
+        key === targetKey
+      ) {
+        continue;
+      }
+      const candidateWindowSessionId = key.slice(
+        CHAT_TAB_SESSION_STORAGE_PREFIX.length,
+      ) as WindowSessionId;
+      const session = parseStoredSession(
+        storage.getItem(key),
+        candidateWindowSessionId,
+      );
+      if (
+        session &&
+        (!mostRecent ||
+          session.updatedAt > mostRecent.session.updatedAt ||
+          (session.updatedAt === mostRecent.session.updatedAt &&
+            key > mostRecent.key))
+      ) {
+        mostRecent = { key, session };
+      }
+    }
+    if (!mostRecent) return;
+
+    storage.setItem(
+      targetKey,
+      JSON.stringify({
+        ...mostRecent.session,
+        windowSessionId: targetWindowSessionId,
+      }),
+    );
+  } catch (error) {
+    console.error("Failed to promote a prior chat tab window session", error);
   }
 }
 

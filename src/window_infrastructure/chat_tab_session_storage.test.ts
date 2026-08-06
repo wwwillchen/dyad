@@ -17,6 +17,7 @@ import {
   createChatTabSessionStorage,
   hasSourceChatTabRemoval,
   markSourceChatTabRemoval,
+  promoteMostRecentChatTabSession,
   pruneChatTabWindowSessions,
   removeActiveStoredChatTab,
   type StoredWindowChatTabSession,
@@ -358,6 +359,43 @@ describe("per-window chat tab session storage", () => {
     expect(localStorage.getItem(LEGACY_CHAT_TAB_SESSION_STORAGE_KEY)).toBe(
       "{}",
     );
+  });
+
+  it("promotes the newest prior window session into a fresh primary identity", () => {
+    const storage = createChatTabSessionStorage(localStorage);
+    storage.setItem(LEGACY_CHAT_TAB_SESSION_STORAGE_KEY, {
+      openChatIds: [10],
+      selectedChatId: 10,
+      closedChatIds: [],
+      updatedAt: 1,
+    });
+    configureChatTabWindowSession(secondWindow, {
+      mayMigrateLegacySession: false,
+    });
+    storage.setItem(LEGACY_CHAT_TAB_SESSION_STORAGE_KEY, {
+      openChatIds: [20],
+      selectedChatId: 20,
+      closedChatIds: [10],
+      updatedAt: 2,
+    });
+    const freshPrimary =
+      "90000000-0000-4000-8000-000000000009" as WindowSessionId;
+
+    promoteMostRecentChatTabSession(localStorage, freshPrimary);
+    pruneChatTabWindowSessions(localStorage, [freshPrimary]);
+
+    const promoted = JSON.parse(
+      localStorage.getItem(chatTabSessionStorageKey(freshPrimary))!,
+    ) as StoredWindowChatTabSession;
+    expect(promoted.windowSessionId).toBe(freshPrimary);
+    expect(promoted.tabs.map((tab) => tab.chatId)).toEqual([20]);
+    expect(promoted.closedChatIds).toEqual([10]);
+    expect(
+      localStorage.getItem(chatTabSessionStorageKey(firstWindow)),
+    ).toBeNull();
+    expect(
+      localStorage.getItem(chatTabSessionStorageKey(secondWindow)),
+    ).toBeNull();
   });
 
   it("reconciles a crash-window duplicate identity into the newest session", () => {
