@@ -10,6 +10,14 @@ launching the packaged Electron app. Use Playwright E2E when the test needs the
 packaged app, native Electron/browser behavior, real click/focus/keyboard
 behavior, screenshots/visual layout, or a complete app-shell user journey.
 
+On macOS, Playwright `page.keyboard.press("Meta+Q")` only sends a renderer key
+event and does not exercise Electron's native Quit menu path. For lifecycle
+coverage, opt into `macos_native_lifecycle.spec.ts` with
+`DYAD_E2E_NATIVE_LIFECYCLE=1` on an Accessibility-authorized host and keep
+`PLAYWRIGHT_PARALLELISM=1`; LaunchServices bundle activation is ambiguous when
+multiple packaged Dyad instances are running. Post Command-Q directly to the
+Electron PID so another process cannot receive it.
+
 Do NOT write lots of e2e test cases for one feature. Each e2e test case adds a significant amount of overhead, so instead prefer just one or two E2E test cases that each have broad coverage of the feature in question.
 
 **IMPORTANT: You MUST run `npm run build` before running E2E tests.** E2E tests run against the built application binary, not the source code. If you make any changes to application code (anything outside of `e2e-tests/`), you MUST re-run `npm run build` before running E2E tests, otherwise you'll be testing the old version of the application.

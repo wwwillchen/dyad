@@ -652,10 +652,74 @@ let pendingActiveChatId: number | null = null;
 let pendingCrashDetected = false;
 let isAppQuitting = false;
 let safeStorageKeychainUnlockRetryScheduled = false;
+const lifecycleLogger = log.scope("app_lifecycle");
+const lifecycleStartedAt = Date.now();
+let lifecycleSequence = 0;
+
+function logLifecycle(
+  event: string,
+  details: Record<string, unknown> = {},
+): void {
+  let windows: Array<{
+    id: number;
+    destroyed: boolean;
+    visible: boolean;
+    focused: boolean;
+    webContentsDestroyed: boolean;
+  }> = [];
+  try {
+    windows = BrowserWindow.getAllWindows().map((window) => ({
+      id: window.id,
+      destroyed: window.isDestroyed(),
+      visible: window.isVisible(),
+      focused: window.isFocused(),
+      webContentsDestroyed: window.webContents.isDestroyed(),
+    }));
+  } catch (error) {
+    lifecycleLogger.warn("snapshot-failed", event, error);
+  }
+
+  lifecycleLogger.info(event, {
+    sequence: ++lifecycleSequence,
+    elapsedMs: Date.now() - lifecycleStartedAt,
+    isAppQuitting,
+    hasCreatedInitialWindow,
+    mainWindowId:
+      mainWindow && !mainWindow.isDestroyed() ? mainWindow.id : null,
+    productWindowCount: productWindows.size,
+    windows,
+    ...details,
+  });
+}
+
+async function observeLifecycleCleanup(
+  name: string,
+  cleanup: () => Promise<void>,
+): Promise<void> {
+  const startedAt = Date.now();
+  logLifecycle("cleanup:start", { name });
+  try {
+    await cleanup();
+    logLifecycle("cleanup:settled", {
+      name,
+      durationMs: Date.now() - startedAt,
+      outcome: "fulfilled",
+    });
+  } catch (error) {
+    logLifecycle("cleanup:settled", {
+      name,
+      durationMs: Date.now() - startedAt,
+      outcome: "rejected",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
 
 function requestRelaunchAfterQuit(deepLinkUrl?: string): void {
   if (appRelaunchRequest.request({ deepLinkUrl })) {
     logger.info("Reopen requested during shutdown; relaunching after cleanup");
+    logLifecycle("relaunch:requested", { hasDeepLink: !!deepLinkUrl });
   }
 }
 
@@ -766,6 +830,10 @@ const createWindow = ({
     windowSessionId,
     visibleEntity,
   });
+  logLifecycle("window:created", {
+    windowId: browserWindow.id,
+    windowSessionId,
+  });
   windowRegistry.register(browserWindow.webContents, windowSessionId);
   browserWindow.on("focus", () => {
     mainWindow = browserWindow;
@@ -792,6 +860,37 @@ const createWindow = ({
       deepLinkWindowReadiness.setTarget(mainWindow);
       crashRecoveryWindowReadiness.setTarget(mainWindow);
     }
+    logLifecycle("window:closed", {
+      windowId: browserWindow.id,
+      windowSessionId,
+      retainedForActivation: retainForActivation,
+    });
+  });
+  browserWindow.on("close", (event) => {
+    logLifecycle("window:close", {
+      windowId: browserWindow.id,
+      windowSessionId,
+      defaultPrevented: event.defaultPrevented,
+    });
+  });
+  browserWindow.on("unresponsive", () => {
+    logLifecycle("window:unresponsive", {
+      windowId: browserWindow.id,
+      windowSessionId,
+    });
+  });
+  browserWindow.on("responsive", () => {
+    logLifecycle("window:responsive", {
+      windowId: browserWindow.id,
+      windowSessionId,
+    });
+  });
+  browserWindow.webContents.on("will-prevent-unload", (event) => {
+    logLifecycle("renderer:will-prevent-unload", {
+      windowId: browserWindow.id,
+      windowSessionId,
+      defaultPrevented: event.defaultPrevented,
+    });
   });
   const packagedRendererUrl = pathToFileURL(
     path.join(__dirname, "../renderer/main_window/index.html"),
@@ -1452,7 +1551,12 @@ app.on("child-process-gone", (_event, details) => {
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
 app.on("window-all-closed", () => {
-  if (shouldQuitAfterAllWindowsClosed(process.platform)) {
+  const shouldQuit = shouldQuitAfterAllWindowsClosed(
+    process.platform,
+    isAppQuitting,
+  );
+  logLifecycle("app:window-all-closed", { shouldQuit });
+  if (shouldQuit) {
     app.quit();
   }
 });
@@ -1461,31 +1565,54 @@ app.on("window-all-closed", () => {
 // cleanup in will-quit cannot race against OS-imposed termination timeouts
 // (e.g. Windows WM_ENDSESSION) and leave the sentinel behind as a false positive.
 const handleMcpBeforeQuit = createMcpBeforeQuitHandler({
-  quit: () =>
+  quit: () => {
+    logLifecycle("app:quit-resume");
     appRelaunchRequest.finish({
       currentArgs: process.argv.slice(1),
-      relaunch: (options) => app.relaunch(options),
-      quit: () => app.quit(),
-    }),
+      relaunch: (options) => {
+        logLifecycle("app:relaunch", {
+          argumentCount: options?.args?.length ?? 0,
+        });
+        app.relaunch(options);
+      },
+      quit: () => {
+        logLifecycle("app:quit-reentered");
+        app.quit();
+      },
+    });
+  },
   cleanup: async () => {
     await Promise.all([
-      disposeMcpClientsForShutdown(),
-      disposeMcpOAuthForShutdown(),
-      disposeConnectionFlowsForShutdown(),
-      remoteMachineHost.dispose(),
+      observeLifecycleCleanup("mcp-clients", () =>
+        disposeMcpClientsForShutdown(),
+      ),
+      observeLifecycleCleanup("mcp-oauth", () => disposeMcpOAuthForShutdown()),
+      observeLifecycleCleanup("connection-flows", () =>
+        disposeConnectionFlowsForShutdown(),
+      ),
+      observeLifecycleCleanup("remote-machine-host", () =>
+        remoteMachineHost.dispose(),
+      ),
     ]);
   },
 });
 
 app.on("before-quit", (event) => {
+  logLifecycle("app:before-quit", {
+    defaultPreventedBeforeHandler: event.defaultPrevented,
+  });
   isAppQuitting = true;
   clearCrashSentinel();
   handleMcpBeforeQuit(event);
+  logLifecycle("app:before-quit-handler-complete", {
+    defaultPreventedAfterHandler: event.defaultPrevented,
+  });
 });
 
 // IMPORTANT: This handler must be synchronous because Electron's EventEmitter
 // does not await async callbacks — the returned Promise would be silently ignored.
 app.on("will-quit", () => {
+  logLifecycle("app:will-quit");
   logger.info("App is quitting");
 
   // Stop the garbage collection timer
@@ -1502,20 +1629,31 @@ app.on("will-quit", () => {
   stopChatSearchIndexer();
 });
 
+app.on("quit", (_event, exitCode) => {
+  logLifecycle("app:quit", { exitCode });
+});
+
 app.on("activate", () => {
   const activationContext = {
     isAppQuitting,
     hasCreatedInitialWindow,
     openWindowCount: BrowserWindow.getAllWindows().length,
   };
-  if (shouldRequestRelaunchOnActivate(activationContext)) {
+  const shouldRequestRelaunch =
+    shouldRequestRelaunchOnActivate(activationContext);
+  const shouldCreateWindow = shouldCreateWindowOnActivate(activationContext);
+  logLifecycle("app:activate", {
+    shouldRequestRelaunch,
+    shouldCreateWindow,
+  });
+  if (shouldRequestRelaunch) {
     requestRelaunchAfterQuit();
   }
   if (isAppQuitting) return;
 
   // On OS X it's common to re-create a window in the app when the
   // dock icon is clicked and there are no other windows open.
-  if (shouldCreateWindowOnActivate(activationContext)) {
+  if (shouldCreateWindow) {
     const descriptor = lastClosedWindowSession ?? {
       windowSessionId: PRIMARY_WINDOW_SESSION_ID,
     };
