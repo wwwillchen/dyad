@@ -5,6 +5,7 @@ import type { RuntimeMode2 } from "@/lib/schemas";
 import type { RunningAppInfo } from "@/ipc/utils/process_manager";
 import {
   AppRuntimeService,
+  getAppRuntimeOperationResources,
   type AppRuntimeOutput,
   type AppRuntimeServiceDependencies,
 } from "./app_runtime_service";
@@ -102,6 +103,19 @@ function createHarness() {
 describe("AppRuntimeService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("claims only the resources each lifecycle operation touches", () => {
+    expect(getAppRuntimeOperationResources("stop")).toEqual(["runtime"]);
+    expect(getAppRuntimeOperationResources("start")).toEqual([
+      { resource: "app-path", mode: "read" },
+      { resource: "repository", mode: "read" },
+      "runtime",
+      { resource: "runtime-config", mode: "read" },
+    ]);
+    expect(getAppRuntimeOperationResources("restart")).toEqual(
+      getAppRuntimeOperationResources("start"),
+    );
   });
 
   it("serializes start, restart, and stop through one lifecycle seam", async () => {

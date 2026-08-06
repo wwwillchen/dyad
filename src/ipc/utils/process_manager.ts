@@ -3,10 +3,7 @@ import treeKill from "tree-kill";
 import log from "electron-log";
 import type { Worker } from "node:worker_threads";
 import type { RuntimeMode2 } from "@/lib/schemas";
-import {
-  appOperationCoordinator,
-  readAppResource,
-} from "../services/app_operation_coordinator";
+import { appOperationCoordinator } from "../services/app_operation_coordinator";
 import {
   destroyCloudSandbox,
   stopCloudSandboxFileSync,
@@ -303,11 +300,7 @@ export async function garbageCollectIdleApps(): Promise<void> {
         {
           appId,
           operation: "garbage-collect-app-runtime",
-          resources: [
-            readAppResource("app-path"),
-            "runtime",
-            readAppResource("runtime-config"),
-          ],
+          resources: ["runtime"],
         },
         async () => {
           // Re-check: the user may have selected this app while we were stopping others

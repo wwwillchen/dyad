@@ -50,6 +50,7 @@ import {
 import {
   appOperationCoordinator,
   readAppResource,
+  type AppOperationRequest,
 } from "@/ipc/services/app_operation_coordinator";
 import { APP_RUN_INVOCATION_KIND } from "@/app_run/state";
 import {
@@ -1437,7 +1438,7 @@ interface RuntimeAppRecord {
 export interface AppRuntimeServiceDependencies {
   runSerialized<T>(
     appId: number,
-    lifecycle: "start" | "restart" | "stop",
+    lifecycle: AppRuntimeLifecycle,
     operation: () => Promise<T>,
   ): Promise<T>;
   findApp(appId: number): Promise<RuntimeAppRecord | undefined>;
@@ -1482,6 +1483,20 @@ export interface AppRuntimeServiceDependencies {
   waitForReady(appId: number, timeoutMs?: number): Promise<void>;
   createId(): string;
   now(): number;
+}
+
+export type AppRuntimeLifecycle = "start" | "restart" | "stop";
+
+export function getAppRuntimeOperationResources(
+  lifecycle: AppRuntimeLifecycle,
+): AppOperationRequest["resources"] {
+  if (lifecycle === "stop") return ["runtime"];
+  return [
+    readAppResource("app-path"),
+    readAppResource("repository"),
+    "runtime",
+    readAppResource("runtime-config"),
+  ];
 }
 
 export interface StartAppRuntimeOptions {
@@ -1940,12 +1955,7 @@ export const appRuntimeService = new AppRuntimeService({
       {
         appId,
         operation: `app-runtime:${lifecycle}`,
-        resources: [
-          readAppResource("app-path"),
-          ...(lifecycle === "stop" ? [] : [readAppResource("repository")]),
-          "runtime",
-          readAppResource("runtime-config"),
-        ],
+        resources: getAppRuntimeOperationResources(lifecycle),
       },
       operation,
     ),
