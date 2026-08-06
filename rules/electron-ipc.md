@@ -267,6 +267,16 @@ When creating hooks/components that call IPC handlers:
   `Restarting app` entry means selection succeeded but lifecycle dispatch never
   reached main. Switching apps cannot repair a renderer-owned app-run manager
   that is stuck in that state.
+- Treat a window-session ID as potentially durable even when BrowserWindow
+  layout is process-local: renderer storage may use it as a namespace. Keep the
+  primary ID stable or migrate its storage before pruning old session keys.
+- On macOS, `activate` can arrive while asynchronous startup is still running.
+  Gate Dock window creation until the initial window exists, or use one
+  idempotent ensure-window path, so startup cannot create stacked renderers.
+- Before destroying a BrowserWindow during creation rollback, remove its
+  session descriptor from authoritative state. Electron may emit `closed`
+  synchronously, and close handlers must not retain a failed window for Dock
+  activation.
 - Treat request/correlation IDs as identifiers, not capabilities. If an ID can
   appear in a shared snapshot, operation wait and cancellation paths must also
   verify the invoking window-session ownership before exposing or mutating the
