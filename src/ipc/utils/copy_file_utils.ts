@@ -7,7 +7,10 @@ import {
   isWithinDyadMediaDir,
   resolveAttachmentLogicalPath,
 } from "./media_path_utils";
-import { withLock } from "./lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "../services/app_operation_coordinator";
 import { deploySupabaseFunction } from "../../supabase_admin/supabase_management_client";
 import {
   isServerFunction,
@@ -52,108 +55,122 @@ export async function executeCopyFile({
   supabaseOrganizationSlug?: string | null;
   isSharedModulesChanged?: boolean;
 }): Promise<CopyFileResult> {
-  return withLock(appId, async () => {
-    // Resolve the source path: allow both .dyad/media paths and app-relative paths
-    let fromFullPath: string;
-    if (from.startsWith("attachments:")) {
-      const attachment = await resolveAttachmentLogicalPath(appPath, from);
-      if (!attachment) {
+  return appOperationCoordinator.run(
+    {
+      appId,
+      operation: "copy-app-file",
+      resources: [
+        readAppResource("app-path"),
+        readAppResource("provider"),
+        "repository",
+      ],
+    },
+    async () => {
+      // Resolve the source path: allow both .dyad/media paths and app-relative paths
+      let fromFullPath: string;
+      if (from.startsWith("attachments:")) {
+        const attachment = await resolveAttachmentLogicalPath(appPath, from);
+        if (!attachment) {
+          throw new DyadError(
+            `Attachment does not exist: ${from}`,
+            DyadErrorKind.NotFound,
+          );
+        }
+        fromFullPath = attachment.filePath;
+      } else if (path.isAbsolute(from)) {
+        // Security: only allow absolute paths within the app's .dyad/media directory
+        if (!isWithinDyadMediaDir(from, appPath)) {
+          throw new Error(
+            `Absolute source paths are only allowed within the .dyad/media directory`,
+          );
+        }
+        fromFullPath = path.resolve(from);
+      } else {
+        fromFullPath = safeJoin(appPath, from);
+      }
+
+      const operationPath = await assertMutationPathAllowed({
+        appPath,
+        relativePath: to,
+      });
+      const toFullPath = safeJoin(appPath, operationPath);
+
+      if (!fs.existsSync(fromFullPath)) {
         throw new DyadError(
-          `Attachment does not exist: ${from}`,
+          `Source file does not exist: ${from}`,
           DyadErrorKind.NotFound,
         );
       }
-      fromFullPath = attachment.filePath;
-    } else if (path.isAbsolute(from)) {
-      // Security: only allow absolute paths within the app's .dyad/media directory
-      if (!isWithinDyadMediaDir(from, appPath)) {
+
+      // Security: resolve symlinks and re-validate that paths remain within bounds.
+      // path.resolve() does not follow symlinks, so an attacker could place a
+      // symlink inside the allowed directory that points outside it.
+      const realFromPath = fs.realpathSync(fromFullPath);
+      const resolvedAppPath = fs.realpathSync(appPath);
+      if (
+        path.isAbsolute(from) &&
+        !isWithinDyadMediaDir(realFromPath, resolvedAppPath)
+      ) {
         throw new Error(
-          `Absolute source paths are only allowed within the .dyad/media directory`,
+          `Source path resolves to a location outside the .dyad/media directory (possible symlink traversal)`,
         );
       }
-      fromFullPath = path.resolve(from);
-    } else {
-      fromFullPath = safeJoin(appPath, from);
-    }
-
-    const operationPath = await assertMutationPathAllowed({
-      appPath,
-      relativePath: to,
-    });
-    const toFullPath = safeJoin(appPath, operationPath);
-
-    if (!fs.existsSync(fromFullPath)) {
-      throw new DyadError(
-        `Source file does not exist: ${from}`,
-        DyadErrorKind.NotFound,
-      );
-    }
-
-    // Security: resolve symlinks and re-validate that paths remain within bounds.
-    // path.resolve() does not follow symlinks, so an attacker could place a
-    // symlink inside the allowed directory that points outside it.
-    const realFromPath = fs.realpathSync(fromFullPath);
-    const resolvedAppPath = fs.realpathSync(appPath);
-    if (
-      path.isAbsolute(from) &&
-      !isWithinDyadMediaDir(realFromPath, resolvedAppPath)
-    ) {
-      throw new Error(
-        `Source path resolves to a location outside the .dyad/media directory (possible symlink traversal)`,
-      );
-    }
-    if (
-      !path.isAbsolute(from) &&
-      !realFromPath.startsWith(resolvedAppPath + path.sep) &&
-      realFromPath !== resolvedAppPath
-    ) {
-      throw new Error(
-        `Source path resolves to a location outside the app directory (possible symlink traversal)`,
-      );
-    }
-
-    // Track if this involves shared modules
-    const sharedModuleChanged = isSharedServerModule(operationPath);
-
-    // Ensure destination directory exists
-    const dirPath = path.dirname(toFullPath);
-    fs.mkdirSync(dirPath, { recursive: true });
-
-    // Copy the file (do not follow symlinks at destination)
-    fs.copyFileSync(fromFullPath, toFullPath);
-    logger.log(`Successfully copied file: ${fromFullPath} -> ${toFullPath}`);
-
-    // Add to git
-    await gitAdd({ path: appPath, filepath: operationPath });
-
-    // Deploy Supabase function if applicable
-    const effectiveSharedModulesChanged =
-      isSharedModulesChanged || sharedModuleChanged;
-    let deployError: unknown;
-    let skippedFunctionDeploy: string | undefined;
-    if (supabaseProjectId && isServerFunction(operationPath)) {
-      const functionName = extractFunctionNameFromPath(operationPath);
-      if (!effectiveSharedModulesChanged) {
-        try {
-          await deploySupabaseFunction({
-            supabaseProjectId,
-            functionName,
-            appPath,
-            organizationSlug: supabaseOrganizationSlug ?? null,
-          });
-        } catch (error) {
-          logger.error("Failed to deploy Supabase function after copy:", error);
-          deployError = error;
-        }
-      } else {
-        skippedFunctionDeploy = functionName;
+      if (
+        !path.isAbsolute(from) &&
+        !realFromPath.startsWith(resolvedAppPath + path.sep) &&
+        realFromPath !== resolvedAppPath
+      ) {
+        throw new Error(
+          `Source path resolves to a location outside the app directory (possible symlink traversal)`,
+        );
       }
-    }
 
-    return {
-      sharedModuleChanged,
-      skippedFunctionDeploy,
-      deployError,
-    };
-  });
+      // Track if this involves shared modules
+      const sharedModuleChanged = isSharedServerModule(operationPath);
+
+      // Ensure destination directory exists
+      const dirPath = path.dirname(toFullPath);
+      fs.mkdirSync(dirPath, { recursive: true });
+
+      // Copy the file (do not follow symlinks at destination)
+      fs.copyFileSync(fromFullPath, toFullPath);
+      logger.log(`Successfully copied file: ${fromFullPath} -> ${toFullPath}`);
+
+      // Add to git
+      await gitAdd({ path: appPath, filepath: operationPath });
+
+      // Deploy Supabase function if applicable
+      const effectiveSharedModulesChanged =
+        isSharedModulesChanged || sharedModuleChanged;
+      let deployError: unknown;
+      let skippedFunctionDeploy: string | undefined;
+      if (supabaseProjectId && isServerFunction(operationPath)) {
+        const functionName = extractFunctionNameFromPath(operationPath);
+        if (!effectiveSharedModulesChanged) {
+          try {
+            await deploySupabaseFunction({
+              supabaseProjectId,
+              functionName,
+              appPath,
+              organizationSlug: supabaseOrganizationSlug ?? null,
+            });
+          } catch (error) {
+            logger.error(
+              "Failed to deploy Supabase function after copy:",
+              error,
+            );
+            deployError = error;
+          }
+        } else {
+          skippedFunctionDeploy = functionName;
+        }
+      }
+
+      return {
+        sharedModuleChanged,
+        skippedFunctionDeploy,
+        deployError,
+      };
+    },
+  );
 }

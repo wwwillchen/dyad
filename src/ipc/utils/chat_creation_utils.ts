@@ -7,8 +7,11 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { getDyadAppPath } from "../../paths/paths";
 import { getCurrentCommitHash } from "./git_utils";
 import { getInitialChatModeForNewChat } from "../handlers/chat_mode_resolution";
-import { withLock } from "./lock_utils";
 import { assertAppChatCreationOpen } from "../services/app_chat_creation_fence";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "../services/app_operation_coordinator";
 
 const logger = log.scope("chat_creation_utils");
 
@@ -22,54 +25,52 @@ export async function createChatForApp({
   initialChatMode?: ChatMode;
 }): Promise<number> {
   assertAppChatCreationOpen(appId);
-  // Get the app's path first
-  const app = await db.query.apps.findFirst({
-    where: eq(apps.id, appId),
-    columns: {
-      path: true,
+  return appOperationCoordinator.run(
+    {
+      appId,
+      operation: "create-chat",
+      resources: [
+        readAppResource("app-path"),
+        "chat-membership",
+        readAppResource("repository"),
+      ],
     },
-  });
+    async () => {
+      // App deletion installs its fences before draining admitted operations.
+      // A creator either commits before deletion snapshots children or is
+      // rejected before it can add a late child.
+      assertAppChatCreationOpen(appId);
+      const app = await db.query.apps.findFirst({
+        where: eq(apps.id, appId),
+        columns: { path: true },
+      });
+      if (!app) {
+        throw new DyadError("App not found", DyadErrorKind.NotFound);
+      }
 
-  if (!app) {
-    throw new DyadError("App not found", DyadErrorKind.NotFound);
-  }
+      let initialCommitHash = null;
+      try {
+        initialCommitHash = await getCurrentCommitHash({
+          path: getDyadAppPath(app.path),
+        });
+      } catch (error) {
+        logger.error("Error getting git revision:", error);
+      }
 
-  let initialCommitHash = null;
-  try {
-    // Get the current git revision of the currently checked-out branch
-    initialCommitHash = await getCurrentCommitHash({
-      path: getDyadAppPath(app.path),
-    });
-  } catch (error) {
-    logger.error("Error getting git revision:", error);
-    // Continue without the git revision
-  }
-
-  const chatMode = await getInitialChatModeForNewChat(initialChatMode);
-
-  const chat = await withLock(appId, async () => {
-    // App deletion installs the fence before taking this same lock. A creator
-    // that started earlier either commits before deletion snapshots children,
-    // or observes the fence here and cannot add a late child.
-    assertAppChatCreationOpen(appId);
-    const [created] = await db
-      .insert(chats)
-      .values({
+      const chatMode = await getInitialChatModeForNewChat(initialChatMode);
+      const [chat] = await db
+        .insert(chats)
+        .values({ appId, title, initialCommitHash, chatMode })
+        .returning();
+      logger.info(
+        "Created chat:",
+        chat.id,
+        "for app:",
         appId,
-        title,
+        "with initial commit hash:",
         initialCommitHash,
-        chatMode,
-      })
-      .returning();
-    return created;
-  });
-  logger.info(
-    "Created chat:",
-    chat.id,
-    "for app:",
-    appId,
-    "with initial commit hash:",
-    initialCommitHash,
+      );
+      return chat.id;
+    },
   );
-  return chat.id;
 }

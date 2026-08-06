@@ -7,7 +7,10 @@ import { apps } from "../../db/schema";
 import { getDyadAppPath } from "../../paths/paths";
 import { DYAD_MEDIA_DIR_NAME } from "../utils/media_path_utils";
 import { safeJoin } from "../utils/path_utils";
-import { withLock } from "../utils/lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "./app_operation_coordinator";
 import { readSettings } from "../../main/settings";
 import { eq } from "drizzle-orm";
 import fs from "node:fs";
@@ -281,8 +284,13 @@ export class ImageGenerationService {
     throwIfGenerationCancelled(controller.signal);
 
     // Save to app's media folder under lock (consistent with media CRUD handlers)
-    const savedImage = await withLock(params.targetAppId, async () =>
-      withLock(`media:${params.targetAppId}`, async () => {
+    const savedImage = await appOperationCoordinator.run(
+      {
+        appId: params.targetAppId,
+        operation: "save-generated-image",
+        resources: [readAppResource("app-path"), "media"],
+      },
+      async () => {
         this.assertAcceptingGenerations(params.targetAppId);
         throwIfGenerationCancelled(controller.signal);
         const currentApp = await db.query.apps.findFirst({
@@ -338,7 +346,7 @@ export class ImageGenerationService {
           appId: currentApp.id,
           appName: currentApp.name,
         };
-      }),
+      },
     );
 
     return savedImage;

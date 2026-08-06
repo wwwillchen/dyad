@@ -18,8 +18,11 @@ import {
 } from "../../supabase_admin/supabase_app_key";
 import { getDyadAppPath } from "../../paths/paths";
 import { createTypedHandler } from "./base";
-import { createAppMutationLock } from "../utils/app_mutation_lock";
-import { withLock } from "../utils/lock_utils";
+import { createAppOperationHandler } from "../utils/app_mutation_lock";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "../services/app_operation_coordinator";
 import { createTestOnlyLoggedHandler } from "./safe_handle";
 import { readSettings, writeSettings } from "../../main/settings";
 import { supabaseContracts } from "../types/supabase";
@@ -213,48 +216,57 @@ export function registerSupabaseHandlers() {
   });
 
   // Set app project - links a Dyad app to a Supabase project.
-  // Under the per-app mutation lock so it serializes with the key switch, which
-  // reads this association and then writes the matching key into the app's
-  // source. Repointing mid-switch would otherwise leave the client holding the
-  // PREVIOUS project's publishable key.
+  // Provider ownership serializes this with the key switch, which reads this
+  // association and writes the matching key into the app's source. Repointing
+  // mid-switch would leave the client holding the previous project's key.
   createTypedHandler(
     supabaseContracts.setAppProject,
-    createAppMutationLock(async (_, params) => {
-      const { projectId, appId, parentProjectId, organizationSlug } = params;
-      await assertNoNeonProject(appId);
-      await db
-        .update(apps)
-        .set({
-          supabaseProjectId: projectId,
-          supabaseParentProjectId: parentProjectId,
-          supabaseOrganizationSlug: organizationSlug,
-        })
-        .where(eq(apps.id, appId));
+    createAppOperationHandler(
+      "set-supabase-project",
+      ["provider"],
+      async (_, params) => {
+        const { projectId, appId, parentProjectId, organizationSlug } = params;
+        await assertNoNeonProject(appId);
+        await db
+          .update(apps)
+          .set({
+            supabaseProjectId: projectId,
+            supabaseParentProjectId: parentProjectId,
+            supabaseOrganizationSlug: organizationSlug,
+          })
+          .where(eq(apps.id, appId));
 
-      logger.info(
-        `Associated app ${appId} with Supabase project ${projectId} (organization: ${organizationSlug})${parentProjectId ? ` and parent project ${parentProjectId}` : ""}`,
-      );
-    }),
+        logger.info(
+          `Associated app ${appId} with Supabase project ${projectId} (organization: ${organizationSlug})${parentProjectId ? ` and parent project ${parentProjectId}` : ""}`,
+        );
+      },
+    ),
   );
 
   // Unset app project - removes the link between a Dyad app and a Supabase
-  // project. Takes the same per-app lock as setAppProject, for the same reason;
-  // this contract spells the app id `app`, so it can't use
-  // createAppMutationLock (which reads `appId`).
+  // project. This legacy contract spells the app id `app`, so it declares the
+  // provider operation directly rather than using createAppOperationHandler.
   createTypedHandler(supabaseContracts.unsetAppProject, async (_, params) => {
     const { app } = params;
-    await withLock(app, async () => {
-      await db
-        .update(apps)
-        .set({
-          supabaseProjectId: null,
-          supabaseParentProjectId: null,
-          supabaseOrganizationSlug: null,
-        })
-        .where(eq(apps.id, app));
+    await appOperationCoordinator.run(
+      {
+        appId: app,
+        operation: "unset-supabase-project",
+        resources: ["provider"],
+      },
+      async () => {
+        await db
+          .update(apps)
+          .set({
+            supabaseProjectId: null,
+            supabaseParentProjectId: null,
+            supabaseOrganizationSlug: null,
+          })
+          .where(eq(apps.id, app));
 
-      logger.info(`Removed Supabase project association for app ${app}`);
-    });
+        logger.info(`Removed Supabase project association for app ${app}`);
+      },
+    );
   });
 
   // Does this app still authenticate with the project's legacy anon key?
@@ -278,50 +290,59 @@ export function registerSupabaseHandlers() {
   );
 
   // Swap an app's generated client off the legacy anon key it was created with.
-  // Under the per-app mutation lock: this is a read-modify-write of the app's
-  // source, so it has to serialize with the other operations that write there.
+  // This is a read-modify-write of the app's source, so it owns both provider
+  // state and the repository alongside a stable app-path read.
   createTypedHandler(
     supabaseContracts.switchAppToPublishableKey,
-    createAppMutationLock(async (_, { appId }) => {
-      const app = await db.query.apps.findFirst({ where: eq(apps.id, appId) });
-      if (!app) {
-        throw new DyadError(`App ${appId} not found.`, DyadErrorKind.NotFound);
-      }
-      if (!app.supabaseProjectId) {
-        throw new DyadError(
-          `App ${appId} is not connected to a Supabase project.`,
-          DyadErrorKind.Precondition,
-        );
-      }
-      try {
-        const outcome = await switchAppToPublishableKey({
-          appPath: getDyadAppPath(app.path),
-          projectId: app.supabaseProjectId,
-          organizationSlug: app.supabaseOrganizationSlug,
+    createAppOperationHandler(
+      "switch-supabase-publishable-key",
+      [readAppResource("app-path"), "provider", "repository"],
+      async (_, { appId }) => {
+        const app = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
         });
-        return { outcome };
-      } catch (error) {
-        // The switch re-checks the key against the Management API, so a revoked
-        // org token surfaces here. Classify it before it crosses IPC, or the
-        // renderer sees an auth problem as an unclassified product exception.
-        const classified = classifyManagementApiError(
-          error,
-          "update this app's API key",
-        );
-        if (isDyadError(classified)) {
-          throw classified;
+        if (!app) {
+          throw new DyadError(
+            `App ${appId} not found.`,
+            DyadErrorKind.NotFound,
+          );
         }
-        // Everything classifyManagementApiError doesn't recognise — a Supabase
-        // 5xx, a `fetch failed` TypeError, an fs error the rewrite couldn't
-        // classify — would otherwise reach the renderer as a bare Error with no
-        // kind to branch on, and be reported as an unclassified product
-        // exception (`rules/dyad-errors.md`).
-        throw new DyadError(
-          `Couldn't update this app's Supabase API key: ${classified instanceof Error ? classified.message : classified}`,
-          DyadErrorKind.External,
-        );
-      }
-    }),
+        if (!app.supabaseProjectId) {
+          throw new DyadError(
+            `App ${appId} is not connected to a Supabase project.`,
+            DyadErrorKind.Precondition,
+          );
+        }
+        try {
+          const outcome = await switchAppToPublishableKey({
+            appPath: getDyadAppPath(app.path),
+            projectId: app.supabaseProjectId,
+            organizationSlug: app.supabaseOrganizationSlug,
+          });
+          return { outcome };
+        } catch (error) {
+          // The switch re-checks the key against the Management API, so a revoked
+          // org token surfaces here. Classify it before it crosses IPC, or the
+          // renderer sees an auth problem as an unclassified product exception.
+          const classified = classifyManagementApiError(
+            error,
+            "update this app's API key",
+          );
+          if (isDyadError(classified)) {
+            throw classified;
+          }
+          // Everything classifyManagementApiError doesn't recognise — a Supabase
+          // 5xx, a `fetch failed` TypeError, an fs error the rewrite couldn't
+          // classify — would otherwise reach the renderer as a bare Error with no
+          // kind to branch on, and be reported as an unclassified product
+          // exception (`rules/dyad-errors.md`).
+          throw new DyadError(
+            `Couldn't update this app's Supabase API key: ${classified instanceof Error ? classified.message : classified}`,
+            DyadErrorKind.External,
+          );
+        }
+      },
+    ),
   );
 
   testOnlyHandle(

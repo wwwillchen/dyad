@@ -83,7 +83,7 @@ import {
   gitDeleteBranch,
 } from "@/ipc/utils/git_utils";
 import { db } from "@/db";
-import { createAppMutationLock } from "@/ipc/utils/app_mutation_lock";
+import { createAppOperationHandler } from "@/ipc/utils/app_mutation_lock";
 
 const mockEvent = {} as IpcMainInvokeEvent;
 
@@ -106,7 +106,9 @@ describe("whole-operation app mutation locks", () => {
       markPushStarted = resolve;
     });
 
-    const push = createAppMutationLock(
+    const push = createAppOperationHandler(
+      "test-push",
+      ["repository"],
       async (_event: unknown, { appId }: { appId: number }) => {
         events.push(`push:${appId}:start`);
         markPushStarted();
@@ -114,7 +116,9 @@ describe("whole-operation app mutation locks", () => {
         events.push(`push:${appId}:end`);
       },
     );
-    const switchBranch = createAppMutationLock(
+    const switchBranch = createAppOperationHandler(
+      "test-switch-branch",
+      ["repository"],
       async (_event: unknown, { appId }: { appId: number }) => {
         events.push(`switch:${appId}`);
       },

@@ -8,7 +8,10 @@ import { getMimeType, MIME_TYPE_MAP } from "../utils/mime_utils";
 import { DYAD_MEDIA_DIR_NAME } from "../utils/media_path_utils";
 import { INVALID_FILE_NAME_CHARS } from "../../shared/media_validation";
 import { ensureDyadGitignored } from "./gitignoreUtils";
-import { withLock } from "../utils/lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "../services/app_operation_coordinator";
 import fs from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
@@ -78,8 +81,13 @@ async function withMediaLock<T>(
       return fn();
     }
 
-    return withLock(`media:${uniqueSortedIds[index]}`, async () =>
-      runWithLock(index + 1),
+    return appOperationCoordinator.run(
+      {
+        appId: uniqueSortedIds[index],
+        operation: "mutate-media",
+        resources: [readAppResource("app-path"), "media"],
+      },
+      () => runWithLock(index + 1),
     );
   };
 

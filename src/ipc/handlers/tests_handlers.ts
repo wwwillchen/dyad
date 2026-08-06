@@ -32,7 +32,10 @@ import { assertMutationPathAllowed, safeJoin } from "../utils/path_utils";
 import { gitAdd, gitRemove } from "../utils/git_utils";
 import { gitService } from "../services/git_service";
 import { runningApps } from "../utils/process_manager";
-import { isLockHeld, withLock } from "../utils/lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "../services/app_operation_coordinator";
 import { broadcastToRegisteredWindows } from "@/ipc/utils/window_broadcast";
 import { spawnStreaming } from "../utils/spawn_streaming";
 import {
@@ -616,12 +619,18 @@ export async function runAppTestsWithIsolation({
       grep,
     });
 
-    // Hold the per-app lock across the whole isolation lifecycle (prepare →
-    // run → teardown). Startup reconciliation (reconcileOrphanTestBranches /
-    // reconcileOrphanTestUsers) takes the same lock, so a rapid Run right
-    // after launch can't interleave its env swap + dev-server restart with
-    // an in-flight reconciliation and end up running against the real DB.
-    if (isLockHeld(appId)) {
+    // Own the runtime/test resources across the whole isolation lifecycle
+    // (prepare → run → teardown). Startup reconciliation owns the same
+    // resources, so a rapid Run after launch cannot interleave its env swap
+    // and dev-server restart with reconciliation and use the real database.
+    const testRunResources = [
+      readAppResource("app-path"),
+      "provider",
+      "runtime",
+      "runtime-config",
+      "test-files",
+    ] as const;
+    if (appOperationCoordinator.isBusy(appId, testRunResources)) {
       logger.info(
         `Test run for app ${appId} is waiting for another app operation to finish before isolation setup`,
       );
@@ -630,74 +639,81 @@ export async function runAppTestsWithIsolation({
         "setup",
       );
     }
-    finalResult = await withLock(appId, async () => {
-      let prepared: PreparedIsolation | undefined;
-      try {
-        const app = await getApp(appId);
+    finalResult = await appOperationCoordinator.run(
+      {
+        appId,
+        operation: "run-app-tests",
+        resources: testRunResources,
+      },
+      async () => {
+        let prepared: PreparedIsolation | undefined;
+        try {
+          const app = await getApp(appId);
 
-        if (!app.testingEnabled) {
-          return {
+          if (!app.testingEnabled) {
+            return {
+              appId,
+              results: [],
+              infraError: {
+                message:
+                  "Testing isn't enabled for this app. Enable it in the Tests panel before running tests.",
+              },
+            };
+          }
+
+          const runtimeMode = readSettings().runtimeMode2 ?? "host";
+
+          // Set up isolation so the run never mutates the user's real data:
+          // Neon apps get a throwaway copy-on-write branch, Supabase apps get
+          // a throwaway RLS-scoped test user, and no-DB apps run as-is.
+          prepared = await prepareIsolatedTestDatabase({
+            app,
+            emit,
+            runtimeMode,
+            signal: controller.signal,
+          });
+
+          // Isolation was required but couldn't be set up — dead-end safely
+          // rather than run against real data. teardown still runs in `finally`.
+          if (prepared.infraError) {
+            return {
+              appId,
+              results: [],
+              infraError: prepared.infraError,
+              isolation: prepared.isolation,
+            };
+          }
+
+          const result = await runAppTestsCore({
             appId,
-            results: [],
-            infraError: {
-              message:
-                "Testing isn't enabled for this app. Enable it in the Tests panel before running tests.",
-            },
-          };
-        }
-
-        const runtimeMode = readSettings().runtimeMode2 ?? "host";
-
-        // Set up isolation so the run never mutates the user's real data:
-        // Neon apps get a throwaway copy-on-write branch, Supabase apps get
-        // a throwaway RLS-scoped test user, and no-DB apps run as-is.
-        prepared = await prepareIsolatedTestDatabase({
-          app,
-          emit,
-          runtimeMode,
-          signal: controller.signal,
-        });
-
-        // Isolation was required but couldn't be set up — dead-end safely
-        // rather than run against real data. teardown still runs in `finally`.
-        if (prepared.infraError) {
-          return {
-            appId,
-            results: [],
-            infraError: prepared.infraError,
-            isolation: prepared.isolation,
-          };
-        }
-
-        const result = await runAppTestsCore({
-          appId,
-          testFile: normalizedTestFile ?? undefined,
-          testLine,
-          grep,
-          headed,
-          parallel,
-          signal: controller.signal,
-          timeoutMs,
-          onOutput: emit,
-          testEnv: prepared.testCredentials,
-        });
-        return { ...result, isolation: prepared.isolation };
-      } finally {
-        // Always restore the app to its real database, even on the
-        // infraError early-return, abort, or throw. `teardown` is safe to
-        // call exactly once; on the infraError path it's a NOOP (isolation
-        // already restored).
-        if (prepared) {
-          try {
-            await prepared.teardown();
-          } catch (error) {
-            logger.error(
-              `Failed to tear down isolated test environment for app ${appId}: ${error}`,
-            );
+            testFile: normalizedTestFile ?? undefined,
+            testLine,
+            grep,
+            headed,
+            parallel,
+            signal: controller.signal,
+            timeoutMs,
+            onOutput: emit,
+            testEnv: prepared.testCredentials,
+          });
+          return { ...result, isolation: prepared.isolation };
+        } finally {
+          // Always restore the app to its real database, even on the
+          // infraError early-return, abort, or throw. `teardown` is safe to
+          // call exactly once; on the infraError path it's a NOOP (isolation
+          // already restored).
+          if (prepared) {
+            try {
+              await prepared.teardown();
+            } catch (error) {
+              logger.error(
+                `Failed to tear down isolated test environment for app ${appId}: ${error}`,
+              );
+            }
           }
         }
-      }
-    });
+      },
+    );
     return finalResult;
   } catch (error) {
     // Surface an unexpected failure as an infra error on the run-state event so
@@ -823,65 +839,72 @@ export function registerTestsHandlers() {
 
     // Same per-app lock the runs take, so a delete can't remove a spec out
     // from under an in-flight run (or interleave with its env swap).
-    return await withLock(params.appId, async () => {
-      // Canonical check on top of the pattern match: a symlinked `e2e-tests/`
-      // (or a symlinked spec) must not let the delete escape the app folder.
-      await assertMutationPathAllowed({
-        appPath,
-        relativePath: testFile,
-        followFinalSymlink: false,
-      });
-      const fullPath = safeJoin(appPath, testFile);
-      // Confirm the spec is actually there before touching git, so a stale row
-      // in the panel reports "not found" instead of committing a phantom
-      // deletion for a path that was already removed elsewhere.
-      try {
-        await fs.promises.lstat(fullPath);
-      } catch (error: any) {
-        if (error?.code === "ENOENT") {
-          throw new DyadError(
-            `Test file not found: ${testFile}`,
-            DyadErrorKind.NotFound,
-          );
-        }
-        throw error;
-      }
-      // Commit just this deletion, so deleting a test doesn't leave the user
-      // with an uncommitted change to review (and the deletion lands in version
-      // history, where it can be restored from). `git rm` removes the file from
-      // disk and stages that removal in one step: unlinking first would leave a
-      // window where an editor or agent write could recreate the path, only for
-      // `git rm -f` to delete the new content without a second confirmation.
-      // Best-effort by design: a git failure (untracked file, non-repo app)
-      // must not report the delete itself as failed. We surface whether it was
-      // committed so the UI doesn't promise a recovery path that may not exist.
-      const { commitHash, uncommittedReason } =
-        await gitService.removeFileAndCommit({
-          path: appPath,
-          filepath: testFile,
-          message: `delete test ${testFile}`,
+    return await appOperationCoordinator.run(
+      {
+        appId: params.appId,
+        operation: "delete-app-test",
+        resources: [readAppResource("app-path"), "repository", "test-files"],
+      },
+      async () => {
+        // Canonical check on top of the pattern match: a symlinked `e2e-tests/`
+        // (or a symlinked spec) must not let the delete escape the app folder.
+        await assertMutationPathAllowed({
+          appPath,
+          relativePath: testFile,
+          followFinalSymlink: false,
         });
-      if (uncommittedReason === "untracked") {
-        // Git removed nothing (untracked spec, or the app isn't a repo), so the
-        // file is still on disk and it's on us to delete it.
+        const fullPath = safeJoin(appPath, testFile);
+        // Confirm the spec is actually there before touching git, so a stale row
+        // in the panel reports "not found" instead of committing a phantom
+        // deletion for a path that was already removed elsewhere.
         try {
-          await fs.promises.unlink(fullPath);
+          await fs.promises.lstat(fullPath);
         } catch (error: any) {
-          if (error?.code !== "ENOENT") {
-            throw error;
+          if (error?.code === "ENOENT") {
+            throw new DyadError(
+              `Test file not found: ${testFile}`,
+              DyadErrorKind.NotFound,
+            );
+          }
+          throw error;
+        }
+        // Commit just this deletion, so deleting a test doesn't leave the user
+        // with an uncommitted change to review (and the deletion lands in version
+        // history, where it can be restored from). `git rm` removes the file from
+        // disk and stages that removal in one step: unlinking first would leave a
+        // window where an editor or agent write could recreate the path, only for
+        // `git rm -f` to delete the new content without a second confirmation.
+        // Best-effort by design: a git failure (untracked file, non-repo app)
+        // must not report the delete itself as failed. We surface whether it was
+        // committed so the UI doesn't promise a recovery path that may not exist.
+        const { commitHash, uncommittedReason } =
+          await gitService.removeFileAndCommit({
+            path: appPath,
+            filepath: testFile,
+            message: `delete test ${testFile}`,
+          });
+        if (uncommittedReason === "untracked") {
+          // Git removed nothing (untracked spec, or the app isn't a repo), so the
+          // file is still on disk and it's on us to delete it.
+          try {
+            await fs.promises.unlink(fullPath);
+          } catch (error: any) {
+            if (error?.code !== "ENOENT") {
+              throw error;
+            }
           }
         }
-      }
-      queueCloudSandboxSnapshotSync({
-        appId: params.appId,
-        deletedPaths: [testFile],
-      });
-      return {
-        file: testFile,
-        committed: commitHash !== null,
-        uncommittedReason,
-      };
-    });
+        queueCloudSandboxSnapshotSync({
+          appId: params.appId,
+          deletedPaths: [testFile],
+        });
+        return {
+          file: testFile,
+          committed: commitHash !== null,
+          uncommittedReason,
+        };
+      },
+    );
   });
 
   createTypedHandler(
@@ -905,163 +928,170 @@ export function registerTestsHandlers() {
       const appPath = getDyadAppPath(app.path);
       // Serialize against test runs (same numeric appId lock) so a move can't
       // interleave with a run's env swap / dev-server restart.
-      return await withLock(params.appId, async () => {
-        const results: MigrateLegacyTestResult[] = [];
+      return await appOperationCoordinator.run(
+        {
+          appId: params.appId,
+          operation: "migrate-legacy-tests",
+          resources: [readAppResource("app-path"), "repository", "test-files"],
+        },
+        async () => {
+          const results: MigrateLegacyTestResult[] = [];
 
-        // Validate + normalize the requested specs up front; invalid ones are
-        // reported and excluded from the move plan. Deduplicate so the same
-        // path submitted twice doesn't produce a spurious second failure.
-        const validSpecs: string[] = [];
-        const seenSpecs = new Set<string>();
-        for (const requested of params.files) {
-          const sourceRel = normalizeLegacyTestFile(requested);
-          if (!sourceRel) {
-            results.push({
-              file: requested,
-              ok: false,
-              error: "Not a valid tests/*.spec.{ts,tsx,js,jsx} path",
-            });
-            continue;
+          // Validate + normalize the requested specs up front; invalid ones are
+          // reported and excluded from the move plan. Deduplicate so the same
+          // path submitted twice doesn't produce a spurious second failure.
+          const validSpecs: string[] = [];
+          const seenSpecs = new Set<string>();
+          for (const requested of params.files) {
+            const sourceRel = normalizeLegacyTestFile(requested);
+            if (!sourceRel) {
+              results.push({
+                file: requested,
+                ok: false,
+                error: "Not a valid tests/*.spec.{ts,tsx,js,jsx} path",
+              });
+              continue;
+            }
+            if (seenSpecs.has(sourceRel)) {
+              continue; // Duplicate request; already accounted for.
+            }
+            seenSpecs.add(sourceRel);
+            validSpecs.push(sourceRel);
           }
-          if (seenSpecs.has(sourceRel)) {
-            continue; // Duplicate request; already accounted for.
-          }
-          seenSpecs.add(sourceRel);
-          validSpecs.push(sourceRel);
-        }
 
-        // Only ever move files detection actually classified as legacy
-        // Playwright specs, regardless of what the renderer submitted — a
-        // valid-looking path alone must not move an unrelated tests/ spec.
-        const detected = new Set(await detectLegacyPlaywrightSpecs(appPath));
-        const plannableSpecs: string[] = [];
-        for (const sourceRel of validSpecs) {
-          if (detected.has(sourceRel)) {
-            plannableSpecs.push(sourceRel);
-          } else {
+          // Only ever move files detection actually classified as legacy
+          // Playwright specs, regardless of what the renderer submitted — a
+          // valid-looking path alone must not move an unrelated tests/ spec.
+          const detected = new Set(await detectLegacyPlaywrightSpecs(appPath));
+          const plannableSpecs: string[] = [];
+          for (const sourceRel of validSpecs) {
+            if (detected.has(sourceRel)) {
+              plannableSpecs.push(sourceRel);
+            } else {
+              results.push({
+                file: sourceRel,
+                ok: false,
+                error: "Not a Playwright spec in tests/",
+              });
+            }
+          }
+
+          // Move one tests/ file into e2e-tests/ (git-aware, never overwriting).
+          // Both paths are canonically validated (`assertMutationPathAllowed`) so
+          // a symlinked e2e-tests/ can't redirect the write outside the app.
+          const moveOne = async (
+            sourceRel: string,
+          ): Promise<{ ok: boolean; movedTo?: string; error?: string }> => {
+            const destRel = legacyToE2ePath(sourceRel);
+            try {
+              await assertMutationPathAllowed({
+                appPath,
+                relativePath: sourceRel,
+                followFinalSymlink: false,
+              });
+              await assertMutationPathAllowed({
+                appPath,
+                relativePath: destRel,
+                followFinalSymlink: false,
+              });
+              const src = safeJoin(appPath, sourceRel);
+              const dst = safeJoin(appPath, destRel);
+              if (!fs.existsSync(src)) {
+                return { ok: false, error: "Source file no longer exists" };
+              }
+              if (fs.existsSync(dst)) {
+                // Never overwrite an existing destination.
+                return { ok: false, error: `${destRel} already exists` };
+              }
+              await fs.promises.mkdir(path.dirname(dst), { recursive: true });
+              await moveFileWithFallback(src, dst);
+              // Stage the move (add new, remove old) without committing, so the
+              // user reviews it through the normal uncommitted-changes flow.
+              // Staging is best-effort: the file has already moved on disk, so a
+              // git failure (lock contention, untracked source, non-repo app)
+              // must not report the move itself as failed.
+              try {
+                await gitAdd({ path: appPath, filepath: destRel });
+              } catch (error) {
+                logger.warn(
+                  `Moved ${sourceRel} but couldn't git-add ${destRel}: ${error}`,
+                );
+              }
+              try {
+                await gitRemove({ path: appPath, filepath: sourceRel });
+              } catch (error) {
+                // The source may be untracked (never committed); the file is
+                // already gone from disk, so staging the new one is enough.
+                logger.warn(
+                  `Moved ${sourceRel} but couldn't git-remove it (likely untracked): ${error}`,
+                );
+              }
+              return { ok: true, movedTo: destRel };
+            } catch (error) {
+              logger.warn(`Failed to migrate ${sourceRel}: ${error}`);
+              return {
+                ok: false,
+                error: error instanceof Error ? error.message : String(error),
+              };
+            }
+          };
+
+          // Plan by connected component: a spec is moved only when its whole
+          // import group can move (no shared fixture or dependency left behind,
+          // no destination collision). Specs that can't move are reported as
+          // blocked rather than migrated into a broken state.
+          const plan =
+            plannableSpecs.length > 0
+              ? await planLegacyMigration(appPath, plannableSpecs)
+              : {
+                  movableSpecs: [] as string[],
+                  supportFiles: [] as string[],
+                  blockedSpecs: [] as { file: string; reason: string }[],
+                  skippedSupportFiles: [] as string[],
+                };
+
+          // Move support files first so a spec never lands beside a fixture that
+          // hasn't moved yet.
+          const movedSupportFiles: string[] = [];
+          const skippedSupportFiles = [...plan.skippedSupportFiles];
+          for (const support of plan.supportFiles) {
+            const outcome = await moveOne(support);
+            if (outcome.ok && outcome.movedTo) {
+              movedSupportFiles.push(outcome.movedTo);
+            } else {
+              skippedSupportFiles.push(support);
+            }
+          }
+
+          // Move the specs that planned cleanly.
+          for (const sourceRel of plan.movableSpecs) {
+            const outcome = await moveOne(sourceRel);
             results.push({
               file: sourceRel,
+              ok: outcome.ok,
+              movedTo: outcome.movedTo,
+              error: outcome.error,
+            });
+          }
+
+          // Report specs that couldn't move without breaking an import.
+          for (const blocked of plan.blockedSpecs) {
+            results.push({
+              file: blocked.file,
               ok: false,
-              error: "Not a Playwright spec in tests/",
+              error: blocked.reason,
             });
           }
-        }
 
-        // Move one tests/ file into e2e-tests/ (git-aware, never overwriting).
-        // Both paths are canonically validated (`assertMutationPathAllowed`) so
-        // a symlinked e2e-tests/ can't redirect the write outside the app.
-        const moveOne = async (
-          sourceRel: string,
-        ): Promise<{ ok: boolean; movedTo?: string; error?: string }> => {
-          const destRel = legacyToE2ePath(sourceRel);
-          try {
-            await assertMutationPathAllowed({
-              appPath,
-              relativePath: sourceRel,
-              followFinalSymlink: false,
-            });
-            await assertMutationPathAllowed({
-              appPath,
-              relativePath: destRel,
-              followFinalSymlink: false,
-            });
-            const src = safeJoin(appPath, sourceRel);
-            const dst = safeJoin(appPath, destRel);
-            if (!fs.existsSync(src)) {
-              return { ok: false, error: "Source file no longer exists" };
-            }
-            if (fs.existsSync(dst)) {
-              // Never overwrite an existing destination.
-              return { ok: false, error: `${destRel} already exists` };
-            }
-            await fs.promises.mkdir(path.dirname(dst), { recursive: true });
-            await moveFileWithFallback(src, dst);
-            // Stage the move (add new, remove old) without committing, so the
-            // user reviews it through the normal uncommitted-changes flow.
-            // Staging is best-effort: the file has already moved on disk, so a
-            // git failure (lock contention, untracked source, non-repo app)
-            // must not report the move itself as failed.
-            try {
-              await gitAdd({ path: appPath, filepath: destRel });
-            } catch (error) {
-              logger.warn(
-                `Moved ${sourceRel} but couldn't git-add ${destRel}: ${error}`,
-              );
-            }
-            try {
-              await gitRemove({ path: appPath, filepath: sourceRel });
-            } catch (error) {
-              // The source may be untracked (never committed); the file is
-              // already gone from disk, so staging the new one is enough.
-              logger.warn(
-                `Moved ${sourceRel} but couldn't git-remove it (likely untracked): ${error}`,
-              );
-            }
-            return { ok: true, movedTo: destRel };
-          } catch (error) {
-            logger.warn(`Failed to migrate ${sourceRel}: ${error}`);
-            return {
-              ok: false,
-              error: error instanceof Error ? error.message : String(error),
-            };
-          }
-        };
-
-        // Plan by connected component: a spec is moved only when its whole
-        // import group can move (no shared fixture or dependency left behind,
-        // no destination collision). Specs that can't move are reported as
-        // blocked rather than migrated into a broken state.
-        const plan =
-          plannableSpecs.length > 0
-            ? await planLegacyMigration(appPath, plannableSpecs)
-            : {
-                movableSpecs: [] as string[],
-                supportFiles: [] as string[],
-                blockedSpecs: [] as { file: string; reason: string }[],
-                skippedSupportFiles: [] as string[],
-              };
-
-        // Move support files first so a spec never lands beside a fixture that
-        // hasn't moved yet.
-        const movedSupportFiles: string[] = [];
-        const skippedSupportFiles = [...plan.skippedSupportFiles];
-        for (const support of plan.supportFiles) {
-          const outcome = await moveOne(support);
-          if (outcome.ok && outcome.movedTo) {
-            movedSupportFiles.push(outcome.movedTo);
-          } else {
-            skippedSupportFiles.push(support);
-          }
-        }
-
-        // Move the specs that planned cleanly.
-        for (const sourceRel of plan.movableSpecs) {
-          const outcome = await moveOne(sourceRel);
-          results.push({
-            file: sourceRel,
-            ok: outcome.ok,
-            movedTo: outcome.movedTo,
-            error: outcome.error,
-          });
-        }
-
-        // Report specs that couldn't move without breaking an import.
-        for (const blocked of plan.blockedSpecs) {
-          results.push({
-            file: blocked.file,
-            ok: false,
-            error: blocked.reason,
-          });
-        }
-
-        return {
-          results,
-          movedSupportFiles,
-          skippedSupportFiles: [...new Set(skippedSupportFiles)].sort((a, b) =>
-            a.localeCompare(b),
-          ),
-        };
-      });
+          return {
+            results,
+            movedSupportFiles,
+            skippedSupportFiles: [...new Set(skippedSupportFiles)].sort(
+              (a, b) => a.localeCompare(b),
+            ),
+          };
+        },
+      );
     },
   );
 

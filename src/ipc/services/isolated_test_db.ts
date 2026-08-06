@@ -395,12 +395,11 @@ async function restoreEnvFile(
 /**
  * Stop (if running) and (re)start the app's dev server in place.
  *
- * The caller must already hold the per-app lock (`withLock(app.id, …)`): both
- * call sites here — setup and teardown — run inside the lock the `tests:run`
- * handler holds across the whole isolation lifecycle. We must NOT re-acquire it
- * here: `withLock` is promise-chained, not re-entrant, so a nested acquisition
- * would queue behind the outer run and wait for it to finish while the outer
- * run is awaiting this restart — a deadlock that Stop can't break.
+ * The caller must already own the app's runtime, runtime-config, and provider
+ * resources: both call sites here — setup and teardown — run inside the
+ * `tests:run` operation across the whole isolation lifecycle. We must NOT start
+ * another coordinated runtime operation here because it would wait behind the
+ * outer run while that run awaited this restart — a deadlock Stop can't break.
  */
 async function restartAppInPlace({
   app,

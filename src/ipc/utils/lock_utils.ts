@@ -1,4 +1,4 @@
-const locks = new Map<number | string, Promise<void>>();
+const locks = new Map<string, Promise<void>>();
 
 /**
  * Build the lock ID used to serialize writes to a single file path.
@@ -7,10 +7,6 @@ const locks = new Map<number | string, Promise<void>>();
  */
 export function getFileWriteKey(filePath: string): string {
   return `filewrite:${filePath}`;
-}
-
-export function isLockHeld(lockId: number | string): boolean {
-  return locks.has(lockId);
 }
 
 /**
@@ -22,10 +18,7 @@ export function isLockHeld(lockId: number | string): boolean {
  * @param fn The function to execute with the lock
  * @returns Result of the function
  */
-export function withLock<T>(
-  lockId: number | string,
-  fn: () => Promise<T>,
-): Promise<T> {
+export function withLock<T>(lockId: string, fn: () => Promise<T>): Promise<T> {
   const lastOperation = locks.get(lockId) ?? Promise.resolve();
 
   let resolve: () => void;

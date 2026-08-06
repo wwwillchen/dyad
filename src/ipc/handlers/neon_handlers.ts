@@ -44,7 +44,8 @@ import {
   type EnsureNitroResult,
 } from "../utils/nitro_setup";
 import { getDyadAppPath } from "@/paths/paths";
-import { createAppMutationLock } from "@/ipc/utils/app_mutation_lock";
+import { createAppOperationHandler } from "@/ipc/utils/app_mutation_lock";
+import { readAppResource } from "@/ipc/services/app_operation_coordinator";
 
 const testOnlyHandle = createTestOnlyLoggedHandler(logger);
 
@@ -59,7 +60,14 @@ function createLockedHandler<
     input: z.infer<TInput>,
   ) => Promise<z.infer<TOutput>>,
 ): void {
-  createTypedHandler(contract, createAppMutationLock(handler));
+  createTypedHandler(
+    contract,
+    createAppOperationHandler(
+      `neon:${contract.channel}`,
+      [readAppResource("app-path"), "provider", "repository", "runtime-config"],
+      handler,
+    ),
+  );
 }
 
 async function restoreEnvFileSnapshot({

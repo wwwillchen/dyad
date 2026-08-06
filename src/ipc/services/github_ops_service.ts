@@ -22,7 +22,10 @@ import {
   handleRenameBranch,
   handleSwitchBranch,
 } from "../handlers/git_branch_handlers";
-import { withLock } from "../utils/lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "./app_operation_coordinator";
 
 // The extracted handler cores do not inspect the Electron event. Keeping the
 // placeholder confined to this compatibility seam lets the hosted actor call
@@ -44,10 +47,17 @@ export class GithubOpsService {
     }
     return this.track(
       appId,
-      withLock(appId, () => {
-        this.assertAcceptingOperations(appId);
-        return this.runUnlocked(appId, op);
-      }),
+      appOperationCoordinator.run(
+        {
+          appId,
+          operation: `github:${op.type}`,
+          resources: [readAppResource("app-path"), "repository"],
+        },
+        () => {
+          this.assertAcceptingOperations(appId);
+          return this.runUnlocked(appId, op);
+        },
+      ),
     );
   }
 

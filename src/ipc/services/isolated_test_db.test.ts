@@ -58,7 +58,7 @@ vi.mock("../utils/framework_utils", () => ({
   detectFrameworkType: vi.fn(() => "nextjs"),
 }));
 vi.mock("../utils/lock_utils", () => ({
-  withLock: (_id: number, fn: () => Promise<unknown>) => fn(),
+  runSerialized: (_id: number, fn: () => Promise<unknown>) => fn(),
 }));
 vi.mock("../utils/process_manager", () => ({
   runningApps: mocks.runningApps,

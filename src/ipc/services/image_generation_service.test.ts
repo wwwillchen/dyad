@@ -5,7 +5,7 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import { apps } from "@/db/schema";
 import { DyadErrorKind } from "@/errors/dyad_error";
-import { withLock } from "@/ipc/utils/lock_utils";
+import { appOperationCoordinator } from "@/ipc/services/app_operation_coordinator";
 import {
   type HandlerTestHarness,
   setupHandlerTestHarness,
@@ -392,17 +392,24 @@ describe("ImageGenerationService", () => {
     );
     const appLockAcquired = deferred<void>();
     const releaseAppLock = deferred<void>();
-    const relocation = withLock(appId, async () => {
-      appLockAcquired.resolve();
-      await releaseAppLock.promise;
-      const movedAppPath = path.join(tempBase, "moved-app");
-      await fs.promises.mkdir(movedAppPath, { recursive: true });
-      harness.db
-        .update(apps)
-        .set({ path: "moved-app", name: "Moved app" })
-        .where(eq(apps.id, appId))
-        .run();
-    });
+    const relocation = appOperationCoordinator.run(
+      {
+        appId,
+        operation: "test-relocation",
+        resources: ["app-path"],
+      },
+      async () => {
+        appLockAcquired.resolve();
+        await releaseAppLock.promise;
+        const movedAppPath = path.join(tempBase, "moved-app");
+        await fs.promises.mkdir(movedAppPath, { recursive: true });
+        harness.db
+          .update(apps)
+          .set({ path: "moved-app", name: "Moved app" })
+          .where(eq(apps.id, appId))
+          .run();
+      },
+    );
     await appLockAcquired.promise;
 
     const generation = generate("move-during-generation");

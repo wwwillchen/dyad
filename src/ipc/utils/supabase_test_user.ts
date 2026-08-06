@@ -7,7 +7,7 @@ import { apps } from "../../db/schema";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { IS_TEST_BUILD } from "@/ipc/utils/test_utils";
 import { fetchWithRetry } from "@/ipc/utils/retryWithRateLimit";
-import { withLock } from "@/ipc/utils/lock_utils";
+import { appOperationCoordinator } from "@/ipc/services/app_operation_coordinator";
 import {
   executeSupabaseSql,
   getProjectApiKeys,
@@ -370,7 +370,14 @@ export async function reconcileOrphanTestUsers(): Promise<void> {
         // Serialize against a user-initiated test run on the same app so this
         // sweep can't race the run's teardown on the shared supabaseTestUserId
         // column. The run path acquires the same per-app lock.
-        await withLock(appData.id, () => deleteTempTestUser(appData));
+        await appOperationCoordinator.run(
+          {
+            appId: appData.id,
+            operation: "reconcile-supabase-test-user",
+            resources: ["provider", "runtime-config"],
+          },
+          () => deleteTempTestUser(appData),
+        );
       } catch (error) {
         logger.warn(
           `Failed to reconcile orphaned test user for app ${appData.id}: ${error}`,

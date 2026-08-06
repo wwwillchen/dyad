@@ -12,7 +12,7 @@ import { localTemplatesData } from "../../shared/templates";
 import { createTypedHandler } from "./base";
 import { templateContracts } from "../types/templates";
 import { getDyadAppPath } from "../../paths/paths";
-import { withLock } from "../utils/lock_utils";
+import { appOperationCoordinator } from "../services/app_operation_coordinator";
 import { runningApps, stopAppByInfo } from "../utils/process_manager";
 import { createFromTemplate } from "./createFromTemplate";
 import { ensureDyadGitignored } from "./gitignoreUtils";
@@ -156,215 +156,227 @@ export function registerTemplateHandlers() {
   createTypedHandler(templateContracts.applyAppTemplate, async (_, params) => {
     const { appId, templateId, chatId } = params;
 
-    return withLock(appId, async () => {
-      const appRecord = await db.query.apps.findFirst({
-        where: eq(apps.id, appId),
-      });
-
-      if (!appRecord) {
-        throw new DyadError("App not found", DyadErrorKind.NotFound);
-      }
-
-      const oldAbsPath = getDyadAppPath(appRecord.path);
-      const uncommittedFiles = await getGitUncommittedFiles({
-        path: oldAbsPath,
-      });
-
-      if (uncommittedFiles.length > 0) {
-        throw new DyadError(
-          "Cannot change templates after local modifications. Please commit or discard your changes first.",
-          DyadErrorKind.Precondition,
-        );
-      }
-
-      // For imported (absolute path) apps, fall back to the in-place flow —
-      // the user picked that folder location intentionally.
-      const useInPlace = path.isAbsolute(appRecord.path);
-
-      let workingPath = oldAbsPath;
-      let newSlug: string | null = null;
-      let newAbsPath: string | null = null;
-      let didPathSwap = false;
-
-      if (!useInPlace) {
-        const allocated = await allocateNewAppPath({
-          appId,
-          newName: appRecord.name,
+    return appOperationCoordinator.run(
+      {
+        appId,
+        operation: "apply-app-template",
+        resources: ["app-path", "chat-content", "repository", "runtime"],
+      },
+      async () => {
+        const appRecord = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
         });
-        if (!pathsEqualCaseInsensitive(allocated.newAbsPath, oldAbsPath)) {
-          newSlug = allocated.newSlug;
-          newAbsPath = allocated.newAbsPath;
-          didPathSwap = true;
+
+        if (!appRecord) {
+          throw new DyadError("App not found", DyadErrorKind.NotFound);
         }
-      }
 
-      let appWasStopped = false;
+        const oldAbsPath = getDyadAppPath(appRecord.path);
+        const uncommittedFiles = await getGitUncommittedFiles({
+          path: oldAbsPath,
+        });
 
-      if (didPathSwap && newAbsPath && newSlug) {
-        // Path-swap branch: build the template at a new directory, migrate
-        // preserved files (.git, .dyad, .env*) from the old directory, update
-        // the DB, then best-effort delete the old directory. This avoids
-        // Windows file-lock failures on node_modules/build artifacts.
-        const tempRoot = await fsPromises.mkdtemp(
-          path.join(os.tmpdir(), "dyad-template-"),
-        );
-        const stagedTemplatePath = path.join(tempRoot, "app");
-
-        let newDirCreated = false;
-        let dbUpdated = false;
-        let noOpAbort = false;
-
-        try {
-          await createFromTemplate({
-            fullAppPath: stagedTemplatePath,
-            templateId,
-          });
-
-          const appInfo = runningApps.get(appId);
-          if (appInfo) {
-            await stopAppByInfo(appId, appInfo);
-            appWasStopped = true;
-          }
-
-          await fsPromises.mkdir(path.dirname(newAbsPath), { recursive: true });
-          await fsPromises.cp(stagedTemplatePath, newAbsPath, {
-            recursive: true,
-          });
-          newDirCreated = true;
-
-          await copyPreservedEntries({
-            fromPath: oldAbsPath,
-            toPath: newAbsPath,
-          });
-
-          // The new template's `.gitignore` likely doesn't contain `.dyad/`,
-          // so re-apply it before staging to keep internal metadata out of
-          // git.
-          await ensureDyadGitignored(newAbsPath);
-
-          const commitHash = await gitService.stageAllAndCommitIfChanged({
-            path: newAbsPath,
-            message: `Apply ${templateId} template`,
-          });
-
-          if (commitHash === null) {
-            // No-op: template produced the same content. Discard the new
-            // dir, leave the DB pointing at the old path, and report no
-            // apply. The dev server still needs restart if we stopped it.
-            logger.info(
-              `Template ${templateId} already applied to app ${appId}, skipping commit (path-swap branch)`,
-            );
-            noOpAbort = true;
-            await fsPromises.rm(newAbsPath, { recursive: true, force: true });
-            return { applied: false, needsRestart: appWasStopped };
-          }
-
-          await db
-            .update(apps)
-            .set({ path: newSlug })
-            .where(eq(apps.id, appId));
-          dbUpdated = true;
-
-          if (chatId) {
-            const chatRecord = await db.query.chats.findFirst({
-              where: eq(chats.id, chatId),
-              columns: { initialCommitHash: true },
-            });
-            if (!chatRecord?.initialCommitHash) {
-              await db
-                .update(chats)
-                .set({ initialCommitHash: commitHash })
-                .where(eq(chats.id, chatId));
-            }
-          }
-        } catch (error) {
-          logger.error(
-            `Failed to swap-apply template ${templateId} for app ${appId} (old=${oldAbsPath}, new=${newAbsPath}):`,
-            error,
+        if (uncommittedFiles.length > 0) {
+          throw new DyadError(
+            "Cannot change templates after local modifications. Please commit or discard your changes first.",
+            DyadErrorKind.Precondition,
           );
-          if (newDirCreated && !dbUpdated && !noOpAbort) {
-            try {
-              await fsPromises.rm(newAbsPath, {
-                recursive: true,
-                force: true,
+        }
+
+        // For imported (absolute path) apps, fall back to the in-place flow —
+        // the user picked that folder location intentionally.
+        const useInPlace = path.isAbsolute(appRecord.path);
+
+        let workingPath = oldAbsPath;
+        let newSlug: string | null = null;
+        let newAbsPath: string | null = null;
+        let didPathSwap = false;
+
+        if (!useInPlace) {
+          const allocated = await allocateNewAppPath({
+            appId,
+            newName: appRecord.name,
+          });
+          if (!pathsEqualCaseInsensitive(allocated.newAbsPath, oldAbsPath)) {
+            newSlug = allocated.newSlug;
+            newAbsPath = allocated.newAbsPath;
+            didPathSwap = true;
+          }
+        }
+
+        let appWasStopped = false;
+
+        if (didPathSwap && newAbsPath && newSlug) {
+          // Path-swap branch: build the template at a new directory, migrate
+          // preserved files (.git, .dyad, .env*) from the old directory, update
+          // the DB, then best-effort delete the old directory. This avoids
+          // Windows file-lock failures on node_modules/build artifacts.
+          const tempRoot = await fsPromises.mkdtemp(
+            path.join(os.tmpdir(), "dyad-template-"),
+          );
+          const stagedTemplatePath = path.join(tempRoot, "app");
+
+          let newDirCreated = false;
+          let dbUpdated = false;
+          let noOpAbort = false;
+
+          try {
+            await createFromTemplate({
+              fullAppPath: stagedTemplatePath,
+              templateId,
+            });
+
+            const appInfo = runningApps.get(appId);
+            if (appInfo) {
+              await stopAppByInfo(appId, appInfo);
+              appWasStopped = true;
+            }
+
+            await fsPromises.mkdir(path.dirname(newAbsPath), {
+              recursive: true,
+            });
+            await fsPromises.cp(stagedTemplatePath, newAbsPath, {
+              recursive: true,
+            });
+            newDirCreated = true;
+
+            await copyPreservedEntries({
+              fromPath: oldAbsPath,
+              toPath: newAbsPath,
+            });
+
+            // The new template's `.gitignore` likely doesn't contain `.dyad/`,
+            // so re-apply it before staging to keep internal metadata out of
+            // git.
+            await ensureDyadGitignored(newAbsPath);
+
+            const commitHash = await gitService.stageAllAndCommitIfChanged({
+              path: newAbsPath,
+              message: `Apply ${templateId} template`,
+            });
+
+            if (commitHash === null) {
+              // No-op: template produced the same content. Discard the new
+              // dir, leave the DB pointing at the old path, and report no
+              // apply. The dev server still needs restart if we stopped it.
+              logger.info(
+                `Template ${templateId} already applied to app ${appId}, skipping commit (path-swap branch)`,
+              );
+              noOpAbort = true;
+              await fsPromises.rm(newAbsPath, { recursive: true, force: true });
+              return { applied: false, needsRestart: appWasStopped };
+            }
+
+            await db
+              .update(apps)
+              .set({ path: newSlug })
+              .where(eq(apps.id, appId));
+            dbUpdated = true;
+
+            if (chatId) {
+              const chatRecord = await db.query.chats.findFirst({
+                where: eq(chats.id, chatId),
+                columns: { initialCommitHash: true },
               });
-            } catch (cleanupError) {
-              logger.warn(
-                `Failed to clean up partial new app directory ${newAbsPath}:`,
-                cleanupError,
+              if (!chatRecord?.initialCommitHash) {
+                await db
+                  .update(chats)
+                  .set({ initialCommitHash: commitHash })
+                  .where(eq(chats.id, chatId));
+              }
+            }
+          } catch (error) {
+            logger.error(
+              `Failed to swap-apply template ${templateId} for app ${appId} (old=${oldAbsPath}, new=${newAbsPath}):`,
+              error,
+            );
+            if (newDirCreated && !dbUpdated && !noOpAbort) {
+              try {
+                await fsPromises.rm(newAbsPath, {
+                  recursive: true,
+                  force: true,
+                });
+              } catch (cleanupError) {
+                logger.warn(
+                  `Failed to clean up partial new app directory ${newAbsPath}:`,
+                  cleanupError,
+                );
+              }
+            }
+            if (appWasStopped) {
+              throw new DyadError(
+                `Failed to apply template "${templateId}". The dev server was stopped before the failure and will need to be started manually. (${
+                  error instanceof Error ? error.message : String(error)
+                })`,
+                DyadErrorKind.Unknown,
               );
             }
+            throw error;
+          } finally {
+            await fsPromises.rm(tempRoot, {
+              recursive: true,
+              force: true,
+            });
           }
-          if (appWasStopped) {
-            throw new DyadError(
-              `Failed to apply template "${templateId}". The dev server was stopped before the failure and will need to be started manually. (${
-                error instanceof Error ? error.message : String(error)
-              })`,
-              DyadErrorKind.Unknown,
+
+          // Best-effort old-dir cleanup. Why is this just a warning? Windows
+          // can hold aggressive file locks on build artifacts that survive a
+          // dev-server stop. The user's app already lives at newAbsPath; a
+          // leftover old directory is annoying but not fatal.
+          try {
+            await fsPromises.rm(oldAbsPath, { recursive: true, force: true });
+          } catch (error) {
+            logger.warn(
+              `Error deleting old app directory ${oldAbsPath}:`,
+              error,
             );
           }
-          throw error;
-        } finally {
-          await fsPromises.rm(tempRoot, {
-            recursive: true,
-            force: true,
-          });
+
+          return { applied: true, needsRestart: true };
         }
 
-        // Best-effort old-dir cleanup. Why is this just a warning? Windows
-        // can hold aggressive file locks on build artifacts that survive a
-        // dev-server stop. The user's app already lives at newAbsPath; a
-        // leftover old directory is annoying but not fatal.
-        try {
-          await fsPromises.rm(oldAbsPath, { recursive: true, force: true });
-        } catch (error) {
-          logger.warn(`Error deleting old app directory ${oldAbsPath}:`, error);
+        // In-place branch (imported apps OR slug already matches existing path).
+        ({ appWasStopped } = await applyTemplateInPlace({
+          appId,
+          appPath: workingPath,
+          templateId,
+        }));
+
+        // The new template's `.gitignore` likely doesn't contain `.dyad/`, so
+        // re-apply it before staging to keep internal metadata out of git.
+        await ensureDyadGitignored(workingPath);
+
+        // If the clear-and-recopy produced no effective diff (e.g. the template
+        // is already applied), skip the commit — git would fail with "nothing to
+        // commit" — and report that no change was applied. The dev server still
+        // needs to be restarted if we stopped it above, otherwise the preview
+        // would remain offline after a no-op apply.
+        const commitHash = await gitService.stageAllAndCommitIfChanged({
+          path: workingPath,
+          message: `Apply ${templateId} template`,
+        });
+        if (commitHash === null) {
+          logger.info(
+            `Template ${templateId} already applied to app ${appId}, skipping commit`,
+          );
+          return { applied: false, needsRestart: appWasStopped };
+        }
+
+        if (chatId) {
+          const chatRecord = await db.query.chats.findFirst({
+            where: eq(chats.id, chatId),
+            columns: { initialCommitHash: true },
+          });
+          if (!chatRecord?.initialCommitHash) {
+            await db
+              .update(chats)
+              .set({ initialCommitHash: commitHash })
+              .where(eq(chats.id, chatId));
+          }
         }
 
         return { applied: true, needsRestart: true };
-      }
-
-      // In-place branch (imported apps OR slug already matches existing path).
-      ({ appWasStopped } = await applyTemplateInPlace({
-        appId,
-        appPath: workingPath,
-        templateId,
-      }));
-
-      // The new template's `.gitignore` likely doesn't contain `.dyad/`, so
-      // re-apply it before staging to keep internal metadata out of git.
-      await ensureDyadGitignored(workingPath);
-
-      // If the clear-and-recopy produced no effective diff (e.g. the template
-      // is already applied), skip the commit — git would fail with "nothing to
-      // commit" — and report that no change was applied. The dev server still
-      // needs to be restarted if we stopped it above, otherwise the preview
-      // would remain offline after a no-op apply.
-      const commitHash = await gitService.stageAllAndCommitIfChanged({
-        path: workingPath,
-        message: `Apply ${templateId} template`,
-      });
-      if (commitHash === null) {
-        logger.info(
-          `Template ${templateId} already applied to app ${appId}, skipping commit`,
-        );
-        return { applied: false, needsRestart: appWasStopped };
-      }
-
-      if (chatId) {
-        const chatRecord = await db.query.chats.findFirst({
-          where: eq(chats.id, chatId),
-          columns: { initialCommitHash: true },
-        });
-        if (!chatRecord?.initialCommitHash) {
-          await db
-            .update(chats)
-            .set({ initialCommitHash: commitHash })
-            .where(eq(chats.id, chatId));
-        }
-      }
-
-      return { applied: true, needsRestart: true };
-    });
+      },
+    );
   });
 }

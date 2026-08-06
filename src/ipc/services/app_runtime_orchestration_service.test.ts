@@ -32,7 +32,7 @@ function createHarness() {
   let runtimeMode: RuntimeMode2 = "host";
   let id = 0;
   const dependencies: AppRuntimeServiceDependencies = {
-    withLock: async (_appId, operation) => {
+    runSerialized: async (_appId, operation) => {
       calls.push("lock");
       return operation();
     },

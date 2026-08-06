@@ -5,7 +5,10 @@ import type { GitCommit } from "../git_types";
 import fs from "node:fs";
 import path from "node:path";
 import { getDyadAppPath } from "../../paths/paths";
-import { withLock } from "../utils/lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "../services/app_operation_coordinator";
 import log from "electron-log";
 import { createTypedHandler } from "./base";
 import { versionContracts } from "../types/version";
@@ -411,8 +414,8 @@ async function restoreBranchForPreview({
 
 /**
  * Reverts the app's codebase (and Neon DB / Supabase functions / cloud sandbox)
- * to the given version. This does NOT modify any chat messages and does NOT take
- * the per-app lock — callers are responsible for holding `withLock(appId)`.
+ * to the given version. This does NOT modify any chat messages or acquire app
+ * resources; callers coordinate repository, provider, and runtime config.
  */
 async function revertCodebaseToVersion({
   appId,
@@ -901,117 +904,132 @@ export function registerVersionHandlers() {
       currentChatMessageId,
       targetBranchName,
     } = params;
-    return withLock(appId, async () => {
-      const app = await db.query.apps.findFirst({
-        where: eq(apps.id, appId),
-      });
-
-      if (!app) {
-        throw new DyadError("App not found", DyadErrorKind.NotFound);
-      }
-
-      const appPath = getDyadAppPath(app.path);
-
-      if (expectedHeadOid) {
-        const currentHeadOid = await getCurrentCommitHash({
-          path: appPath,
-          ref: targetBranchName ?? "HEAD",
+    return appOperationCoordinator.run(
+      {
+        appId,
+        operation: "revert-version",
+        resources: [
+          readAppResource("app-path"),
+          "provider",
+          "repository",
+          "runtime-config",
+        ],
+      },
+      async () => {
+        const app = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
         });
-        if (currentHeadOid !== expectedHeadOid) {
-          throw new DyadError(
-            "The app's history changed since you confirmed. Please retry the undo.",
-            DyadErrorKind.Conflict,
-          );
+
+        if (!app) {
+          throw new DyadError("App not found", DyadErrorKind.NotFound);
         }
-      }
 
-      const { successMessage, warningMessage, restoreCompletion } =
-        await revertCodebaseToVersion({
-          appId,
-          app,
-          appPath,
-          previousVersionId,
-          targetBranchName,
-          onRestoreProgress,
-        });
+        const appPath = getDyadAppPath(app.path);
 
-      let affectedChatId: number | null = null;
-
-      // Delete messages based on currentChatMessageId if provided, otherwise use commit hash lookup
-      if (currentChatMessageId) {
-        // Delete all messages including and after the specified message
-        const { chatId, messageId } = currentChatMessageId;
-        affectedChatId = chatId;
-
-        const messagesToDelete = await db.query.messages.findMany({
-          where: and(eq(messages.chatId, chatId), gte(messages.id, messageId)),
-          orderBy: desc(messages.id),
-        });
-
-        logger.log(
-          `Deleting ${messagesToDelete.length} messages (id >= ${messageId}) from chat ${chatId}`,
-        );
-
-        if (messagesToDelete.length > 0) {
-          await db
-            .delete(messages)
-            .where(
-              and(eq(messages.chatId, chatId), gte(messages.id, messageId)),
+        if (expectedHeadOid) {
+          const currentHeadOid = await getCurrentCommitHash({
+            path: appPath,
+            ref: targetBranchName ?? "HEAD",
+          });
+          if (currentHeadOid !== expectedHeadOid) {
+            throw new DyadError(
+              "The app's history changed since you confirmed. Please retry the undo.",
+              DyadErrorKind.Conflict,
             );
+          }
         }
-      } else {
-        // Find the chat and message associated with the commit hash
-        const messageWithCommit = await db.query.messages.findFirst({
-          where: eq(messages.commitHash, previousVersionId),
-          with: {
-            chat: true,
-          },
-        });
 
-        // If we found a message with this commit hash, delete all subsequent messages (but keep this message)
-        if (messageWithCommit) {
-          const chatId = messageWithCommit.chatId;
+        const { successMessage, warningMessage, restoreCompletion } =
+          await revertCodebaseToVersion({
+            appId,
+            app,
+            appPath,
+            previousVersionId,
+            targetBranchName,
+            onRestoreProgress,
+          });
+
+        let affectedChatId: number | null = null;
+
+        // Delete messages based on currentChatMessageId if provided, otherwise use commit hash lookup
+        if (currentChatMessageId) {
+          // Delete all messages including and after the specified message
+          const { chatId, messageId } = currentChatMessageId;
           affectedChatId = chatId;
 
-          // Find all messages in this chat with IDs > the one with our commit hash
           const messagesToDelete = await db.query.messages.findMany({
             where: and(
               eq(messages.chatId, chatId),
-              gt(messages.id, messageWithCommit.id),
+              gte(messages.id, messageId),
             ),
             orderBy: desc(messages.id),
           });
 
           logger.log(
-            `Deleting ${messagesToDelete.length} messages after commit ${previousVersionId} from chat ${chatId}`,
+            `Deleting ${messagesToDelete.length} messages (id >= ${messageId}) from chat ${chatId}`,
           );
 
-          // Delete the messages
           if (messagesToDelete.length > 0) {
             await db
               .delete(messages)
               .where(
-                and(
-                  eq(messages.chatId, chatId),
-                  gt(messages.id, messageWithCommit.id),
-                ),
+                and(eq(messages.chatId, chatId), gte(messages.id, messageId)),
               );
           }
-        }
-      }
+        } else {
+          // Find the chat and message associated with the commit hash
+          const messageWithCommit = await db.query.messages.findFirst({
+            where: eq(messages.commitHash, previousVersionId),
+            with: {
+              chat: true,
+            },
+          });
 
-      onRestoreProgress?.({
-        ...restoreCompletion,
-        nextStep: "completed",
-      });
-      return versionCommandResult({
-        notification: warningMessage
-          ? { kind: "warning", message: warningMessage }
-          : { kind: "success", message: successMessage },
-        runtimeAction: versionRuntimeAction(app, true),
-        affectedChatId,
-      });
-    });
+          // If we found a message with this commit hash, delete all subsequent messages (but keep this message)
+          if (messageWithCommit) {
+            const chatId = messageWithCommit.chatId;
+            affectedChatId = chatId;
+
+            // Find all messages in this chat with IDs > the one with our commit hash
+            const messagesToDelete = await db.query.messages.findMany({
+              where: and(
+                eq(messages.chatId, chatId),
+                gt(messages.id, messageWithCommit.id),
+              ),
+              orderBy: desc(messages.id),
+            });
+
+            logger.log(
+              `Deleting ${messagesToDelete.length} messages after commit ${previousVersionId} from chat ${chatId}`,
+            );
+
+            // Delete the messages
+            if (messagesToDelete.length > 0) {
+              await db
+                .delete(messages)
+                .where(
+                  and(
+                    eq(messages.chatId, chatId),
+                    gt(messages.id, messageWithCommit.id),
+                  ),
+                );
+            }
+          }
+        }
+
+        onRestoreProgress?.({
+          ...restoreCompletion,
+          nextStep: "completed",
+        });
+        return versionCommandResult({
+          notification: warningMessage
+            ? { kind: "warning", message: warningMessage }
+            : { kind: "success", message: successMessage },
+          runtimeAction: versionRuntimeAction(app, true),
+          affectedChatId,
+        });
+      },
+    );
   };
   versionPreviewHandlerBridge.revertVersion = (params, onRestoreProgress) =>
     revertVersionHandler(
@@ -1038,113 +1056,125 @@ export function registerVersionHandlers() {
     // take this same lock, so the snapshot we validate against stays
     // consistent, and bailing out here for an invalid request never aborts
     // unrelated in-flight generations for a restore that cannot succeed.
-    const prepared = await withLock(appId, async () => {
-      const app = await db.query.apps.findFirst({
-        where: eq(apps.id, appId),
-      });
-      if (!app) {
-        throw new DyadError("App not found", DyadErrorKind.NotFound);
-      }
-      const appPath = getDyadAppPath(app.path);
-      if (restoreCodebase) {
-        // Validate the branch anchor before cancelling any streams. The same
-        // check runs again during the mutation to protect against a ref change
-        // in the cancellation window.
-        await resolveRestoreRef({ appPath, targetBranchName });
-      }
-
-      const chat = await db.query.chats.findFirst({
-        where: eq(chats.id, chatId),
-        with: {
-          messages: {
-            orderBy: (messages, { asc }) => [
-              asc(messages.createdAt),
-              asc(messages.id),
-            ],
-          },
-        },
-      });
-      if (!chat) {
-        throw new DyadError("Chat not found", DyadErrorKind.NotFound);
-      }
-      // Defense in depth: make sure the chat actually belongs to this app so
-      // a mismatched (appId, chatId) from the renderer can't create a chat
-      // under the wrong app or revert to a commit from another app's repo.
-      if (chat.appId !== appId) {
-        throw new DyadError(
-          "Chat does not belong to this app",
-          DyadErrorKind.Validation,
-        );
-      }
-
-      const targetIndex = chat.messages.findIndex((m) => m.id === messageId);
-      if (targetIndex === -1) {
-        throw new DyadError("Message not found", DyadErrorKind.NotFound);
-      }
-
-      const messagesBefore = chat.messages
-        .slice(0, targetIndex)
-        .filter(
-          (message) => !(message.isCompactionSummary && message.id > messageId),
-        );
-
-      // Restoring to the very first message is allowed: "version 1" is the
-      // commit that existed before the first message's changes were applied,
-      // so we restore to that version and fork an empty chat (no prior
-      // messages to copy). The empty chat starts from the restored version.
-
-      const targetCommitHash = resolveTargetCommitHash({
-        chatMessages: chat.messages,
-        targetIndex,
-        initialCommitHash: chat.initialCommitHash,
-      });
-
-      if (restoreCodebase) {
-        if (!targetCommitHash) {
-          // No version could be determined, so we don't create a new chat.
-          // Omit `newChatId` so the renderer stays on the current chat instead
-          // of "navigating" to the same one (which would look like a no-op).
-          return {
-            status: "warn" as const,
-            warningMessage:
-              "Could not determine a version to restore to for this message.",
-          };
+    const prepared = await appOperationCoordinator.run(
+      {
+        appId,
+        operation: "prepare-restore-to-message",
+        resources: [
+          readAppResource("app-path"),
+          readAppResource("chat-content"),
+          readAppResource("repository"),
+        ],
+      },
+      async () => {
+        const app = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
+        });
+        if (!app) {
+          throw new DyadError("App not found", DyadErrorKind.NotFound);
         }
-        // The hash was resolved from stored DB fields, so a garbage-collected
-        // or stale value would otherwise surface as an opaque git error from
-        // `gitStageToRevert`. Validate it exists before cancelling any streams
-        // (mirroring the `revertVersion` flow) so an invalid target returns a
-        // user-friendly warning instead of aborting in-flight generations for
-        // a restore that cannot proceed.
-        try {
-          await assertVersionExists({
-            appPath,
-            versionId: targetCommitHash,
-          });
-        } catch (error) {
-          if (
-            error instanceof DyadError &&
-            error.kind === DyadErrorKind.NotFound
-          ) {
+        const appPath = getDyadAppPath(app.path);
+        if (restoreCodebase) {
+          // Validate the branch anchor before cancelling any streams. The same
+          // check runs again during the mutation to protect against a ref change
+          // in the cancellation window.
+          await resolveRestoreRef({ appPath, targetBranchName });
+        }
+
+        const chat = await db.query.chats.findFirst({
+          where: eq(chats.id, chatId),
+          with: {
+            messages: {
+              orderBy: (messages, { asc }) => [
+                asc(messages.createdAt),
+                asc(messages.id),
+              ],
+            },
+          },
+        });
+        if (!chat) {
+          throw new DyadError("Chat not found", DyadErrorKind.NotFound);
+        }
+        // Defense in depth: make sure the chat actually belongs to this app so
+        // a mismatched (appId, chatId) from the renderer can't create a chat
+        // under the wrong app or revert to a commit from another app's repo.
+        if (chat.appId !== appId) {
+          throw new DyadError(
+            "Chat does not belong to this app",
+            DyadErrorKind.Validation,
+          );
+        }
+
+        const targetIndex = chat.messages.findIndex((m) => m.id === messageId);
+        if (targetIndex === -1) {
+          throw new DyadError("Message not found", DyadErrorKind.NotFound);
+        }
+
+        const messagesBefore = chat.messages
+          .slice(0, targetIndex)
+          .filter(
+            (message) =>
+              !(message.isCompactionSummary && message.id > messageId),
+          );
+
+        // Restoring to the very first message is allowed: "version 1" is the
+        // commit that existed before the first message's changes were applied,
+        // so we restore to that version and fork an empty chat (no prior
+        // messages to copy). The empty chat starts from the restored version.
+
+        const targetCommitHash = resolveTargetCommitHash({
+          chatMessages: chat.messages,
+          targetIndex,
+          initialCommitHash: chat.initialCommitHash,
+        });
+
+        if (restoreCodebase) {
+          if (!targetCommitHash) {
+            // No version could be determined, so we don't create a new chat.
+            // Omit `newChatId` so the renderer stays on the current chat instead
+            // of "navigating" to the same one (which would look like a no-op).
             return {
               status: "warn" as const,
               warningMessage:
-                "Could not restore the codebase because the target version no longer exists in the repository.",
+                "Could not determine a version to restore to for this message.",
             };
           }
-          throw error;
+          // The hash was resolved from stored DB fields, so a garbage-collected
+          // or stale value would otherwise surface as an opaque git error from
+          // `gitStageToRevert`. Validate it exists before cancelling any streams
+          // (mirroring the `revertVersion` flow) so an invalid target returns a
+          // user-friendly warning instead of aborting in-flight generations for
+          // a restore that cannot proceed.
+          try {
+            await assertVersionExists({
+              appPath,
+              versionId: targetCommitHash,
+            });
+          } catch (error) {
+            if (
+              error instanceof DyadError &&
+              error.kind === DyadErrorKind.NotFound
+            ) {
+              return {
+                status: "warn" as const,
+                warningMessage:
+                  "Could not restore the codebase because the target version no longer exists in the repository.",
+              };
+            }
+            throw error;
+          }
         }
-      }
 
-      return {
-        status: "ready" as const,
-        app,
-        appPath,
-        chat,
-        messagesBefore,
-        targetCommitHash,
-      };
-    });
+        return {
+          status: "ready" as const,
+          app,
+          appPath,
+          chat,
+          messagesBefore,
+          targetCommitHash,
+        };
+      },
+    );
 
     // A validated request that cannot proceed returns a warning without ever
     // cancelling streams (see phase 1 above).
@@ -1201,307 +1231,321 @@ export function registerVersionHandlers() {
       // or commits a recoverable checkpoint when preserving an interrupted
       // turn — if the work tree is dirty, so a stray write can't be silently
       // clobbered.
-      return await withLock(appId, async () => {
-        const latestApp = await db.query.apps.findFirst({
-          where: eq(apps.id, appId),
-        });
-        if (!latestApp) {
-          throw new DyadError("App not found", DyadErrorKind.NotFound);
-        }
-        // The app directory can be renamed while phase 2 awaits stream
-        // cancellation without holding the app lock. Re-resolve it from the
-        // row fetched after reacquiring the lock so every phase-3 filesystem
-        // operation targets the current directory.
-        const latestAppPath = getDyadAppPath(latestApp.path);
-
-        const latestChat = await db.query.chats.findFirst({
-          where: eq(chats.id, chatId),
-          with: {
-            messages: {
-              orderBy: (messages, { asc }) => [
-                asc(messages.createdAt),
-                asc(messages.id),
-              ],
-            },
-          },
-        });
-        if (!latestChat) {
-          throw new DyadError("Chat not found", DyadErrorKind.NotFound);
-        }
-        if (latestChat.appId !== appId) {
-          throw new DyadError(
-            "Chat does not belong to this app",
-            DyadErrorKind.Validation,
-          );
-        }
-
-        const latestTargetIndex = latestChat.messages.findIndex(
-          (m) => m.id === messageId,
-        );
-        if (latestTargetIndex === -1) {
-          throw new DyadError("Message not found", DyadErrorKind.NotFound);
-        }
-
-        const latestMessagesBefore = latestChat.messages
-          .slice(0, latestTargetIndex)
-          .filter(
-            (message) =>
-              !(message.isCompactionSummary && message.id > messageId),
-          );
-
-        const latestTargetCommitHash = resolveTargetCommitHash({
-          chatMessages: latestChat.messages,
-          targetIndex: latestTargetIndex,
-          initialCommitHash: latestChat.initialCommitHash,
-        });
-
-        if (restoreCodebase && !latestTargetCommitHash) {
-          return versionCommandResult({
-            repositoryOutcome: "unchanged",
-            notification: {
-              kind: "warning",
-              message: appendInterruptedGenerationWarning(
-                "Could not determine a version to restore to for this message.",
-                preserveDirtyTree,
-              ),
-            },
+      return await appOperationCoordinator.run(
+        {
+          appId,
+          operation: "restore-to-message",
+          resources: [
+            readAppResource("app-path"),
+            "chat-content",
+            "chat-membership",
+            "provider",
+            "repository",
+            "runtime-config",
+          ],
+        },
+        async () => {
+          const latestApp = await db.query.apps.findFirst({
+            where: eq(apps.id, appId),
           });
-        }
-        if (restoreCodebase && latestTargetCommitHash) {
-          try {
-            await assertVersionExists({
-              appPath: latestAppPath,
-              versionId: latestTargetCommitHash,
-            });
-          } catch (error) {
-            if (
-              error instanceof DyadError &&
-              error.kind === DyadErrorKind.NotFound
-            ) {
-              return versionCommandResult({
-                repositoryOutcome: "unchanged",
-                notification: {
-                  kind: "warning",
-                  message: appendInterruptedGenerationWarning(
-                    "Could not restore the codebase because the target version no longer exists in the repository.",
-                    preserveDirtyTree,
-                  ),
-                },
-              });
-            }
-            throw error;
+          if (!latestApp) {
+            throw new DyadError("App not found", DyadErrorKind.NotFound);
           }
-        }
+          // The app directory can be renamed while phase 2 awaits stream
+          // cancellation without holding the app lock. Re-resolve it from the
+          // row fetched after reacquiring the lock so every phase-3 filesystem
+          // operation targets the current directory.
+          const latestAppPath = getDyadAppPath(latestApp.path);
 
-        // When the user chose to also restore the codebase, we need a concrete
-        // version to revert to. Revert the codebase first: if this throws (e.g.
-        // a Git or Neon error), we bail out before touching the database so we
-        // don't leave an orphaned, partially-created chat behind. A
-        // `warningMessage` still means the codebase was reverted (only a
-        // secondary step failed), so we go on to create the new chat in that
-        // case. When the user only forks the chat, we skip the revert entirely.
-        let successMessage = "Forked the chat into a new chat.";
-        let warningMessage = "";
-
-        let restoreCompletion:
-          | (Extract<
-              RestoreRecovery,
-              { repositoryOutcome: "target-applied" }
-            > & { nextStep: "chat-mutation" })
-          | undefined;
-        if (restoreCodebase && latestTargetCommitHash) {
-          const result = await revertCodebaseToVersion({
-            appId,
-            app: latestApp,
-            appPath: latestAppPath,
-            previousVersionId: latestTargetCommitHash,
-            targetBranchName,
-            preserveDirtyTree,
-            onRestoreProgress,
+          const latestChat = await db.query.chats.findFirst({
+            where: eq(chats.id, chatId),
+            with: {
+              messages: {
+                orderBy: (messages, { asc }) => [
+                  asc(messages.createdAt),
+                  asc(messages.id),
+                ],
+              },
+            },
           });
-          successMessage = result.successMessage;
-          warningMessage = result.warningMessage;
-          restoreCompletion = result.restoreCompletion;
-        }
+          if (!latestChat) {
+            throw new DyadError("Chat not found", DyadErrorKind.NotFound);
+          }
+          if (latestChat.appId !== appId) {
+            throw new DyadError(
+              "Chat does not belong to this app",
+              DyadErrorKind.Validation,
+            );
+          }
 
-        // Carry over the original chat's title so the forked chat is tied to
-        // the conversation it came from without storing an English-only suffix
-        // in the database. If the original is untitled, keep the fork untitled
-        // and let the renderer's localized fallback title handle display.
-        const restoredTitle = latestChat.title;
+          const latestTargetIndex = latestChat.messages.findIndex(
+            (m) => m.id === messageId,
+          );
+          if (latestTargetIndex === -1) {
+            throw new DyadError("Message not found", DyadErrorKind.NotFound);
+          }
 
-        // Keep `null` (rather than `[]`) when there is nothing to carry over so
-        // forked chats match the shape of freshly created ones.
-        const storedReferencedAppIds = readStoredReferencedAppIds(
-          latestChat.referencedAppIds,
-        );
-        const forkReferencedAppIds =
-          storedReferencedAppIds.length > 0 ? storedReferencedAppIds : null;
-
-        // Anchor the forked chat to the version it actually starts from. When we
-        // restored the codebase, that's the target version. When we only forked
-        // the chat (codebase left untouched), the new chat starts from the
-        // live branch's current commit, so use that instead of the historical
-        // target. If the Version pane has a detached historical preview checked
-        // out, `targetBranchName` points at the branch the pane will restore on
-        // close; anchoring to that branch avoids leaving the fork attached to an
-        // abandoned preview commit.
-        const forkInitialCommitHash = restoreCodebase
-          ? latestTargetCommitHash
-          : await (async () => {
-              const currentBranch = await gitCurrentBranch({
-                path: latestAppPath,
-              }).catch(() => null);
-              const forkRef = currentBranch || targetBranchName || "HEAD";
-              return getCurrentCommitHash({
-                path: latestAppPath,
-                ref: forkRef,
-              });
-            })().catch(
-              () => latestChat.initialCommitHash ?? latestTargetCommitHash,
+          const latestMessagesBefore = latestChat.messages
+            .slice(0, latestTargetIndex)
+            .filter(
+              (message) =>
+                !(message.isCompactionSummary && message.id > messageId),
             );
 
-        // Compile-time guard so a new column added to the `messages` schema in
-        // db/schema.ts isn't silently dropped when copying messages into the
-        // forked chat. Every column must be classified below as either copied
-        // (in the `.map` further down) or intentionally excluded; adding a
-        // column to the schema without listing it here becomes a type error.
-        type CopiedMessageColumn =
-          | "role"
-          | "content"
-          | "approvalState"
-          | "sourceCommitHash"
-          | "commitHash"
-          | "requestId"
-          | "maxTokensUsed"
-          | "model"
-          | "aiMessagesJson"
-          | "isCompactionSummary"
-          | "createdAt";
-        // Deliberately not copied from the source message:
-        //  - `id`: autoIncrement primary key, generated per inserted row.
-        //  - `chatId`: set to the newly created chat below.
-        //  - `usingFreeAgentModeQuota`: reset to false (see note below).
-        //  - `userInputRequestId`: live delivery dedupe key, not message data.
-        type ExcludedMessageColumn =
-          | "id"
-          | "chatId"
-          | "usingFreeAgentModeQuota"
-          | "userInputRequestId";
-        // If a column is neither copied nor excluded, this `Exclude` is no
-        // longer `never` and the assignment fails to compile, flagging the
-        // unclassified column.
-        const _assertAllMessageColumnsHandled: Exclude<
-          keyof typeof messages.$inferSelect,
-          CopiedMessageColumn | ExcludedMessageColumn
-        > extends never
-          ? true
-          : never = true;
-        void _assertAllMessageColumnsHandled;
-
-        const messagesBeforeInInsertOrder = [...latestMessagesBefore].sort(
-          (a, b) => a.id - b.id,
-        );
-
-        // Create the new chat pointing at that version and copy over the earlier
-        // messages atomically. We insert directly (instead of using the
-        // createChat handler) so `initialCommitHash` is the intended version
-        // rather than whatever the createChat handler would capture. Wrapping
-        // both inserts in a transaction ensures we never leave behind an
-        // orphaned, empty forked chat if the messages insert fails after
-        // the chat insert. better-sqlite3 transactions are synchronous, so the
-        // callback uses the sync query API (`.get()`/`.run()`) rather than
-        // `await`.
-        if (!restoreCodebase) {
-          onRestoreProgress?.({
-            repositoryOutcome: "unchanged",
-            nextStep: "chat-mutation",
+          const latestTargetCommitHash = resolveTargetCommitHash({
+            chatMessages: latestChat.messages,
+            targetIndex: latestTargetIndex,
+            initialCommitHash: latestChat.initialCommitHash,
           });
-        }
-        const newChat = db.transaction((tx) => {
-          const createdChat = tx
-            .insert(chats)
-            .values({
-              appId,
-              title: restoredTitle,
-              chatMode: latestChat.chatMode,
-              initialCommitHash: forkInitialCommitHash,
-              // Carry over the sticky referenced apps. The fork copies the
-              // history containing the `@app:` mentions, so dropping these
-              // would leave the mention visible while the next agent turn
-              // silently lost read access to that app. We copy the whole set
-              // rather than re-deriving it from the copied messages: these ids
-              // exist precisely because message text is not a reliable source
-              // (compaction rewrites history), and the fork's chip row shows
-              // every carried-over app with a way to detach it.
-              referencedAppIds: forkReferencedAppIds,
-            })
-            .returning()
-            .get();
 
-          // Copy all messages that came before the target message into the new
-          // chat, preserving display ordering via `createdAt` while inserting
-          // in original ID order. Compaction summaries are deliberately
-          // backdated for display but must keep their identity boundary after
-          // the user turn that triggered them.
-          if (messagesBeforeInInsertOrder.length > 0) {
-            tx.insert(messages)
-              .values(
-                // IMPORTANT: keep this field list in sync with the `messages`
-                // table schema in db/schema.ts. New columns are NOT copied
-                // automatically — add them here (or make a conscious decision to
-                // omit them, like `usingFreeAgentModeQuota` below) when the
-                // schema changes. The `_assertAllMessageColumnsHandled` guard
-                // above enforces this classification at compile time.
-                messagesBeforeInInsertOrder.map((m) => ({
-                  chatId: createdChat.id,
-                  role: m.role,
-                  content: m.content,
-                  approvalState: m.approvalState,
-                  sourceCommitHash: m.sourceCommitHash,
-                  commitHash: m.commitHash,
-                  requestId: m.requestId,
-                  maxTokensUsed: m.maxTokensUsed,
-                  model: m.model,
-                  aiMessagesJson: m.aiMessagesJson,
-                  // Don't carry over the free-agent quota flag. The copied
-                  // messages represent already-completed turns; preserving the
-                  // flag would make getFreeAgentQuotaStatus (which counts every
-                  // row globally) double-count those past requests and could
-                  // exhaust a non-Pro user's quota without any new model call.
-                  usingFreeAgentModeQuota: false,
-                  isCompactionSummary: m.isCompactionSummary,
-                  createdAt: m.createdAt,
-                })),
-              )
-              .run();
+          if (restoreCodebase && !latestTargetCommitHash) {
+            return versionCommandResult({
+              repositoryOutcome: "unchanged",
+              notification: {
+                kind: "warning",
+                message: appendInterruptedGenerationWarning(
+                  "Could not determine a version to restore to for this message.",
+                  preserveDirtyTree,
+                ),
+              },
+            });
+          }
+          if (restoreCodebase && latestTargetCommitHash) {
+            try {
+              await assertVersionExists({
+                appPath: latestAppPath,
+                versionId: latestTargetCommitHash,
+              });
+            } catch (error) {
+              if (
+                error instanceof DyadError &&
+                error.kind === DyadErrorKind.NotFound
+              ) {
+                return versionCommandResult({
+                  repositoryOutcome: "unchanged",
+                  notification: {
+                    kind: "warning",
+                    message: appendInterruptedGenerationWarning(
+                      "Could not restore the codebase because the target version no longer exists in the repository.",
+                      preserveDirtyTree,
+                    ),
+                  },
+                });
+              }
+              throw error;
+            }
           }
 
-          return createdChat;
-        });
+          // When the user chose to also restore the codebase, we need a concrete
+          // version to revert to. Revert the codebase first: if this throws (e.g.
+          // a Git or Neon error), we bail out before touching the database so we
+          // don't leave an orphaned, partially-created chat behind. A
+          // `warningMessage` still means the codebase was reverted (only a
+          // secondary step failed), so we go on to create the new chat in that
+          // case. When the user only forks the chat, we skip the revert entirely.
+          let successMessage = "Forked the chat into a new chat.";
+          let warningMessage = "";
 
-        onRestoreProgress?.(
-          restoreCompletion
-            ? { ...restoreCompletion, nextStep: "completed" }
-            : {
-                repositoryOutcome: "unchanged",
-                nextStep: "completed",
-              },
-        );
-        return versionCommandResult({
-          repositoryOutcome: restoreCodebase ? "target-applied" : "unchanged",
-          notification: warningMessage
-            ? {
-                kind: "warning",
-                message: restoreCodebase
-                  ? `Code restored, but: ${warningMessage}`
-                  : warningMessage,
-              }
-            : { kind: "success", message: successMessage },
-          runtimeAction: versionRuntimeAction(latestApp, restoreCodebase),
-          createdChatId: newChat.id,
-        });
-      });
+          let restoreCompletion:
+            | (Extract<
+                RestoreRecovery,
+                { repositoryOutcome: "target-applied" }
+              > & { nextStep: "chat-mutation" })
+            | undefined;
+          if (restoreCodebase && latestTargetCommitHash) {
+            const result = await revertCodebaseToVersion({
+              appId,
+              app: latestApp,
+              appPath: latestAppPath,
+              previousVersionId: latestTargetCommitHash,
+              targetBranchName,
+              preserveDirtyTree,
+              onRestoreProgress,
+            });
+            successMessage = result.successMessage;
+            warningMessage = result.warningMessage;
+            restoreCompletion = result.restoreCompletion;
+          }
+
+          // Carry over the original chat's title so the forked chat is tied to
+          // the conversation it came from without storing an English-only suffix
+          // in the database. If the original is untitled, keep the fork untitled
+          // and let the renderer's localized fallback title handle display.
+          const restoredTitle = latestChat.title;
+
+          // Keep `null` (rather than `[]`) when there is nothing to carry over so
+          // forked chats match the shape of freshly created ones.
+          const storedReferencedAppIds = readStoredReferencedAppIds(
+            latestChat.referencedAppIds,
+          );
+          const forkReferencedAppIds =
+            storedReferencedAppIds.length > 0 ? storedReferencedAppIds : null;
+
+          // Anchor the forked chat to the version it actually starts from. When we
+          // restored the codebase, that's the target version. When we only forked
+          // the chat (codebase left untouched), the new chat starts from the
+          // live branch's current commit, so use that instead of the historical
+          // target. If the Version pane has a detached historical preview checked
+          // out, `targetBranchName` points at the branch the pane will restore on
+          // close; anchoring to that branch avoids leaving the fork attached to an
+          // abandoned preview commit.
+          const forkInitialCommitHash = restoreCodebase
+            ? latestTargetCommitHash
+            : await (async () => {
+                const currentBranch = await gitCurrentBranch({
+                  path: latestAppPath,
+                }).catch(() => null);
+                const forkRef = currentBranch || targetBranchName || "HEAD";
+                return getCurrentCommitHash({
+                  path: latestAppPath,
+                  ref: forkRef,
+                });
+              })().catch(
+                () => latestChat.initialCommitHash ?? latestTargetCommitHash,
+              );
+
+          // Compile-time guard so a new column added to the `messages` schema in
+          // db/schema.ts isn't silently dropped when copying messages into the
+          // forked chat. Every column must be classified below as either copied
+          // (in the `.map` further down) or intentionally excluded; adding a
+          // column to the schema without listing it here becomes a type error.
+          type CopiedMessageColumn =
+            | "role"
+            | "content"
+            | "approvalState"
+            | "sourceCommitHash"
+            | "commitHash"
+            | "requestId"
+            | "maxTokensUsed"
+            | "model"
+            | "aiMessagesJson"
+            | "isCompactionSummary"
+            | "createdAt";
+          // Deliberately not copied from the source message:
+          //  - `id`: autoIncrement primary key, generated per inserted row.
+          //  - `chatId`: set to the newly created chat below.
+          //  - `usingFreeAgentModeQuota`: reset to false (see note below).
+          //  - `userInputRequestId`: live delivery dedupe key, not message data.
+          type ExcludedMessageColumn =
+            | "id"
+            | "chatId"
+            | "usingFreeAgentModeQuota"
+            | "userInputRequestId";
+          // If a column is neither copied nor excluded, this `Exclude` is no
+          // longer `never` and the assignment fails to compile, flagging the
+          // unclassified column.
+          const _assertAllMessageColumnsHandled: Exclude<
+            keyof typeof messages.$inferSelect,
+            CopiedMessageColumn | ExcludedMessageColumn
+          > extends never
+            ? true
+            : never = true;
+          void _assertAllMessageColumnsHandled;
+
+          const messagesBeforeInInsertOrder = [...latestMessagesBefore].sort(
+            (a, b) => a.id - b.id,
+          );
+
+          // Create the new chat pointing at that version and copy over the earlier
+          // messages atomically. We insert directly (instead of using the
+          // createChat handler) so `initialCommitHash` is the intended version
+          // rather than whatever the createChat handler would capture. Wrapping
+          // both inserts in a transaction ensures we never leave behind an
+          // orphaned, empty forked chat if the messages insert fails after
+          // the chat insert. better-sqlite3 transactions are synchronous, so the
+          // callback uses the sync query API (`.get()`/`.run()`) rather than
+          // `await`.
+          if (!restoreCodebase) {
+            onRestoreProgress?.({
+              repositoryOutcome: "unchanged",
+              nextStep: "chat-mutation",
+            });
+          }
+          const newChat = db.transaction((tx) => {
+            const createdChat = tx
+              .insert(chats)
+              .values({
+                appId,
+                title: restoredTitle,
+                chatMode: latestChat.chatMode,
+                initialCommitHash: forkInitialCommitHash,
+                // Carry over the sticky referenced apps. The fork copies the
+                // history containing the `@app:` mentions, so dropping these
+                // would leave the mention visible while the next agent turn
+                // silently lost read access to that app. We copy the whole set
+                // rather than re-deriving it from the copied messages: these ids
+                // exist precisely because message text is not a reliable source
+                // (compaction rewrites history), and the fork's chip row shows
+                // every carried-over app with a way to detach it.
+                referencedAppIds: forkReferencedAppIds,
+              })
+              .returning()
+              .get();
+
+            // Copy all messages that came before the target message into the new
+            // chat, preserving display ordering via `createdAt` while inserting
+            // in original ID order. Compaction summaries are deliberately
+            // backdated for display but must keep their identity boundary after
+            // the user turn that triggered them.
+            if (messagesBeforeInInsertOrder.length > 0) {
+              tx.insert(messages)
+                .values(
+                  // IMPORTANT: keep this field list in sync with the `messages`
+                  // table schema in db/schema.ts. New columns are NOT copied
+                  // automatically — add them here (or make a conscious decision to
+                  // omit them, like `usingFreeAgentModeQuota` below) when the
+                  // schema changes. The `_assertAllMessageColumnsHandled` guard
+                  // above enforces this classification at compile time.
+                  messagesBeforeInInsertOrder.map((m) => ({
+                    chatId: createdChat.id,
+                    role: m.role,
+                    content: m.content,
+                    approvalState: m.approvalState,
+                    sourceCommitHash: m.sourceCommitHash,
+                    commitHash: m.commitHash,
+                    requestId: m.requestId,
+                    maxTokensUsed: m.maxTokensUsed,
+                    model: m.model,
+                    aiMessagesJson: m.aiMessagesJson,
+                    // Don't carry over the free-agent quota flag. The copied
+                    // messages represent already-completed turns; preserving the
+                    // flag would make getFreeAgentQuotaStatus (which counts every
+                    // row globally) double-count those past requests and could
+                    // exhaust a non-Pro user's quota without any new model call.
+                    usingFreeAgentModeQuota: false,
+                    isCompactionSummary: m.isCompactionSummary,
+                    createdAt: m.createdAt,
+                  })),
+                )
+                .run();
+            }
+
+            return createdChat;
+          });
+
+          onRestoreProgress?.(
+            restoreCompletion
+              ? { ...restoreCompletion, nextStep: "completed" }
+              : {
+                  repositoryOutcome: "unchanged",
+                  nextStep: "completed",
+                },
+          );
+          return versionCommandResult({
+            repositoryOutcome: restoreCodebase ? "target-applied" : "unchanged",
+            notification: warningMessage
+              ? {
+                  kind: "warning",
+                  message: restoreCodebase
+                    ? `Code restored, but: ${warningMessage}`
+                    : warningMessage,
+                }
+              : { kind: "success", message: successMessage },
+            runtimeAction: versionRuntimeAction(latestApp, restoreCodebase),
+            createdChatId: newChat.id,
+          });
+        },
+      );
     } finally {
       releaseStreamAdmissionBlock?.();
       releaseActorAdmissionBlock?.();
@@ -1525,124 +1569,138 @@ export function registerVersionHandlers() {
     const { appId } = params;
     const gitRef =
       params.purpose === "preview" ? params.versionId : params.branch;
-    return withLock(appId, async () => {
-      let warningMessage = "";
-      const app = await db.query.apps.findFirst({
-        where: eq(apps.id, appId),
-      });
+    return appOperationCoordinator.run(
+      {
+        appId,
+        operation: `checkout-version:${params.purpose}`,
+        resources: [
+          readAppResource("app-path"),
+          "provider",
+          "repository",
+          "runtime-config",
+        ],
+      },
+      async () => {
+        let warningMessage = "";
+        const app = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
+        });
 
-      if (!app) {
-        throw new DyadError("App not found", DyadErrorKind.NotFound);
-      }
+        if (!app) {
+          throw new DyadError("App not found", DyadErrorKind.NotFound);
+        }
 
-      if (
-        app.neonProjectId &&
-        app.neonDevelopmentBranchId &&
-        app.neonPreviewBranchId
-      ) {
-        if (params.purpose === "return") {
-          logger.info(
-            `Switching Postgres to development branch for app ${appId}`,
-          );
-          await switchPostgresToDevelopmentBranch({
-            neonProjectId: app.neonProjectId,
-            neonDevelopmentBranchId: app.neonDevelopmentBranchId,
-            appPath: app.path,
-          });
-        } else {
-          logger.info(`Switching Postgres to preview branch for app ${appId}`);
+        if (
+          app.neonProjectId &&
+          app.neonDevelopmentBranchId &&
+          app.neonPreviewBranchId
+        ) {
+          if (params.purpose === "return") {
+            logger.info(
+              `Switching Postgres to development branch for app ${appId}`,
+            );
+            await switchPostgresToDevelopmentBranch({
+              neonProjectId: app.neonProjectId,
+              neonDevelopmentBranchId: app.neonDevelopmentBranchId,
+              appPath: app.path,
+            });
+          } else {
+            logger.info(
+              `Switching Postgres to preview branch for app ${appId}`,
+            );
 
-          // Regardless of whether we have a timestamp or not, we want to disable DB push
-          // while we're checking out an earlier version
-          await updateDbPushEnvVar({
-            appPath: app.path,
-            disabled: true,
-          });
+            // Regardless of whether we have a timestamp or not, we want to disable DB push
+            // while we're checking out an earlier version
+            await updateDbPushEnvVar({
+              appPath: app.path,
+              disabled: true,
+            });
 
-          const version = await db.query.versions.findFirst({
-            where: and(
-              eq(versions.appId, appId),
-              eq(versions.commitHash, gitRef),
-            ),
-          });
+            const version = await db.query.versions.findFirst({
+              where: and(
+                eq(versions.appId, appId),
+                eq(versions.commitHash, gitRef),
+              ),
+            });
 
-          if (version && version.neonDbTimestamp) {
-            try {
-              // SWITCH the env var for POSTGRES_URL to the preview branch
-              const connectionUri = await getConnectionUri({
-                projectId: app.neonProjectId,
-                branchId: app.neonPreviewBranchId,
-              });
-
-              await restoreBranchForPreview({
-                appId,
-                dbTimestamp: version.neonDbTimestamp,
-                neonProjectId: app.neonProjectId,
-                previewBranchId: app.neonPreviewBranchId,
-                developmentBranchId: app.neonDevelopmentBranchId,
-              });
-
-              await updatePostgresUrlEnvVar({
-                appPath: app.path,
-                connectionUri,
-              });
-              logger.info(
-                `Switched Postgres to preview branch for app ${appId} commit ${version.commitHash} dbTimestamp=${version.neonDbTimestamp}`,
-              );
-            } catch (error) {
-              logger.error(
-                "Error restoring Neon preview branch during checkout:",
-                getNeonErrorMessage(error),
-              );
-              // Do not throw: we still want to check out the code below. This
-              // commonly happens when the picked version is older than Neon's
-              // retention window, so the database snapshot has expired.
-              warningMessage = getDatabaseRestoreWarning(error);
-              // Keep the app pointed at the live development database so the
-              // checked-out code still has a database to run against. This is
-              // best-effort and must never block the code checkout.
+            if (version && version.neonDbTimestamp) {
               try {
+                // SWITCH the env var for POSTGRES_URL to the preview branch
+                const connectionUri = await getConnectionUri({
+                  projectId: app.neonProjectId,
+                  branchId: app.neonPreviewBranchId,
+                });
+
+                await restoreBranchForPreview({
+                  appId,
+                  dbTimestamp: version.neonDbTimestamp,
+                  neonProjectId: app.neonProjectId,
+                  previewBranchId: app.neonPreviewBranchId,
+                  developmentBranchId: app.neonDevelopmentBranchId,
+                });
+
                 await updatePostgresUrlEnvVar({
                   appPath: app.path,
-                  connectionUri: await getConnectionUri({
-                    projectId: app.neonProjectId,
-                    branchId: app.neonDevelopmentBranchId,
-                  }),
+                  connectionUri,
                 });
-              } catch (fallbackError) {
-                logger.error(
-                  "Failed to point Postgres at the development branch after a failed preview restore:",
-                  getNeonErrorMessage(fallbackError),
+                logger.info(
+                  `Switched Postgres to preview branch for app ${appId} commit ${version.commitHash} dbTimestamp=${version.neonDbTimestamp}`,
                 );
-                // The fallback failed too, so we could not explicitly re-point
-                // the app at the development branch. The env file is left at its
-                // previous value, which is usually still the development branch
-                // but may be a stale preview branch from an earlier checkout.
-                // Overwrite the warning so the user knows the DB branch is
-                // uncertain.
-                warningMessage =
-                  "Restored your code to this version, but the database could not be " +
-                  "switched and we were unable to confirm which database branch your app " +
-                  `is connected to: ${getNeonErrorMessage(fallbackError)}. Please check ` +
-                  "your app's database connection before relying on its data.";
+              } catch (error) {
+                logger.error(
+                  "Error restoring Neon preview branch during checkout:",
+                  getNeonErrorMessage(error),
+                );
+                // Do not throw: we still want to check out the code below. This
+                // commonly happens when the picked version is older than Neon's
+                // retention window, so the database snapshot has expired.
+                warningMessage = getDatabaseRestoreWarning(error);
+                // Keep the app pointed at the live development database so the
+                // checked-out code still has a database to run against. This is
+                // best-effort and must never block the code checkout.
+                try {
+                  await updatePostgresUrlEnvVar({
+                    appPath: app.path,
+                    connectionUri: await getConnectionUri({
+                      projectId: app.neonProjectId,
+                      branchId: app.neonDevelopmentBranchId,
+                    }),
+                  });
+                } catch (fallbackError) {
+                  logger.error(
+                    "Failed to point Postgres at the development branch after a failed preview restore:",
+                    getNeonErrorMessage(fallbackError),
+                  );
+                  // The fallback failed too, so we could not explicitly re-point
+                  // the app at the development branch. The env file is left at its
+                  // previous value, which is usually still the development branch
+                  // but may be a stale preview branch from an earlier checkout.
+                  // Overwrite the warning so the user knows the DB branch is
+                  // uncertain.
+                  warningMessage =
+                    "Restored your code to this version, but the database could not be " +
+                    "switched and we were unable to confirm which database branch your app " +
+                    `is connected to: ${getNeonErrorMessage(fallbackError)}. Please check ` +
+                    "your app's database connection before relying on its data.";
+                }
               }
             }
           }
         }
-      }
-      const fullAppPath = getDyadAppPath(app.path);
-      await gitCheckout({
-        path: fullAppPath,
-        ref: gitRef,
-      });
-      await syncCloudSandboxSnapshotBestEffort(appId);
-      return versionCommandResult({
-        notification: warningMessage
-          ? { kind: "warning", message: warningMessage }
-          : null,
-        runtimeAction: versionRuntimeAction(app, true),
-      });
-    });
+        const fullAppPath = getDyadAppPath(app.path);
+        await gitCheckout({
+          path: fullAppPath,
+          ref: gitRef,
+        });
+        await syncCloudSandboxSnapshotBestEffort(appId);
+        return versionCommandResult({
+          notification: warningMessage
+            ? { kind: "warning", message: warningMessage }
+            : null,
+          runtimeAction: versionRuntimeAction(app, true),
+        });
+      },
+    );
   };
   versionPreviewHandlerBridge.checkoutVersion = (params) =>
     checkoutVersionHandler(

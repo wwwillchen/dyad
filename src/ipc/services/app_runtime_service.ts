@@ -47,7 +47,10 @@ import {
   stopAppByInfo,
   type RunningAppInfo,
 } from "@/ipc/utils/process_manager";
-import { withLock } from "@/ipc/utils/lock_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "@/ipc/services/app_operation_coordinator";
 import { APP_RUN_INVOCATION_KIND } from "@/app_run/state";
 import {
   ensurePnpmAllowBuildsConfigured,
@@ -1432,7 +1435,7 @@ interface RuntimeAppRecord {
 }
 
 export interface AppRuntimeServiceDependencies {
-  withLock<T>(appId: number, operation: () => Promise<T>): Promise<T>;
+  runSerialized<T>(appId: number, operation: () => Promise<T>): Promise<T>;
   findApp(appId: number): Promise<RuntimeAppRecord | undefined>;
   resolveAppPath(relativePath: string): string;
   getRunningApp(appId: number): RunningAppInfo | undefined;
@@ -1532,7 +1535,7 @@ export class AppRuntimeService {
 
   async start(options: StartAppRuntimeOptions): Promise<void> {
     const { appId, output, invocationRef } = options;
-    return this.dependencies.withLock(appId, async () => {
+    return this.dependencies.runSerialized(appId, async () => {
       const existing = this.dependencies.getRunningApp(appId);
       if (existing) {
         logger.debug(`App ${appId} is already running.`);
@@ -1582,7 +1585,7 @@ export class AppRuntimeService {
       clearRuntimeLogs = false,
     } = options;
     logger.log(`Restarting app ${appId}`);
-    return this.dependencies.withLock(appId, async () => {
+    return this.dependencies.runSerialized(appId, async () => {
       const app = await this.requireApp(appId);
       const appPath = this.dependencies.resolveAppPath(app.path);
       const appInfo = this.dependencies.getRunningApp(appId);
@@ -1637,7 +1640,7 @@ export class AppRuntimeService {
     logger.log(
       `Attempting to stop app ${appId}. Current running apps: ${runningApps.size}`,
     );
-    return this.dependencies.withLock(appId, async () => {
+    return this.dependencies.runSerialized(appId, async () => {
       const appInfo = this.dependencies.getRunningApp(appId);
       if (!appInfo) {
         logger.log(`App ${appId} is already stopped.`);
@@ -1928,7 +1931,19 @@ async function waitForAppReady(
 }
 
 export const appRuntimeService = new AppRuntimeService({
-  withLock,
+  runSerialized: (appId, operation) =>
+    appOperationCoordinator.run(
+      {
+        appId,
+        operation: "app-runtime",
+        resources: [
+          readAppResource("app-path"),
+          "runtime",
+          readAppResource("runtime-config"),
+        ],
+      },
+      operation,
+    ),
   findApp: (appId) =>
     db.query.apps.findFirst({
       where: eq(apps.id, appId),

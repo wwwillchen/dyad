@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createAppMutationLock } from "./app_mutation_lock";
+import { createAppOperationHandler } from "./app_mutation_lock";
 
 function deferred() {
   let resolve!: () => void;
@@ -10,14 +10,18 @@ function deferred() {
   return { promise, resolve };
 }
 
-describe("createAppMutationLock", () => {
+describe("createAppOperationHandler", () => {
   it("serializes mutations for the same app", async () => {
     const first = deferred();
     const handler = vi.fn(async (_event: unknown, input: { appId: number }) => {
       if (handler.mock.calls.length === 1) await first.promise;
       return input.appId;
     });
-    const locked = createAppMutationLock(handler);
+    const locked = createAppOperationHandler(
+      "test-mutation",
+      ["metadata"],
+      handler,
+    );
 
     const firstCall = locked({}, { appId: 1 });
     const secondCall = locked({}, { appId: 1 });
@@ -32,7 +36,9 @@ describe("createAppMutationLock", () => {
   it("allows mutations for different apps to overlap", async () => {
     const release = deferred();
     const started: number[] = [];
-    const locked = createAppMutationLock(
+    const locked = createAppOperationHandler(
+      "test-mutation",
+      ["metadata"],
       async (_event: unknown, input: { appId: number }) => {
         started.push(input.appId);
         await release.promise;
