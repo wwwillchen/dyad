@@ -145,6 +145,7 @@ import {
   configureWindowProductController,
 } from "./window_infrastructure/main/window_product_controller";
 import {
+  clearWindowSessionPersistence,
   forgetWindowSessionBestEffort,
   getWindowSessionFilePath,
   MAX_PRODUCT_WINDOWS,
@@ -538,7 +539,7 @@ export async function onReady() {
   }
 
   await onFirstRunMaybe(settings);
-  restoreWindowSessions();
+  await createFreshStartupWindow();
   createApplicationMenu();
 
   sendTelemetryEvent("runtime_source", {
@@ -907,7 +908,7 @@ const createWindow = ({
     // reported in app:crash_detected.
     processNativeCrashDumps();
     // Crash recovery follows the focused/current product window and waits for
-    // its post-DevTools-reload renderer. Background restored windows cannot
+    // its post-DevTools-reload renderer. Background product windows cannot
     // consume the one-shot dialog or telemetry event.
     crashRecoveryWindowReadiness.markReady(browserWindow);
 
@@ -1046,15 +1047,16 @@ const createWindow = ({
   return { windowSessionId, browserWindow, rendererLoad: initialLoad };
 };
 
-function restoreWindowSessions(): void {
-  const sessions = getWindowSessionPersistence().read();
-  if (sessions.length === 0) {
-    createWindow({ persistenceFailurePolicy: "continue" });
-    return;
+async function createFreshStartupWindow(): Promise<void> {
+  try {
+    await clearWindowSessionPersistence(app.getPath("userData"));
+  } catch (error) {
+    logger.error(
+      "Failed to clear saved window sessions; continuing with one fresh window:",
+      error,
+    );
   }
-  for (const session of sessions) {
-    createWindow({ ...session, persistenceFailurePolicy: "continue" });
-  }
+  createWindow({ persistenceFailurePolicy: "continue" });
 }
 
 configureWindowProductController({

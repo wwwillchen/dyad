@@ -7,7 +7,7 @@ export function closedWindowSessionDisposition({
   isAppQuitting: boolean;
   openWindowCountBeforeClose: number;
 }): ClosedWindowSessionDisposition {
-  return !isAppQuitting && openWindowCountBeforeClose > 1 ? "forget" : "retain";
+  return isAppQuitting || openWindowCountBeforeClose > 1 ? "forget" : "retain";
 }
 
 export function shouldQuitAfterAllWindowsClosed(

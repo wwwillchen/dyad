@@ -5,7 +5,7 @@ import {
 } from "@/main/window_lifecycle_policy";
 
 describe("window lifecycle policy", () => {
-  it("forgets explicitly closed peer windows but retains shutdown sessions", () => {
+  it("forgets explicitly closed peer windows and shutdown sessions", () => {
     expect(
       closedWindowSessionDisposition({
         isAppQuitting: false,
@@ -17,10 +17,16 @@ describe("window lifecycle policy", () => {
         isAppQuitting: true,
         openWindowCountBeforeClose: 2,
       }),
-    ).toBe("retain");
+    ).toBe("forget");
+    expect(
+      closedWindowSessionDisposition({
+        isAppQuitting: true,
+        openWindowCountBeforeClose: 1,
+      }),
+    ).toBe("forget");
   });
 
-  it("retains the last window for macOS activation and future launches", () => {
+  it("retains the last window for macOS activation within the current launch", () => {
     expect(
       closedWindowSessionDisposition({
         isAppQuitting: false,

@@ -31,7 +31,7 @@ afterEach(() => {
 });
 
 describe("WindowSessionPersistence", () => {
-  it("restores multiple stable window identities and their visible entities", () => {
+  it("stores multiple stable window identities and their visible entities", () => {
     const persistence = createPersistence();
     persistence.remember(session(1), { kind: "app", id: 7 });
     persistence.remember(session(2), { kind: "app", id: 9 });
