@@ -493,7 +493,6 @@ function createCommandRunner() {
           timestamp: command.startedAt,
           invocationRef: command.invocationRef,
         });
-        let runtimeMayBeLive = false;
         const operation = Promise.resolve().then(async () => {
           await (command.operation === "run"
             ? appRuntimeService.start({
@@ -508,7 +507,9 @@ function createCommandRunner() {
                 recreateSandbox: command.options.recreateSandbox,
                 output,
               }));
-          runtimeMayBeLive = true;
+          // Runtime lifecycle methods retain coordinator resources through
+          // readiness. Keep this explicit wait as an idempotent actor-boundary
+          // assertion and for compatibility with injected runtime facades.
           await appRuntimeService.waitForReady(command.appId);
         });
         return operation.then(
@@ -526,7 +527,7 @@ function createCommandRunner() {
               requestId: command.requestId,
               invocationRef: command.invocationRef,
               error: runErrorInfo(error),
-              runtimeMayBeLive,
+              runtimeMayBeLive: appRuntimeService.isRunning(command.appId),
             }),
         );
       }

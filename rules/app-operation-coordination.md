@@ -33,6 +33,12 @@ it is already owned and drained by a domain-specific actor fence. Deletion-only
 work uses the opaque deletion handle after `drain()`; ordinary handlers must
 never bypass admission.
 
+For runtime start/restart, spawning the long-lived install/dev child is not the
+end of startup. Retain path, repository, and runtime-config admission until the
+preview is ready so install and self-heal work cannot race Git mutations. Any
+later background callback that writes the working tree must acquire its own
+coordinator operation.
+
 Keep `withLock` for non-app string identities such as canonical file paths and
 token refreshes. Its string-only signature intentionally prevents the old
 global `withLock(appId, ...)` pattern from returning.

@@ -25,6 +25,7 @@ const runtime = vi.hoisted(() => ({
   restart: vi.fn<() => Promise<void>>(),
   stop: vi.fn<() => Promise<void>>(),
   waitForReady: vi.fn<() => Promise<void>>(),
+  isRunning: vi.fn(() => false),
   cleanup: vi.fn(),
   createExternalLifecycleRef: vi.fn(),
 }));
@@ -116,6 +117,8 @@ describe("main-hosted app-run actor", () => {
     runtime.restart.mockReset();
     runtime.stop.mockReset();
     runtime.waitForReady.mockReset();
+    runtime.isRunning.mockReset();
+    runtime.isRunning.mockReturnValue(false);
     runtime.cleanup.mockReset();
     runtime.createExternalLifecycleRef.mockReset();
     runtime.createExternalLifecycleRef.mockReturnValue({

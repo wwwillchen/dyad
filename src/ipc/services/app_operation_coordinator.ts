@@ -1,16 +1,16 @@
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 export const APP_OPERATION_RESOURCES = [
-  "app-path",
-  "chat-content",
-  "chat-membership",
-  "media",
-  "metadata",
-  "provider",
-  "repository",
-  "runtime",
-  "runtime-config",
-  "test-files",
+  "app-path", // The app row's path and the identity/location of its directory.
+  "chat-content", // Messages within the app's chats.
+  "chat-membership", // Which chats belong to the app.
+  "media", // Uploaded, generated, and screenshot files in the media library.
+  "metadata", // General app fields not owned by a more specific resource.
+  "provider", // Supabase/Neon associations and provider lifecycle state.
+  "repository", // Code files plus Git commits, refs, index, and working tree.
+  "runtime", // The preview process, port, proxy, and sandbox lifecycle.
+  "runtime-config", // Environment/configuration consumed by the runtime.
+  "test-files", // Test inputs, generated configuration, and test artifacts.
 ] as const;
 
 export type AppOperationResource = (typeof APP_OPERATION_RESOURCES)[number];

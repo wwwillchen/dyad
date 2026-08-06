@@ -797,7 +797,7 @@ function listenToProcess({
         // ignored builds can be read and recorded.
         if (appPath && !ignoredBuildsRecordedAfterInstall) {
           ignoredBuildsRecordedAfterInstall = true;
-          void recordIgnoredBuildsAfterInstall(appPath);
+          await recordIgnoredBuildsAfterInstall(appPath);
         }
         await ensureProxyForRunningApp({
           appId,
@@ -1302,11 +1302,19 @@ export function startCloudSandboxLogStream(input: {
       try {
         // Output-only on purpose: the install ran remotely, so the local
         // .modules.yaml (if any) does not describe this sandbox.
-        await recordAndReportDeniedPnpmBuilds({
-          appPath,
-          ignoredBuilds,
-          source: "cloud-sandbox",
-        });
+        await appOperationCoordinator.run(
+          {
+            appId: input.appId,
+            operation: "record-cloud-pnpm-build-policy",
+            resources: [readAppResource("app-path"), "repository"],
+          },
+          () =>
+            recordAndReportDeniedPnpmBuilds({
+              appPath,
+              ignoredBuilds,
+              source: "cloud-sandbox",
+            }),
+        );
       } catch (error) {
         logger.warn(
           "Failed to record ignored pnpm builds from cloud sandbox logs:",
@@ -1503,6 +1511,7 @@ export interface StartAppRuntimeOptions {
   appId: number;
   output: AppRuntimeOutput;
   invocationRef?: AppRunInvocationRef;
+  readyTimeoutMs?: number;
 }
 
 export interface RestartAppRuntimeOptions extends StartAppRuntimeOptions {
@@ -1574,17 +1583,22 @@ export class AppRuntimeService {
       const app = await this.requireApp(appId);
       const appPath = this.dependencies.resolveAppPath(app.path);
       logger.debug(`Starting app ${appId} in path ${app.path}`);
+      let processStarted = false;
       try {
         await this.dependencies.cleanPort(getAppPort(appId));
         await this.startProcess(app, appPath, options);
+        processStarted = true;
+        await this.dependencies.waitForReady(appId, options.readyTimeoutMs);
       } catch (error) {
         logger.error(`Error running app ${appId}:`, error);
-        const latest = this.dependencies.getRunningApp(appId);
-        if (
-          latest &&
-          latest.processId === this.dependencies.getProcessCounter()
-        ) {
-          this.dependencies.deleteRunningApp(appId);
+        if (!processStarted) {
+          const latest = this.dependencies.getRunningApp(appId);
+          if (
+            latest &&
+            latest.processId === this.dependencies.getProcessCounter()
+          ) {
+            this.dependencies.deleteRunningApp(appId);
+          }
         }
         throw new DyadError(
           `Failed to run app ${appId}: ${errorMessage(error)}`,
@@ -1622,6 +1636,7 @@ export class AppRuntimeService {
           clearRuntimeLogs,
           appInfo,
         });
+        await this.dependencies.waitForReady(appId, options.readyTimeoutMs);
         return;
       }
 
@@ -1652,6 +1667,7 @@ export class AppRuntimeService {
         this.dependencies.clearLogs(appId);
       }
       await this.startProcess(app, appPath, options);
+      await this.dependencies.waitForReady(appId, options.readyTimeoutMs);
     });
   }
 
@@ -1707,6 +1723,10 @@ export class AppRuntimeService {
     options: { timeoutMs?: number } = {},
   ): Promise<void> {
     return this.dependencies.waitForReady(appId, options.timeoutMs);
+  }
+
+  isRunning(appId: number): boolean {
+    return this.dependencies.getRunningApp(appId) !== undefined;
   }
 
   createExternalLifecycleRef(appId: number): AppRunInvocationRef {
@@ -1779,7 +1799,6 @@ export class AppRuntimeService {
         DyadErrorKind.UserCancelled,
       );
     }
-    let runtimeMayBeLive = false;
     try {
       await this.restart({
         appId: options.appId,
@@ -1788,18 +1807,14 @@ export class AppRuntimeService {
         removeNodeModules: options.operation === "rebuild",
         recreateSandbox: options.operation === "rebuild",
         clearRuntimeLogs: true,
-      });
-      runtimeMayBeLive = true;
-      await this.waitForReady(options.appId, {
-        timeoutMs: options.timeoutMs,
+        readyTimeoutMs: options.timeoutMs,
       });
       this.settleExternalClaim(claim);
     } catch (error) {
       this.settleExternalClaim(
         claim,
         error,
-        runtimeMayBeLive &&
-          this.dependencies.getRunningApp(options.appId) !== undefined,
+        this.dependencies.getRunningApp(options.appId) !== undefined,
       );
       throw error;
     }
