@@ -82,6 +82,13 @@ describe("local_agent_prompt", () => {
     expect(prompt).toContain("App Blueprint (new apps only)");
     expect(prompt).toContain("write_app_blueprint");
     expect(prompt).toContain("planning_questionnaire");
+    expect(prompt).toContain("whether the app needs user accounts");
+    expect(prompt).toContain(
+      "in a database, only on the user's device, or not persisted",
+    );
+    expect(prompt).toContain(
+      "do not ask about specific database providers or implementation details",
+    );
   });
 
   it("basic agent mode system prompt with app blueprint enabled", () => {
