@@ -84,7 +84,7 @@ describe("local_agent_prompt", () => {
     expect(prompt).toContain("planning_questionnaire");
     expect(prompt).toContain("whether the app needs user accounts");
     expect(prompt).toContain(
-      "in a database, only on the user's device, or not persisted",
+      "e.g., in a database, only on the user's device, or not persisted",
     );
     expect(prompt).toContain(
       "do not ask about specific database providers or implementation details",
