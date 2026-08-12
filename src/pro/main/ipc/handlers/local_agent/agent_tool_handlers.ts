@@ -21,7 +21,6 @@ import {
   followupSubagent,
   getSubagentMessages,
   listSubagents,
-  recoverInterruptedSubagents,
   runAutoReviewBarrier,
   sendSubagentMessage,
   setSubagentEventTarget,
@@ -32,9 +31,6 @@ import {
 const logger = log.scope("agent_tool_handlers");
 const handle = createLoggedTypedHandler(logger);
 export function registerAgentToolHandlers() {
-  void recoverInterruptedSubagents().catch((error) =>
-    logger.error("Failed to reconcile interrupted sub-agents", error),
-  );
   // Get list of available tools with their consent settings
   handle(agentContracts.getTools, async (): Promise<AgentTool[]> => {
     const consents = getAllAgentToolConsents();

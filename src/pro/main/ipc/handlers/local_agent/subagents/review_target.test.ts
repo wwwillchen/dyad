@@ -51,6 +51,66 @@ describe("buildReviewTarget", () => {
     expect(review.targetCommit).toBe(target.trim());
   });
 
+  it("does not execute configured textconv filters", async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(
+      path.join(repo, ".gitattributes"),
+      "*.txt diff=unsafe\n",
+    );
+    await fs.writeFile(path.join(repo, "feature.txt"), "before\n");
+    await git(repo, "add", ".");
+    await git(repo, "commit", "-m", "base");
+    const base = (await git(repo, "rev-parse", "HEAD")).trim();
+    await git(
+      repo,
+      "config",
+      "diff.unsafe.textconv",
+      "dyad-textconv-must-not-run",
+    );
+    await fs.writeFile(path.join(repo, "feature.txt"), "after\n");
+    await git(repo, "commit", "-am", "change");
+    const target = (await git(repo, "rev-parse", "HEAD")).trim();
+
+    const review = await buildReviewTarget({
+      appPath: repo,
+      baseCommit: base,
+      targetCommit: target,
+    });
+
+    expect(review.files).toEqual(["feature.txt"]);
+    expect(review.diff).toContain("+after");
+  });
+
+  it("uses the message source commit for a working-tree review", async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(
+      path.join(repo, "feature.ts"),
+      "export const value = 1;\n",
+    );
+    await git(repo, "add", ".");
+    await git(repo, "commit", "-m", "source");
+    const source = (await git(repo, "rev-parse", "HEAD")).trim();
+    await fs.writeFile(
+      path.join(repo, "feature.ts"),
+      "export const value = 2;\n",
+    );
+    await git(repo, "commit", "-am", "later head");
+    await fs.writeFile(
+      path.join(repo, "feature.ts"),
+      "export const value = 3;\n",
+    );
+
+    const review = await buildReviewTarget({
+      appPath: repo,
+      baseCommit: source,
+    });
+
+    expect(review.baseCommit).toBe(source);
+    expect(review.targetCommit).toBeNull();
+    expect(review.diff).toContain("-export const value = 1;");
+    expect(review.diff).toContain("+export const value = 3;");
+  });
+
   it("excludes binary files from immutable commit ranges", async () => {
     const repo = await makeRepo();
     await fs.writeFile(path.join(repo, "asset.bin"), Buffer.from([0, 1, 2]));

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildAllExcludedReviewResult,
+  buildFailedRemediationState,
   buildRemediationPrompt,
   buildReboundReviewState,
   buildBoundedModelHistory,
@@ -59,6 +60,20 @@ describe("sub-agent manager status policy", () => {
       remediationSource: null,
       autoFixAt: null,
       updatedAt,
+    });
+  });
+
+  it("clears a failed remediation claim so findings can be retried", () => {
+    const now = new Date("2026-07-22T00:00:00Z");
+    const resultJson = { findingCount: 1, report: "One finding" };
+
+    expect(buildFailedRemediationState(resultJson, now)).toEqual({
+      status: "completed",
+      resultJson,
+      remediationSource: null,
+      error: "Review remediation did not complete.",
+      completedAt: now,
+      updatedAt: now,
     });
   });
 

@@ -56,6 +56,8 @@ export async function buildReviewTarget(params: {
   if (params.baseCommit && params.targetCommit) {
     const files = await git(params.appPath, [
       "diff",
+      "--no-ext-diff",
+      "--no-textconv",
       "--name-only",
       "-z",
       params.baseCommit,
@@ -81,10 +83,12 @@ export async function buildReviewTarget(params: {
       "--verify",
       "HEAD",
     ]);
-    const comparisonBase = head?.trim() || EMPTY_TREE;
+    const comparisonBase = effectiveBaseCommit ?? head?.trim() ?? EMPTY_TREE;
     const [trackedFiles, untracked] = await Promise.all([
       git(params.appPath, [
         "diff",
+        "--no-ext-diff",
+        "--no-textconv",
         "--name-only",
         "-z",
         comparisonBase,
@@ -170,7 +174,7 @@ export async function buildReviewTarget(params: {
       const syntheticDiff = `diff --git a/${file} b/${file}\nnew file mode 100644\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${textLines.length} @@\n${textLines.map((line) => `+${line}`).join("\n")}`;
       addDiff(file, syntheticDiff);
     }
-    effectiveBaseCommit = head?.trim() || null;
+    effectiveBaseCommit = effectiveBaseCommit ?? head?.trim() ?? null;
   }
 
   const diff = chunks.filter(Boolean).join("\n");
@@ -196,7 +200,7 @@ async function boundedGitDiff(
   try {
     const { stdout } = await execFileAsync(
       "git",
-      ["diff", "--no-ext-diff", "--no-color", ...rangeAndPath],
+      ["diff", "--no-ext-diff", "--no-textconv", "--no-color", ...rangeAndPath],
       { cwd, maxBuffer: REVIEW_MAX_FILE_BYTES + 64 * 1024 },
     );
     return Buffer.byteLength(stdout) <= REVIEW_MAX_FILE_BYTES ? stdout : null;

@@ -352,15 +352,34 @@ export async function skipReviewAutoFix(
   assertPro("reviewer");
   const thread = await getOwnedThread(chatId, threadId);
   if (thread.status === "fixing_findings") {
-    await finishThread(
-      threadId,
-      "completed",
-      thread.resultJson,
-      "Review remediation did not complete.",
-    );
+    const updated = await db
+      .update(agentThreads)
+      .set(buildFailedRemediationState(thread.resultJson))
+      .where(
+        and(
+          eq(agentThreads.id, threadId),
+          eq(agentThreads.status, "fixing_findings"),
+        ),
+      )
+      .returning({ id: agentThreads.id });
+    if (updated.length > 0) emit(thread.chatId, threadId);
     return;
   }
   skippedAutoFixes.add(threadId);
+}
+
+export function buildFailedRemediationState(
+  resultJson: Record<string, unknown> | null,
+  now = new Date(),
+) {
+  return {
+    status: "completed" as const,
+    resultJson,
+    remediationSource: null,
+    error: "Review remediation did not complete.",
+    completedAt: now,
+    updatedAt: now,
+  };
 }
 
 export async function buildFixFindingsPrompt(
