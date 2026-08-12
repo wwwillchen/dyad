@@ -71,10 +71,12 @@ const pendingRuns: Array<{
   source: "model" | "review_button" | "auto_review" | "followup";
   run: () => Promise<void>;
 }> = [];
-let eventTarget: WebContents | null = null;
+const eventTargets = new Set<WebContents>();
 
 export function setSubagentEventTarget(target: WebContents): void {
-  eventTarget = target;
+  if (target.isDestroyed() || eventTargets.has(target)) return;
+  eventTargets.add(target);
+  target.once("destroyed", () => eventTargets.delete(target));
 }
 
 export async function recoverInterruptedSubagents(): Promise<void> {
@@ -1436,10 +1438,18 @@ function assertPro(persona?: SubagentPersona): void {
   }
 }
 
-function emit(chatId: number, threadId: string): void {
-  const target = eventTarget;
-  if (target && !target.isDestroyed())
+export function emitSubagentUpdate(chatId: number, threadId: string): void {
+  for (const target of eventTargets) {
+    if (target.isDestroyed()) {
+      eventTargets.delete(target);
+      continue;
+    }
     target.send("agent:subagent-update", { chatId, threadId });
+  }
+}
+
+function emit(chatId: number, threadId: string): void {
+  emitSubagentUpdate(chatId, threadId);
 }
 
 function toSummary(
@@ -1605,60 +1615,64 @@ async function startPendingFollowup(
     if (!pending) return;
     const thread = await getThread(threadId);
     if (ACTIVE.includes(thread.status as (typeof ACTIVE)[number])) return;
-    let acquiredAppId: number | null = null;
+    const queueFollowup = async (acquiredAppId: number | null) => {
+      followupStarts.add(threadId);
+      try {
+        await db
+          .update(agentThreads)
+          .set({
+            status: "queued",
+            invocationSource: "followup",
+            resultJson: null,
+            remediationSource: null,
+            error: null,
+            startedAt: null,
+            completedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(agentThreads.id, threadId));
+        emit(thread.chatId, threadId);
+        run("Continue by addressing the queued root messages in order.");
+        acquiredAppId = null;
+      } catch (error) {
+        if (acquiredAppId !== null) {
+          releaseMutationLease(acquiredAppId, threadId);
+        }
+        throw error;
+      } finally {
+        followupStarts.delete(threadId);
+      }
+    };
 
-    if (thread.persona === "implementer") {
-      const chat = await db.query.chats.findFirst({
-        where: eq(chats.id, thread.chatId),
-        with: { app: true },
-      });
-      const scope = Array.isArray(thread.contextJson?.scope)
-        ? thread.contextJson.scope.filter(
-            (value): value is string => typeof value === "string",
-          )
-        : [];
-      if (
-        !chat?.app ||
-        !acquireMutationLease({
-          appId: chat.app.id,
-          threadId,
-          scope,
-        })
-      ) {
+    if (thread.persona !== "implementer") {
+      await queueFollowup(null);
+      return;
+    }
+
+    const chat = await db.query.chats.findFirst({
+      where: eq(chats.id, thread.chatId),
+      with: { app: true },
+    });
+    if (!chat?.app) {
+      throw new DyadError(
+        "The Implementer's app no longer exists.",
+        DyadErrorKind.NotFound,
+      );
+    }
+    const scope = Array.isArray(thread.contextJson?.scope)
+      ? thread.contextJson.scope.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [];
+    await withMutationAdmission(chat.app.id, async () => {
+      if (!acquireMutationLease({ appId: chat.app.id, threadId, scope })) {
         throw new DyadError(
           "Another Implementer is already editing this app.",
           DyadErrorKind.Conflict,
         );
       }
-      acquiredAppId = chat.app.id;
-    }
-
-    followupStarts.add(threadId);
-    try {
-      await db
-        .update(agentThreads)
-        .set({
-          status: "queued",
-          invocationSource: "followup",
-          resultJson: null,
-          remediationSource: null,
-          error: null,
-          startedAt: null,
-          completedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(agentThreads.id, threadId));
-      emit(thread.chatId, threadId);
-      run("Continue by addressing the queued root messages in order.");
-      acquiredAppId = null;
-    } catch (error) {
-      if (acquiredAppId !== null) {
-        releaseMutationLease(acquiredAppId, threadId);
-      }
-      throw error;
-    } finally {
-      followupStarts.delete(threadId);
-    }
+      await queueFollowup(chat.app.id);
+    });
   });
 }
 

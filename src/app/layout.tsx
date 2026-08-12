@@ -17,6 +17,7 @@ import { useAppBlueprintEvents } from "@/hooks/useAppBlueprintEvents";
 import { useTestRunEvents } from "@/hooks/useTestRunEvents";
 import { useZoomShortcuts } from "@/hooks/useZoomShortcuts";
 import { useChatStreamRuntime } from "@/hooks/useChatStream";
+import { useBackgroundAutoReview } from "@/hooks/subagentReviewOrchestration";
 import { useReopenClosedTab } from "@/hooks/useReopenClosedTab";
 import { VersionPreviewProvider } from "@/version_preview/VersionPreviewProvider";
 import {
@@ -145,6 +146,7 @@ function RootLayoutContent({ children }: { children: ReactNode }) {
     requestPreviewReload: appRunManager.requestManualReload,
     requestCapture: screenshotManager.requestCapture,
   });
+  useBackgroundAutoReview();
 
   // Persist queued messages to disk and hydrate them on startup, so queued
   // prompts survive app restarts / crashes.

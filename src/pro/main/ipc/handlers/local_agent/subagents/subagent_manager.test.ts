@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import type { WebContents } from "electron";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildAllExcludedReviewResult,
@@ -6,6 +7,7 @@ import {
   buildRemediationPrompt,
   buildReboundReviewState,
   buildBoundedModelHistory,
+  emitSubagentUpdate,
   isAcceptableImplementerJoinStatus,
   isReusableReviewStatus,
   isSubagentJoinReady,
@@ -13,6 +15,7 @@ import {
   isWaitCompleteStatus,
   remediationClaimStatus,
   reviewFollowupAvailability,
+  setSubagentEventTarget,
   SUBAGENT_NONTERMINAL_STATUSES,
 } from "./subagent_manager";
 
@@ -75,6 +78,27 @@ describe("sub-agent manager status policy", () => {
       completedAt: now,
       updatedAt: now,
     });
+  });
+
+  it("broadcasts sub-agent updates to every live renderer subscriber", () => {
+    const first = fakeWebContents();
+    const second = fakeWebContents();
+    setSubagentEventTarget(first.target);
+    setSubagentEventTarget(second.target);
+
+    emitSubagentUpdate(7, "review-1");
+
+    expect(first.send).toHaveBeenCalledWith("agent:subagent-update", {
+      chatId: 7,
+      threadId: "review-1",
+    });
+    expect(second.send).toHaveBeenCalledWith("agent:subagent-update", {
+      chatId: 7,
+      threadId: "review-1",
+    });
+
+    first.destroy();
+    second.destroy();
   });
 
   it("waits through active workflows but treats idle and terminal states as complete", () => {
@@ -204,3 +228,23 @@ describe("sub-agent manager status policy", () => {
     ).toBe("all_excluded");
   });
 });
+
+function fakeWebContents() {
+  let destroyed = false;
+  const destroyedListeners: Array<() => void> = [];
+  const send = vi.fn();
+  return {
+    target: {
+      isDestroyed: () => destroyed,
+      once: (event: string, listener: () => void) => {
+        if (event === "destroyed") destroyedListeners.push(listener);
+      },
+      send,
+    } as unknown as WebContents,
+    send,
+    destroy: () => {
+      destroyed = true;
+      for (const listener of destroyedListeners) listener();
+    },
+  };
+}

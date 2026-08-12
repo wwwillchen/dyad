@@ -1,8 +1,17 @@
+import { useRef } from "react";
+
+import {
+  useChatStreamManager,
+  useStreamFinished,
+} from "@/chat_stream/ChatStreamProvider";
 import { ipc } from "@/ipc/types";
 import type { ChatResponseEnd } from "@/ipc/types";
 import type { SubagentThreadSummary } from "@/ipc/types/agent";
+import { isDyadProEnabled } from "@/lib/schemas";
+import { showError } from "@/lib/toast";
 
 import { setPendingReviewContinuation } from "./subagentReviewContinuation";
+import { useSettings } from "./useSettings";
 
 export type ReviewRemediationOutcome = "completed" | "failed" | "paused";
 
@@ -170,4 +179,75 @@ export async function runBackgroundAutoReview(
   } finally {
     backgroundAutoReviewChatIds.delete(params.chatId);
   }
+}
+
+export function useBackgroundAutoReview(): void {
+  const manager = useChatStreamManager();
+  const { settings } = useSettings();
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const remediationChatIdsRef = useRef(new Set<number>());
+
+  useStreamFinished((event) => {
+    const currentSettings = settingsRef.current;
+    const snapshot = manager.ensure(event.chatId).getSnapshot();
+    if (
+      !shouldStartBackgroundAutoReview({
+        updatedFiles:
+          event.outcome === "completed" &&
+          !event.wasCancelled &&
+          event.updatedFiles,
+        enableAutoReview:
+          currentSettings !== undefined &&
+          currentSettings !== null &&
+          isDyadProEnabled(currentSettings) &&
+          currentSettings.enableAutoReview === true,
+        hasQueuedMessages:
+          snapshot.queue.length > 0 || snapshot.phase === "streaming",
+        suppressAutoReview: remediationChatIdsRef.current.has(event.chatId),
+      })
+    ) {
+      return;
+    }
+
+    void ipc.chat
+      .getChat(event.chatId)
+      .then(async (chat) => {
+        const sourceMessage = [...chat.messages]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        if (!sourceMessage) return;
+
+        await runBackgroundAutoReview({
+          chatId: event.chatId,
+          sourceMessageId: sourceMessage.id,
+          getAutoFix: () => settingsRef.current?.autoFixReviewIssues === true,
+          streamFix: (prompt) => {
+            remediationChatIdsRef.current.add(event.chatId);
+            return new Promise<ReviewRemediationOutcome>((resolve) => {
+              manager.ensure(event.chatId).send({
+                type: "submit",
+                request: {
+                  chatId: event.chatId,
+                  prompt,
+                  requestedChatMode: "local-agent",
+                  onSettled: ({ success, pausedByStepLimit }) => {
+                    resolve(
+                      pausedByStepLimit
+                        ? "paused"
+                        : success
+                          ? "completed"
+                          : "failed",
+                    );
+                  },
+                },
+              });
+            }).finally(() => {
+              remediationChatIdsRef.current.delete(event.chatId);
+            });
+          },
+        });
+      })
+      .catch((error) => showError(error));
+  });
 }

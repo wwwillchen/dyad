@@ -41,6 +41,8 @@ export interface StreamFinishedEvent {
   chatId: number;
   invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>;
   outcome: "completed" | "cancelled" | "errored";
+  updatedFiles: boolean;
+  wasCancelled: boolean;
   chatSummary?: string;
 }
 
@@ -735,6 +737,8 @@ export class ChatStreamRemoteManager {
         chatId,
         invocationRef: completion.invocationRef,
         outcome: completion.outcome,
+        updatedFiles: completion.updatedFiles === true,
+        wasCancelled: completion.outcome === "cancelled",
         chatSummary: completion.chatSummary,
       });
     }
