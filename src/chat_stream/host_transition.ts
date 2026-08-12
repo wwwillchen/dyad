@@ -358,6 +358,7 @@ export function transitionChatStreamHost(
             outcome: event.response.wasCancelled ? "cancelled" : "completed",
             chatSummary: event.response.chatSummary,
             pausePromptQueue: event.response.pausePromptQueue,
+            reviewBarrierRequested: event.response.reviewBarrierRequested,
             updatedFiles: event.response.updatedFiles,
             extraFiles: event.response.extraFiles,
             extraFilesError: event.response.extraFilesError,

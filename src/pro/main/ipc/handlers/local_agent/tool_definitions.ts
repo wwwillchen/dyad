@@ -38,7 +38,6 @@ import { generateTestAssertionsTool } from "./tools/generate_test_assertions";
 import { rebuildAppTool, restartAppTool } from "./tools/app_lifecycle";
 import { grepTool } from "./tools/grep";
 import { codeSearchTool } from "./tools/code_search";
-import { exploreCodeTool } from "./tools/explore_code";
 import { exploreChatHistoryTool } from "./tools/explore_chat_history";
 import { searchChatsTool } from "./tools/search_chats";
 import { readChatTool } from "./tools/read_chat";
@@ -127,7 +126,6 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   gitRestoreFileTool,
   grepTool,
   codeSearchTool,
-  exploreCodeTool,
   exploreChatHistoryTool,
   searchChatsTool,
   readChatTool,

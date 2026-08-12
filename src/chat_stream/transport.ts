@@ -308,6 +308,7 @@ export const ChatStreamRemoteSnapshotSchema = z
         outcome: z.enum(["completed", "cancelled", "errored"]),
         chatSummary: z.string().optional(),
         pausePromptQueue: z.boolean().optional(),
+        reviewBarrierRequested: z.boolean().optional(),
         updatedFiles: z.boolean().optional(),
         extraFiles: z.array(z.string()).optional(),
         extraFilesError: z.string().optional(),

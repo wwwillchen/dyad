@@ -1,3 +1,4 @@
+import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubagentThreadSummary } from "@/ipc/types/agent";
 
@@ -7,6 +8,46 @@ const mocks = vi.hoisted(() => ({
   fixReviewFindings: vi.fn(),
   runAutoReviewBarrier: vi.fn(),
   skipReviewAutoFix: vi.fn(),
+  dispatchQueueEvent: vi.fn(),
+  streamFinishedCallback: undefined as
+    | ((event: {
+        chatId: number;
+        outcome: "completed" | "cancelled" | "errored";
+        updatedFiles: boolean;
+        reviewBarrierRequested: boolean;
+        wasCancelled: boolean;
+      }) => void)
+    | undefined,
+}));
+
+vi.mock("@/chat_stream/ChatStreamProvider", () => ({
+  useChatStreamManager: () => ({
+    dispatchQueueEvent: mocks.dispatchQueueEvent,
+    ensure: () => ({
+      getSnapshot: () => ({
+        phase: "idle",
+        queuePaused: true,
+        queue: [{ itemId: "queued-1" }],
+        lastCompletion: { pausePromptQueue: true },
+      }),
+      send: vi.fn(),
+    }),
+  }),
+  useStreamFinished: (
+    callback: NonNullable<typeof mocks.streamFinishedCallback>,
+  ) => {
+    mocks.streamFinishedCallback = callback;
+  },
+}));
+
+vi.mock("./useSettings", () => ({
+  useSettings: () => ({
+    settings: {
+      enableAutoReview: true,
+      autoFixReviewIssues: false,
+      enableDyadPro: true,
+    },
+  }),
 }));
 
 vi.mock("@/ipc/types", async (importOriginal) => {
@@ -30,6 +71,7 @@ import {
   shouldRunQueuedReviewBarrier,
   shouldResumePendingReview,
   shouldStartBackgroundAutoReview,
+  useBackgroundAutoReview,
 } from "./subagentReviewOrchestration";
 import {
   hasPendingReviewContinuation,
@@ -72,6 +114,31 @@ function review(
 describe("sub-agent review orchestration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.streamFinishedCallback = undefined;
+    mocks.dispatchQueueEvent.mockResolvedValue(undefined);
+  });
+
+  it("runs and releases the queued-message barrier from the production completion hook", async () => {
+    mocks.runAutoReviewBarrier.mockResolvedValue({ outcome: "released" });
+    renderHook(() => useBackgroundAutoReview());
+
+    mocks.streamFinishedCallback?.({
+      chatId: 7,
+      outcome: "completed",
+      updatedFiles: true,
+      reviewBarrierRequested: true,
+      wasCancelled: false,
+    });
+
+    await waitFor(() => {
+      expect(mocks.runAutoReviewBarrier).toHaveBeenCalledWith({
+        chatId: 7,
+        verification: undefined,
+      });
+      expect(mocks.dispatchQueueEvent).toHaveBeenCalledWith(7, {
+        type: "RESUME_QUEUE",
+      });
+    });
   });
 
   it("leaves queued turns to the queue review barrier", () => {

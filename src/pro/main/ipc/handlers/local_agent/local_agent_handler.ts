@@ -1815,10 +1815,11 @@ export async function handleLocalAgentStream(
         (thread) => !isAcceptableImplementerJoinStatus(thread.status),
       );
       if (unsuccessful.length > 0) {
-        throw new Error(
+        throw new DyadError(
           `Implementer sub-agent did not complete successfully: ${unsuccessful
             .map((thread) => `${thread.taskName} (${thread.status})`)
             .join(", ")}`,
+          DyadErrorKind.Precondition,
         );
       }
     }
@@ -1832,6 +1833,10 @@ export async function handleLocalAgentStream(
         })
         .where(eq(messages.id, placeholderMessageId));
       await clearTodosOnCancel(event, appPath, chat.id, persistedTodos);
+      if (rootFinalizationActive) {
+        await endRootFinalization(chat.app.id);
+        rootFinalizationActive = false;
+      }
       return false; // Cancelled - don't consume quota
     }
 
@@ -1973,6 +1978,16 @@ export async function handleLocalAgentStream(
       }
     }
 
+    const updatedFiles =
+      !readOnly &&
+      (Object.keys(fileEditTracker).length > 0 ||
+        ctx.workspaceMutated === true);
+    const reviewBarrierRequested =
+      updatedFiles &&
+      !hitStepLimit &&
+      isDyadProEnabled(settings) &&
+      settings.enableAutoReview === true;
+
     // Send completion
     publishQueryInvalidations(
       [{ family: "chats" }, { family: "chat", chatId: req.chatId }],
@@ -1982,15 +1997,12 @@ export async function handleLocalAgentStream(
       chatId: req.chatId,
       invocationRef: req.invocationRef,
       streamId: req.streamId,
-      updatedFiles:
-        !readOnly &&
-        (!modelRefused ||
-          Object.keys(fileEditTracker).length > 0 ||
-          ctx.workspaceMutated === true),
+      updatedFiles,
       chatSummary: ctx.chatSummary,
       warningMessages:
         warningMessages.length > 0 ? [...new Set(warningMessages)] : undefined,
-      pausePromptQueue: hitStepLimit || undefined,
+      pausePromptQueue: hitStepLimit || reviewBarrierRequested || undefined,
+      reviewBarrierRequested: reviewBarrierRequested || undefined,
     } satisfies ChatResponseEnd);
 
     if (rootFinalizationActive) {

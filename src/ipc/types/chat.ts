@@ -289,6 +289,8 @@ export const ChatResponseEndSchema = z.object({
   wasCancelled: z.boolean().optional(),
   /** Indicates queued prompts should be paused after this stream completes */
   pausePromptQueue: z.boolean().optional(),
+  /** Indicates the queue pause was requested for the automatic review barrier. */
+  reviewBarrierRequested: z.boolean().optional(),
 });
 
 export type ChatResponseEnd = z.infer<typeof ChatResponseEndSchema>;

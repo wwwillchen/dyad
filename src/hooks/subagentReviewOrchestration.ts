@@ -10,7 +10,12 @@ import type { SubagentThreadSummary } from "@/ipc/types/agent";
 import { isDyadProEnabled } from "@/lib/schemas";
 import { showError } from "@/lib/toast";
 
-import { setPendingReviewContinuation } from "./subagentReviewContinuation";
+import {
+  clearPendingReviewContinuation,
+  hasPendingReviewContinuation,
+  resumePendingReviewContinuation,
+  setPendingReviewContinuation,
+} from "./subagentReviewContinuation";
 import { useSettings } from "./useSettings";
 
 export type ReviewRemediationOutcome = "completed" | "failed" | "paused";
@@ -87,6 +92,7 @@ interface BackgroundAutoReviewParams {
   sourceMessageId: number;
   getAutoFix: () => boolean;
   streamFix: (prompt: string) => Promise<ReviewRemediationOutcome>;
+  onReviewReleased?: () => Promise<void>;
 }
 
 const backgroundAutoReviewChatIds = new Set<number>();
@@ -143,6 +149,7 @@ async function runSingleBackgroundAutoReview(
         chatId: params.chatId,
         verification: true,
       });
+      await params.onReviewReleased?.();
     });
     return;
   }
@@ -188,9 +195,107 @@ export function useBackgroundAutoReview(): void {
   settingsRef.current = settings;
   const remediationChatIdsRef = useRef(new Set<number>());
 
+  const resumeQueue = async (chatId: number): Promise<void> => {
+    const snapshot = manager.ensure(chatId).getSnapshot();
+    if (!snapshot.queuePaused) return;
+    await manager.dispatchQueueEvent(chatId, { type: "RESUME_QUEUE" });
+  };
+
   useStreamFinished((event) => {
     const currentSettings = settingsRef.current;
     const snapshot = manager.ensure(event.chatId).getSnapshot();
+    const suppressAutoReview = remediationChatIdsRef.current.has(event.chatId);
+    const hasPendingContinuation = hasPendingReviewContinuation(event.chatId);
+
+    if (event.wasCancelled) {
+      clearPendingReviewContinuation(event.chatId);
+      if (
+        suppressAutoReview ||
+        event.reviewBarrierRequested ||
+        hasPendingContinuation
+      ) {
+        void resumeQueue(event.chatId).catch(showError);
+      }
+      return;
+    }
+
+    if (
+      shouldResumePendingReview({
+        wasCancelled: event.wasCancelled,
+        pausePromptQueue:
+          snapshot.lastCompletion?.pausePromptQueue === true &&
+          !event.reviewBarrierRequested,
+        hasPendingContinuation,
+      })
+    ) {
+      void resumePendingReviewContinuation(event.chatId).catch(
+        async (error) => {
+          await resumeQueue(event.chatId).catch(showError);
+          showError(error);
+        },
+      );
+      return;
+    }
+
+    if (suppressAutoReview) return;
+
+    if (event.reviewBarrierRequested && snapshot.queue.length > 0) {
+      void runQueuedReviewFlow({
+        runBarrier: (verification) =>
+          ipc.agent.runAutoReviewBarrier({
+            chatId: event.chatId,
+            verification,
+          }),
+        streamRemediation: (prompt) => {
+          remediationChatIdsRef.current.add(event.chatId);
+          return new Promise<ReviewRemediationOutcome>((resolve) => {
+            manager.ensure(event.chatId).send({
+              type: "submit",
+              request: {
+                chatId: event.chatId,
+                prompt,
+                requestedChatMode: "local-agent",
+                onSettled: ({ success, pausedByStepLimit }) => {
+                  resolve(
+                    pausedByStepLimit
+                      ? "paused"
+                      : success
+                        ? "completed"
+                        : "failed",
+                  );
+                },
+              },
+            });
+          }).finally(() => {
+            remediationChatIdsRef.current.delete(event.chatId);
+          });
+        },
+        onRemediationFailed: (threadId) =>
+          ipc.agent.skipReviewAutoFix({
+            chatId: event.chatId,
+            threadId,
+          }),
+        onRemediationPaused: () => {
+          setPendingReviewContinuation(event.chatId, async () => {
+            await ipc.agent.runAutoReviewBarrier({
+              chatId: event.chatId,
+              verification: true,
+            });
+            await resumeQueue(event.chatId);
+          });
+        },
+      })
+        .then(async (outcome) => {
+          if (outcome === "released") await resumeQueue(event.chatId);
+        })
+        .catch(async (error) => {
+          clearPendingReviewContinuation(event.chatId);
+          await resumeQueue(event.chatId).catch(showError);
+          showError(error);
+        });
+      return;
+    }
+
     if (
       !shouldStartBackgroundAutoReview({
         updatedFiles:
@@ -204,9 +309,12 @@ export function useBackgroundAutoReview(): void {
           currentSettings.enableAutoReview === true,
         hasQueuedMessages:
           snapshot.queue.length > 0 || snapshot.phase === "streaming",
-        suppressAutoReview: remediationChatIdsRef.current.has(event.chatId),
+        suppressAutoReview,
       })
     ) {
+      if (event.reviewBarrierRequested) {
+        void resumeQueue(event.chatId).catch(showError);
+      }
       return;
     }
 
@@ -222,6 +330,7 @@ export function useBackgroundAutoReview(): void {
           chatId: event.chatId,
           sourceMessageId: sourceMessage.id,
           getAutoFix: () => settingsRef.current?.autoFixReviewIssues === true,
+          onReviewReleased: () => resumeQueue(event.chatId),
           streamFix: (prompt) => {
             remediationChatIdsRef.current.add(event.chatId);
             return new Promise<ReviewRemediationOutcome>((resolve) => {
@@ -247,7 +356,14 @@ export function useBackgroundAutoReview(): void {
             });
           },
         });
+
+        if (!hasPendingReviewContinuation(event.chatId)) {
+          await resumeQueue(event.chatId);
+        }
       })
-      .catch((error) => showError(error));
+      .catch(async (error) => {
+        await resumeQueue(event.chatId).catch(showError);
+        showError(error);
+      });
   });
 }

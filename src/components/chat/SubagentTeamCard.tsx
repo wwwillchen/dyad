@@ -292,7 +292,10 @@ export function SubagentTeamCard({
                       size="sm"
                       variant="ghost"
                       aria-label={`Stop ${thread.persona} ${thread.taskName}`}
-                      disabled={cancelMutation.isPending}
+                      disabled={
+                        cancelMutation.isPending &&
+                        cancelMutation.variables === thread.id
+                      }
                       onClick={() => cancelMutation.mutate(thread.id)}
                     >
                       {cancelMutation.isPending &&
@@ -411,8 +414,11 @@ export function SubagentTeamCard({
                     disabled={
                       !messageDrafts[thread.id]?.trim() ||
                       !isSubagentAcceptingMessages(thread.status) ||
-                      sendMessageMutation.isPending ||
-                      followupMutation.isPending
+                      (sendMessageMutation.isPending &&
+                        sendMessageMutation.variables?.threadId ===
+                          thread.id) ||
+                      (followupMutation.isPending &&
+                        followupMutation.variables?.thread.id === thread.id)
                     }
                     title={
                       isSubagentAcceptingMessages(thread.status)
@@ -438,8 +444,11 @@ export function SubagentTeamCard({
                     disabled={
                       !messageDrafts[thread.id]?.trim() ||
                       thread.persona === "implementer" ||
-                      sendMessageMutation.isPending ||
-                      followupMutation.isPending
+                      (sendMessageMutation.isPending &&
+                        sendMessageMutation.variables?.threadId ===
+                          thread.id) ||
+                      (followupMutation.isPending &&
+                        followupMutation.variables?.thread.id === thread.id)
                     }
                     title={
                       thread.persona === "implementer"

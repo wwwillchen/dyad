@@ -35,6 +35,7 @@ export interface ChatStreamHostState {
     readonly outcome: "completed" | "cancelled" | "errored";
     readonly chatSummary?: string;
     readonly pausePromptQueue?: boolean;
+    readonly reviewBarrierRequested?: boolean;
     readonly updatedFiles?: boolean;
     readonly extraFiles?: string[];
     readonly extraFilesError?: string;

@@ -218,6 +218,53 @@ describe("SubagentTeamCard", () => {
     ).toBe(true);
   });
 
+  it("keeps unrelated child controls enabled while one row is pending", async () => {
+    let finishCancel!: () => void;
+    mocks.cancelSubagent.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishCancel = resolve;
+      }),
+    );
+    mocks.listSubagents.mockResolvedValue([
+      {
+        ...makeReview("explorer-one", 42, "first report"),
+        persona: "explorer",
+        taskName: "First explorer",
+        status: "running",
+      },
+      {
+        ...makeReview("explorer-two", 42, "second report"),
+        persona: "explorer",
+        taskName: "Second explorer",
+        status: "running",
+      },
+    ]);
+
+    render(<SubagentTeamCard chatId={7} messageId={42} />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Stop explorer First explorer",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen
+          .getByRole("button", { name: "Stop explorer First explorer" })
+          .hasAttribute("disabled"),
+      ).toBe(true);
+    });
+    expect(
+      screen
+        .getByRole("button", { name: "Stop explorer Second explorer" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    finishCancel();
+  });
+
   it("verifies a manual fix after a step-limit continuation completes", async () => {
     mocks.listSubagents.mockResolvedValue([
       makeReview("current-message", 42, "current report"),

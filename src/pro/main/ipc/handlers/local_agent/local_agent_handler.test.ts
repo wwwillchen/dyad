@@ -101,6 +101,7 @@ function buildTestSettings(
     hasApiKey?: boolean;
     selectedModel?: { name: string; provider: string };
     enableContextCompaction?: boolean;
+    enableAutoReview?: boolean;
   } = {},
 ) {
   const baseSettings = {
@@ -109,6 +110,7 @@ function buildTestSettings(
       provider: "openai",
     },
     enableContextCompaction: overrides.enableContextCompaction ?? true,
+    enableAutoReview: overrides.enableAutoReview ?? false,
   };
 
   if (overrides.enableDyadPro && overrides.hasApiKey !== false) {
@@ -910,6 +912,41 @@ describe("handleLocalAgentStream", () => {
       expect(
         getMessagesByChannel("chat:response:end")[0].args[0],
       ).toMatchObject({ updatedFiles: true });
+    });
+
+    it("pauses the prompt queue when a real mutation requires auto-review", async () => {
+      const { event, getMessagesByChannel } = createFakeEvent();
+      mockSettings = buildTestSettings({
+        enableDyadPro: true,
+        enableAutoReview: true,
+      });
+      mockChatData = buildTestChat();
+      vi.mocked(buildAgentToolSet).mockImplementationOnce((ctx) => {
+        ctx.workspaceMutated = true;
+        return {};
+      });
+      mockStreamResult = createFakeStream([
+        { type: "text-delta", text: "Updated the app" },
+      ]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      expect(
+        getMessagesByChannel("chat:response:end")[0].args[0],
+      ).toMatchObject({
+        updatedFiles: true,
+        pausePromptQueue: true,
+        reviewBarrierRequested: true,
+      });
     });
 
     it("includes warning messages in the error payload when a tool fails after warning", async () => {
@@ -2054,7 +2091,7 @@ describe("handleLocalAgentStream", () => {
       expect(endMessages[0].args[0]).toMatchObject({
         chatId: 1,
         invocationRef,
-        updatedFiles: true,
+        updatedFiles: false,
       });
 
       // Assert - verify database was updated with accumulated content
@@ -3058,6 +3095,37 @@ describe("handleLocalAgentStream", () => {
   });
 
   describe("Abort handling", () => {
+    it("releases the root finalization fence when cancellation wins after the join", async () => {
+      const { event } = createFakeEvent();
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat();
+      mockStreamResult = createFakeStream([
+        { type: "text-delta", text: "Finishing" },
+      ]);
+      const abortController = new AbortController();
+      mockSubagentManager.waitForSubagentsAndBeginFinalization.mockImplementationOnce(
+        async () => {
+          abortController.abort();
+          return [];
+        },
+      );
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        abortController,
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      expect(mockSubagentManager.endRootFinalization).toHaveBeenCalledWith(
+        mockChatData.app.id,
+      );
+    });
+
     it("cancels spawned sub-agents when the root stream fails", async () => {
       const { event } = createFakeEvent();
       mockSettings = buildTestSettings({ enableDyadPro: true });

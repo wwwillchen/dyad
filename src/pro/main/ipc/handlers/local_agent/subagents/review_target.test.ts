@@ -5,6 +5,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DyadErrorKind } from "@/errors/dyad_error";
+
 import {
   buildReviewTarget,
   REVIEW_MAX_FILE_BYTES,
@@ -23,6 +25,19 @@ afterEach(async () => {
 });
 
 describe("buildReviewTarget", () => {
+  it("classifies a non-Git app as an unavailable review precondition", async () => {
+    const appPath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "dyad-review-non-git-"),
+    );
+    tempDirs.push(appPath);
+
+    await expect(buildReviewTarget({ appPath })).rejects.toMatchObject({
+      name: "DyadError",
+      kind: DyadErrorKind.Precondition,
+      message: "This app has no Git history, so changes cannot be reviewed.",
+    });
+  });
+
   it("uses an assistant turn's immutable commit range", async () => {
     const repo = await makeRepo();
     await fs.writeFile(

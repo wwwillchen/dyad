@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+
 const execFileAsync = promisify(execFile);
 
 // gpt-5.6-sol has a 372k-token context window. Keep the raw diff well below
@@ -27,7 +29,15 @@ export async function buildReviewTarget(params: {
   baseCommit?: string | null;
   targetCommit?: string | null;
 }): Promise<ReviewTarget> {
-  await git(params.appPath, ["rev-parse", "--git-dir"]);
+  try {
+    await git(params.appPath, ["rev-parse", "--git-dir"]);
+  } catch (error) {
+    throw new DyadError(
+      "This app has no Git history, so changes cannot be reviewed.",
+      DyadErrorKind.Precondition,
+      { cause: error },
+    );
+  }
   const exclusions: string[] = [];
   const chunks: string[] = [];
   const includedFiles = new Set<string>();

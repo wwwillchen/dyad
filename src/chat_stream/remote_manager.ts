@@ -42,6 +42,7 @@ export interface StreamFinishedEvent {
   invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>;
   outcome: "completed" | "cancelled" | "errored";
   updatedFiles: boolean;
+  reviewBarrierRequested: boolean;
   wasCancelled: boolean;
   chatSummary?: string;
 }
@@ -738,6 +739,7 @@ export class ChatStreamRemoteManager {
         invocationRef: completion.invocationRef,
         outcome: completion.outcome,
         updatedFiles: completion.updatedFiles === true,
+        reviewBarrierRequested: completion.reviewBarrierRequested === true,
         wasCancelled: completion.outcome === "cancelled",
         chatSummary: completion.chatSummary,
       });
