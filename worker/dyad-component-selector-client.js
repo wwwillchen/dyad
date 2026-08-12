@@ -525,6 +525,23 @@
   }
 
   function onKeyDown(e) {
+    const key = e.key.toLowerCase();
+    const hasCtrlOrMeta = isMac ? e.metaKey : e.ctrlKey;
+
+    // Electron's native reload accelerators target the whole Dyad renderer.
+    // Keep reload shortcuts scoped to the preview even while it owns focus.
+    if (key === "r" && hasCtrlOrMeta) {
+      e.preventDefault();
+      e.stopPropagation();
+      window.parent.postMessage(
+        {
+          type: "dyad-preview-reload-shortcut",
+        },
+        "*",
+      );
+      return;
+    }
+
     // Ignore keystrokes if the user is typing in an input field, textarea, or editable element
     if (
       e.target.tagName === "INPUT" ||
@@ -535,9 +552,7 @@
     }
 
     // Forward shortcuts to parent window
-    const key = e.key.toLowerCase();
     const hasShift = e.shiftKey;
-    const hasCtrlOrMeta = isMac ? e.metaKey : e.ctrlKey;
     if (key === "c" && hasShift && hasCtrlOrMeta) {
       e.preventDefault();
       window.parent.postMessage(

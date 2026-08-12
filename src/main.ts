@@ -1235,12 +1235,12 @@ const createApplicationMenu = () => {
     {
       label: "View",
       submenu: [
-        { role: "reload" as const },
-        { role: "forceReload" as const },
         ...(process.env.NODE_ENV === "development"
-          ? [{ role: "toggleDevTools" as const }]
+          ? [
+              { role: "toggleDevTools" as const },
+              { type: "separator" as const },
+            ]
           : []),
-        { type: "separator" as const },
         { role: "togglefullscreen" as const },
       ],
     },

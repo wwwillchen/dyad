@@ -1,6 +1,60 @@
 import { testSkipIfWindows, Timeout } from "./helpers/test_helper";
 import { expect } from "@playwright/test";
 
+testSkipIfWindows(
+  "reload shortcuts stay scoped to the focused preview",
+  async ({ electronApp, po }) => {
+    await po.setUp({ autoApprove: true });
+    await po.sendPrompt("hi");
+    await po.previewPanel.expectPreviewIframeIsVisible();
+
+    const reloadRoles = await electronApp.evaluate(({ Menu }) => {
+      const viewMenu = Menu.getApplicationMenu()?.items.find(
+        (item) => item.label === "View",
+      );
+      return (
+        viewMenu?.submenu?.items
+          .map((item) => item.role)
+          .filter((role) => role === "reload" || role === "forceReload") ?? []
+      );
+    });
+    expect(reloadRoles).toEqual([]);
+
+    await po.page.evaluate(() => {
+      (
+        window as typeof window & { reloadShortcutMarker?: string }
+      ).reloadShortcutMarker = "outer-renderer-still-alive";
+    });
+
+    const modifier = process.platform === "darwin" ? "Meta" : "Control";
+    for (const shortcut of [`${modifier}+r`, `${modifier}+Shift+r`]) {
+      const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
+      await frame.locator("body").evaluate((body) => {
+        body.dataset.reloadShortcutMarker = "before-reload";
+        body.tabIndex = -1;
+        body.focus();
+      });
+
+      await po.page.keyboard.press(shortcut);
+
+      await expect(frame.locator("body")).not.toHaveAttribute(
+        "data-reload-shortcut-marker",
+        "before-reload",
+        { timeout: Timeout.LONG },
+      );
+      await expect
+        .poll(() =>
+          po.page.evaluate(
+            () =>
+              (window as typeof window & { reloadShortcutMarker?: string })
+                .reloadShortcutMarker,
+          ),
+        )
+        .toBe("outer-renderer-still-alive");
+    }
+  },
+);
+
 testSkipIfWindows("refresh app", async ({ po }) => {
   await po.setUp({ autoApprove: true });
   await po.sendPrompt("hi");

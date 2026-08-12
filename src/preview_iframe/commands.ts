@@ -72,6 +72,7 @@ export function createPreviewIframeCommandAdapter(
 
 export type PreviewIframeMachineMessageType =
   | "dyad-component-selector-initialized"
+  | "dyad-preview-reload-shortcut"
   | "dyad-screenshot-response"
   | "pushState"
   | "replaceState"
@@ -84,6 +85,7 @@ export const PREVIEW_IFRAME_MESSAGE_ROUTES: Readonly<
   >
 > = {
   "dyad-component-selector-initialized": "shared-and-component",
+  "dyad-preview-reload-shortcut": "machine",
   // The screenshot machine and annotator share this response. Correlation by
   // requestId lets each owner ignore messages belonging to the other.
   "dyad-screenshot-response": "shared-and-component",
@@ -141,6 +143,8 @@ export function routePreviewIframeMessage(input: {
   if (type === "dyad-component-selector-initialized") {
     send({ type: "SELECTOR_READY" });
     onSharedMachineEvent({ type: "SELECTOR_READY" });
+  } else if (type === "dyad-preview-reload-shortcut") {
+    send({ type: "RELOAD_REQUESTED" });
   } else if (type === "dyad-screenshot-response") {
     const requestId = event.data?.requestId;
     if (typeof requestId === "string") {
