@@ -273,6 +273,10 @@ If a targeted E2E fails before launch with `ENOENT: no such file or directory, s
 
 ## Triaging failures from a CI run's html-report
 
+- If the Playwright artifacts have expired, query failed job IDs from
+  `gh run view --json jobs`, then inspect each E2E job with `--job <id> --log`.
+  The final Playwright summary and inline snapshot diff usually preserve the
+  failing specs and assertion evidence even when traces are gone.
 - In the merged `html-report` artifact's `results.json`, failure screenshots are embedded as base64 in `attachments[].body` (the `path` field is empty or CI-side); decode the body to view them. Trace zips live in the artifact's `data/` directory, keyed by the hash in the CI-side path.
 - If a trace attachment's CI-side hash is absent from the merged report's `data/` directory, scan `data/*.zip` by grepping each archive's `test.trace` for the spec filename; some report merges rename resource hashes.
 - Before root-causing a failure on a PR branch, download the `html-report` from a recent main-branch CI run and check whether the same spec fails there — pre-existing main failures are out of scope for the PR's deflake.
