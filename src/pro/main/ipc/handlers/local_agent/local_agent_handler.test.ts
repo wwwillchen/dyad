@@ -56,6 +56,11 @@ function buildTestChat(
       createdAt?: Date;
     }>;
     supabaseProjectId?: string | null;
+    modelSelection?: {
+      provider: string;
+      name: string;
+      effortLevel: string;
+    };
   } = {},
 ) {
   const chatId = overrides.chatId ?? 1;
@@ -74,6 +79,7 @@ function buildTestChat(
     appId,
     title: "Test Chat",
     createdAt: new Date(),
+    modelSelection: overrides.modelSelection,
     messages,
     app: {
       id: appId,
@@ -93,12 +99,15 @@ function buildTestSettings(
   overrides: {
     enableDyadPro?: boolean;
     hasApiKey?: boolean;
-    selectedModel?: string;
+    selectedModel?: { name: string; provider: string };
     enableContextCompaction?: boolean;
   } = {},
 ) {
   const baseSettings = {
-    selectedModel: overrides.selectedModel ?? "gpt-4",
+    selectedModel: overrides.selectedModel ?? {
+      name: "gpt-4",
+      provider: "openai",
+    },
     enableContextCompaction: overrides.enableContextCompaction ?? true,
   };
 
@@ -251,6 +260,14 @@ vi.mock("@/ipc/utils/get_model_client", () => ({
       model: { id: "test-model" },
       builtinProviderId: "openai",
     },
+  })),
+}));
+
+vi.mock("@/ipc/utils/model_effort", () => ({
+  normalizeModelSelection: vi.fn(async (selection) => selection),
+  resolveDefaultModelSelection: vi.fn(async (settings) => ({
+    ...settings.selectedModel,
+    effortLevel: "medium",
   })),
 }));
 
@@ -764,6 +781,44 @@ describe("handleLocalAgentStream", () => {
           },
         ),
       ).rejects.toThrow("Chat not found: 1");
+    });
+  });
+
+  describe("Model selection", () => {
+    it("uses an explicit model override ahead of the chat selection", async () => {
+      const { event } = createFakeEvent();
+      const modelSelectionOverride = {
+        provider: "openai",
+        name: "override-model",
+        effortLevel: "high",
+      };
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat({
+        modelSelection: {
+          provider: "anthropic",
+          name: "stored-chat-model",
+          effortLevel: "low",
+        },
+      });
+      mockStreamResult = createFakeStream([]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+          modelSelectionOverride,
+        },
+      );
+
+      expect(getModelClient).toHaveBeenCalledWith(
+        modelSelectionOverride,
+        expect.objectContaining({ selectedModel: modelSelectionOverride }),
+        modelSelectionOverride,
+      );
     });
   });
 

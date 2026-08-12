@@ -60,6 +60,10 @@ import {
   noteAck,
 } from "./testing_chat_handlers";
 import { getModelClient, ModelClient } from "../utils/get_model_client";
+import {
+  normalizeModelSelection,
+  resolveDefaultModelSelection,
+} from "../utils/model_effort";
 import log from "electron-log";
 import { sendTelemetryEvent } from "../utils/telemetry";
 import {
@@ -134,6 +138,7 @@ import {
 import { isFreeProModel } from "@/lib/freeProModel";
 import {
   assertChatModeCompatibleWithModel,
+  normalizeStoredChatMode,
   resolveChatModeForTurn,
 } from "./chat_mode_resolution";
 import { acceptChatTurn } from "./chat_turn_acceptance";
@@ -1344,6 +1349,10 @@ ${componentSnippet}
       const defaultAiUserPrompt =
         userPrompt + (attachmentInfo ? attachmentInfo : "");
 
+      const baseSettings = readSettings();
+      let selectedModel = chat.modelSelection
+        ? await normalizeModelSelection(chat.modelSelection)
+        : await resolveDefaultModelSelection(baseSettings);
       let {
         settings: storedSettings,
         mode: selectedChatMode,
@@ -1351,6 +1360,7 @@ ${componentSnippet}
       } = await resolveChatModeForTurn({
         storedChatMode: chat.chatMode,
         requestedChatMode: req.requestedChatMode,
+        settings: { ...baseSettings, selectedModel },
       });
       assertChatModeCompatibleWithModel(storedSettings, selectedChatMode);
 
@@ -1363,6 +1373,7 @@ ${componentSnippet}
           chatId: req.chatId,
           storedChatMode: chat.chatMode,
           selectedChatMode,
+          selectedModel,
           content:
             implementPlanDisplayPrompt ??
             displayUserPrompt ??
@@ -1399,20 +1410,26 @@ ${componentSnippet}
         return req.chatId;
       }
 
-      if (
-        acceptedTurn.authoritativeChatMode !== null &&
-        acceptedTurn.authoritativeChatMode !== selectedChatMode
-      ) {
-        const authoritativeResolution = await resolveChatModeForTurn({
-          storedChatMode: acceptedTurn.authoritativeChatMode,
-        });
-        ({
-          settings: storedSettings,
-          mode: selectedChatMode,
-          fallbackReason: chatModeFallbackReason,
-        } = authoritativeResolution);
-        assertChatModeCompatibleWithModel(storedSettings, selectedChatMode);
+      if (acceptedTurn.authoritativeModel) {
+        selectedModel = await normalizeModelSelection(
+          acceptedTurn.authoritativeModel,
+        );
+        storedSettings = { ...storedSettings, selectedModel };
       }
+
+      const authoritativeResolution = await resolveChatModeForTurn({
+        storedChatMode: acceptedTurn.authoritativeChatMode,
+        requestedChatMode:
+          req.requestedChatMode ??
+          normalizeStoredChatMode(acceptedTurn.authoritativeChatMode),
+        settings: storedSettings,
+      });
+      ({
+        settings: storedSettings,
+        mode: selectedChatMode,
+        fallbackReason: chatModeFallbackReason,
+      } = authoritativeResolution);
+      assertChatModeCompatibleWithModel(storedSettings, selectedChatMode);
 
       const userMessageId = acceptedTurn.userMessageId;
       if (req.userInputRequestId) {
@@ -1523,7 +1540,7 @@ ${componentSnippet}
       } else {
         // Normal AI processing for non-test prompts
         const { modelClient, isEngineEnabled, isSmartContextEnabled } =
-          await getModelClient(settings.selectedModel, settings);
+          await getModelClient(settings.selectedModel, settings, selectedModel);
 
         const appPath = getDyadAppPath(updatedChat.app.path);
         // When we don't have smart context enabled, we
@@ -2036,7 +2053,8 @@ This conversation includes one or more image attachments. When the user uploads 
             versionedFiles,
             mentionedAppsCodebases,
             builtinProviderId: modelClient.builtinProviderId,
-            settings,
+            reasoningEffortProviderId: modelClient.reasoningEffortProviderId,
+            modelSelection: selectedModel,
           });
 
           const streamResult = streamText({
@@ -2201,6 +2219,7 @@ This conversation includes one or more image attachments. When the user uploads 
               readOnly: true,
               messageOverride: isSummarizeIntent ? chatMessages : undefined,
               settingsOverride: settings,
+              modelSelectionOverride: selectedModel,
               freeModelMode,
               referencedApps: referencedAppsForAgent,
               currentTurnHasOnDiskAttachment:
@@ -2239,6 +2258,7 @@ This conversation includes one or more image attachments. When the user uploads 
               planModeOnly: true,
               messageOverride: isSummarizeIntent ? chatMessages : undefined,
               settingsOverride: settings,
+              modelSelectionOverride: selectedModel,
               freeModelMode,
               referencedApps: referencedAppsForAgent,
               currentTurnHasOnDiskAttachment: false,
@@ -2291,6 +2311,7 @@ This conversation includes one or more image attachments. When the user uploads 
                 dyadRequestId: dyadRequestId ?? "[no-request-id]",
                 messageOverride: isSummarizeIntent ? chatMessages : undefined,
                 settingsOverride: settings,
+                modelSelectionOverride: selectedModel,
                 freeModelMode,
                 referencedApps: referencedAppsForAgent,
                 currentTurnHasOnDiskAttachment:

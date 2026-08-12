@@ -22,7 +22,7 @@ const testWithFallbackCatalog = testWithConfig({
 testWithRemoteCatalog(
   "dynamic models - uses remote catalog when API is available",
   async ({ po }) => {
-    await po.setUp();
+    await po.setUpDyadPro();
 
     await po.page.getByTestId("model-picker").click();
     // Models appear directly in the flat tier list.
@@ -30,6 +30,20 @@ testWithRemoteCatalog(
     await expect(
       po.page.getByText("GPT 5.2 Remote Only", { exact: true }),
     ).toBeVisible();
+    await po.page
+      .getByRole("menuitem", {
+        name: /GPT 5\.2 Remote Only.*Effort: Minimal.*Right Arrow to configure effort/,
+      })
+      .locator("[data-effort-chevron]")
+      .click();
+    await po.page.getByText("Xhigh", { exact: true }).click();
+    await expect(po.page.getByTestId("model-picker")).toContainText(
+      "GPT 5.2 Remote Only (Xhigh)",
+    );
+    await po.sendPrompt("[dump] tc=basic");
+    await po.snapshotServerDump("request", {
+      name: "remote-catalog-effort",
+    });
 
     await po.navigation.goToLibraryTab();
     await po.page.getByRole("link", { name: "Themes" }).click();

@@ -10,6 +10,7 @@ import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import type { FetchFunction } from "@ai-sdk/provider-utils";
 import type {
   LargeLanguageModel,
+  ModelSelection,
   UserSettings,
   VertexProviderSetting,
   AzureProviderSetting,
@@ -39,6 +40,8 @@ import {
 } from "@/lib/providerApiKey";
 import { FREE_PRO_MODEL_NAME, isFreeProModel } from "@/lib/freeProModel";
 import { getOpenRouterAppAttributionHeaders } from "./openrouter_attribution";
+import { resolveModelSelection } from "./model_effort";
+import { getModelPreferenceKey } from "@/lib/modelEffort";
 
 // The test-only fetch seam lives in ./test_fetch_override (dependency-free,
 // so secondary factories can use it without import cycles). Re-exported here
@@ -65,18 +68,27 @@ const OPENROUTER_FREE_MODEL_NAME = "openrouter/free";
 export interface ModelClient {
   model: LanguageModel;
   builtinProviderId?: string;
+  reasoningEffortProviderId?: string;
 }
 
 const logger = log.scope("getModelClient");
 export async function getModelClient(
   model: LargeLanguageModel,
   settings: UserSettings,
+  modelSelectionOverride?: ModelSelection,
   // files?: File[],
 ): Promise<{
   modelClient: ModelClient;
   isEngineEnabled?: boolean;
   isSmartContextEnabled?: boolean;
 }> {
+  const modelSelection =
+    modelSelectionOverride ??
+    (await resolveModelSelection({
+      model,
+      preferredEffortLevel:
+        settings.modelEffortPreferences?.[getModelPreferenceKey(model)],
+    }));
   const allProviders = await getLanguageModelProviders();
 
   const dyadApiKey = settings.enableDyadPro
@@ -129,6 +141,7 @@ export async function getModelClient(
           enableWebSearch: settings.enableProWebSearch,
         },
         settings,
+        modelSelection,
       });
 
       logger.debug(
@@ -566,6 +579,7 @@ function getRegularModelClient(
         modelClient: {
           model: provider(model.name),
           builtinProviderId: providerId,
+          reasoningEffortProviderId: "azure",
         },
         backupModelClients: [],
       };
@@ -579,6 +593,7 @@ function getRegularModelClient(
         modelClient: {
           model: provider(model.name),
           builtinProviderId: providerId,
+          reasoningEffortProviderId: "ollama",
         },
         backupModelClients: [],
       };
@@ -594,6 +609,8 @@ function getRegularModelClient(
       return {
         modelClient: {
           model: provider(model.name),
+          builtinProviderId: providerId,
+          reasoningEffortProviderId: "lmstudio",
         },
         backupModelClients: [],
       };
@@ -647,6 +664,8 @@ function getRegularModelClient(
         return {
           modelClient: {
             model: provider(model.name),
+            builtinProviderId: providerConfig.id,
+            reasoningEffortProviderId: providerConfig.id,
           },
           backupModelClients: [],
         };

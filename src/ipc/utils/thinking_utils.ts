@@ -1,9 +1,10 @@
 import { PROVIDERS_THAT_SUPPORT_THINKING as GEMINI_PROVIDERS } from "../shared/language_model_constants";
 import type { AnthropicProviderOptions } from "@ai-sdk/anthropic";
-import type { UserSettings } from "../../lib/schemas";
+import type { ModelSelection, UserSettings } from "../../lib/schemas";
 
-type ThinkingBudget = NonNullable<UserSettings["thinkingBudget"]>;
-type ReasoningEffort = "low" | "medium" | "high";
+export function getModelEffort(modelSelection: ModelSelection): string {
+  return modelSelection.effortLevel;
+}
 
 // The Dyad Engine is backed by LiteLLM using the
 // OpenAI-compatible chat completions API. This means
@@ -13,6 +14,7 @@ type ReasoningEffort = "low" | "medium" | "high";
 export function getExtraProviderOptionsForEngine(
   providerId: string | undefined,
   settings: UserSettings,
+  modelSelection: ModelSelection,
 ): Record<string, any> {
   if (!providerId) {
     return {};
@@ -20,14 +22,14 @@ export function getExtraProviderOptionsForEngine(
   if (providerId === "openai") {
     // OpenAI uses the same provider options because the Dyad Engine
     // is implemented as an OpenAI-compatible provider.
-    return getOpenAIProviderOptions(settings);
+    return getOpenAIProviderOptions(settings, modelSelection);
   }
   if (providerId === "anthropic") {
-    return getAnthropicEngineThinkingOptions(settings);
+    return getAnthropicEngineThinkingOptions(modelSelection);
   }
   if (GEMINI_PROVIDERS.includes(providerId)) {
     const budgetTokens = getGeminiThinkingBudgetTokens(
-      settings?.thinkingBudget,
+      getModelEffort(modelSelection),
     );
     return {
       thinking: {
@@ -42,10 +44,10 @@ export function getExtraProviderOptionsForEngine(
   return {};
 }
 
-function getGeminiThinkingBudgetTokens(
-  thinkingBudget?: ThinkingBudget,
-): number {
-  switch (thinkingBudget) {
+export function getGeminiThinkingBudgetTokens(effortLevel: string): number {
+  switch (effortLevel) {
+    case "minimal":
+      return 0;
     case "low":
       return 1_000;
     case "medium":
@@ -58,48 +60,39 @@ function getGeminiThinkingBudgetTokens(
   }
 }
 
-export function getThinkingBudgetEffort(
-  thinkingBudget?: ThinkingBudget,
-): ReasoningEffort {
-  switch (thinkingBudget) {
-    case "low":
-      return "low";
-    case "high":
-      return "high";
-    case "medium":
-    default:
-      return "medium";
-  }
-}
-
 // This is the engine-specicific (LiteLLM) thinking configuration
-function getAnthropicEngineThinkingOptions(settings: UserSettings) {
+function getAnthropicEngineThinkingOptions(modelSelection: ModelSelection) {
   return {
     thinking: {
       type: "adaptive",
       display: "summarized",
     },
     // Use anthropic's native effort config.
-    output_config: { effort: getThinkingBudgetEffort(settings.thinkingBudget) },
+    output_config: { effort: getModelEffort(modelSelection) },
   };
 }
 
 // This is the regular AI-SDK Anthropic provider options.
 export function getAnthropicProviderOptions(
-  settings: UserSettings,
+  modelSelection: ModelSelection,
 ): AnthropicProviderOptions {
   return {
     thinking: {
       type: "adaptive",
       display: "summarized",
     },
-    effort: getThinkingBudgetEffort(settings.thinkingBudget),
+    effort: getModelEffort(
+      modelSelection,
+    ) as AnthropicProviderOptions["effort"],
     sendReasoning: true,
   };
 }
 
-export function getOpenAIProviderOptions(settings: UserSettings) {
-  const effort = getThinkingBudgetEffort(settings.thinkingBudget);
+export function getOpenAIProviderOptions(
+  settings: UserSettings,
+  modelSelection: ModelSelection,
+) {
+  const effort = getModelEffort(modelSelection);
 
   if (settings.selectedChatMode === "local-agent") {
     return {

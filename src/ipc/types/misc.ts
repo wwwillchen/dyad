@@ -50,7 +50,7 @@ export const SetAppEnvVarsParamsSchema = z.object({
  * Schema version for the session debug bundle format.
  * Bump this when making breaking changes to the schema.
  */
-export const SESSION_DEBUG_SCHEMA_VERSION = 3;
+export const SESSION_DEBUG_SCHEMA_VERSION = 4;
 
 // -- System info --
 
@@ -90,8 +90,8 @@ const DebugSettingsSchema = z.object({
   autoApproveChanges: z.boolean().nullable(),
   /** Whether Dyad Pro is enabled */
   enableDyadPro: z.boolean().nullable(),
-  /** Thinking budget level: "low" | "medium" | "high" */
-  thinkingBudget: z.string().nullable(),
+  /** Model-specific effort level */
+  effortLevel: z.string(),
   /** Max chat turns kept in context window */
   maxChatTurnsInContext: z.number().nullable(),
   /** Whether auto-update is enabled */

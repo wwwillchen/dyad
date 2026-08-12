@@ -41,6 +41,11 @@ describe("acceptChatTurn", () => {
       chatId,
       storedChatMode: null,
       selectedChatMode: "build",
+      selectedModel: {
+        provider: "openai",
+        name: "first-model",
+        effortLevel: "high",
+      },
       content: "first",
       userInputRequestId: "first-request",
     });
@@ -48,19 +53,36 @@ describe("acceptChatTurn", () => {
       chatId,
       storedChatMode: null,
       selectedChatMode: "ask",
+      selectedModel: {
+        provider: "anthropic",
+        name: "second-model",
+        effortLevel: "low",
+      },
       content: "second",
       userInputRequestId: "second-request",
     });
 
     expect(first.authoritativeChatMode).toBe("build");
     expect(second.authoritativeChatMode).toBe("build");
+    expect(first.authoritativeModel).toEqual({
+      provider: "openai",
+      name: "first-model",
+      effortLevel: "high",
+    });
+    expect(second.authoritativeModel).toEqual(first.authoritativeModel);
     expect(
       db
-        .select({ chatMode: chats.chatMode })
+        .select({
+          chatMode: chats.chatMode,
+          modelSelection: chats.modelSelection,
+        })
         .from(chats)
         .where(eq(chats.id, chatId))
-        .get()?.chatMode,
-    ).toBe("build");
+        .get(),
+    ).toEqual({
+      chatMode: "build",
+      modelSelection: first.authoritativeModel,
+    });
     expect(
       db
         .select({ id: messages.id })
@@ -68,6 +90,39 @@ describe("acceptChatTurn", () => {
         .where(eq(messages.chatId, chatId))
         .all(),
     ).toHaveLength(2);
+  });
+
+  it("returns the current mode and model when the caller snapshot is stale", () => {
+    db.update(chats)
+      .set({
+        chatMode: "ask",
+        modelSelection: {
+          provider: "auto",
+          name: "free-pro",
+          effortLevel: "low",
+        },
+      })
+      .where(eq(chats.id, chatId))
+      .run();
+
+    const accepted = acceptChatTurn(db, {
+      chatId,
+      storedChatMode: "build",
+      selectedChatMode: "build",
+      selectedModel: {
+        provider: "openai",
+        name: "stale-model",
+        effortLevel: "high",
+      },
+      content: "use the authoritative pair",
+    });
+
+    expect(accepted.authoritativeChatMode).toBe("ask");
+    expect(accepted.authoritativeModel).toEqual({
+      provider: "auto",
+      name: "free-pro",
+      effortLevel: "low",
+    });
   });
 
   it("compacts reordered queue positions without uniqueness collisions", async () => {
@@ -103,6 +158,11 @@ describe("acceptChatTurn", () => {
         chatId,
         storedChatMode: null,
         selectedChatMode: "build",
+        selectedModel: {
+          provider: "auto",
+          name: "auto",
+          effortLevel: "medium",
+        },
         content: "third",
         chatTurnIntentId: "third",
       }),

@@ -38,10 +38,13 @@ import { HelpBotDialog } from "./HelpBotDialog";
 import { useSettings } from "@/hooks/useSettings";
 import { BugScreenshotDialog } from "./BugScreenshotDialog";
 import { useUserBudgetInfo } from "@/hooks/useUserBudgetInfo";
-import { type UserSettings } from "@/lib/schemas";
+import { type ModelSelection, type UserSettings } from "@/lib/schemas";
 import { type UserBudgetInfo } from "@/ipc/types/system";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatUpdaterLogsForIssueBody } from "@/lib/debugLogFormatting";
+import { useChatMode } from "@/hooks/useChatMode";
+import { useLanguageModelsByProviders } from "@/hooks/useLanguageModelsByProviders";
+import { createModelSelection, getModelPreferenceKey } from "@/lib/modelEffort";
 
 // =============================================================================
 // Animation constants
@@ -75,14 +78,18 @@ const screenTransition = {
 const GITHUB_ISSUES_BASE =
   "https://github.com/dyad-sh/dyad/issues/new" as const;
 
-function formatSettingsLines(settings: UserSettings | null): string {
+function formatSettingsLines(
+  settings: UserSettings | null,
+  selectedModel: ModelSelection | null,
+): string {
   if (!settings) return "Settings not available";
+  const model = selectedModel ?? settings.selectedModel;
   return [
-    `- Selected Model: ${settings.selectedModel?.provider}:${settings.selectedModel?.name}`,
+    `- Selected Model: ${model.provider}:${model.name}`,
     `- Chat Mode: ${settings.selectedChatMode ?? "default"}`,
     `- Auto Approve Changes: ${settings.autoApproveChanges ?? "n/a"}`,
     `- Dyad Pro Enabled: ${settings.enableDyadPro ?? "n/a"}`,
-    `- Thinking Budget: ${settings.thinkingBudget ?? "n/a"}`,
+    `- Effort Level: ${selectedModel?.effortLevel ?? "medium"}`,
     `- Runtime Mode: ${settings.runtimeMode2 ?? "n/a"}`,
     `- Release Channel: ${settings.releaseChannel ?? "n/a"}`,
   ].join("\n");
@@ -271,6 +278,27 @@ export function HelpDialog() {
   const preloadedChatId = useRef<number | null>(null);
   const selectedChatId = useAtomValue(selectedChatIdAtom);
   const { settings } = useSettings();
+  const { chat: selectedChat } = useChatMode(selectedChatId);
+  const { data: modelsByProviders } = useLanguageModelsByProviders();
+  const defaultCatalogModel = settings
+    ? modelsByProviders?.[settings.selectedModel.provider]?.find((model) =>
+        settings.selectedModel.customModelId
+          ? model.type === "custom" &&
+            model.id === settings.selectedModel.customModelId
+          : model.apiName === settings.selectedModel.name,
+      )
+    : undefined;
+  const diagnosticModelSelection = settings
+    ? (selectedChat?.modelSelection ??
+      createModelSelection({
+        model: settings.selectedModel,
+        catalogModel: defaultCatalogModel,
+        preferredEffortLevel:
+          settings.modelEffortPreferences?.[
+            getModelPreferenceKey(settings.selectedModel)
+          ],
+      }))
+    : null;
   const { userBudget } = useUserBudgetInfo();
   const isDyadProUser = settings?.providerSettings?.["auto"]?.apiKey?.value;
 
@@ -364,7 +392,7 @@ export function HelpDialog() {
 ${formatSystemInfoSection(debugInfo, userBudget ?? undefined)}
 
 ## Settings
-${formatSettingsLines(settings)}
+${formatSettingsLines(settings, diagnosticModelSelection)}
 
 ${formatLogsSection(debugInfo)}
 `;
@@ -464,7 +492,7 @@ Pro User ID: ${userBudget?.redactedUserId || "n/a"}
 ${formatSystemInfoSection(debugInfo, userBudget ?? undefined)}
 
 ## Settings
-${formatSettingsLines(settings)}
+${formatSettingsLines(settings, diagnosticModelSelection)}
 
 ${formatLogsSection(debugInfo)}
 `;

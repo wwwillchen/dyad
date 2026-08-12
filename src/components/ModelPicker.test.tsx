@@ -5,7 +5,10 @@ import { ModelPicker } from "./ModelPicker";
 const mocks = vi.hoisted(() => ({
   invalidateQueries: vi.fn(),
   setChatMode: vi.fn(),
+  setChatModelSelection: vi.fn(),
+  setChatSelection: vi.fn(),
   updateSettings: vi.fn(),
+  updateChat: vi.fn(),
   navigate: vi.fn(),
   posthogCapture: vi.fn(),
   openExternalUrl: vi.fn(),
@@ -13,6 +16,18 @@ const mocks = vi.hoisted(() => ({
   isTrial: false,
   renderSubContent: false,
   settingsLoading: false,
+  chatLoading: false,
+  chat: null as null | {
+    id: number;
+    messages: Array<{ id: number }>;
+    modelSelection?: {
+      provider: string;
+      name: string;
+      effortLevel: string;
+    };
+  },
+  pathname: "/",
+  search: {} as { id?: number },
   envVars: {} as Record<string, string | undefined>,
   freeModelQuota: {
     quotaStatus: {
@@ -77,8 +92,8 @@ vi.mock("@/hooks/useSettings", () => ({
 vi.mock("@tanstack/react-router", () => ({
   useRouterState: () => ({
     location: {
-      pathname: "/",
-      search: {},
+      pathname: mocks.pathname,
+      search: mocks.search,
     },
   }),
   useNavigate: () => mocks.navigate,
@@ -99,6 +114,9 @@ vi.mock("@/routes/settings/providers/$provider", () => ({
 vi.mock("@/ipc/types", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   ipc: {
+    chat: {
+      updateChat: mocks.updateChat,
+    },
     system: {
       openExternalUrl: mocks.openExternalUrl,
     },
@@ -124,8 +142,12 @@ vi.mock("@/components/ui/dialog", () => ({
 
 vi.mock("@/hooks/useChatMode", () => ({
   useChatMode: () => ({
+    chat: mocks.chat,
+    isLoading: mocks.chatLoading,
     selectedMode: mocks.selectedMode,
     setChatMode: mocks.setChatMode,
+    setChatModelSelection: mocks.setChatModelSelection,
+    setChatSelection: mocks.setChatSelection,
   }),
 }));
 
@@ -178,6 +200,10 @@ vi.mock("@/hooks/useLanguageModelsByProviders", () => ({
           displayName: "GPT 5",
           description: "OpenAI model",
           dollarSigns: 3,
+          effortSettings: {
+            defaultEffortLevel: "minimal",
+            possibleEffortLevels: ["minimal", "xhigh"],
+          },
           type: "cloud",
         },
       ],
@@ -318,9 +344,14 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuSub: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
-  DropdownMenuSubTrigger: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
+  DropdownMenuSubTrigger: ({
+    children,
+    hideChevron: _hideChevron,
+    ...props
+  }: {
+    children: React.ReactNode;
+    hideChevron?: boolean;
+  }) => <button {...props}>{children}</button>,
   DropdownMenuSubContent: ({ children }: { children: React.ReactNode }) =>
     mocks.renderSubContent ? <div>{children}</div> : null,
 }));
@@ -330,13 +361,24 @@ describe("ModelPicker", () => {
     mocks.invalidateQueries.mockReset();
     mocks.setChatMode.mockReset();
     mocks.setChatMode.mockResolvedValue(undefined);
+    mocks.setChatModelSelection.mockReset();
+    mocks.setChatModelSelection.mockResolvedValue(undefined);
+    mocks.setChatSelection.mockReset();
+    mocks.setChatSelection.mockResolvedValue(undefined);
     mocks.updateSettings.mockReset();
+    mocks.updateSettings.mockResolvedValue(mocks.settings);
+    mocks.updateChat.mockReset();
+    mocks.updateChat.mockResolvedValue(undefined);
     mocks.navigate.mockReset();
     mocks.posthogCapture.mockReset();
     mocks.openExternalUrl.mockReset();
     mocks.selectedMode = "build";
     mocks.renderSubContent = false;
     mocks.settingsLoading = false;
+    mocks.chatLoading = false;
+    mocks.chat = null;
+    mocks.pathname = "/";
+    mocks.search = {};
     mocks.envVars = {};
     mocks.settings.enableDyadPro = true;
     mocks.settings.providerSettings.auto.apiKey.value = "dyad-pro-key";
@@ -367,6 +409,12 @@ describe("ModelPicker", () => {
     expect(screen.getByText("Dyad Free")).toBeTruthy();
     expect(screen.getByText("2/5 left")).toBeTruthy();
     expect(screen.getByText("Data sharing")).toBeTruthy();
+    expect(
+      screen
+        .getByText("Dyad Free")
+        .closest("button")
+        ?.getAttribute("aria-label"),
+    ).toContain("2/5 left. Data sharing");
     expect(screen.getByText("Claude Sonnet 4.5")).toBeTruthy();
     expect(screen.queryByText("Grok Code Fast")).toBeNull();
     expect(screen.queryByText("xAI")).toBeNull();
@@ -374,20 +422,97 @@ describe("ModelPicker", () => {
     expect(screen.queryByText("Other AI providers")).toBeNull();
   });
 
+  it("shows effort in the trigger and selects catalog-defined effort from a model submenu", async () => {
+    mocks.renderSubContent = true;
+    render(<ModelPicker />);
+
+    expect(screen.getByTestId("model-picker").textContent).toContain(
+      "Auto (Medium)",
+    );
+    expect(screen.getByTestId("model-picker").className).toContain(
+      "max-w-[220px]",
+    );
+    const gpt5Row = screen.getAllByText("GPT 5")[0].closest("button")!;
+    expect(
+      gpt5Row.querySelector("[data-effort-chevron]")?.previousElementSibling
+        ?.textContent,
+    ).toBe("Minimal");
+    expect(gpt5Row.getAttribute("aria-label")).toContain("Effort: Minimal");
+    fireEvent.click(gpt5Row.querySelector("[data-effort-chevron]")!);
+    fireEvent.click(screen.getAllByText("Xhigh")[0]);
+
+    await waitFor(() => {
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        selectedModel: { name: "gpt-5", provider: "openai" },
+        modelEffortPreferences: {
+          '["openai","gpt-5",null]': "xhigh",
+        },
+      });
+    });
+  });
+
+  it("disables selection while an existing chat is still loading", () => {
+    mocks.pathname = "/chat";
+    mocks.search = { id: 42 };
+    mocks.chatLoading = true;
+
+    render(<ModelPicker />);
+
+    expect(
+      (screen.getByTestId("model-picker") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+    expect(mocks.updateChat).not.toHaveBeenCalled();
+  });
+
+  it("persists an established chat model through the optimistic mutation", async () => {
+    mocks.pathname = "/chat";
+    mocks.search = { id: 42 };
+    mocks.chat = {
+      id: 42,
+      messages: [{ id: 1 }],
+      modelSelection: {
+        provider: "auto",
+        name: "auto",
+        effortLevel: "medium",
+      },
+    };
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+    fireEvent.click(screen.getAllByText("Xhigh")[0]);
+
+    await waitFor(() => {
+      expect(mocks.setChatSelection).toHaveBeenCalledWith({
+        modelSelection: {
+          provider: "openai",
+          name: "gpt-5",
+          effortLevel: "xhigh",
+        },
+      });
+    });
+    expect(mocks.updateChat).not.toHaveBeenCalled();
+  });
+
   it("sorts the Pro flat list by price descending and groups same-price models by provider", () => {
     render(<ModelPicker />);
 
+    const modelNames = [
+      "GPT 5 Mini",
+      "Gemini 2.5 Pro",
+      "Gemini 2.5 Flash",
+      "Claude Sonnet 4.5",
+      "GPT 5",
+    ];
     const modelOrder = Array.from(document.querySelectorAll("button"))
-      .map((button) => button.textContent?.trim())
-      .filter((text) =>
-        [
-          "GPT 5 Mini",
-          "Gemini 2.5 Pro",
-          "Gemini 2.5 Flash",
-          "Claude Sonnet 4.5",
-          "GPT 5",
-        ].includes(text ?? ""),
-      );
+      .map((button) =>
+        modelNames.find((name) =>
+          Array.from(button.querySelectorAll("span")).some(
+            (span) => span.textContent === name,
+          ),
+        ),
+      )
+      .filter((name): name is string => Boolean(name));
 
     expect(modelOrder).toEqual([
       "GPT 5",
@@ -424,10 +549,16 @@ describe("ModelPicker", () => {
       "true",
     );
     expect(
+      screen
+        .getByText("GPT 5")
+        .closest("button")
+        ?.querySelector("[data-effort-chevron]"),
+    ).toBeNull();
+    expect(
       screen.getByText("Claude Sonnet 4.5").closest("button")?.dataset.locked,
     ).toBeUndefined();
     expect(
-      screen.getAllByText("Auto")[1].closest("button")?.dataset.locked,
+      screen.getByText("Auto").closest("button")?.dataset.locked,
     ).toBeUndefined();
   });
 
@@ -585,8 +716,11 @@ describe("ModelPicker", () => {
 
     render(<ModelPicker />);
 
+    expect(screen.getByText("Auto").closest("button")?.textContent).toContain(
+      "Data sharing",
+    );
     expect(
-      screen.getAllByText("Auto")[1].closest("button")?.textContent,
+      screen.getByText("Auto").closest("button")?.getAttribute("aria-label"),
     ).toContain("Data sharing");
   });
 
@@ -597,9 +731,9 @@ describe("ModelPicker", () => {
 
     render(<ModelPicker />);
 
-    expect(
-      screen.getAllByText("Auto")[1].closest("button")?.textContent,
-    ).toContain("Data sharing");
+    expect(screen.getByText("Auto").closest("button")?.textContent).toContain(
+      "Data sharing",
+    );
   });
 
   it("does not show data sharing disclosure on Auto without an OpenRouter key", () => {
@@ -609,7 +743,7 @@ describe("ModelPicker", () => {
     render(<ModelPicker />);
 
     expect(
-      screen.getAllByText("Auto")[1].closest("button")?.textContent,
+      screen.getByText("Auto").closest("button")?.textContent,
     ).not.toContain("Data sharing");
   });
 
@@ -636,7 +770,7 @@ describe("ModelPicker", () => {
     expect(screen.getAllByText("Data sharing").length).toBeGreaterThan(1);
   });
 
-  it("selects flat Pro models with their source provider", () => {
+  it("selects flat Pro models with their source provider", async () => {
     render(<ModelPicker />);
 
     fireEvent.click(screen.getByText("GPT 5").closest("button")!);
@@ -647,7 +781,9 @@ describe("ModelPicker", () => {
         provider: "openai",
       }),
     });
-    expect(mocks.invalidateQueries).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(mocks.invalidateQueries).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("hides Dyad Free for Dyad Pro trial users", () => {
@@ -659,6 +795,11 @@ describe("ModelPicker", () => {
     expect(
       screen.getByText("Upgrade from Dyad Pro trial to unlock more models."),
     ).toBeTruthy();
+    const autoRow = screen.getByText("Auto").closest("button")!;
+    expect(
+      autoRow.querySelector("[data-effort-chevron]")?.previousElementSibling
+        ?.textContent,
+    ).toBe("Medium");
   });
 
   it("does not select Dyad Free when quota is exhausted", () => {
@@ -685,15 +826,44 @@ describe("ModelPicker", () => {
     fireEvent.click(screen.getByText("Dyad Free").closest("button")!);
 
     await waitFor(() => {
-      expect(mocks.setChatMode).toHaveBeenCalledWith("local-agent");
       expect(mocks.updateSettings).toHaveBeenCalledWith({
         selectedModel: expect.objectContaining({
           name: "free-pro",
           provider: "auto",
         }),
+        selectedChatMode: "local-agent",
         defaultChatMode: "local-agent",
       });
     });
+  });
+
+  it("updates an established chat model and fallback mode atomically", async () => {
+    mocks.pathname = "/chat";
+    mocks.search = { id: 42 };
+    mocks.chat = {
+      id: 42,
+      messages: [{ id: 1 }],
+      modelSelection: {
+        provider: "openai",
+        name: "gpt-5",
+        effortLevel: "high",
+      },
+    };
+
+    render(<ModelPicker />);
+    fireEvent.click(screen.getByText("Dyad Free").closest("button")!);
+
+    await waitFor(() => {
+      expect(mocks.setChatSelection).toHaveBeenCalledWith({
+        chatMode: "local-agent",
+        modelSelection: expect.objectContaining({
+          name: "free-pro",
+          provider: "auto",
+        }),
+      });
+    });
+    expect(mocks.setChatMode).not.toHaveBeenCalled();
+    expect(mocks.setChatModelSelection).not.toHaveBeenCalled();
   });
 
   it("shows Dyad Free quota as unavailable when the quota fetch fails", () => {

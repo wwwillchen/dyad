@@ -2,6 +2,8 @@ import { streamText, stepCountIs, type ModelMessage, type ToolSet } from "ai";
 import log from "electron-log";
 
 import { readSettings } from "@/main/settings";
+import { resolveModelSelection } from "@/ipc/utils/model_effort";
+import { getModelPreferenceKey } from "@/lib/modelEffort";
 import { cleanMessage } from "@/ipc/utils/ai_messages_utils";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 import { getAiHeaders, getProviderOptions } from "@/ipc/utils/provider_options";
@@ -56,10 +58,22 @@ export async function runExploreChatHistorySubagent({
   ctx: AgentContext;
   onProgress?: (progressText: string) => void;
 }): Promise<ExploreChatHistoryRunResult> {
-  const settings = readSettings();
-  assertHistoryExplorerAvailable(settings, ctx);
+  const storedSettings = readSettings();
+  assertHistoryExplorerAvailable(storedSettings, ctx);
+  const selectedModel = await resolveModelSelection({
+    model: SUBAGENT_MODEL,
+    preferredEffortLevel:
+      storedSettings.modelEffortPreferences?.[
+        getModelPreferenceKey(SUBAGENT_MODEL)
+      ],
+  });
+  const settings = { ...storedSettings, selectedModel };
 
-  const modelInfo = await getModelClient(SUBAGENT_MODEL, settings);
+  const modelInfo = await getModelClient(
+    SUBAGENT_MODEL,
+    settings,
+    selectedModel,
+  );
   const maxOutputTokens = Math.min(
     (await getMaxTokens(SUBAGENT_MODEL)) ?? SUBAGENT_MAX_OUTPUT_TOKENS,
     SUBAGENT_MAX_OUTPUT_TOKENS,
@@ -124,7 +138,9 @@ export async function runExploreChatHistorySubagent({
         files: [],
         mentionedAppsCodebases: [],
         builtinProviderId: modelInfo.modelClient.builtinProviderId,
-        settings,
+        reasoningEffortProviderId:
+          modelInfo.modelClient.reasoningEffortProviderId,
+        modelSelection: selectedModel,
       }),
       maxOutputTokens,
       temperature,

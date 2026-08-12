@@ -1,7 +1,6 @@
 {
   "body": {
-    "model": "gemini/gemini-2.5-pro",
-    "max_tokens": 65535,
+    "model": "gpt-5.2-remote-only",
     "messages": [
       {
         "role": "system",
@@ -9,39 +8,11 @@
       },
       {
         "role": "user",
-        "content": "tc=1"
-      },
-      {
-        "role": "assistant",
-        "content": "1"
-      },
-      {
-        "role": "user",
-        "content": "[dump] hi"
-      },
-      {
-        "role": "assistant",
-        "content": "[[dyad-dump-path=*]]"
-      },
-      {
-        "role": "user",
-        "content": "[dump] hi"
-      },
-      {
-        "role": "assistant",
-        "content": "[[dyad-dump-path=*]]"
-      },
-      {
-        "role": "user",
-        "content": "[dump] hi"
+        "content": "[dump] tc=basic"
       }
     ],
     "stream": true,
-    "thinking": {
-      "type": "enabled",
-      "include_thoughts": true,
-      "budget_tokens": -1
-    },
+    "reasoning_effort": "xhigh",
     "dyad_options": {
       "versioned_files": {
         "fileIdToContent": {
@@ -515,10 +486,7 @@
           }
         ],
         "messageIndexToFilePathToFileId": {
-          "1": {},
-          "3": {},
-          "5": {},
-          "7": {}
+          "1": {}
         },
         "hasExternalChanges": true
       },

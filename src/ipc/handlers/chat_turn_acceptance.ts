@@ -9,7 +9,7 @@ import {
   markIntentAccepted,
 } from "@/chat_stream/persistence";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
-import type { ChatMode, StoredChatMode } from "@/lib/schemas";
+import type { ChatMode, ModelSelection, StoredChatMode } from "@/lib/schemas";
 import type { SerializableChatTurnIntent } from "@/chat_stream/transport";
 
 type ChatTurnDatabase = Pick<
@@ -21,6 +21,7 @@ export interface AcceptChatTurnInput {
   chatId: number;
   storedChatMode: StoredChatMode | null;
   selectedChatMode: ChatMode;
+  selectedModel: ModelSelection;
   content: string;
   userInputRequestId?: string;
   chatTurnIntentId?: string;
@@ -30,12 +31,14 @@ export interface AcceptChatTurnInput {
 export interface AcceptedChatTurn {
   userMessageId: number | null;
   authoritativeChatMode: StoredChatMode | null;
+  authoritativeModel: ModelSelection | null;
 }
 
 export function acceptChatTurn(
   database: ChatTurnDatabase,
   input: AcceptChatTurnInput,
 ): AcceptedChatTurn {
+  const selectedModel = input.selectedModel;
   if (input.chatTurnIntent) {
     ensureIntentRecord(input.chatTurnIntent);
   }
@@ -43,7 +46,11 @@ export function acceptChatTurn(
     input.chatTurnIntentId &&
     getAcceptedMessageId(input.chatTurnIntentId) !== undefined
   ) {
-    return { userMessageId: null, authoritativeChatMode: null };
+    return {
+      userMessageId: null,
+      authoritativeChatMode: null,
+      authoritativeModel: null,
+    };
   }
   const accepted = database.transaction((tx) => {
     const insert = tx.insert(messages).values({
@@ -68,31 +75,31 @@ export function acceptChatTurn(
         .set({ chatMode: input.selectedChatMode })
         .where(and(eq(chats.id, input.chatId), isNull(chats.chatMode)))
         .run();
-      return { userMessageId: null, authoritativeChatMode: null };
-    }
-
-    if (input.storedChatMode !== null) {
+      tx.update(chats)
+        .set({ modelSelection: selectedModel })
+        .where(and(eq(chats.id, input.chatId), isNull(chats.modelSelection)))
+        .run();
       return {
-        userMessageId: insertedUserMessage.id,
+        userMessageId: null,
         authoritativeChatMode: null,
+        authoritativeModel: null,
       };
     }
 
-    const latchedChat = tx
-      .update(chats)
+    tx.update(chats)
+      .set({ modelSelection: selectedModel })
+      .where(and(eq(chats.id, input.chatId), isNull(chats.modelSelection)))
+      .run();
+    tx.update(chats)
       .set({ chatMode: input.selectedChatMode })
       .where(and(eq(chats.id, input.chatId), isNull(chats.chatMode)))
-      .returning({ chatMode: chats.chatMode })
-      .get();
-    if (latchedChat) {
-      return {
-        userMessageId: insertedUserMessage.id,
-        authoritativeChatMode: latchedChat.chatMode,
-      };
-    }
+      .run();
 
     const winningChat = tx
-      .select({ chatMode: chats.chatMode })
+      .select({
+        chatMode: chats.chatMode,
+        modelSelection: chats.modelSelection,
+      })
       .from(chats)
       .where(eq(chats.id, input.chatId))
       .get();
@@ -102,9 +109,16 @@ export function acceptChatTurn(
         DyadErrorKind.NotFound,
       );
     }
+    if (!winningChat.chatMode || !winningChat.modelSelection) {
+      throw new DyadError(
+        `Chat turn acceptance failed to latch mode and model selection for chat ${input.chatId}`,
+        DyadErrorKind.Internal,
+      );
+    }
     return {
       userMessageId: insertedUserMessage.id,
       authoritativeChatMode: winningChat.chatMode,
+      authoritativeModel: winningChat.modelSelection,
     };
   });
   if (accepted.userMessageId !== null && input.chatTurnIntentId) {
