@@ -8,10 +8,26 @@
  * Machine dependency graph: preview_iframe -> none.
  */
 
+/**
+ * Who put the preview on the route it is showing.
+ *
+ * "dyad" — the user chose it through Dyad's chrome (address bar, back/forward,
+ * a restored presentation). "app" — the previewed app navigated itself, e.g. a
+ * redirect or a click inside the page. "none" — nothing has navigated yet.
+ *
+ * The recorder is what needs the distinction. Starting a recording passes the
+ * current route as the session's opening `goto`, which is right for a route the
+ * user deliberately selected and wrong for one the app arrived at on its own:
+ * pinning the test to the *destination* of a redirect skips the redirect, which
+ * may be the behaviour under test.
+ */
+export type PreviewRouteSource = "none" | "dyad" | "app";
+
 export interface PreviewIframeState {
   readonly history: readonly string[];
   readonly position: number;
   readonly currentUrl: string | null;
+  readonly currentUrlSource: PreviewRouteSource;
   readonly preservedUrl: string | null;
   readonly iframeEpoch: number;
   readonly selectorReady: boolean;
@@ -30,6 +46,7 @@ export const INITIAL_PREVIEW_IFRAME_STATE: PreviewIframeState = {
   history: [],
   position: 0,
   currentUrl: null,
+  currentUrlSource: "none",
   preservedUrl: null,
   iframeEpoch: 0,
   selectorReady: false,
@@ -44,13 +61,37 @@ export type PreviewIframeEvent =
       type: "RESTORE_PRESENTATION";
       history: readonly string[];
       position: number;
+      /**
+       * Provenance captured alongside the history. Absent for presentations
+       * saved before it was tracked — restoring those must not claim the user
+       * picked the route, so the transition treats it as app-driven.
+       */
+      source?: PreviewRouteSource;
       preserveHistoryOnNextReplacement?: boolean;
     }
   | { type: "APP_URL_CHANGED"; url: string }
   | { type: "NAVIGATE"; path: string }
   | {
       type: "NAVIGATED_IN_APP";
-      kind: "pushState" | "replaceState";
+      /**
+       * `documentLoad` is a whole-document navigation the app performed itself
+       * — a plain link or a server redirect. Those never reach the history
+       * shim, so without it the preview keeps reporting the route Dyad last
+       * selected and a recording started afterwards pins replay to a route the
+       * user never chose.
+       */
+      kind: "pushState" | "replaceState" | "documentLoad";
+      /**
+       * `documentLoad` only: what the load did to the browser's history, so
+       * this model can do the same. "push" is a plain link or form submit —
+       * reading one as a replacement costs the preview the page the user came
+       * from, and its Back button and a recording's `page.goBack()` skip
+       * straight past it. "traverse" is a cross-document back/forward, which
+       * moves within the history that is already there rather than rewriting
+       * any of it. Absent (an older shim in the page) reads as "replace", which
+       * never invents an entry the browser lacks.
+       */
+      historyEffect?: "push" | "replace" | "traverse";
       url: string;
     }
   | { type: "GO_BACK" }
@@ -98,6 +139,7 @@ export type PreviewIframeIgnoreReason =
   | "already-current-url"
   | "empty-url"
   | "history-boundary"
+  | "unknown-history-entry"
   | "already-runtime-reset"
   | "picker-not-ready"
   | "picker-already-inactive"

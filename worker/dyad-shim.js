@@ -6,6 +6,51 @@
   let previousUrl = window.location.href;
   const PARENT_TARGET_ORIGIN = "*";
 
+  /**
+   * What this load did to the browser's history, so the parent's model can do
+   * the same: "push" added an entry, "replace" reused the current one, and
+   * "traverse" moved to an entry that was already there.
+   *
+   * A plain link or a `<form>` submit pushes, and the parent's history has to
+   * grow with it or its Back button — and the `page.goBack()` a recording
+   * replays with — skips the page the user came from. Deliberately NOT keyed on
+   * `redirectCount`: a link whose request is answered with a 3xx still ends in
+   * a brand-new entry, so counting redirects as replacements loses exactly the
+   * entry this exists to keep.
+   *
+   * A same-document `location.replace()` by the app is indistinguishable from a
+   * link here and reads as a push; the parent's equality check still covers the
+   * one case that matters, Dyad's own `location.replace` navigation.
+   */
+  function loadHistoryEffect() {
+    try {
+      const [navigation] = performance.getEntriesByType("navigation");
+      if (!navigation) return "replace";
+      if (navigation.type === "reload") return "replace";
+      if (navigation.type === "back_forward") return "traverse";
+      return "push";
+    } catch {
+      return "replace";
+    }
+  }
+
+  // A whole-document navigation — a plain link, a `<form>` submit, a server
+  // redirect — never passes through the history overrides below, so without
+  // this the parent keeps showing whatever route it last selected itself. That
+  // stale route is what the recorder would pin a session's opening `goto` to,
+  // skipping the very navigation the test is about. Sent on every load; the
+  // parent ignores the one matching the route it just asked for.
+  window.parent.postMessage(
+    {
+      type: "dyad-document-loaded",
+      payload: {
+        newUrl: window.location.href,
+        historyEffect: loadHistoryEffect(),
+      },
+    },
+    PARENT_TARGET_ORIGIN,
+  );
+
   // --- History API Overrides ---
   const originalPushState = history.pushState;
   const originalReplaceState = history.replaceState;

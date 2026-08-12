@@ -701,6 +701,96 @@ export async function gitResetFile({
   );
 }
 
+/**
+ * One index entry for a path, exactly as it is staged right now.
+ *
+ * `stage` is 0 for an ordinary entry. A path in a merge conflict has no stage-0
+ * entry at all — it has stages 1, 2 and 3 (base, ours, theirs) — which is why
+ * this is read and restored as a list: collapsing them to the first blob would
+ * hand the user back a resolved-looking file they never resolved.
+ */
+export interface GitIndexEntry {
+  mode: string;
+  oid: string;
+  stage: number;
+}
+
+/**
+ * Every index entry for one path, exactly as it is staged right now.
+ *
+ * An empty array means the path is not in the index at all. Anything that
+ * stages over a file it may have to put back needs this: restoring the
+ * working-tree bytes and re-adding them rebuilds the index from the *content*,
+ * which silently replaces whatever the user had staged there — including a
+ * staged delete, which has no content to rebuild from.
+ */
+export async function readGitIndexEntries({
+  path,
+  filepath,
+}: GitFileParams): Promise<GitIndexEntry[]> {
+  const normalizedFilepath = normalizePath(filepath);
+  const result = await execGit(
+    ["ls-files", "--stage", "--", normalizedFilepath],
+    path,
+  );
+  if (result.exitCode !== 0) {
+    throw new DyadError(
+      `Failed to read the index entry for '${normalizedFilepath}'. ${
+        result.stderr.trim() || result.stdout.trim()
+      }`,
+      DyadErrorKind.External,
+    );
+  }
+  // `<mode> <oid> <stage>\t<path>` per line, empty when the path isn't staged.
+  const entries: GitIndexEntry[] = [];
+  for (const rawLine of result.stdout.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const [mode, oid, stage] = line.split(/\s+/);
+    if (!mode || !oid) continue;
+    entries.push({ mode, oid, stage: Number(stage) || 0 });
+  }
+  return entries;
+}
+
+/**
+ * Put a path's index entries back to exactly what `readGitIndexEntries`
+ * returned, without touching the working tree. An empty list removes the path
+ * from the index.
+ */
+export async function restoreGitIndexEntries({
+  path,
+  filepath,
+  entries,
+}: GitFileParams & { entries: GitIndexEntry[] }): Promise<void> {
+  const normalizedFilepath = normalizePath(filepath);
+  // Unconditionally first: `--index-info` adds stages, so a leftover entry for
+  // this path (a stage-0 one written by the staging this is undoing, say) would
+  // otherwise survive alongside the restored conflict stages.
+  await execOrThrow(
+    ["update-index", "--force-remove", "--", normalizedFilepath],
+    path,
+    `Failed to restore the index entry for '${normalizedFilepath}'`,
+  );
+  if (entries.length === 0) return;
+  // `--index-info` rather than `--cacheinfo`: only this form can write an entry
+  // at a stage other than 0, which is the whole of a conflicted path's state.
+  await execOrThrow(
+    ["update-index", "--index-info"],
+    path,
+    `Failed to restore the index entry for '${normalizedFilepath}'`,
+    DyadErrorKind.External,
+    {
+      stdin: entries
+        .map(
+          (entry) =>
+            `${entry.mode} ${entry.oid} ${entry.stage}\t${normalizedFilepath}\n`,
+        )
+        .join(""),
+    },
+  );
+}
+
 export async function gitReset({ path }: GitBaseParams): Promise<void> {
   // Reset the staging area to match HEAD (unstage files but keep working directory changes)
   await execOrThrow(["reset", "HEAD"], path, "Failed to reset staging area");

@@ -11,6 +11,7 @@ import {
   appOperationCoordinator,
   readAppResource,
 } from "./app_operation_coordinator";
+import { assertNoActiveRecording } from "./recording_registry";
 import { readSettings } from "../../main/settings";
 import { eq } from "drizzle-orm";
 import fs from "node:fs";
@@ -23,6 +24,8 @@ import { ensureDyadGitignored } from "../handlers/gitignoreUtils";
 const logger = log.scope("image_generation_service");
 
 const IMAGE_GENERATION_TIMEOUT_MS = 120_000;
+/** Named once: the early refusal and the save-time refusal must read alike. */
+const IMAGE_SAVE_ACTION = "save a generated image";
 const MAX_IMAGE_SIZE = 50 * 1024 * 1024; // 50 MB
 
 export interface GenerateImageInput {
@@ -75,12 +78,21 @@ export class ImageGenerationService {
 
   generate(params: GenerateImageInput) {
     this.assertAcceptingGenerations(params.targetAppId);
+    // Before the recording refusal below: a cancellation that arrived first is
+    // what happened to this request, and reporting it as blocked by a recording
+    // would both misname it and leave its tombstone behind until eviction.
     if (this.cancellationTombstones.delete(params.requestId)) {
       throw new DyadError(
         "Image generation cancelled.",
         DyadErrorKind.UserCancelled,
       );
     }
+    // Refuse before the generation, not just before the save: the save runs
+    // behind a recording's session-long `repository` claim, and the user would
+    // otherwise pay for and wait through a full generation to be told so.
+    // The coordinator repeats this check atomically for a recording that
+    // starts mid-generation; this one is only the early exit.
+    assertNoActiveRecording(params.targetAppId, IMAGE_SAVE_ACTION);
     if (this.active.has(params.requestId)) {
       throw new DyadError(
         "Image generation invocation is already active",
@@ -289,6 +301,9 @@ export class ImageGenerationService {
         appId: params.targetAppId,
         operation: "save-generated-image",
         resources: [readAppResource("app-path"), "media", "repository"],
+        // `repository` is a recording's for the whole session, so saving the
+        // image would sit behind it with only a spinner to show for it.
+        refuseWhenRecording: IMAGE_SAVE_ACTION,
       },
       async () => {
         this.assertAcceptingGenerations(params.targetAppId);

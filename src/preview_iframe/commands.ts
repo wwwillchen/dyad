@@ -74,7 +74,8 @@ export type PreviewIframeMachineMessageType =
   | "dyad-component-selector-initialized"
   | "dyad-screenshot-response"
   | "pushState"
-  | "replaceState";
+  | "replaceState"
+  | "dyad-document-loaded";
 
 export const PREVIEW_IFRAME_MESSAGE_ROUTES: Readonly<
   Record<
@@ -88,6 +89,10 @@ export const PREVIEW_IFRAME_MESSAGE_ROUTES: Readonly<
   "dyad-screenshot-response": "shared-and-component",
   pushState: "machine",
   replaceState: "machine",
+  // The shim announces every document it loads. Only the machine cares: it is
+  // how a navigation the app made on its own — a link, a redirect — becomes
+  // visible at all, since neither passes through the history overrides.
+  "dyad-document-loaded": "machine",
 };
 
 export type PreviewSharedMachineEvent =
@@ -98,6 +103,17 @@ export type PreviewSharedMachineEvent =
       ok: boolean;
       dataUrl?: string;
     };
+
+/**
+ * The shim's history classification, or "replace" for anything else.
+ *
+ * The value crosses a postMessage from the previewed app's frame, so it is
+ * validated rather than trusted — and an unrecognised one falls back to the
+ * reading that never invents a history entry the browser does not have.
+ */
+function readHistoryEffect(value: unknown): "push" | "replace" | "traverse" {
+  return value === "push" || value === "traverse" ? value : "replace";
+}
 
 export function routePreviewIframeMessage(input: {
   event: MessageEvent;
@@ -137,14 +153,36 @@ export function routePreviewIframeMessage(input: {
           : {}),
       });
     }
-  } else if (type === "pushState" || type === "replaceState") {
+  } else if (
+    type === "pushState" ||
+    type === "replaceState" ||
+    type === "dyad-document-loaded"
+  ) {
     const rawUrl = event.data?.payload?.newUrl;
     if (typeof rawUrl === "string" && rawUrl && appUrl) {
       try {
         const trustedAppUrl = new URL(appUrl);
         const url = new URL(rawUrl, trustedAppUrl);
         if (url.origin !== trustedAppUrl.origin) return;
-        send({ type: "NAVIGATED_IN_APP", kind: type, url: url.href });
+        // A `blob:` URL inherits the app's origin, so the check above lets it
+        // through — but it is not a route the preview can navigate to, nor one
+        // a recording could replay.
+        if (url.protocol !== "http:" && url.protocol !== "https:") return;
+        send(
+          type === "dyad-document-loaded"
+            ? {
+                type: "NAVIGATED_IN_APP",
+                kind: "documentLoad",
+                url: url.href,
+                // Only the shim knows what the browser did to its history;
+                // anything else (an older shim still in the page) keeps the
+                // previous reading, which never invents an entry.
+                historyEffect: readHistoryEffect(
+                  event.data?.payload?.historyEffect,
+                ),
+              }
+            : { type: "NAVIGATED_IN_APP", kind: type, url: url.href },
+        );
       } catch {
         return;
       }

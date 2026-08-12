@@ -561,6 +561,7 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
       stagedDiffFile: null,
       previewHistory: [],
       previewHistoryPosition: 0,
+      previewRouteSource: "none",
       previewMode: "preview",
       isPreviewOpen: true,
       isChatPanelHidden: false,
@@ -592,6 +593,7 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
         stagedDiffFile: store.get(stagedDiffFileAtom),
         previewHistory: [...iframe.history],
         previewHistoryPosition: iframe.position,
+        previewRouteSource: iframe.currentUrlSource,
         previewMode: store.get(previewModeAtom),
         isPreviewOpen: store.get(isPreviewOpenAtom),
         isChatPanelHidden: store.get(isChatPanelHiddenAtom),
@@ -629,6 +631,7 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
         type: "RESTORE_PRESENTATION",
         history: presentation.previewHistory,
         position: presentation.previewHistoryPosition,
+        source: presentation.previewRouteSource,
         preserveHistoryOnNextReplacement:
           !previewIframeManager.hasTarget(appId),
       });
@@ -958,6 +961,12 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                 type: "RESTORE_PRESENTATION",
                 history: previousIframe.history,
                 position: previousIframe.position,
+                // This restores live state, which still carries its
+                // provenance — the "app" default is only for presentations
+                // saved before provenance was tracked. Dropping it here would
+                // downgrade a route the user picked and send a recording
+                // started afterwards to the app root instead.
+                source: previousIframe.currentUrlSource,
               });
             }
             void navigate({ to: previousLocationHref });

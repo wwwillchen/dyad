@@ -27,6 +27,7 @@ import {
   EyeOff,
   Zap,
   ShieldCheck,
+  CircleDot,
   Code,
   Trash2,
 } from "lucide-react";
@@ -35,6 +36,10 @@ import { selectedChatIdAtom } from "@/atoms/chatAtoms";
 import { useCurrentAppUrl } from "@/hooks/useAppRun";
 import { selectedFileAtom } from "@/atoms/viewAtoms";
 import { clearStagedDiffAtom } from "@/atoms/commitAtoms";
+import {
+  currentRecordingStateAtom,
+  recordingStartRequestAtom,
+} from "@/atoms/recorderAtoms";
 import {
   applyTestRunFinishedAtom,
   applyTestRunStartedAtom,
@@ -73,6 +78,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { showError, showInfo, showSuccess } from "@/lib/toast";
 import { findCaseResult, statusLabel, testKey } from "@/lib/testResultUtils";
+import { usePreviewIframeController } from "@/preview_iframe/usePreviewIframe";
+import { sameOriginStartPath } from "./previewAddressPath";
 
 function StatusIcon({ status }: { status: TestStatus }) {
   switch (status) {
@@ -617,6 +624,8 @@ export function TestsPanel() {
   const specs = useAtomValue(currentTestSpecsAtom);
   const runState = useAtomValue(currentTestRunStateAtom);
   const appUrl = useCurrentAppUrl(selectedAppId);
+  const { state: previewIframeState } =
+    usePreviewIframeController(selectedAppId);
   const setSpecs = useSetAtom(setTestSpecsForAppAtom);
   const setRunState = useSetAtom(setTestRunStateForAppAtom);
   const setPreviewMode = useSetAtom(previewModeAtom);
@@ -627,6 +636,8 @@ export function TestsPanel() {
   // on every flush and defeat the point of the separate output atom).
   const jotaiStore = useStore();
   const chatId = useAtomValue(selectedChatIdAtom);
+  const recordingState = useAtomValue(currentRecordingStateAtom);
+  const requestRecording = useSetAtom(recordingStartRequestAtom);
   const { app } = useLoadApp(selectedAppId);
   const { settings, updateSettings } = useSettings();
   const { runApp } = useRunApp();
@@ -999,6 +1010,56 @@ export function TestsPanel() {
     }
   }, [doGenerateTest, isAgentMode]);
 
+  // Recording happens in the preview (it drives the real app), but this panel is
+  // where users look for it. Switch tabs and hand the request to the recorder,
+  // which starts the session as soon as the preview mounts.
+  const isRecordingSession = recordingState.phase !== "idle";
+  const canStartRecording =
+    devServerRunning && !isRunning && !isRecordingSession;
+  const startRecording = useCallback(() => {
+    if (selectedAppId == null) return;
+    const currentPreviewUrl =
+      previewIframeState.history[previewIframeState.position] ??
+      previewIframeState.currentUrl;
+    // Only a route the user picked through Dyad's chrome becomes the session's
+    // opening navigation. A route the app reached on its own — a redirect, a
+    // link followed before Record was pressed — is not a starting point the
+    // user chose, and recording it as one makes replay `goto` straight to the
+    // destination and skip the navigation that got there.
+    //
+    // Left undefined the recording does open at the app's root, because the
+    // recorder navigates the preview there before it starts; a bare remount
+    // alone would keep the app-driven route and run every captured action
+    // against a page the spec's `page.goto("/")` never visits.
+    const startPath =
+      previewIframeState.currentUrlSource === "dyad"
+        ? sameOriginStartPath(currentPreviewUrl, appUrl.appUrl)
+        : undefined;
+    requestRecording({
+      appId: selectedAppId,
+      requestedAt: Date.now(),
+      startPath,
+    });
+    setPreviewMode("preview");
+  }, [
+    appUrl.appUrl,
+    previewIframeState.currentUrl,
+    previewIframeState.currentUrlSource,
+    previewIframeState.history,
+    previewIframeState.position,
+    requestRecording,
+    selectedAppId,
+    setPreviewMode,
+  ]);
+
+  const recordButtonTitle = !devServerRunning
+    ? "Start the app to record a test."
+    : isRunning
+      ? "Wait for the current test run to finish."
+      : isRecordingSession
+        ? "A recording session is already in progress."
+        : "Click through your app in the preview and Dyad writes the test for you.";
+
   const enableTesting = useCallback(() => {
     if (selectedAppId == null) return;
     setTestingEnabled({ appId: selectedAppId, enabled: true });
@@ -1214,6 +1275,31 @@ export function TestsPanel() {
             {headed ? <Eye size={14} /> : <EyeOff size={14} />}
             {headed ? "Headed" : "Headless"}
           </button>
+        )}
+        {testingEnabled && !isRunning && (
+          // The title sits on the wrapper, not the button: Chromium suppresses
+          // pointer events on a disabled control, so a title there never
+          // surfaces — leaving a greyed-out Record with no reason given, which
+          // is exactly when the reason matters most.
+          <span
+            title={recordButtonTitle}
+            data-testid="tests-record-button-hint"
+          >
+            <button
+              onClick={startRecording}
+              disabled={!canStartRecording}
+              aria-label="Record a test in the preview"
+              data-testid="tests-record-button"
+              className={cn(
+                "flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md cursor-pointer transition-colors",
+                "text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/40",
+                !canStartRecording && "opacity-40 cursor-not-allowed",
+              )}
+            >
+              <CircleDot size={14} />
+              Record
+            </button>
+          </span>
         )}
         {isRunning ? (
           <button
@@ -1462,6 +1548,28 @@ export function TestsPanel() {
               <Sparkles size={16} />
               Generate a test for a critical user journey
             </button>
+            {/* Title on the wrapper for the same reason as the toolbar's
+                Record: a disabled button never fires the hover that would
+                show it. */}
+            <span
+              title={recordButtonTitle}
+              data-testid="tests-empty-record-button-hint"
+              className="mt-3"
+            >
+              <button
+                onClick={startRecording}
+                disabled={!canStartRecording}
+                data-testid="tests-empty-record-button"
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium cursor-pointer transition-colors",
+                  "text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/40",
+                  !canStartRecording && "opacity-40 cursor-not-allowed",
+                )}
+              >
+                <CircleDot size={16} />
+                Or record one by clicking through your app
+              </button>
+            </span>
           </div>
         ) : (
           <div>

@@ -1,4 +1,5 @@
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { assertNoActiveRecording } from "./recording_registry";
 
 export const APP_OPERATION_RESOURCES = [
   "app-path", // The app row's path and the identity/location of its directory.
@@ -16,6 +17,21 @@ export const APP_OPERATION_RESOURCES = [
 export type AppOperationResource = (typeof APP_OPERATION_RESOURCES)[number];
 export type AppOperationAccessMode = "read" | "write";
 
+/**
+ * A second `beginAppDeletion` for an app already being deleted.
+ *
+ * A named class rather than a bare `Error`, because the delete handler has to
+ * recognise it to report "already being deleted" as a Precondition rather than
+ * an unclassified product exception (`rules/dyad-errors.md`). Matching on the
+ * message text coupled the two files through a string nothing checks.
+ */
+export class AppDeletionInProgressError extends Error {
+  constructor(readonly appId: number) {
+    super(`App ${appId} deletion is already in progress`);
+    this.name = "AppDeletionInProgressError";
+  }
+}
+
 export interface AppOperationAccess {
   resource: AppOperationResource;
   mode: AppOperationAccessMode;
@@ -25,6 +41,24 @@ export interface AppOperationRequest {
   appId: number;
   operation: string;
   resources: readonly (AppOperationResource | AppOperationAccess)[];
+  /**
+   * Refuse this operation outright while a recording session holds the app,
+   * instead of queueing behind it. Names the action in the imperative, e.g.
+   * "delete a test".
+   *
+   * A session claims repository, provider, runtime, runtime-config and
+   * test-files for its whole lifetime, and this queue has no timeout — so
+   * anything taking one of those claims can sit on a spinner for the rest of
+   * the 30-minute cap with nothing on screen saying why. Paths that can't
+   * simply end the session (the recording IS what the user is doing) say so and
+   * let them decide.
+   *
+   * Checked HERE rather than by the caller beforehand so the refusal and the
+   * admission are one synchronous step. A caller-side check leaves a window in
+   * which a recording starts between the two, and the operation queues behind
+   * the session the check exists to avoid.
+   */
+  refuseWhenRecording?: string;
 }
 
 interface NormalizedAppOperationRequest {
@@ -114,6 +148,19 @@ export class AppOperationCoordinator {
       );
     }
 
+    // Synchronous with the enqueue below: a recording reserving this app in
+    // between is what a caller-side check cannot rule out.
+    if (request.refuseWhenRecording !== undefined) {
+      try {
+        assertNoActiveRecording(request.appId, request.refuseWhenRecording);
+      } catch (error) {
+        // Nothing was enqueued, so the state this refusal just created would
+        // otherwise be retained empty for the lifetime of the process.
+        this.removeStateIfIdle(request.appId, state);
+        return Promise.reject(error);
+      }
+    }
+
     const normalizedRequest: NormalizedAppOperationRequest = {
       ...request,
       resources: normalizeResources(request.resources),
@@ -146,7 +193,7 @@ export class AppOperationCoordinator {
   beginAppDeletion(appId: number): AppOperationDeletion {
     const state = this.getOrCreateState(appId);
     if (state.deletion) {
-      throw new Error(`App ${appId} deletion is already in progress`);
+      throw new AppDeletionInProgressError(appId);
     }
 
     const token = Symbol(`app-deletion:${appId}`);

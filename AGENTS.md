@@ -87,6 +87,8 @@ npm run lint:fix
 
 > **WARNING: Do NOT run `npx eslint` directly.** The project uses **oxlint** (not eslint) via `npm run lint`. Running `npx eslint <file>` produces spurious `import/no-unresolved` errors for `@/...` path aliases and other false positives — ignore those and rely on `npm run lint` / `npm run lint:fix`.
 
+> **WARNING: Do NOT run `npx prettier --write` either.** Formatting is **oxfmt** via `npm run fmt` (check with `npm run fmt:check`). Prettier disagrees with oxfmt on operator/argument indentation, so it silently reformats untouched blocks in files you edited — `worker/dyad-recorder-client.js` picked up an unrelated 6-line hunk this way. `npm run fmt` reverts it, but only if you notice; check `git diff` for hunks you did not write.
+
 > **WARNING: Never run `npx oxlint --fix` or `npx oxfmt` before `node_modules` is installed.** Without the pinned local binary, `npx` downloads the _latest_ version, which can rewrite files repo-wide differently from the pinned version (observed: de-indented code blocks inside `e2e-tests/fixtures/*.md` and reflowed unrelated `src/` files). Use the lockfile-pinned `./node_modules/.bin/oxlint` / `./node_modules/.bin/oxfmt`, and check `git status` for collateral edits after any repo-wide `--fix` run.
 
 **Type-checks**
@@ -119,6 +121,8 @@ This is the only supported way to type-check the project. It uses the correct co
 ## Verifying your changes
 
 You should test your changes before committing or pushing. Run relevant unit tests and E2E tests to verify expected behavior. If it's truly impossible to test a change locally (e.g. CI-only behavior, third-party service integration), note this in the PR description explaining why and what manual verification is needed.
+
+When diagnosing a bug the user hit in their running dev app, read `logs/main.log` under the dev app's userData directory — `NODE_ENV=development` repoints Electron's userData away from the OS path (`~/.config/dyad/logs/main.log`), which holds unit-test noise instead. That directory is `./userData` **inside the repo** by default, but `DYAD_DEV_USER_DATA_DIR` overrides it (see `getUserDataPath` in `src/paths/paths.ts`) — `npm run start:onboarding` sets it to a throwaway directory, so a plain `userData/logs/main.log` there is stale or absent. Check the env var first, or read the path `electron-log` prints on startup. The main log carries scoped lines (`process_manager`, `app_runtime_service`, timings) that pin down whether a failure is main-process or renderer-side.
 
 ## General guidance
 

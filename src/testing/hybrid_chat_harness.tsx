@@ -78,6 +78,7 @@ import {
   clearTestRuntimeForAppAtom,
   testRunOutputByAppIdAtom,
 } from "@/atoms/testRuntimeAtoms";
+import { clearRecorderForAppAtom } from "@/atoms/recorderAtoms";
 import { planAcceptInNewChatByChatIdAtom } from "@/atoms/planAtoms";
 import { registerRendererIpcListeners } from "@/app_wiring/registerRendererIpcListeners";
 import { useChatStreamRuntime } from "@/hooks/useChatStream";
@@ -564,9 +565,16 @@ function HybridAppEventWiring({
 }
 
 function HybridEntityDisposalWiring({ store }: { store: JotaiStore }) {
+  // Mirrors renderer.tsx's own disposer, main-process teardown included. The
+  // atoms are only the UI half: a deleted app can still have a parked draft and
+  // a live session holding its lock in main, and a harness that skipped those
+  // calls would leave that path untested precisely where it matters.
   const clearAppRuntime = useCallback(
     (appId: number) => {
       store.set(clearTestRuntimeForAppAtom, appId);
+      store.set(clearRecorderForAppAtom, appId);
+      void ipc.recording.discardRecordedTestDraft({ appId }).catch(() => {});
+      void ipc.recording.stopRecording({ appId }).catch(() => {});
     },
     [store],
   );

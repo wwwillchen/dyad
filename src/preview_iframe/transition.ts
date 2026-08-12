@@ -43,6 +43,17 @@ export function transition(
           history,
           position,
           currentUrl,
+          // Provenance travels with the presentation: a restored route is only
+          // the user's own selection if it was one when it was captured.
+          // Restoring it as "dyad" regardless would hand a redirect destination
+          // back as a deliberate choice, and a recording started after the tab
+          // switch would open there and skip the navigation under test.
+          //
+          // Presentations saved before provenance was captured have none, and
+          // "app" is the safe reading: the recorder falls back to the app root
+          // rather than pinning replay to a route nobody may have picked.
+          currentUrlSource:
+            currentUrl === null ? "none" : (event.source ?? "app"),
           preservedUrl: currentUrl,
           iframeEpoch:
             currentUrl === null ? state.iframeEpoch + 1 : state.iframeEpoch,
@@ -67,6 +78,8 @@ export function transition(
         history: [event.url],
         position: 0,
         currentUrl: event.url,
+        // The dev server's own address, not a route anyone chose.
+        currentUrlSource: "none",
         preservedUrl: event.url,
       });
     }
@@ -82,6 +95,7 @@ export function transition(
           history,
           position: history.length - 1,
           currentUrl: event.path,
+          currentUrlSource: "dyad",
           preservedUrl: event.path,
         },
         [navigateCommand(event.path)],
@@ -89,7 +103,38 @@ export function transition(
     }
     case "NAVIGATED_IN_APP": {
       if (!event.url) return ignore(state, "empty-url");
-      if (event.kind === "pushState") {
+      // A document load caused by Dyad's own navigation must not be misread as
+      // the app's doing: that navigation already set `currentUrl` to this URL
+      // before the document loaded, so it is ignored rather than downgrading
+      // provenance to "app". `replaceState` shares the check for the same
+      // reason — it too can only restate the slot it is already in.
+      if (event.kind !== "pushState" && event.url === state.currentUrl) {
+        return ignore(state, "already-current-url");
+      }
+      // A cross-document back/forward moves within the history that is already
+      // here rather than rewriting any of it. Overwriting the current slot
+      // would lose both the entry the user left and the one they arrived at.
+      if (event.kind === "documentLoad" && event.historyEffect === "traverse") {
+        const position = state.history.indexOf(event.url);
+        if (position === -1) return ignore(state, "unknown-history-entry");
+        return applied({
+          ...state,
+          position,
+          currentUrl: event.url,
+          currentUrlSource: "app",
+          preservedUrl: event.url,
+        });
+      }
+      // A plain link or `<form>` submit grows the browser's history exactly as
+      // `pushState` does, and the preview's history has to grow with it: its
+      // Back button, and the `page.goBack()` a recording replays with, would
+      // otherwise skip the page the user came from. A link answered with a 3xx
+      // still ends in a brand-new entry, so only `replaceState` and a load that
+      // genuinely reused its slot (a reload) stay put.
+      if (
+        event.kind === "pushState" ||
+        (event.kind === "documentLoad" && event.historyEffect === "push")
+      ) {
         const history = [
           ...state.history.slice(0, state.position + 1),
           event.url,
@@ -99,11 +144,9 @@ export function transition(
           history,
           position: history.length - 1,
           currentUrl: event.url,
+          currentUrlSource: "app",
           preservedUrl: event.url,
         });
-      }
-      if (event.url === state.currentUrl) {
-        return ignore(state, "already-current-url");
       }
       const history = [...state.history];
       if (history.length === 0) {
@@ -116,6 +159,7 @@ export function transition(
         history,
         position: history.length === 1 ? 0 : state.position,
         currentUrl: event.url,
+        currentUrlSource: "app",
         preservedUrl: event.url,
       });
     }
@@ -125,7 +169,13 @@ export function transition(
       const currentUrl = state.history[position];
       if (!currentUrl) return ignore(state, "history-boundary");
       return applied(
-        { ...state, position, currentUrl, preservedUrl: currentUrl },
+        {
+          ...state,
+          position,
+          currentUrl,
+          currentUrlSource: "dyad",
+          preservedUrl: currentUrl,
+        },
         [navigateCommand(currentUrl, "backward")],
       );
     }
@@ -137,7 +187,13 @@ export function transition(
       const currentUrl = state.history[position];
       if (!currentUrl) return ignore(state, "history-boundary");
       return applied(
-        { ...state, position, currentUrl, preservedUrl: currentUrl },
+        {
+          ...state,
+          position,
+          currentUrl,
+          currentUrlSource: "dyad",
+          preservedUrl: currentUrl,
+        },
         [navigateCommand(currentUrl, "forward")],
       );
     }
@@ -146,6 +202,7 @@ export function transition(
         state.history.length === 0 &&
         state.position === 0 &&
         state.currentUrl === null &&
+        state.currentUrlSource === "none" &&
         state.preservedUrl === null &&
         !state.selectorReady &&
         !state.picking
@@ -157,6 +214,9 @@ export function transition(
         history: [],
         position: 0,
         currentUrl: null,
+        // No route means nobody chose one; leaving the old provenance behind
+        // would let the recorder read a selection that no longer exists.
+        currentUrlSource: "none",
         preservedUrl: null,
         selectorReady: false,
         picking: false,

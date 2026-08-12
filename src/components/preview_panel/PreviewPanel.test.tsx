@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { useEffect, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -14,6 +20,9 @@ const mocks = vi.hoisted(() => ({
   nodeVersion: "v22.14.0",
   openExternalUrl: vi.fn(),
   previewModeAtom: Symbol("previewModeAtom"),
+  previewReloadToken: 0,
+  recorderMountCount: 0,
+  reloadRecorderPreview: null as (() => void) | null,
   refetchNodeStatus: vi.fn(),
   reloadEnvPath: vi.fn(),
   runApp: vi.fn(),
@@ -51,7 +60,11 @@ vi.mock("@/preview_console/hooks", () => ({
 }));
 
 vi.mock("@/hooks/useAppRun", () => ({
-  usePreviewReloadToken: () => 0,
+  // Reads the hoisted value rather than returning a constant: a test that bumps
+  // the token needs the iframe key to actually change, or the remount it means
+  // to exercise never happens and everything it asserts afterwards passes on a
+  // component that was never re-created.
+  usePreviewReloadToken: () => mocks.previewReloadToken,
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -105,6 +118,17 @@ vi.mock("@/hooks/useRunApp", async (importOriginal) => ({
   }),
 }));
 
+vi.mock("@/hooks/useTestRecorder", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  return {
+    useTestRecorder: ({ reloadPreview }: { reloadPreview: () => void }) => {
+      mocks.reloadRecorderPreview = reloadPreview;
+      const [instanceId] = React.useState(() => ++mocks.recorderMountCount);
+      return { instanceId };
+    },
+  };
+});
+
 vi.mock("@/hooks/useLoadApp", () => ({
   useLoadApp: () => ({
     app: { id: mocks.selectedAppId },
@@ -135,17 +159,44 @@ vi.mock("react-resizable-panels", () => ({
 }));
 
 vi.mock("./PreviewIframe", () => ({
-  PreviewIframe: () => {
+  PreviewIframe: ({ recorder }: { recorder: { instanceId: number } }) => {
     useEffect(() => {
       mocks.previewIframeMounted();
       return () => mocks.previewIframeUnmounted();
     }, []);
-    return <div>Preview iframe</div>;
+    return (
+      <div data-testid="preview-iframe" data-recorder={recorder.instanceId}>
+        Preview iframe
+      </div>
+    );
   },
 }));
 
 vi.mock("./PreviewToolbar", () => ({
   PreviewToolbar: () => null,
+}));
+
+// The panel only reaches the manager to put the preview back on the app root
+// before a recording; standing it up needs the whole provider stack, and this
+// suite is about the Node.js setup path and the iframe's remount identity.
+vi.mock("@/preview_iframe/PreviewIframeProvider", () => ({
+  usePreviewIframeManager: () => ({
+    getSnapshot: () => ({ currentUrl: null }),
+    send: () => {},
+  }),
+}));
+
+// The real host reaches for the chat stream to send the assertion request; this
+// suite is about the Node.js setup path and the iframe's remount identity.
+vi.mock("./RecordingBannerHost", () => ({
+  RecordingBannerHost: ({ recorder }: { recorder: { instanceId: number } }) => (
+    <div
+      data-testid="recording-banner-host"
+      data-recorder={recorder.instanceId}
+    >
+      Recording banner host
+    </div>
+  ),
 }));
 
 vi.mock("./PackageManagerWarningBanner", () => ({
@@ -189,6 +240,9 @@ describe("PreviewPanel", () => {
     mocks.managedNodeSupported = true;
     mocks.nodeVersion = "v22.14.0";
     mocks.openExternalUrl.mockReset();
+    mocks.previewReloadToken = 0;
+    mocks.recorderMountCount = 0;
+    mocks.reloadRecorderPreview = null;
     mocks.refetchNodeStatus.mockReset();
     mocks.reloadEnvPath.mockReset();
     mocks.runApp.mockReset();
@@ -226,6 +280,32 @@ describe("PreviewPanel", () => {
 
     expect(mocks.previewIframeUnmounted).toHaveBeenCalledTimes(1);
     expect(mocks.previewIframeMounted).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the recorder coordinator mounted when the preview reloads", () => {
+    const { rerender } = render(<PreviewPanel />);
+
+    expect(screen.getByTestId("preview-iframe").dataset.recorder).toBe("1");
+    expect(mocks.previewIframeMounted).toHaveBeenCalledTimes(1);
+
+    // A token-driven reload: the iframe is re-created, and the recorder that
+    // owns the live session must not go with it.
+    mocks.previewReloadToken = 1;
+    rerender(<PreviewPanel />);
+
+    expect(mocks.previewIframeUnmounted).toHaveBeenCalledTimes(1);
+    expect(mocks.previewIframeMounted).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("preview-iframe").dataset.recorder).toBe("1");
+    expect(mocks.recorderMountCount).toBe(1);
+
+    // And the recorder's own reload, which is the other way the iframe is
+    // re-created — teardown reloads the preview to drop the test user's
+    // in-memory session.
+    act(() => mocks.reloadRecorderPreview?.());
+
+    expect(mocks.previewIframeMounted).toHaveBeenCalledTimes(3);
+    expect(screen.getByTestId("preview-iframe").dataset.recorder).toBe("1");
+    expect(mocks.recorderMountCount).toBe(1);
   });
 
   it("auto-starts managed Node install and skips running the app when Node.js is missing", async () => {

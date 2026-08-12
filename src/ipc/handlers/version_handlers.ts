@@ -69,6 +69,7 @@ import {
 } from "@/ipc/services/chat_actor_service";
 import type { RestoreRecovery } from "@/version_preview/state";
 import { readStoredReferencedAppIds } from "../utils/mention_apps";
+import { blockRecordingStart } from "../services/recording_registry";
 
 const logger = log.scope("version_handlers");
 
@@ -904,6 +905,9 @@ export function registerVersionHandlers() {
       currentChatMessageId,
       targetBranchName,
     } = params;
+    // A recording holds repository, provider and runtime-config for its whole
+    // session, so this would queue invisibly behind it for up to the 30-minute
+    // cap. It is also rewriting the tree the recording is capturing against.
     return appOperationCoordinator.run(
       {
         appId,
@@ -915,6 +919,7 @@ export function registerVersionHandlers() {
           "repository",
           "runtime-config",
         ],
+        refuseWhenRecording: "undo to a previous version",
       },
       async () => {
         const app = await db.query.apps.findFirst({
@@ -1066,6 +1071,10 @@ export function registerVersionHandlers() {
           readAppResource("chat-content"),
           readAppResource("repository"),
         ],
+        // Phase 1 already conflicts with the recording's repository claim.
+        // Refuse as part of admission so an active or reserving session cannot
+        // leave Restore spinning behind its whole-lifetime claim.
+        refuseWhenRecording: "restore this version",
       },
       async () => {
         const app = await db.query.apps.findFirst({
@@ -1199,6 +1208,7 @@ export function registerVersionHandlers() {
       ? await beginAppChatActorMutation(appId)
       : undefined;
     let releaseStreamAdmissionBlock: (() => void) | undefined;
+    let releaseRecordingBlock: (() => void) | undefined;
 
     // Wrap phases 2 and 3 in a single try/finally so the admission block is
     // always released, even if `withLock` were to throw synchronously before
@@ -1206,6 +1216,21 @@ export function registerVersionHandlers() {
     // promise). Leaking the block would permanently stall new streams for the
     // app/chat until the process restarts.
     try {
+      // Taken BEFORE phase 2 cancels anything. Phase 1's atomic admission
+      // refuses a recording that already exists, but it releases before this
+      // cancellation window. A recording starting there used to be caught only
+      // after the user's in-flight generations were already gone, so they lost
+      // the generation and got the refusal. Holding the app first means the
+      // refusal costs nothing.
+      releaseRecordingBlock =
+        blockRecordingStart(appId, "restore a version") ?? undefined;
+      if (!releaseRecordingBlock) {
+        throw new DyadError(
+          "Stop the recording session before you restore this version — it's holding this app while it records.",
+          DyadErrorKind.Precondition,
+        );
+      }
+
       releaseStreamAdmissionBlock = restoreCodebase
         ? blockNewStreamsForApp(appId)
         : blockNewStreamsForChat(chatId);
@@ -1223,6 +1248,11 @@ export function registerVersionHandlers() {
         ? await cancelActiveStreamsForApp(appId, event.sender)
         : false;
       const preserveDirtyTree = didCancelActor || didCancelTransport;
+
+      // No recording recheck here: the block taken above is what rules one out
+      // for the rest of this operation, and it was taken while a refusal was
+      // still free. A recheck at this point would be reporting a race that can
+      // no longer happen — after the cost it exists to avoid.
 
       // Phase 3: perform the codebase revert and create the forked chat under
       // the lock. Holding it across the whole mutation serializes the revert
@@ -1557,6 +1587,7 @@ export function registerVersionHandlers() {
     } finally {
       releaseStreamAdmissionBlock?.();
       releaseActorAdmissionBlock?.();
+      releaseRecordingBlock?.();
     }
   };
   versionPreviewHandlerBridge.restoreToMessage = (
@@ -1587,6 +1618,7 @@ export function registerVersionHandlers() {
           "repository",
           "runtime-config",
         ],
+        refuseWhenRecording: "check out this version",
       },
       async () => {
         let warningMessage = "";

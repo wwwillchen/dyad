@@ -21,6 +21,47 @@ const logger = log.scope("neon_test_branch");
 
 type AppRow = typeof apps.$inferSelect;
 
+// The same durable column tracks two materially different states:
+//
+// - a raw branch id means `.env.local` may still point at that test branch;
+// - a cleanup-only marker means the real env was restored and only the remote
+//   branch deletion remains.
+//
+// Keeping that distinction durable prevents a harmless Neon cleanup outage
+// from blocking Run after a restart. Neon branch ids do not use this namespaced
+// value, and every API boundary below strips it before addressing Neon.
+const CLEANUP_ONLY_BRANCH_PREFIX = "dyad-cleanup-only:v1:";
+
+/**
+ * The Neon branch id a `neonTestBranchId` value refers to.
+ *
+ * The accessor every reader outside this module has to go through: the column
+ * stores either a raw branch id or the cleanup-only marker wrapping one, and
+ * anything that addresses Neon — or names the branch to a user who may have to
+ * delete it by hand — means this, never the stored string.
+ */
+export function trackedBranchId(marker: string): string {
+  return marker.startsWith(CLEANUP_ONLY_BRANCH_PREFIX)
+    ? marker.slice(CLEANUP_ONLY_BRANCH_PREFIX.length)
+    : marker;
+}
+
+export function isTestBranchCleanupOnly(marker: string | null): boolean {
+  return marker?.startsWith(CLEANUP_ONLY_BRANCH_PREFIX) ?? false;
+}
+
+export async function markTestBranchCleanupOnly(
+  appData: AppRow,
+  branchId: string,
+): Promise<AppRow> {
+  const marker = `${CLEANUP_ONLY_BRANCH_PREFIX}${trackedBranchId(branchId)}`;
+  await db
+    .update(apps)
+    .set({ neonTestBranchId: marker })
+    .where(eq(apps.id, appData.id));
+  return { ...appData, neonTestBranchId: marker };
+}
+
 /** Connection details for an isolated, throwaway Neon test branch. */
 export interface TempTestBranch {
   /** The ephemeral branch's id (also persisted on the app row while live). */
@@ -129,7 +170,7 @@ export async function createTempTestBranch(
   if (appData.neonTestBranchId) {
     const priorCleanupOk = await deleteBranchBestEffort(
       projectId,
-      appData.neonTestBranchId,
+      trackedBranchId(appData.neonTestBranchId),
     );
     if (!priorCleanupOk) {
       throw new DyadError(
@@ -255,12 +296,31 @@ export async function createTempTestBranch(
 /**
  * Tear down the test branch for an app: best-effort delete on Neon and clear
  * the persisted `neonTestBranchId`. Safe to call when no branch is set.
+ *
+ * Resolves to whether the branch is gone from Neon — false when the delete
+ * failed and the id was deliberately left on the row for the startup sweep to
+ * retry. Most callers can ignore that, because that retry is the recovery. The
+ * app-deletion path cannot: it is removing the row the sweep would read, so a
+ * false here is the last moment anything can name the orphaned branch.
  */
-export async function deleteTempTestBranch(appData: AppRow): Promise<void> {
-  const branchId = appData.neonTestBranchId;
+export async function deleteTempTestBranch(appData: AppRow): Promise<boolean> {
+  const marker = appData.neonTestBranchId;
   const projectId = appData.neonProjectId;
-  if (!branchId || !projectId) {
-    return;
+  if (!marker) {
+    // Nothing tracked, so nothing is stranded.
+    return true;
+  }
+  const branchId = trackedBranchId(marker);
+  if (!projectId) {
+    // A branch IS tracked, but the row no longer names the project holding it —
+    // Neon was unlinked after the branch was created. Nothing here can address
+    // it. Reporting success would be a lie with consequences: the app-deletion
+    // path reads this to decide whether anything was left behind, and would drop
+    // the row — the last record of this branch — believing it was cleaned up.
+    logger.error(
+      `App ${appData.id} still tracks temporary Neon test branch ${branchId}, but the app is no longer linked to a Neon project; Dyad cannot delete it and it must be removed manually.`,
+    );
+    return false;
   }
   // Only forget the branch once Neon confirms it's gone. Clearing the column on
   // a failed delete would orphan the branch in the user's account forever, since
@@ -271,6 +331,44 @@ export async function deleteTempTestBranch(appData: AppRow): Promise<void> {
       .update(apps)
       .set({ neonTestBranchId: null })
       .where(eq(apps.id, appData.id));
+  }
+  return deleted;
+}
+
+/**
+ * The tail every "we're done with this temporary branch" path shares: persist
+ * the cleanup-only marker, then delete the branch on Neon. Best-effort
+ * throughout — never throws.
+ *
+ * Ordering matters and is the reason this is one function rather than two calls
+ * repeated at each site. The marker is written FIRST so a process that dies
+ * before the remote delete leaves a row saying "the env is real, only the
+ * branch is outstanding" — which is what lets Run proceed after a restart while
+ * the startup sweep keeps retrying. Marking after a failed delete would instead
+ * claim safety this never established. A failed mark is not fatal: the delete
+ * still goes out with the raw id, so a transient SQLite error doesn't turn into
+ * a guaranteed Neon leak.
+ */
+export async function markAndDeleteTempTestBranch(
+  appData: AppRow,
+  branchId: string,
+): Promise<void> {
+  // `deleteTempTestBranch` reads the marker off the row it is given, and the
+  // caller's copy is stale by now, so carry the branch we actually created.
+  let cleanupApp: AppRow = { ...appData, neonTestBranchId: branchId };
+  try {
+    cleanupApp = await markTestBranchCleanupOnly(appData, branchId);
+  } catch (error) {
+    logger.error(
+      `Failed to persist cleanup-only state for test branch ${trackedBranchId(branchId)} on app ${appData.id}: ${error}`,
+    );
+  }
+  try {
+    await deleteTempTestBranch(cleanupApp);
+  } catch (error) {
+    logger.error(
+      `Failed to delete temporary test branch ${trackedBranchId(branchId)} for app ${appData.id}: ${error}`,
+    );
   }
 }
 
@@ -388,29 +486,7 @@ export async function reconcileOrphanTestBranches(): Promise<void> {
     );
     for (const appData of rows) {
       try {
-        // Serialize against user-initiated test runs on the same app: both this
-        // sweep and a run swap .env.local and restart the dev server, so an
-        // interleaving could leave the run pointed at the real database. The run
-        // path acquires the same per-app lock.
-        await appOperationCoordinator.run(
-          {
-            appId: appData.id,
-            operation: "reconcile-neon-test-branch",
-            resources: [
-              readAppResource("app-path"),
-              "provider",
-              "runtime",
-              "runtime-config",
-            ],
-          },
-          async () => {
-            const restored = await restoreRealBranchEnvVars(appData);
-            if (!restored) {
-              return;
-            }
-            await deleteTempTestBranch(appData);
-          },
-        );
+        await restoreAppFromTestBranch(appData);
       } catch (error) {
         logger.warn(
           `Failed to reconcile orphaned test branch for app ${appData.id}: ${error}`,
@@ -420,4 +496,68 @@ export async function reconcileOrphanTestBranches(): Promise<void> {
   } catch (error) {
     logger.error(`Failed to reconcile orphaned test branches: ${error}`);
   }
+}
+
+/**
+ * Put one app's `.env.local` back on its real branch and drop the temporary
+ * test branch. Returns whether the app is off the test branch afterwards.
+ *
+ * A teardown that couldn't restore the env deliberately keeps the branch
+ * tracked, so this is the retry — used both by the startup sweep above and by
+ * the relaunch paths, which would otherwise have nothing to offer the user
+ * beyond "edit the file yourself".
+ */
+export async function restoreAppFromTestBranch(
+  appData: AppRow,
+): Promise<boolean> {
+  if (!appData.neonTestBranchId) {
+    return true;
+  }
+  // Serialize against user-initiated test runs on the same app: both this and a
+  // run swap .env.local and restart the dev server, so an interleaving could
+  // leave the run pointed at the real database. The run path acquires the same
+  // per-app lock.
+  return appOperationCoordinator.run(
+    {
+      appId: appData.id,
+      operation: "reconcile-neon-test-branch",
+      resources: [
+        readAppResource("app-path"),
+        "provider",
+        "runtime",
+        "runtime-config",
+      ],
+    },
+    async () => {
+      // Rename, relocation, or provider reassociation may have completed while
+      // this operation waited for admission. Only the row read under app-path
+      // access is safe to use for filesystem and provider work.
+      const currentApp = await db.query.apps.findFirst({
+        where: eq(apps.id, appData.id),
+      });
+      if (!currentApp) {
+        logger.warn(
+          `Cannot restore test branch for app ${appData.id}: the app no longer exists.`,
+        );
+        return false;
+      }
+      if (!currentApp.neonTestBranchId) return true;
+
+      if (!isTestBranchCleanupOnly(currentApp.neonTestBranchId)) {
+        const restored = await restoreRealBranchEnvVars(currentApp);
+        if (!restored) {
+          return false;
+        }
+      }
+      // Same mark-then-delete tail the isolation teardown runs, shared so the
+      // marker scheme and the ordering it depends on live in one place. The env
+      // is real by now either way, which is what the relaunch gate cares about;
+      // a branch that survives stays tracked for the next sweep.
+      await markAndDeleteTempTestBranch(
+        currentApp,
+        currentApp.neonTestBranchId,
+      );
+      return true;
+    },
+  );
 }

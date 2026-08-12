@@ -28,6 +28,15 @@ const EVENTS: readonly PreviewIframeEvent[] = [
     kind: "replaceState",
     url: `${URL}/account`,
   },
+  // Same URL as the `replaceState` case above on purpose: both take the same
+  // branch, so a second URL only multiplies the explored state space without
+  // covering anything new. The behaviour that IS specific to `documentLoad` —
+  // provenance, and ignoring Dyad's own load — is asserted directly below.
+  {
+    type: "NAVIGATED_IN_APP",
+    kind: "documentLoad",
+    url: `${URL}/account`,
+  },
   { type: "GO_BACK" },
   { type: "GO_FORWARD" },
   { type: "RUNTIME_RESTARTED" },
@@ -342,6 +351,165 @@ describe("preview iframe transition", () => {
       preservedUrl: "https://untrusted.example/path",
     };
     expect(selectIframeSrc(state, URL)).toBe(URL);
+  });
+
+  it("distinguishes a route Dyad selected from one the app navigated to", () => {
+    // The recorder reads this to decide whether the current route is a starting
+    // point the user chose. An app-driven route is not, and recording it as the
+    // session's opening `goto` would replay straight past the navigation that
+    // reached it.
+    expect(INITIAL_PREVIEW_IFRAME_STATE.currentUrlSource).toBe("none");
+
+    const appRoot = transition(INITIAL_PREVIEW_IFRAME_STATE, {
+      type: "APP_URL_CHANGED",
+      url: URL,
+    }).state;
+    expect(appRoot.currentUrlSource).toBe("none");
+
+    const typedIn = transition(appRoot, {
+      type: "NAVIGATE",
+      path: `${URL}/settings`,
+    }).state;
+    expect(typedIn.currentUrlSource).toBe("dyad");
+
+    // `documentLoad` included: a plain link or a server redirect replaces the
+    // whole document and never reaches the history shim, so without it the
+    // preview would keep reporting `/settings` as a route the user picked.
+    for (const kind of ["pushState", "replaceState", "documentLoad"] as const) {
+      const redirected = transition(typedIn, {
+        type: "NAVIGATED_IN_APP",
+        kind,
+        url: `${URL}/login`,
+      }).state;
+      expect(redirected.currentUrlSource).toBe("app");
+
+      // Going back through Dyad's chrome makes it the user's choice again.
+      expect(
+        transition(redirected, { type: "GO_BACK" }).state.currentUrlSource,
+      ).toBe("dyad");
+    }
+
+    // Dyad's own navigation loads a document too. That load reports the route
+    // Dyad just set, so it must not downgrade the selection it belongs to.
+    const ownLoad = transition(typedIn, {
+      type: "NAVIGATED_IN_APP",
+      kind: "documentLoad",
+      url: `${URL}/settings`,
+    });
+    expect(ownLoad.state).toBe(typedIn);
+    expect(ignoreReasonOf(ownLoad)).toBe("already-current-url");
+  });
+
+  // A plain link grows the browser's history; a reload reuses the slot.
+  // Reading a link as a replacement costs the preview the page the user came
+  // from — its Back button, and the `page.goBack()` a recording replays with,
+  // would skip straight past it.
+  it("keeps the previous entry when a link loads a new document", () => {
+    const appRoot = transition(INITIAL_PREVIEW_IFRAME_STATE, {
+      type: "APP_URL_CHANGED",
+      url: URL,
+    }).state;
+
+    const linked = transition(appRoot, {
+      type: "NAVIGATED_IN_APP",
+      kind: "documentLoad",
+      url: `${URL}/dashboard`,
+      historyEffect: "push",
+    }).state;
+    expect(linked.history).toEqual([URL, `${URL}/dashboard`]);
+    expect(linked.position).toBe(1);
+    expect(linked.currentUrlSource).toBe("app");
+    // The entry the user came from is still reachable.
+    expect(transition(linked, { type: "GO_BACK" }).state.currentUrl).toBe(URL);
+
+    const reloaded = transition(appRoot, {
+      type: "NAVIGATED_IN_APP",
+      kind: "documentLoad",
+      url: `${URL}/login`,
+      historyEffect: "replace",
+    }).state;
+    expect(reloaded.history).toEqual([`${URL}/login`]);
+    expect(reloaded.position).toBe(0);
+  });
+
+  // A cross-document back/forward moves within the history that is already
+  // there. Overwriting the current slot would lose both the entry the user left
+  // and the one they arrived at.
+  it("moves position rather than rewriting history on a traversal", () => {
+    const appRoot = transition(INITIAL_PREVIEW_IFRAME_STATE, {
+      type: "APP_URL_CHANGED",
+      url: URL,
+    }).state;
+    const linked = transition(appRoot, {
+      type: "NAVIGATED_IN_APP",
+      kind: "documentLoad",
+      url: `${URL}/dashboard`,
+      historyEffect: "push",
+    }).state;
+
+    const back = transition(linked, {
+      type: "NAVIGATED_IN_APP",
+      kind: "documentLoad",
+      url: URL,
+      historyEffect: "traverse",
+    }).state;
+    expect(back.history).toEqual([URL, `${URL}/dashboard`]);
+    expect(back.position).toBe(0);
+    expect(back.currentUrl).toBe(URL);
+    // Forward is reachable again, which an overwrite would have destroyed.
+    expect(transition(back, { type: "GO_FORWARD" }).state.currentUrl).toBe(
+      `${URL}/dashboard`,
+    );
+
+    // A traversal to somewhere this model never recorded is not something it
+    // can place, and inventing a slot for it would be worse than ignoring it.
+    const unknown = transition(linked, {
+      type: "NAVIGATED_IN_APP",
+      kind: "documentLoad",
+      url: `${URL}/elsewhere`,
+      historyEffect: "traverse",
+    });
+    expect(unknown.state).toBe(linked);
+    expect(ignoreReasonOf(unknown)).toBe("unknown-history-entry");
+  });
+
+  it("restores route provenance with the presentation", () => {
+    const restored = transition(INITIAL_PREVIEW_IFRAME_STATE, {
+      type: "RESTORE_PRESENTATION",
+      history: [URL, `${URL}/settings`],
+      position: 1,
+      source: "dyad",
+    });
+    expect(restored.state.currentUrlSource).toBe("dyad");
+
+    const appDriven = transition(INITIAL_PREVIEW_IFRAME_STATE, {
+      type: "RESTORE_PRESENTATION",
+      history: [URL, `${URL}/login`],
+      position: 1,
+      source: "app",
+    });
+    expect(appDriven.state.currentUrlSource).toBe("app");
+  });
+
+  // Presentations persisted before provenance was captured have none. Reading
+  // those as the user's own selection would hand a redirect destination back as
+  // a deliberate choice; "app" costs a recording its start route instead.
+  it("restores a presentation without provenance as app-driven", () => {
+    const restored = transition(INITIAL_PREVIEW_IFRAME_STATE, {
+      type: "RESTORE_PRESENTATION",
+      history: [URL, `${URL}/settings`],
+      position: 1,
+    });
+    expect(restored.state.currentUrlSource).toBe("app");
+
+    // An empty presentation has no route at all, so nobody chose one.
+    expect(
+      transition(INITIAL_PREVIEW_IFRAME_STATE, {
+        type: "RESTORE_PRESENTATION",
+        history: [],
+        position: 0,
+      }).state.currentUrlSource,
+    ).toBe("none");
   });
 
   it("derives browser navigation availability from history and position", () => {

@@ -42,3 +42,57 @@ coordinator operation.
 Keep `withLock` for non-app string identities such as canonical file paths and
 token refreshes. Its string-only signature intentionally prevents the old
 global `withLock(appId, ...)` pattern from returning.
+
+## Sessions that hold claims for a user-controlled duration
+
+A recording session holds `repository`, `provider`, `runtime`, `runtime-config`
+and `test-files` until the user ends it (capped at 30 minutes), and the
+coordinator queues conflicting work with **no timeout** — read-vs-write counts
+as a conflict. So every handler taking one of those resources becomes an
+indefinite spinner with nothing on screen explaining it. Each such path must
+either end the session (`endRecordingForApp`, for Stop/Run/Restart/Delete, which
+own the app going away) or refuse when the session is the thing the user is
+doing. Adding a resource to a long-lived operation means auditing every other
+handler that declares it.
+
+For cross-app operations, apply recording refusal per app according to that
+app's claims, not to the whole operation indiscriminately. For example, moving
+media claims `media` on both apps but `repository` only on the target (where it
+may update `.gitignore`), so a recording target must refuse while a recording
+source can still move the media out.
+
+Refuse by passing `refuseWhenRecording: "<action>"` on the coordinator request,
+not by calling `assertNoActiveRecording` beforehand. `run()` checks it in the
+same synchronous step as the enqueue, so no session can start in between; a
+caller-side check leaves exactly that window, and the operation then queues
+behind the session the check existed to avoid. Keep a separate preflight only
+where one must precede work the admission cannot cover (`copyApp` recovers a
+prior test branch first), and pass the flag as well.
+
+When refusing arrives too late to be free — `restoreToMessage` cancels the
+user's in-flight generations before it can take the repository claim — take
+`blockRecordingStart(appId, reason)` first and release it in the same `finally`
+as the other admission blocks. Refusing after a destructive step costs the user
+both the generation and the operation.
+
+Reserve the session's app **before the handler's first await** and give the
+reservation a main-owned cancellation tombstone, not just a busy flag. Between
+the reservation and the published handle there is nothing for a concurrent
+teardown to stop, so it reports success while the reserved start goes on to swap
+`.env.local` and restart the dev server the caller was stopping. The start has to
+re-read the tombstone after every setup await, and release must be
+identity-checked so a cancelled attempt cannot retire its successor's
+reservation. Same rule as the main-owned tombstone in
+[rules/state-machines.md](state-machines.md), applied main-to-main.
+
+## A deliberate stop looks like a crash to the process close listener
+
+`stopAppByInfo` awaits `killProcess` and only deletes the `runningApps` entry
+after it resolves, but the child's spawn-time `close` listener runs _first_ and
+synchronously reaches `removeAppIfCurrentProcess` with the entry still current.
+Anything that listener treats as "the app went away on its own" therefore fires
+for intentional restarts too. Isolation setup restarts the very app it is
+preparing to record, so an unmarked restart ended the session it was setting up
+and deleted the temporary Neon branch ~200ms after creating it. Mark such stops
+(`stopAppByInfo(appId, appInfo, { recordingOwnedRestart: true })`) rather than
+assuming map-entry ordering distinguishes them.
