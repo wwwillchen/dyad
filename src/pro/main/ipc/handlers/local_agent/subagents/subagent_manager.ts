@@ -999,7 +999,11 @@ async function runModel(params: {
   const defaults = MODELS[params.persona];
   const settings = {
     ...readSettings(),
-    selectedModel: { provider: defaults.provider, name: defaults.name },
+    selectedModel: {
+      provider: defaults.provider,
+      name: defaults.name,
+      effortLevel: defaults.effort,
+    },
     thinkingBudget: defaults.effort,
   };
   const modelInfo = await getModelClient(settings.selectedModel, settings);
@@ -1016,7 +1020,9 @@ async function runModel(params: {
       files: [],
       mentionedAppsCodebases: [],
       builtinProviderId: modelInfo.modelClient.builtinProviderId,
-      settings,
+      reasoningEffortProviderId:
+        modelInfo.modelClient.reasoningEffortProviderId,
+      modelSelection: settings.selectedModel,
     }),
     system: systemPrompt(params.persona),
     messages: history,

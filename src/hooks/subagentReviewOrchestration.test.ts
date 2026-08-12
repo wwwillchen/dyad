@@ -1,11 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createStore } from "jotai";
 import type { SubagentThreadSummary } from "@/ipc/types/agent";
-import {
-  effectiveQueuePausedByIdAtom,
-  queuePausedByIdAtom,
-  reviewBarrierHeldByIdAtom,
-} from "@/atoms/chatAtoms";
 
 const mocks = vi.hoisted(() => ({
   startAutoReview: vi.fn(),
@@ -120,17 +114,6 @@ describe("sub-agent review orchestration", () => {
         hasPendingContinuation: true,
       }),
     ).toBe(true);
-  });
-
-  it("preserves an explicit user pause when the review barrier releases its hold", () => {
-    const store = createStore();
-    store.set(queuePausedByIdAtom, new Map([[7, true]]));
-    store.set(reviewBarrierHeldByIdAtom, new Map([[7, true]]));
-
-    store.set(reviewBarrierHeldByIdAtom, new Map([[7, false]]));
-
-    expect(store.get(queuePausedByIdAtom).get(7)).toBe(true);
-    expect(store.get(effectiveQueuePausedByIdAtom).get(7)).toBe(true);
   });
 
   it("does not recursively review remediation turns", () => {

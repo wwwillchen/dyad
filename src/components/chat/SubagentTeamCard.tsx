@@ -85,7 +85,6 @@ export function SubagentTeamCard({
             prompt,
             chatId,
             requestedChatMode: "local-agent",
-            suppressAutoReview: true,
             onSettled: ({ success, pausedByStepLimit }) =>
               resolve(
                 pausedByStepLimit ? "paused" : success ? "completed" : "failed",

@@ -157,7 +157,6 @@ describe("SubagentTeamCard", () => {
           prompt: "Fix current review",
           chatId: 7,
           requestedChatMode: "local-agent",
-          suppressAutoReview: true,
         }),
       );
       expect(mocks.runAutoReviewBarrier).toHaveBeenCalledWith({
