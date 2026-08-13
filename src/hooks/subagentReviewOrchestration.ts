@@ -89,7 +89,6 @@ export async function runQueuedReviewFlow(params: {
 
 interface BackgroundAutoReviewParams {
   chatId: number;
-  sourceMessageId: number;
   getAutoFix: () => boolean;
   streamFix: (prompt: string) => Promise<ReviewRemediationOutcome>;
   onReviewReleased?: () => Promise<void>;
@@ -297,52 +296,43 @@ export function useBackgroundAutoReview(): void {
       return;
     }
 
-    void ipc.chat
-      .getChat(event.chatId)
-      .then(async (chat) => {
-        const sourceMessage = [...chat.messages]
-          .reverse()
-          .find((message) => message.role === "assistant");
-        if (!sourceMessage) return;
-
-        await runBackgroundAutoReview({
-          chatId: event.chatId,
-          sourceMessageId: sourceMessage.id,
-          getAutoFix: () => settingsRef.current?.autoFixReviewIssues === true,
-          onReviewReleased: () => resumeQueue(event.chatId),
-          streamFix: (prompt) => {
-            remediationChatIdsRef.current.add(event.chatId);
-            return new Promise<ReviewRemediationOutcome>((resolve) => {
-              manager.ensure(event.chatId).send({
-                type: "submit",
-                request: {
-                  chatId: event.chatId,
-                  prompt,
-                  requestedChatMode: "local-agent",
-                  onSettled: ({ success, pausedByStepLimit }) => {
-                    resolve(
-                      pausedByStepLimit
-                        ? "paused"
-                        : success
-                          ? "completed"
-                          : "failed",
-                    );
-                  },
+    void (async () => {
+      await runBackgroundAutoReview({
+        chatId: event.chatId,
+        getAutoFix: () => settingsRef.current?.autoFixReviewIssues === true,
+        onReviewReleased: () => resumeQueue(event.chatId),
+        streamFix: (prompt) => {
+          remediationChatIdsRef.current.add(event.chatId);
+          return new Promise<ReviewRemediationOutcome>((resolve) => {
+            manager.ensure(event.chatId).send({
+              type: "submit",
+              request: {
+                chatId: event.chatId,
+                prompt,
+                requestedChatMode: "local-agent",
+                onSettled: ({ success, pausedByStepLimit }) => {
+                  resolve(
+                    pausedByStepLimit
+                      ? "paused"
+                      : success
+                        ? "completed"
+                        : "failed",
+                  );
                 },
-              });
-            }).finally(() => {
-              remediationChatIdsRef.current.delete(event.chatId);
+              },
             });
-          },
-        });
-
-        if (!hasPendingReviewContinuation(event.chatId)) {
-          await resumeQueue(event.chatId);
-        }
-      })
-      .catch(async (error) => {
-        await resumeQueue(event.chatId).catch(showError);
-        showError(error);
+          }).finally(() => {
+            remediationChatIdsRef.current.delete(event.chatId);
+          });
+        },
       });
+
+      if (!hasPendingReviewContinuation(event.chatId)) {
+        await resumeQueue(event.chatId);
+      }
+    })().catch(async (error) => {
+      await resumeQueue(event.chatId).catch(showError);
+      showError(error);
+    });
   });
 }

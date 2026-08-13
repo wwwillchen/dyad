@@ -268,7 +268,6 @@ describe("sub-agent review orchestration", () => {
 
     await runBackgroundAutoReview({
       chatId: 7,
-      sourceMessageId: 42,
       getAutoFix: () => true,
       streamFix,
     });
@@ -299,7 +298,6 @@ describe("sub-agent review orchestration", () => {
 
     await runBackgroundAutoReview({
       chatId: 12,
-      sourceMessageId: 42,
       getAutoFix: () => true,
       streamFix: async () => "paused",
     });
@@ -320,7 +318,6 @@ describe("sub-agent review orchestration", () => {
 
     await runBackgroundAutoReview({
       chatId: 7,
-      sourceMessageId: 42,
       getAutoFix: () => false,
       streamFix: vi.fn(),
     });
@@ -342,7 +339,6 @@ describe("sub-agent review orchestration", () => {
 
     const run = runBackgroundAutoReview({
       chatId: 10,
-      sourceMessageId: 42,
       getAutoFix: () => autoFix,
       streamFix: vi.fn(),
     });
@@ -371,7 +367,6 @@ describe("sub-agent review orchestration", () => {
 
     const firstRun = runBackgroundAutoReview({
       chatId: 9,
-      sourceMessageId: 42,
       getAutoFix: () => false,
       streamFix: vi.fn(),
     });
@@ -381,7 +376,6 @@ describe("sub-agent review orchestration", () => {
 
     await runBackgroundAutoReview({
       chatId: 9,
-      sourceMessageId: 43,
       getAutoFix: () => false,
       streamFix: vi.fn(),
     });

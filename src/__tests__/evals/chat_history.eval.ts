@@ -52,7 +52,7 @@ import {
 } from "./helpers/chat_history_harness";
 
 // The model the explore_chat_history plan would use for its sub-agent
-// (explore_code_subagent.ts SUBAGENT_MODEL) — primary comparison model.
+// (durable Explorer persona model) — primary comparison model.
 const GPT_5_6_LUNA = "gpt-5.6-luna";
 
 type Arm = "current" | "subagent" | "control";

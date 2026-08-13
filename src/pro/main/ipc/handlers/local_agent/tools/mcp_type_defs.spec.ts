@@ -14,6 +14,10 @@ import { requireMcpToolConsent } from "@/ipc/utils/mcp_consent";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import type { AgentContext } from "./types";
 import { MCP_RESULT_MAX_BYTES } from "@/ipc/utils/mcp_result_sanitizer";
+import {
+  acquireMutationLease,
+  releaseMutationLease,
+} from "../subagents/mutation_lease";
 
 vi.mock("@/ipc/utils/mcp_manager", () => ({
   mcpManager: {
@@ -432,6 +436,26 @@ describe("buildMcpCapabilityMap", () => {
     );
     expect(execute).not.toHaveBeenCalled();
     expect(ctx.onXmlComplete).not.toHaveBeenCalled();
+  });
+
+  it("does not run sandbox MCP calls beside an active Implementer", async () => {
+    vi.mocked(requireMcpToolConsent).mockResolvedValue({ approved: true });
+    const execute = vi.fn().mockResolvedValue({ content: [] });
+    vi.mocked(mcpManager.getClient).mockResolvedValue({
+      tools: async () => ({ hello: { execute } }),
+    } as any);
+    acquireMutationLease({ appId: 1, threadId: "writer", scope: ["src"] });
+    const map = buildMcpCapabilityMap({
+      event: {} as any,
+      ctx: createCtx(),
+      defs: [makeDef()],
+    });
+
+    await expect(map.srv__hello({})).rejects.toMatchObject({
+      kind: DyadErrorKind.Conflict,
+    });
+    expect(execute).not.toHaveBeenCalled();
+    releaseMutationLease(1, "writer");
   });
 
   it("does not pass an auto-approve callback during Dyad Free turns", async () => {

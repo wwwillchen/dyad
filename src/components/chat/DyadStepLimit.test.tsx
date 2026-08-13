@@ -8,15 +8,33 @@ const streamChatMocks = vi.hoisted(() => ({
   streamMessage: vi.fn(),
   clearPauseOnly: vi.fn(),
 }));
+const reviewContinuationMocks = vi.hoisted(() => ({
+  hasPending: vi.fn(() => false),
+}));
 
 vi.mock("@/hooks/useStreamChat", () => ({
   useStreamChat: () => streamChatMocks,
+}));
+vi.mock("@/hooks/subagentReviewContinuation", () => ({
+  hasPendingReviewContinuation: reviewContinuationMocks.hasPending,
 }));
 
 describe("DyadStepLimit", () => {
   beforeEach(() => {
     streamChatMocks.streamMessage.mockReset();
     streamChatMocks.clearPauseOnly.mockReset();
+    reviewContinuationMocks.hasPending.mockReturnValue(false);
+  });
+
+  it("leaves review-owned pauses for verification to release", () => {
+    reviewContinuationMocks.hasPending.mockReturnValue(true);
+    renderStepLimit();
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    const onSettled = streamChatMocks.streamMessage.mock.calls[0][0].onSettled;
+    act(() => onSettled({ success: true, pausedByStepLimit: false }));
+
+    expect(streamChatMocks.clearPauseOnly).not.toHaveBeenCalled();
   });
 
   it("keeps the queue paused when continuation hits the step limit again", () => {

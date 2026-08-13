@@ -238,23 +238,23 @@ export function SubagentTeamCard({
   return (
     <div className="mt-3 rounded-lg border bg-muted/20 text-sm">
       <div className="flex items-center justify-between gap-2 p-2">
-        <button
-          className="flex items-center gap-2 font-medium"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? (
-            <ChevronDown className="h-4 w-4" />
-          ) : (
-            <ChevronRight className="h-4 w-4" />
-          )}
-          <Bot className="h-4 w-4" /> Agent team
-          {visibleThreads.length > 0 && (
+        {visibleThreads.length > 0 && (
+          <button
+            className="flex items-center gap-2 font-medium"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? (
+              <ChevronDown className="h-4 w-4" />
+            ) : (
+              <ChevronRight className="h-4 w-4" />
+            )}
+            <Bot className="h-4 w-4" /> Agent team
             <span className="text-xs text-muted-foreground">
               {visibleThreads.length}
             </span>
-          )}
-        </button>
+          </button>
+        )}
         <Button
           size="sm"
           variant="outline"
