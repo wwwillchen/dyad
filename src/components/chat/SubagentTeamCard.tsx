@@ -225,6 +225,7 @@ export function SubagentTeamCard({
   );
   if (!isPro) return null;
   if (query.isPending) {
+    if (!showReviewAction) return null;
     return (
       <div className="mt-3 flex items-center gap-2 rounded-lg border bg-muted/20 p-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" /> Loading agent team
@@ -232,6 +233,7 @@ export function SubagentTeamCard({
     );
   }
   if (query.isError) {
+    if (!showReviewAction) return null;
     return (
       <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-destructive/40 bg-muted/20 p-2 text-sm">
         <span className="text-destructive">Could not load agent team.</span>

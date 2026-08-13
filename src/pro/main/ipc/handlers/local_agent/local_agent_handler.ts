@@ -1989,7 +1989,7 @@ export async function handleLocalAgentStream(
       !planModeOnly &&
       (workspaceChanged || ctx.mcpToolRan === true);
     const reviewBarrierRequested =
-      updatedFiles &&
+      workspaceChanged &&
       !hitStepLimit &&
       isDyadProEnabled(settings) &&
       settings.enableAutoReview === true;

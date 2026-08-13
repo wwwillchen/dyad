@@ -511,20 +511,6 @@ export async function skipReviewAutoFix(
   autoFixOwnerByThread.delete(threadId);
 }
 
-export function buildFailedRemediationState(
-  resultJson: Record<string, unknown> | null,
-  now = new Date(),
-) {
-  return {
-    status: "completed" as const,
-    resultJson,
-    remediationSource: null,
-    error: "Review remediation did not complete.",
-    completedAt: now,
-    updatedAt: now,
-  };
-}
-
 export async function buildFixFindingsPrompt(
   chatId: number,
   threadId: string,
@@ -606,14 +592,6 @@ export async function buildFixFindingsPrompt(
     );
   }
   return prompt;
-}
-
-export function remediationClaimStatus(
-  source: "fix_button" | "auto_fix" | "queued_message_override",
-): "completed" | "auto_fix_countdown" {
-  return source === "queued_message_override"
-    ? "auto_fix_countdown"
-    : "completed";
 }
 
 export function buildRemediationPrompt(

@@ -61,10 +61,7 @@ vi.mock("@/ipc/types", async (importOriginal) => {
 });
 
 import {
-  isStreamReviewEligible,
   runBackgroundAutoReview,
-  runQueuedReviewFlow,
-  shouldRunQueuedReviewBarrier,
   shouldResumePendingReview,
   shouldStartBackgroundAutoReview,
   useBackgroundAutoReview,
@@ -125,20 +122,6 @@ describe("sub-agent review orchestration", () => {
     ).toBe(false);
   });
 
-  it("bypasses the queued review barrier when the completed turn changed no files", () => {
-    expect(
-      isStreamReviewEligible({ updatedFiles: false, wasCancelled: false }),
-    ).toBe(false);
-    expect(
-      isStreamReviewEligible({ updatedFiles: true, wasCancelled: true }),
-    ).toBe(false);
-    expect(
-      isStreamReviewEligible({ updatedFiles: true, wasCancelled: false }),
-    ).toBe(true);
-    expect(shouldRunQueuedReviewBarrier(false)).toBe(false);
-    expect(shouldRunQueuedReviewBarrier(true)).toBe(true);
-  });
-
   it("does not resume a paused review continuation after cancellation", () => {
     expect(
       shouldResumePendingReview({
@@ -165,75 +148,6 @@ describe("sub-agent review orchestration", () => {
         suppressAutoReview: true,
       }),
     ).toBe(false);
-  });
-
-  it("remediates and verifies before releasing a queued message", async () => {
-    const events: string[] = [];
-    const runBarrier = vi.fn(async (verification?: boolean) => {
-      events.push(verification ? "verify" : "review");
-      return verification
-        ? ({ outcome: "released" } as const)
-        : ({ outcome: "fix_required", prompt: "fix it" } as const);
-    });
-    const streamRemediation = vi.fn(async () => {
-      events.push("fix");
-      return "completed" as const;
-    });
-
-    await expect(
-      runQueuedReviewFlow({ runBarrier, streamRemediation }),
-    ).resolves.toBe("released");
-    expect(events).toEqual(["review", "fix", "verify"]);
-  });
-
-  it("keeps the queue paused while another renderer owns remediation", async () => {
-    await expect(
-      runQueuedReviewFlow({
-        runBarrier: async () => ({ outcome: "waiting" }),
-        streamRemediation: vi.fn(),
-      }),
-    ).resolves.toBe("paused");
-  });
-
-  it("releases the queued message when remediation fails", async () => {
-    const runBarrier = vi.fn(async () => ({
-      outcome: "fix_required" as const,
-      threadId: "review-1",
-      prompt: "fix it",
-    }));
-    const onRemediationFailed = vi.fn(async () => {});
-
-    await expect(
-      runQueuedReviewFlow({
-        runBarrier,
-        streamRemediation: async () => "failed",
-        onRemediationFailed,
-      }),
-    ).resolves.toBe("released");
-    expect(runBarrier).toHaveBeenCalledTimes(1);
-    expect(onRemediationFailed).toHaveBeenCalledWith("review-1");
-  });
-
-  it("keeps the queue paused when remediation hits the step limit", async () => {
-    const runBarrier = vi.fn(async () => ({
-      outcome: "fix_required" as const,
-      threadId: "review-1",
-      prompt: "fix it",
-    }));
-    const onRemediationFailed = vi.fn(async () => {});
-    const onRemediationPaused = vi.fn();
-
-    await expect(
-      runQueuedReviewFlow({
-        runBarrier,
-        streamRemediation: async () => "paused",
-        onRemediationFailed,
-        onRemediationPaused,
-      }),
-    ).resolves.toBe("paused");
-    expect(runBarrier).toHaveBeenCalledTimes(1);
-    expect(onRemediationFailed).not.toHaveBeenCalled();
-    expect(onRemediationPaused).toHaveBeenCalledTimes(1);
   });
 
   it("resumes a paused remediation with exactly one verification", async () => {

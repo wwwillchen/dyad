@@ -5,7 +5,6 @@ import {
   useStreamFinished,
 } from "@/chat_stream/ChatStreamProvider";
 import { ipc } from "@/ipc/types";
-import type { ChatResponseEnd } from "@/ipc/types";
 import { isDyadProEnabled } from "@/lib/schemas";
 import { showError } from "@/lib/toast";
 
@@ -18,16 +17,6 @@ import {
 import { useSettings } from "./useSettings";
 
 export type ReviewRemediationOutcome = "completed" | "failed" | "paused";
-
-export function isStreamReviewEligible(
-  response: Pick<ChatResponseEnd, "updatedFiles" | "wasCancelled">,
-): boolean {
-  return !response.wasCancelled && response.updatedFiles === true;
-}
-
-export function shouldRunQueuedReviewBarrier(reviewEligible: boolean): boolean {
-  return reviewEligible;
-}
 
 export function shouldStartBackgroundAutoReview(params: {
   updatedFiles: boolean;
@@ -53,43 +42,6 @@ export function shouldResumePendingReview(params: {
     params.pausePromptQueue !== true &&
     params.hasPendingContinuation
   );
-}
-
-export async function runQueuedReviewFlow(params: {
-  runBarrier: (verification?: boolean) => Promise<{
-    outcome:
-      | "released"
-      | "skipped"
-      | "waiting"
-      | "fix_required"
-      | "verification_failed";
-    threadId?: string;
-    prompt?: string;
-  }>;
-  streamRemediation: (prompt: string) => Promise<ReviewRemediationOutcome>;
-  onRemediationFailed?: (threadId: string) => Promise<void>;
-  onRemediationPaused?: () => void;
-}): Promise<"released" | "paused"> {
-  const barrier = await params.runBarrier();
-  if (barrier.outcome === "waiting") return "paused";
-  if (barrier.outcome !== "fix_required" || !barrier.prompt) {
-    return "released";
-  }
-
-  const remediated = await params.streamRemediation(barrier.prompt);
-  if (remediated === "paused") {
-    params.onRemediationPaused?.();
-    return "paused";
-  }
-  if (remediated === "failed") {
-    if (barrier.threadId) {
-      await params.onRemediationFailed?.(barrier.threadId);
-    }
-    return "released";
-  }
-
-  await params.runBarrier(true);
-  return "released";
 }
 
 interface BackgroundAutoReviewParams {

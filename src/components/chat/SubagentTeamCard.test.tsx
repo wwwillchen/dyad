@@ -148,6 +148,17 @@ describe("SubagentTeamCard", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
+  it("hides shared loading state on historical assistant messages", () => {
+    mocks.listSubagents.mockReturnValue(new Promise(() => {}));
+
+    render(
+      <SubagentTeamCard chatId={7} messageId={41} showReviewAction={false} />,
+      { wrapper: makeWrapper() },
+    );
+
+    expect(screen.queryByText("Loading agent team")).toBeNull();
+  });
+
   it("shows and fixes only the review for this assistant message", async () => {
     mocks.listSubagents.mockResolvedValue([
       makeReview("newer-other-message", 99, "stale report"),

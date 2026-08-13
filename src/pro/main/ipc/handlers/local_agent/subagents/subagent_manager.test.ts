@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   buildAllExcludedReviewResult,
-  buildFailedRemediationState,
   buildRemediationPrompt,
   buildReboundReviewState,
   buildBoundedModelHistory,
@@ -13,7 +12,6 @@ import {
   isSubagentJoinReady,
   isTerminalSubagentStatus,
   isWaitCompleteStatus,
-  remediationClaimStatus,
   reviewFollowupAvailability,
   setSubagentEventTarget,
   SUBAGENT_NONTERMINAL_STATUSES,
@@ -72,20 +70,6 @@ describe("sub-agent manager status policy", () => {
       remediationSource: null,
       autoFixAt: null,
       updatedAt,
-    });
-  });
-
-  it("clears a failed remediation claim so findings can be retried", () => {
-    const now = new Date("2026-07-22T00:00:00Z");
-    const resultJson = { findingCount: 1, report: "One finding" };
-
-    expect(buildFailedRemediationState(resultJson, now)).toEqual({
-      status: "completed",
-      resultJson,
-      remediationSource: null,
-      error: "Review remediation did not complete.",
-      completedAt: now,
-      updatedAt: now,
     });
   });
 
@@ -193,14 +177,6 @@ describe("sub-agent manager status policy", () => {
       { role: "assistant", content: "Option two uses callbacks." },
       { role: "user", content: "Address queued messages in order" },
     ]);
-  });
-
-  it("claims remediation only from the status owned by its trigger", () => {
-    expect(remediationClaimStatus("queued_message_override")).toBe(
-      "auto_fix_countdown",
-    );
-    expect(remediationClaimStatus("fix_button")).toBe("completed");
-    expect(remediationClaimStatus("auto_fix")).toBe("completed");
   });
 
   it("serializes validated findings without allowing delimiter injection", () => {
