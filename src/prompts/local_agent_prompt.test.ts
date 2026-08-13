@@ -83,10 +83,15 @@ describe("local_agent_prompt", () => {
     expect(prompt).toContain("write_app_blueprint");
     expect(prompt).toContain("planning_questionnaire");
     expect(prompt).toContain("aim for 3-4 quick questions; never exceed 5");
-    expect(prompt).toContain("Do not ask the user technical questions");
-    expect(prompt).toContain("whether the app requires user accounts");
     expect(prompt).toContain(
-      "such as in a database, only on the user's device, or not persisted at all",
+      "user-facing product requirements and high-level architectural needs",
+    );
+    expect(prompt).toContain("whether the app needs user accounts");
+    expect(prompt).toContain(
+      "whether it needs a database to store persistent app data",
+    );
+    expect(prompt).toContain(
+      "Do not ask the user to choose implementation details such as frameworks, libraries, hosting platforms, database providers, authentication providers, or other technology-specific options",
     );
   });
 
