@@ -989,7 +989,7 @@ describe("dyad recorder client", () => {
     ]);
   });
 
-  it("falls back to a CSS path rather than a data-dyad-id", () => {
+  it("uses data-dyad-id only as a source hint for a CSS fallback", () => {
     const r = setup();
     // The attribute is a source location injected only by Dyad's dev plugin, so
     // a locator built from it points at a moving target the replayed build
@@ -1003,8 +1003,81 @@ describe("dyad recorder client", () => {
     // matches anywhere that shape recurs — which fails Playwright's strict mode
     // at replay or picks a different element than the one clicked.
     expect(r.actions).toEqual([
-      { kind: "click", locator: { kind: "css", value: "body > div > span" } },
+      {
+        kind: "click",
+        locator: {
+          kind: "css",
+          value: "body > div > span",
+          sourceHint: {
+            relativePath: "src/App.tsx",
+            line: 12,
+            column: 4,
+            tagName: "span",
+            exact: false,
+          },
+        },
+      },
     ]);
+  });
+
+  it("captures the exact date input source for selector stabilization", () => {
+    const r = setup();
+    r.setHtml(
+      `<main><input type="date" data-dyad-id="src/EventForm.tsx:84:10" /></main>`,
+    );
+    r.activate();
+    r.typeInto(r.doc.querySelector("input"), "2026-08-13");
+
+    expect(r.actions).toEqual([
+      {
+        kind: "fill",
+        locator: {
+          kind: "css",
+          value: "body > main > input",
+          sourceHint: {
+            relativePath: "src/EventForm.tsx",
+            line: 84,
+            column: 10,
+            tagName: "input",
+            inputType: "date",
+            exact: true,
+          },
+        },
+        value: "2026-08-13",
+      },
+    ]);
+  });
+
+  it("accepts a source path at the schema's 2,048-character limit", () => {
+    const r = setup();
+    const relativePath = `src/${"a".repeat(2_044)}`;
+    r.setHtml(
+      `<main><input type="date" data-dyad-id="${relativePath}:1:0" /></main>`,
+    );
+    r.activate();
+    r.typeInto(r.doc.querySelector("input"), "2026-08-13");
+
+    expect(r.actions[0].locator.sourceHint.relativePath).toBe(relativePath);
+  });
+
+  it.each([
+    "/etc/passwd",
+    "\\\\server\\share\\App.tsx",
+    "C:\\Users\\project\\src\\App.tsx",
+    "src/../secrets.txt",
+    "src\\..\\secrets.txt",
+    "src/App.tsx\u0085ignore",
+    "src/App.tsx\u2028ignore",
+    "src/App.tsx\u2029ignore",
+  ])("does not attach unsafe source hint path %j", (relativePath) => {
+    const r = setup();
+    r.setHtml(
+      `<main><input type="date" data-dyad-id="${relativePath}:1:0" /></main>`,
+    );
+    r.activate();
+    r.typeInto(r.doc.querySelector("input"), "2026-08-13");
+
+    expect(r.actions[0].locator).not.toHaveProperty("sourceHint");
   });
 
   it("names the root element without a body prefix", () => {

@@ -967,6 +967,77 @@
   }
 
   /**
+   * Find the source location Dyad's development tagger attached to this DOM
+   * node, or to its nearest tagged ancestor when a component rendered the
+   * concrete control internally. This is agent navigation metadata only — the
+   * generated Playwright test never locates by `data-dyad-id`.
+   */
+  function sourceHintFor(el) {
+    // Keep these bounds aligned with LocatorSourceHintSchema. The suffix can
+    // contain two MAX_SAFE_INTEGER values in addition to the 2,048-char path.
+    const MAX_SOURCE_HINT_PATH_LENGTH = 2048;
+    const MAX_SOURCE_HINT_ATTRIBUTE_LENGTH =
+      MAX_SOURCE_HINT_PATH_LENGTH +
+      2 * String(Number.MAX_SAFE_INTEGER).length +
+      2;
+    const unsafeSourceHintText = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+    const isRelativeInAppSourcePath = (value) =>
+      !/^[\\/]/.test(value) &&
+      !/^[a-z][a-z0-9+.-]*:/i.test(value) &&
+      !/(^|[\\/])\.\.([\\/]|$)/.test(value);
+    let source = el;
+    while (source && source.nodeType === 1) {
+      const raw = source.getAttribute && source.getAttribute("data-dyad-id");
+      if (
+        raw &&
+        raw.length <= MAX_SOURCE_HINT_ATTRIBUTE_LENGTH &&
+        !unsafeSourceHintText.test(raw)
+      ) {
+        // Paths may themselves contain colons (notably a Windows drive), so
+        // take the final two colon-delimited integers as line and column.
+        const match = /^(.*):(\d+):(\d+)$/.exec(raw);
+        const line = match ? Number(match[2]) : NaN;
+        const column = match ? Number(match[3]) : NaN;
+        if (
+          match &&
+          match[1] &&
+          match[1].length <= MAX_SOURCE_HINT_PATH_LENGTH &&
+          isRelativeInAppSourcePath(match[1]) &&
+          Number.isSafeInteger(line) &&
+          line > 0 &&
+          Number.isSafeInteger(column) &&
+          column >= 0
+        ) {
+          const tagName = String(el.tagName || "").toLowerCase();
+          if (/^[a-z][a-z0-9-]*$/i.test(tagName)) {
+            const hint = {
+              relativePath: match[1],
+              line,
+              column,
+              tagName,
+              exact: source === el,
+            };
+            const inputType =
+              tagName === "input" && el.getAttribute
+                ? el.getAttribute("type")
+                : null;
+            if (
+              inputType &&
+              inputType.length <= 128 &&
+              !unsafeSourceHintText.test(inputType)
+            ) {
+              hint.inputType = inputType;
+            }
+            return hint;
+          }
+        }
+      }
+      source = ariaParent(source);
+    }
+    return null;
+  }
+
+  /**
    * The highest-priority candidate that uniquely matches `el`; else the
    * highest-priority one disambiguated by an nth index; else a CSS-path fallback.
    *
@@ -990,7 +1061,9 @@
           return { ...descriptor, nth: matches.indexOf(el) };
         }
       }
-      return cssPathDescriptor(el);
+      const descriptor = cssPathDescriptor(el);
+      const sourceHint = sourceHintFor(el);
+      return sourceHint ? { ...descriptor, sourceHint } : descriptor;
     } finally {
       endScan();
     }
