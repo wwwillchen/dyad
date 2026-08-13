@@ -77,7 +77,7 @@ Each question object has these fields:
 </input_schema>
 
 <correct_example>
-Reasoning: The user asked to "build me a todo app". I need to clarify the tech stack and key features. I'll use radio for single-choice and checkbox for multi-choice.
+Reasoning: The user asked to "build me a todo app". I need to clarify the look and feel and key product features. I'll use radio for single-choice and checkbox for multi-choice.
 
 {
   "questions": [

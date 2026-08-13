@@ -82,6 +82,9 @@ describe("local_agent_prompt", () => {
     expect(prompt).toContain("App Blueprint (new apps only)");
     expect(prompt).toContain("write_app_blueprint");
     expect(prompt).toContain("planning_questionnaire");
+    expect(prompt).toContain(
+      "For new apps, follow the question-count guidance in the app blueprint section",
+    );
     expect(prompt).toContain("aim for 3-4 quick questions; never exceed 5");
     expect(prompt).toContain(
       "user-facing product requirements and high-level architectural needs",
