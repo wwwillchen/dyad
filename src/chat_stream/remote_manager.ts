@@ -69,6 +69,15 @@ interface RemoteChatRef {
 
 const IDLE_UNSUBSCRIBE: () => void = () => undefined;
 
+export function projectPausedByStepLimit(completion: {
+  pausePromptQueue?: boolean;
+  reviewBarrierRequested?: boolean;
+}): boolean | undefined {
+  return completion.pausePromptQueue === undefined
+    ? undefined
+    : completion.pausePromptQueue && completion.reviewBarrierRequested !== true;
+}
+
 export type QueueMutationWithoutRevision =
   | Omit<
       Extract<ChatStreamIntentEvent, { type: "PAUSE_QUEUE" }>,
@@ -571,7 +580,7 @@ export class ChatStreamRemoteManager {
           ) {
             pending.request.onSettled?.({
               success: replayedCompletion.outcome === "completed",
-              pausedByStepLimit: replayedCompletion.pausePromptQueue,
+              pausedByStepLimit: projectPausedByStepLimit(replayedCompletion),
             });
             this.takePendingSubmission(acceptance.intentId);
           }
@@ -608,7 +617,7 @@ export class ChatStreamRemoteManager {
     if (pending) {
       const result: StreamSettledResult = {
         success: completion.outcome === "completed",
-        pausedByStepLimit: completion.pausePromptQueue,
+        pausedByStepLimit: projectPausedByStepLimit(completion),
       };
       pending.request.onSettled?.(result);
     }
