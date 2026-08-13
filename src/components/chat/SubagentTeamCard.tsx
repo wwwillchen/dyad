@@ -222,6 +222,23 @@ export function SubagentTeamCard({
     threads.map((thread, index) => [thread.id, transcriptQueries[index]]),
   );
   if (!isPro) return null;
+  if (query.isPending) {
+    return (
+      <div className="mt-3 flex items-center gap-2 rounded-lg border bg-muted/20 p-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" /> Loading agent team
+      </div>
+    );
+  }
+  if (query.isError) {
+    return (
+      <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-destructive/40 bg-muted/20 p-2 text-sm">
+        <span className="text-destructive">Could not load agent team.</span>
+        <Button size="sm" variant="outline" onClick={() => query.refetch()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
   const visibleThreads = threads.filter(
     (thread) =>
       thread.persona !== "reviewer" || thread.sourceMessageId === messageId,

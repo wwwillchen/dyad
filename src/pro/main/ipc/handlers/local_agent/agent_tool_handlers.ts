@@ -87,7 +87,18 @@ export function registerAgentToolHandlers() {
   });
   handle(agentContracts.runAutoReviewBarrier, async (event, params) => {
     setSubagentEventTarget(event.sender);
-    return runAutoReviewBarrier({ ...params, callerId: event.sender.id });
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    event.sender.once("destroyed", abort);
+    try {
+      return await runAutoReviewBarrier({
+        ...params,
+        callerId: event.sender.id,
+        abortSignal: controller.signal,
+      });
+    } finally {
+      event.sender.removeListener("destroyed", abort);
+    }
   });
   handle(
     agentContracts.fixReviewFindings,

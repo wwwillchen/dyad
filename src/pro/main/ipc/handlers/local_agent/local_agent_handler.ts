@@ -997,7 +997,7 @@ export async function handleLocalAgentStream(
     // so the system prompt stays static and cacheable.
     if (referencedApps.length > 0) {
       injectReferencedAppsReminder(messageHistory, referencedApps, {
-        codeExplorerAvailable: agentTools.spawn_agent != undefined,
+        codeExplorerAvailable: ctx.canUseExplorerSubagent === true,
       });
     }
 
@@ -1991,7 +1991,7 @@ export async function handleLocalAgentStream(
     // evidence to start an automatic Git review.
     const updatedFiles = workspaceChanged || ctx.mcpToolRan === true;
     const reviewBarrierRequested =
-      workspaceChanged &&
+      updatedFiles &&
       !hitStepLimit &&
       isDyadProEnabled(settings) &&
       settings.enableAutoReview === true;

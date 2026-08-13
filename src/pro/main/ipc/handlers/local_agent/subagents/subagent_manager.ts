@@ -47,6 +47,7 @@ const MODELS = {
 } as const;
 const MAX_DURABLE_REPORT_CHARS = 100_000;
 const MAX_MODEL_HISTORY_CHARS = 100_000;
+const AUTO_REVIEW_BARRIER_MAX_WAIT_MS = 10 * 60 * 1000;
 const logger = log.scope("subagent_manager");
 
 export const SUBAGENT_NONTERMINAL_STATUSES = [
@@ -557,11 +558,14 @@ export async function runAutoReviewBarrier(params: {
   verification?: boolean;
   autoFix?: boolean;
   callerId?: number;
+  abortSignal?: AbortSignal;
+  deadlineAt?: number;
 }): Promise<{
   outcome: "released" | "skipped" | "waiting" | "fix_required";
   threadId?: string;
   prompt?: string;
 }> {
+  params.deadlineAt ??= Date.now() + AUTO_REVIEW_BARRIER_MAX_WAIT_MS;
   const settings = readSettings();
   const isPro = isDyadProEnabled(settings);
   if (params.verification && isPro) {
@@ -600,7 +604,9 @@ export async function runAutoReviewBarrier(params: {
     return { outcome: "released" };
   }
   while (["queued", "running", "waiting_for_writer"].includes(summary.status)) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (!(await waitForAutoReviewPoll(params))) {
+      return { outcome: "waiting", threadId: summary.id };
+    }
     summary = toSummary(await getThread(summary.id));
   }
   if (params.verification) {
@@ -677,7 +683,9 @@ export async function runAutoReviewBarrier(params: {
     emit(summary.chatId, summary.id);
   }
   while (Date.now() < autoFixAt.getTime()) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (!(await waitForAutoReviewPoll(params))) {
+      return { outcome: "waiting", threadId: summary.id };
+    }
   }
   const afterCountdown = await getOwnedThread(params.chatId, summary.id);
   if (afterCountdown.status !== "auto_fix_countdown") {
@@ -748,9 +756,19 @@ async function waitForAutoFixOwner(
     ) {
       return { outcome: "released", threadId };
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (!(await waitForAutoReviewPoll(params))) {
+      return { outcome: "waiting", threadId };
+    }
   }
   return runAutoReviewBarrier(params);
+}
+
+async function waitForAutoReviewPoll(
+  params: Parameters<typeof runAutoReviewBarrier>[0],
+): Promise<boolean> {
+  if (Date.now() >= (params.deadlineAt ?? 0)) return false;
+  await waitForAbortableDelay(250, params.abortSignal);
+  return Date.now() < (params.deadlineAt ?? 0);
 }
 
 export async function sendSubagentMessage(

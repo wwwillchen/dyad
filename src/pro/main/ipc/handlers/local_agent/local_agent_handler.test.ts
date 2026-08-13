@@ -984,7 +984,7 @@ describe("handleLocalAgentStream", () => {
       });
     });
 
-    it("refreshes preview after MCP tools without requesting a Git review", async () => {
+    it("conservatively reviews opaque MCP tool changes", async () => {
       const { event, getMessagesByChannel } = createFakeEvent();
       mockSettings = buildTestSettings({
         enableDyadPro: true,
@@ -1016,8 +1016,8 @@ describe("handleLocalAgentStream", () => {
       expect(
         getMessagesByChannel("chat:response:end")[0].args[0],
       ).toMatchObject({
-        reviewBarrierRequested: undefined,
-        pausePromptQueue: undefined,
+        reviewBarrierRequested: true,
+        pausePromptQueue: true,
       });
     });
 

@@ -548,6 +548,12 @@ export function buildAgentToolSet(
           const mutationRequiresAdmission =
             toolModifiesState(tool, ctx) &&
             tool.requiresMutationLease !== false;
+          const processedArgs = await processArgPlaceholders(args, ctx);
+
+          // Consent can wait indefinitely for the user. Resolve it before
+          // entering app-wide mutation admission so cancellation/finalization
+          // and other actors are not parked behind a UI prompt.
+          await requireToolConsentOrThrow(tool, processedArgs, ctx);
           const invoke = async () => {
             if (ctx.abortSignal?.aborted) {
               throw new DyadError(
@@ -583,11 +589,6 @@ export function buildAgentToolSet(
                 enabled: options.enableAppBlueprint !== false,
               });
             }
-
-            const processedArgs = await processArgPlaceholders(args, ctx);
-
-            // Check consent before executing the tool
-            await requireToolConsentOrThrow(tool, processedArgs, ctx);
 
             // Track file edit tool usage before execution to capture all attempts
             // (including failures) for retry/fallback telemetry

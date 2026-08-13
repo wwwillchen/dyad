@@ -130,6 +130,24 @@ describe("SubagentTeamCard", () => {
     });
   });
 
+  it("shows loading and retry states for the team query", async () => {
+    let rejectQuery!: (error: Error) => void;
+    mocks.listSubagents.mockReturnValue(
+      new Promise((_, reject) => {
+        rejectQuery = reject;
+      }),
+    );
+
+    render(<SubagentTeamCard chatId={7} messageId={42} />, {
+      wrapper: makeWrapper(),
+    });
+    expect(screen.getByText("Loading agent team")).toBeTruthy();
+
+    rejectQuery(new Error("IPC unavailable"));
+    expect(await screen.findByText("Could not load agent team.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  });
+
   it("shows and fixes only the review for this assistant message", async () => {
     mocks.listSubagents.mockResolvedValue([
       makeReview("newer-other-message", 99, "stale report"),
