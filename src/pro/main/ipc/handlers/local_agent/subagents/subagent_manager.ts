@@ -11,6 +11,11 @@ import { getModelClient } from "@/ipc/utils/get_model_client";
 import { getAiHeaders, getProviderOptions } from "@/ipc/utils/provider_options";
 import { withLock } from "@/ipc/utils/lock_utils";
 import { fastTextOutput } from "@/ipc/utils/stream_text_utils";
+import { getBuiltinLanguageModelCatalog } from "@/ipc/shared/remote_language_model_catalog";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "@/ipc/services/app_operation_coordinator";
 import type {
   SubagentMessage,
   SubagentPersona,
@@ -58,7 +63,7 @@ export const SUBAGENT_NONTERMINAL_STATUSES = [
 const ACTIVE = ["queued", "running", "waiting_for_writer"] as const;
 const abortControllers = new Map<string, AbortController>();
 const cancelledThreadIds = new Set<string>();
-const skippedAutoFixes = new Set<string>();
+const autoFixOwnerByThread = new Map<string, number>();
 const followupRunners = new Map<string, (assignment: string) => void>();
 const followupStarts = new Set<string>();
 const activeRunsByChat = new Map<number, Set<string>>();
@@ -143,6 +148,7 @@ export async function spawnModelSubagent(params: {
       DyadErrorKind.Validation,
     );
   }
+  await preflightPersonaModel(params.persona);
 
   const threadId = crypto.randomUUID();
   const reserved =
@@ -208,6 +214,7 @@ export async function startReview(params: {
   allowWhenAutoReviewDisabled?: boolean;
 }): Promise<SubagentThreadSummary> {
   assertPro("reviewer");
+  await preflightPersonaModel("reviewer");
   if (
     params.invocationSource === "auto_review" &&
     !params.allowWhenAutoReviewDisabled &&
@@ -234,8 +241,8 @@ export async function startReview(params: {
       DyadErrorKind.NotFound,
     );
   }
-  const target = await buildReviewTarget({
-    appPath: getDyadAppPath(chat.app.path),
+  const { target, appPath } = await buildCoordinatedReviewTarget({
+    chatId: params.chatId,
     baseCommit: source.sourceCommitHash,
     targetCommit: source.commitHash,
   });
@@ -300,13 +307,7 @@ export async function startReview(params: {
           chatId: params.chatId,
           source: params.invocationSource,
           run: () =>
-            runReview(
-              thread.id,
-              chat.app.id,
-              getDyadAppPath(chat.app.path),
-              target,
-              followup,
-            ),
+            runReview(thread.id, chat.app.id, appPath, target, followup),
         });
       followupRunners.set(thread.id, run);
       run();
@@ -347,6 +348,18 @@ export async function cancelSubagent(
     });
     if (chat?.app) releaseMutationLease(chat.app.id, threadId);
   }
+  if (thread.persona === "implementer" && controller) {
+    const chat = await db.query.chats.findFirst({
+      where: eq(chats.id, chatId),
+      with: { app: true },
+    });
+    if (chat?.app) {
+      // Cancellation is not terminal until an already-entered atomic mutation
+      // leaves admission. The wrapper's abort check prevents queued mutations
+      // from entering after this drain.
+      await withMutationAdmission(chat.app.id, async () => {});
+    }
+  }
   await finishThread(threadId, "cancelled", null, "Cancelled by user.");
   if (pendingIndex >= 0 || (!controller && !schedulerStillOwnsRun)) {
     cancelledThreadIds.delete(threadId);
@@ -356,10 +369,11 @@ export async function cancelSubagent(
 export async function skipReviewAutoFix(
   chatId: number,
   threadId: string,
+  remediationFailed = false,
 ): Promise<void> {
   assertPro("reviewer");
   const thread = await getOwnedThread(chatId, threadId);
-  if (thread.status === "fixing_findings") {
+  if (remediationFailed && thread.status === "fixing_findings") {
     const updated = await db
       .update(agentThreads)
       .set(buildFailedRemediationState(thread.resultJson))
@@ -370,10 +384,29 @@ export async function skipReviewAutoFix(
         ),
       )
       .returning({ id: agentThreads.id });
+    autoFixOwnerByThread.delete(threadId);
     if (updated.length > 0) emit(thread.chatId, threadId);
     return;
   }
-  skippedAutoFixes.add(threadId);
+  const updated = await db
+    .update(agentThreads)
+    .set({ status: "completed", autoFixAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(agentThreads.id, threadId),
+        eq(agentThreads.status, "auto_fix_countdown"),
+        isNull(agentThreads.remediationSource),
+      ),
+    )
+    .returning({ id: agentThreads.id });
+  if (updated.length === 0 && thread.status !== "completed") {
+    throw new DyadError(
+      "Automatic fixes have already started for this review.",
+      DyadErrorKind.Precondition,
+    );
+  }
+  autoFixOwnerByThread.delete(threadId);
+  if (updated.length > 0) emit(thread.chatId, threadId);
 }
 
 export function buildFailedRemediationState(
@@ -426,8 +459,8 @@ export async function buildFixFindingsPrompt(
       DyadErrorKind.Precondition,
     );
   }
-  const target = await buildReviewTarget({
-    appPath: getDyadAppPath(chat.app.path),
+  const { target } = await buildCoordinatedReviewTarget({
+    chatId,
     baseCommit: source.sourceCommitHash,
     targetCommit: source.commitHash,
   });
@@ -523,8 +556,9 @@ export async function runAutoReviewBarrier(params: {
   chatId: number;
   verification?: boolean;
   autoFix?: boolean;
+  callerId?: number;
 }): Promise<{
-  outcome: "released" | "skipped" | "fix_required";
+  outcome: "released" | "skipped" | "waiting" | "fix_required";
   threadId?: string;
   prompt?: string;
 }> {
@@ -575,49 +609,79 @@ export async function runAutoReviewBarrier(params: {
   }
   const completedReview = await getOwnedThread(params.chatId, summary.id);
   if (completedReview.remediationSource) {
+    if (
+      completedReview.status === "fixing_findings" &&
+      completedReview.remediationSource === "queued_message_override"
+    ) {
+      const owner = autoFixOwnerByThread.get(summary.id);
+      if (
+        owner !== undefined &&
+        owner !== params.callerId &&
+        isLiveCaller(owner)
+      ) {
+        return waitForAutoFixOwner(params, summary.id, owner);
+      }
+      autoFixOwnerByThread.set(summary.id, params.callerId ?? 0);
+      return {
+        outcome: "fix_required",
+        threadId: summary.id,
+        prompt: buildPromptForPersistedReview(completedReview),
+      };
+    }
     return { outcome: "released", threadId: summary.id };
   }
   const findingCount = Number(summary.result?.findingCount ?? 0);
-  if (summary.status !== "completed" || findingCount === 0)
+  if (summary.status === "auto_fix_countdown") {
+    const owner = autoFixOwnerByThread.get(summary.id);
+    if (
+      owner !== undefined &&
+      owner !== params.callerId &&
+      isLiveCaller(owner)
+    ) {
+      return waitForAutoFixOwner(params, summary.id, owner);
+    }
+    autoFixOwnerByThread.set(summary.id, params.callerId ?? 0);
+  } else if (summary.status !== "completed" || findingCount === 0) {
     return { outcome: "released", threadId: summary.id };
+  }
   if (params.autoFix === false) {
     return { outcome: "released", threadId: summary.id };
   }
 
-  const autoFixAt = new Date(Date.now() + 10_000);
-  const countdownClaim = await db
-    .update(agentThreads)
-    .set({ status: "auto_fix_countdown", autoFixAt, updatedAt: new Date() })
-    .where(
-      and(
-        eq(agentThreads.id, summary.id),
-        eq(agentThreads.status, "completed"),
-        isNull(agentThreads.remediationSource),
-      ),
-    )
-    .returning({ id: agentThreads.id });
-  if (countdownClaim.length === 0) {
-    return { outcome: "released", threadId: summary.id };
-  }
-  emit(summary.chatId, summary.id);
-  while (
-    Date.now() < autoFixAt.getTime() &&
-    !skippedAutoFixes.has(summary.id)
-  ) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  if (skippedAutoFixes.delete(summary.id)) {
-    await db
+  let autoFixAt = completedReview.autoFixAt ?? new Date(Date.now() + 10_000);
+  if (summary.status === "completed") {
+    const countdownClaim = await db
       .update(agentThreads)
-      .set({ status: "completed", autoFixAt: null, updatedAt: new Date() })
+      .set({ status: "auto_fix_countdown", autoFixAt, updatedAt: new Date() })
       .where(
         and(
           eq(agentThreads.id, summary.id),
-          eq(agentThreads.status, "auto_fix_countdown"),
+          eq(agentThreads.status, "completed"),
           isNull(agentThreads.remediationSource),
         ),
-      );
+      )
+      .returning({ id: agentThreads.id });
+    if (countdownClaim.length === 0) {
+      const owner = autoFixOwnerByThread.get(summary.id);
+      if (
+        owner !== undefined &&
+        owner !== params.callerId &&
+        isLiveCaller(owner)
+      ) {
+        return waitForAutoFixOwner(params, summary.id, owner);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return runAutoReviewBarrier(params);
+    }
+    autoFixOwnerByThread.set(summary.id, params.callerId ?? 0);
     emit(summary.chatId, summary.id);
+  }
+  while (Date.now() < autoFixAt.getTime()) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const afterCountdown = await getOwnedThread(params.chatId, summary.id);
+  if (afterCountdown.status !== "auto_fix_countdown") {
+    autoFixOwnerByThread.delete(summary.id);
     return { outcome: "released", threadId: summary.id };
   }
   try {
@@ -631,6 +695,11 @@ export async function runAutoReviewBarrier(params: {
       ),
     };
   } catch (error) {
+    const current = await getOwnedThread(params.chatId, summary.id);
+    if (current.status === "completed" && !current.remediationSource) {
+      autoFixOwnerByThread.delete(summary.id);
+      return { outcome: "released", threadId: summary.id };
+    }
     await db
       .update(agentThreads)
       .set({ status: "completed", autoFixAt: null, updatedAt: new Date() })
@@ -642,6 +711,7 @@ export async function runAutoReviewBarrier(params: {
         ),
       );
     emit(summary.chatId, summary.id);
+    autoFixOwnerByThread.delete(summary.id);
     throw error;
   }
 }
@@ -659,7 +729,28 @@ async function completeRemediatedReviews(chatId: number): Promise<void> {
       ),
     )
     .returning({ id: agentThreads.id });
-  for (const thread of completed) emit(chatId, thread.id);
+  for (const thread of completed) {
+    autoFixOwnerByThread.delete(thread.id);
+    emit(chatId, thread.id);
+  }
+}
+
+async function waitForAutoFixOwner(
+  params: Parameters<typeof runAutoReviewBarrier>[0],
+  threadId: string,
+  owner: number,
+): ReturnType<typeof runAutoReviewBarrier> {
+  while (isLiveCaller(owner)) {
+    const thread = await getOwnedThread(params.chatId, threadId);
+    if (
+      thread.status !== "auto_fix_countdown" &&
+      thread.status !== "fixing_findings"
+    ) {
+      return { outcome: "released", threadId };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return runAutoReviewBarrier(params);
 }
 
 export async function sendSubagentMessage(
@@ -980,6 +1071,7 @@ async function runReview(
   target: ReviewTarget,
   followup?: string,
 ): Promise<void> {
+  const thread = await getThread(threadId);
   const controller = new AbortController();
   let shouldContinue = false;
   abortControllers.set(threadId, controller);
@@ -1000,8 +1092,8 @@ async function runReview(
       abortSignal: controller.signal,
     });
     const parsed = parseReviewResult(report, target.files);
-    const currentTarget = await buildReviewTarget({
-      appPath,
+    const { target: currentTarget } = await buildCoordinatedReviewTarget({
+      chatId: thread.chatId,
       baseCommit: target.baseCommit,
       targetCommit: target.targetCommit,
     });
@@ -1049,16 +1141,7 @@ async function runModel(params: {
 }): Promise<string> {
   assertPro(params.persona);
   const claimedRootMessageIds = new Set<number>();
-  const defaults = MODELS[params.persona];
-  const settings = {
-    ...readSettings(),
-    selectedModel: {
-      provider: defaults.provider,
-      name: defaults.name,
-      effortLevel: defaults.effort,
-    },
-    thinkingBudget: defaults.effort,
-  };
+  const settings = personaModelSettings(params.persona);
   const modelInfo = await getModelClient(settings.selectedModel, settings);
   const history = await buildModelHistory(params.threadId, params.assignment);
   const result = streamText({
@@ -1137,6 +1220,43 @@ async function runModel(params: {
     .where(eq(agentThreads.id, params.threadId));
   emit(thread.chatId, params.threadId);
   return text;
+}
+
+function personaModelSettings(persona: SubagentPersona) {
+  const defaults = MODELS[persona];
+  return {
+    ...readSettings(),
+    selectedModel: {
+      provider: defaults.provider,
+      name: defaults.name,
+      effortLevel: defaults.effort,
+    },
+    thinkingBudget: defaults.effort,
+  };
+}
+
+async function preflightPersonaModel(persona: SubagentPersona): Promise<void> {
+  const defaults = MODELS[persona];
+  const catalog = await getBuiltinLanguageModelCatalog();
+  const available = catalog.modelsByProvider[defaults.provider]?.some(
+    (model) => model.apiName === defaults.name,
+  );
+  if (!available) {
+    throw new DyadError(
+      `${persona} requires ${defaults.name}, which is not currently available. Check your Dyad Pro model access and try again.`,
+      DyadErrorKind.Precondition,
+    );
+  }
+  try {
+    const settings = personaModelSettings(persona);
+    await getModelClient(settings.selectedModel, settings);
+  } catch (error) {
+    throw new DyadError(
+      `${persona} could not start because ${defaults.name} is not configured. Check your Dyad Pro model access and try again.`,
+      DyadErrorKind.Precondition,
+      { cause: error },
+    );
+  }
 }
 
 async function buildModelHistory(
@@ -1376,14 +1496,16 @@ async function reconstructReviewerRunner(
   if (!chat?.app) {
     throw new DyadError("Chat app not found.", DyadErrorKind.NotFound);
   }
-  const appPath = getDyadAppPath(chat.app.path);
   let target: ReviewTarget;
+  let appPath: string;
   try {
-    target = await buildReviewTarget({
-      appPath,
+    const coordinated = await buildCoordinatedReviewTarget({
+      chatId: thread.chatId,
       baseCommit: thread.reviewBaseCommit,
       targetCommit: thread.reviewTargetCommit,
     });
+    target = coordinated.target;
+    appPath = coordinated.appPath;
   } catch (error) {
     await markReviewOutdated(
       thread,
@@ -1423,6 +1545,47 @@ async function reconstructReviewerRunner(
     });
   followupRunners.set(thread.id, run);
   return run;
+}
+
+async function buildCoordinatedReviewTarget(params: {
+  chatId: number;
+  baseCommit?: string | null;
+  targetCommit?: string | null;
+}): Promise<{ target: ReviewTarget; appId: number; appPath: string }> {
+  const initial = await db.query.chats.findFirst({
+    where: eq(chats.id, params.chatId),
+    with: { app: true },
+  });
+  if (!initial?.app) {
+    throw new DyadError("Chat app not found.", DyadErrorKind.NotFound);
+  }
+  return appOperationCoordinator.run(
+    {
+      appId: initial.app.id,
+      operation: "build sub-agent review target",
+      resources: [readAppResource("app-path"), readAppResource("repository")],
+      refuseWhenRecording: "review these changes",
+    },
+    async () => {
+      const current = await db.query.chats.findFirst({
+        where: eq(chats.id, params.chatId),
+        with: { app: true },
+      });
+      if (!current?.app || current.app.id !== initial.app.id) {
+        throw new DyadError("Chat app not found.", DyadErrorKind.NotFound);
+      }
+      const appPath = getDyadAppPath(current.app.path);
+      return {
+        appId: current.app.id,
+        appPath,
+        target: await buildReviewTarget({
+          appPath,
+          baseCommit: params.baseCommit,
+          targetCommit: params.targetCommit,
+        }),
+      };
+    },
+  );
 }
 
 async function markReviewOutdated(
@@ -1475,8 +1638,42 @@ export function emitSubagentUpdate(chatId: number, threadId: string): void {
       eventTargets.delete(target);
       continue;
     }
-    target.send("agent:subagent-update", { chatId, threadId });
+    try {
+      target.send("agent:subagent-update", { chatId, threadId });
+    } catch (error) {
+      logger.debug(
+        "Renderer disappeared while sending sub-agent update",
+        error,
+      );
+    }
   }
+}
+
+function isLiveCaller(callerId: number): boolean {
+  return [...eventTargets].some(
+    (target) => !target.isDestroyed() && target.id === callerId,
+  );
+}
+
+function buildPromptForPersistedReview(
+  thread: typeof agentThreads.$inferSelect,
+): string {
+  const reviewedFiles = Array.isArray(thread.contextJson?.files)
+    ? thread.contextJson.files.filter(
+        (value): value is string => typeof value === "string",
+      )
+    : [];
+  if (!thread.resultJson) {
+    throw new DyadError(
+      "This review no longer has findings to fix.",
+      DyadErrorKind.Precondition,
+    );
+  }
+  return buildRemediationPrompt(
+    thread.reviewDiffHash ?? "unknown",
+    thread.resultJson,
+    reviewedFiles,
+  );
 }
 
 function emit(chatId: number, threadId: string): void {
@@ -1771,9 +1968,26 @@ function drainRuns(chatId: number): void {
         ) {
           activeRunsByChat.delete(chatId);
         }
+        const cleanupTimer = setTimeout(
+          () => void cleanupFollowupRunnerIfIdle(item.threadId),
+          5_000,
+        );
+        cleanupTimer.unref();
         drainRuns(chatId);
       });
   }
+}
+
+async function cleanupFollowupRunnerIfIdle(threadId: string): Promise<void> {
+  if (pendingRuns.some((run) => run.threadId === threadId)) return;
+  const pendingMessage = await db.query.agentMessages.findFirst({
+    where: and(
+      eq(agentMessages.threadId, threadId),
+      eq(agentMessages.role, "root"),
+      eq(agentMessages.consumed, false),
+    ),
+  });
+  if (!pendingMessage) followupRunners.delete(threadId);
 }
 
 function watchEntitlement(

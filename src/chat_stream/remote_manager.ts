@@ -592,7 +592,13 @@ export class ChatStreamRemoteManager {
       this.completionCursorInitialized.add(chatId);
       if (completion && !this.pendingSubmissions.has(completion.intentId)) {
         this.lastCompletionByChat.set(chatId, completion.intentId);
-        return;
+        // A review barrier is durable main-owned work. Replay only this
+        // terminal effect after renderer replacement so a paused queue cannot
+        // be stranded when the renderer that began review disappears.
+        if (!completion.reviewBarrierRequested || !snapshot.queuePaused) {
+          return;
+        }
+        this.lastCompletionByChat.delete(chatId);
       }
     }
     if (

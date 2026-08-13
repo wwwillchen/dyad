@@ -13,6 +13,8 @@ const execFileAsync = promisify(execFile);
 // durable thread history, and the structured response.
 export const REVIEW_MAX_FILE_BYTES = 96 * 1024;
 export const REVIEW_MAX_TOTAL_BYTES = 192 * 1024;
+export const REVIEW_MAX_EXCLUSION_COUNT = 200;
+export const REVIEW_MAX_EXCLUSION_BYTES = 32 * 1024;
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 export interface ReviewTarget {
@@ -39,6 +41,21 @@ export async function buildReviewTarget(params: {
     );
   }
   const exclusions: string[] = [];
+  const exclusionHash = crypto.createHash("sha256");
+  let exclusionCount = 0;
+  let exclusionBytes = 0;
+  const addExclusion = (exclusion: string): void => {
+    exclusionCount += 1;
+    exclusionHash.update(exclusion).update("\0");
+    const bytes = Buffer.byteLength(exclusion);
+    if (
+      exclusions.length < REVIEW_MAX_EXCLUSION_COUNT &&
+      exclusionBytes + bytes <= REVIEW_MAX_EXCLUSION_BYTES
+    ) {
+      exclusions.push(exclusion);
+      exclusionBytes += bytes;
+    }
+  };
   const chunks: string[] = [];
   const includedFiles = new Set<string>();
   let includedBytes = 0;
@@ -46,16 +63,16 @@ export async function buildReviewTarget(params: {
 
   const addDiff = (file: string, value: string): void => {
     if (/(?:^|\n)Binary files .* differ(?:\n|$)/.test(value)) {
-      exclusions.push(`${file} (binary)`);
+      addExclusion(`${file} (binary)`);
       return;
     }
     const bytes = Buffer.byteLength(value);
     if (bytes > REVIEW_MAX_FILE_BYTES) {
-      exclusions.push(`${file} (diff exceeds per-file review limit)`);
+      addExclusion(`${file} (diff exceeds per-file review limit)`);
       return;
     }
     if (includedBytes + bytes > REVIEW_MAX_TOTAL_BYTES) {
-      exclusions.push(`${file} (aggregate review limit reached)`);
+      addExclusion(`${file} (aggregate review limit reached)`);
       return;
     }
     chunks.push(value);
@@ -82,7 +99,7 @@ export async function buildReviewTarget(params: {
         file,
       ]);
       if (value === null) {
-        exclusions.push(`${file} (diff exceeds per-file review limit)`);
+        addExclusion(`${file} (diff exceeds per-file review limit)`);
       } else {
         addDiff(file, value);
       }
@@ -119,7 +136,7 @@ export async function buildReviewTarget(params: {
         file,
       ]);
       if (value === null) {
-        exclusions.push(`${file} (diff exceeds per-file review limit)`);
+        addExclusion(`${file} (diff exceeds per-file review limit)`);
       } else {
         addDiff(file, value);
       }
@@ -132,30 +149,30 @@ export async function buildReviewTarget(params: {
       try {
         stat = await fs.lstat(absolutePath);
       } catch {
-        exclusions.push(`${file} (unreadable)`);
+        addExclusion(`${file} (unreadable)`);
         continue;
       }
       if (stat.isSymbolicLink()) {
-        exclusions.push(`${file} (symbolic link)`);
+        addExclusion(`${file} (symbolic link)`);
         continue;
       }
       if (!stat.isFile()) {
-        exclusions.push(`${file} (not a regular file)`);
+        addExclusion(`${file} (not a regular file)`);
         continue;
       }
       let realPath: string;
       try {
         realPath = await fs.realpath(absolutePath);
       } catch {
-        exclusions.push(`${file} (unreadable)`);
+        addExclusion(`${file} (unreadable)`);
         continue;
       }
       if (!isInside(appRoot, realPath)) {
-        exclusions.push(`${file} (outside app root)`);
+        addExclusion(`${file} (outside app root)`);
         continue;
       }
       if (stat.size > REVIEW_MAX_FILE_BYTES) {
-        exclusions.push(`${file} (exceeds per-file review limit)`);
+        addExclusion(`${file} (exceeds per-file review limit)`);
         continue;
       }
 
@@ -171,11 +188,11 @@ export async function buildReviewTarget(params: {
         await handle.close();
       }
       if (buffer.length > REVIEW_MAX_FILE_BYTES) {
-        exclusions.push(`${file} (exceeds per-file review limit)`);
+        addExclusion(`${file} (exceeds per-file review limit)`);
         continue;
       }
       if (buffer.includes(0)) {
-        exclusions.push(`${file} (binary)`);
+        addExclusion(`${file} (binary)`);
         continue;
       }
 
@@ -189,9 +206,22 @@ export async function buildReviewTarget(params: {
 
   const diff = chunks.filter(Boolean).join("\n");
   const files = [...includedFiles];
+  const omittedExclusionCount = exclusionCount - exclusions.length;
+  if (omittedExclusionCount > 0) {
+    exclusions.push(
+      `${omittedExclusionCount.toLocaleString()} additional changed files excluded`,
+    );
+  }
   const hash = crypto
     .createHash("sha256")
-    .update(JSON.stringify({ diff, files, exclusions }))
+    .update(
+      JSON.stringify({
+        diff,
+        files,
+        exclusionCount,
+        exclusionDigest: exclusionHash.digest("hex"),
+      }),
+    )
     .digest("hex");
   return {
     baseCommit: effectiveBaseCommit,

@@ -621,6 +621,75 @@ describe("main-hosted chat stream actor", () => {
     await host.dispose();
   });
 
+  it("replays an unfinished durable review barrier after renderer reload", async () => {
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const producer = new RemoteMachineClient(
+      duplex.connect(),
+      createSequentialIdSource(),
+    );
+    producer.start();
+    const actor = producer.actor(chatStreamClientDefinition, chatStreamKey(7));
+    const releaseProducer = actor.subscribe(() => undefined);
+    await actor.resync();
+    await actor.dispatch({ type: "SUBMIT", intent: turn("review") });
+    await flush();
+    await actor.dispatch({ type: "SUBMIT", intent: turn("queued") });
+    await flush();
+    persisted.paused = true;
+    execution.observers.get("review")?.onEnd?.({
+      chatId: 7,
+      invocationRef: turn("review").invocationRef,
+      updatedFiles: true,
+      pausePromptQueue: true,
+      reviewBarrierRequested: true,
+    });
+    await vi.waitFor(() => {
+      expect(actor.getSnapshot().lastCompletion?.intentId).toBe("review");
+      expect(actor.getSnapshot().queuePaused).toBe(true);
+    });
+
+    const reloaded = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      duplex.connect(),
+    );
+    const terminalEffect = vi.fn();
+    reloaded.start();
+    reloaded.subscribeStreamFinished(terminalEffect);
+    const releaseReloaded = reloaded.ensure(7).subscribe(() => undefined);
+
+    await vi.waitFor(() =>
+      expect(terminalEffect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: 7,
+          reviewBarrierRequested: true,
+          updatedFiles: true,
+        }),
+      ),
+    );
+
+    releaseReloaded();
+    releaseProducer();
+    reloaded.dispose();
+    producer.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
   it("preserves submission order across asynchronous attachment preparation", async () => {
     let releaseAttachment!: () => void;
     const attachmentGate = new Promise<void>((resolve) => {

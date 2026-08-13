@@ -87,7 +87,7 @@ export function registerAgentToolHandlers() {
   });
   handle(agentContracts.runAutoReviewBarrier, async (event, params) => {
     setSubagentEventTarget(event.sender);
-    return runAutoReviewBarrier(params);
+    return runAutoReviewBarrier({ ...params, callerId: event.sender.id });
   });
   handle(
     agentContracts.fixReviewFindings,
@@ -100,9 +100,9 @@ export function registerAgentToolHandlers() {
   );
   handle(
     agentContracts.skipReviewAutoFix,
-    async (event, { chatId, threadId }) => {
+    async (event, { chatId, threadId, remediationFailed }) => {
       setSubagentEventTarget(event.sender);
-      await skipReviewAutoFix(chatId, threadId);
+      await skipReviewAutoFix(chatId, threadId, remediationFailed);
     },
   );
   handle(agentContracts.cancelSubagent, async (event, { chatId, threadId }) => {

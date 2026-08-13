@@ -57,7 +57,7 @@ export function shouldResumePendingReview(params: {
 
 export async function runQueuedReviewFlow(params: {
   runBarrier: (verification?: boolean) => Promise<{
-    outcome: "released" | "skipped" | "fix_required";
+    outcome: "released" | "skipped" | "waiting" | "fix_required";
     threadId?: string;
     prompt?: string;
   }>;
@@ -66,6 +66,7 @@ export async function runQueuedReviewFlow(params: {
   onRemediationPaused?: () => void;
 }): Promise<"released" | "paused"> {
   const barrier = await params.runBarrier();
+  if (barrier.outcome === "waiting") return "paused";
   if (barrier.outcome !== "fix_required" || !barrier.prompt) {
     return "released";
   }
@@ -132,6 +133,7 @@ async function runSingleBackgroundAutoReview(
       await ipc.agent.skipReviewAutoFix({
         chatId: params.chatId,
         threadId: barrier.threadId,
+        remediationFailed: true,
       });
     }
     return;
@@ -250,6 +252,7 @@ export function useBackgroundAutoReview(): void {
           ipc.agent.skipReviewAutoFix({
             chatId: event.chatId,
             threadId,
+            remediationFailed: true,
           }),
         onRemediationPaused: () => {
           setPendingReviewContinuation(event.chatId, async () => {

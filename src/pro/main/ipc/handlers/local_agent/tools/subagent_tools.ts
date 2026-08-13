@@ -63,6 +63,11 @@ export function buildSubagentContext(
     subagentPersona: persona,
     subagentPathScope: scope.map(normalizeMutationScope),
     abortSignal,
+    onWorkspaceMutation: () => {
+      ctx.mutationCount = (ctx.mutationCount ?? 0) + 1;
+      ctx.workspaceMutated = true;
+      ctx.onWorkspaceMutation?.();
+    },
     requireConsent: (consent) =>
       ctx.requireConsent({
         ...consent,
@@ -137,6 +142,7 @@ export const spawnAgentTool: ToolDefinition<
   modifiesState: true,
   subagentOnly: true,
   requiresMutationLease: false,
+  requiresBlueprintApproval: false,
   usesEngineEndpoint: true,
   isEnabled: (ctx) =>
     Boolean(
@@ -203,6 +209,7 @@ export const cancelAgentTool: ToolDefinition<{ thread_id: string }> = {
   modifiesState: true,
   subagentOnly: true,
   requiresMutationLease: false,
+  requiresBlueprintApproval: false,
   isEnabled: (ctx) => Boolean(ctx.isDyadPro && !ctx.subagentThreadId),
   execute: async (args, ctx) => {
     await cancelSubagent(ctx.chatId, args.thread_id);
@@ -223,6 +230,7 @@ export const sendMessageTool: ToolDefinition<z.infer<typeof messageSchema>> = {
   modifiesState: true,
   subagentOnly: true,
   requiresMutationLease: false,
+  requiresBlueprintApproval: false,
   isEnabled: (ctx) => Boolean(ctx.isDyadPro && !ctx.subagentThreadId),
   execute: async (args, ctx) => {
     await sendSubagentMessage(ctx.chatId, args.thread_id, args.message);
@@ -237,6 +245,7 @@ export const followupTaskTool: ToolDefinition<z.infer<typeof messageSchema>> = {
     "Queue a durable follow-up assignment on an existing child thread. An idle child will consume it on its next turn.",
   subagentOnly: true,
   requiresMutationLease: false,
+  requiresBlueprintApproval: false,
   usesEngineEndpoint: true,
   execute: async (args, ctx) => {
     const persona = await followupSubagent(

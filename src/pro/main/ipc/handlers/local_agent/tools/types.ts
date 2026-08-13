@@ -104,6 +104,8 @@ export interface AgentContext {
    * through ANY mutating tool — not just write_file/search_replace.
    */
   mutationCount?: number;
+  /** Propagates successful child-tool mutations to the owning root turn. */
+  onWorkspaceMutation?: () => void;
   /**
    * If true, the user has Dyad Pro enabled.
    * Engine-dependent tools require this to access the Dyad Pro API.
@@ -342,6 +344,11 @@ export interface ToolDefinition<T = any> {
    * mutation; writable children acquire their own lease in the manager.
    */
   readonly requiresMutationLease?: boolean;
+  /**
+   * Whether this state-modifying tool must wait for app-blueprint approval.
+   * Set false for durable orchestration metadata that cannot change the app.
+   */
+  readonly requiresBlueprintApproval?: boolean;
   /**
    * If true, this tool calls a Dyad Engine endpoint outside the main model
    * generation endpoint.

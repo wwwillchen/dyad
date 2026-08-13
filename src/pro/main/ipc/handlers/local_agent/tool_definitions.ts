@@ -549,6 +549,12 @@ export function buildAgentToolSet(
             toolModifiesState(tool, ctx) &&
             tool.requiresMutationLease !== false;
           const invoke = async () => {
+            if (ctx.abortSignal?.aborted) {
+              throw new DyadError(
+                "This agent run was cancelled.",
+                DyadErrorKind.UserCancelled,
+              );
+            }
             if (mutationRequiresAdmission) {
               assertMutationLease(ctx);
             }
@@ -566,6 +572,7 @@ export function buildAgentToolSet(
             // write_file and bypass the required blueprint approval flow.
             if (
               toolModifiesState(tool, ctx) &&
+              tool.requiresBlueprintApproval !== false &&
               !APP_BLUEPRINT_TOOLS.has(tool.name) &&
               !PLANNING_SPECIFIC_TOOLS.has(tool.name) &&
               !CAPABILITY_GATED_BLUEPRINT_TOOLS.has(tool.name)

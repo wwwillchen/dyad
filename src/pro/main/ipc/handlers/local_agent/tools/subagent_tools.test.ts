@@ -11,6 +11,7 @@ import {
   waitAgentsTool,
 } from "./subagent_tools";
 import type { AgentContext } from "./types";
+import { trackAppMutation } from "./tool_invocation";
 
 describe("spawn_agent schema", () => {
   it("binds child consent and tools to the child abort signal", async () => {
@@ -45,6 +46,29 @@ describe("spawn_agent schema", () => {
         taskName: "Edit auth flow",
       },
     });
+  });
+
+  it("propagates successful child mutations to the root turn", () => {
+    const root = {
+      sharedServerModulePaths: [],
+      pendingFunctionDeploys: [],
+      referencedApps: new Map(),
+      fileEditTracker: { attemptsByFile: new Map() },
+    } as unknown as AgentContext;
+    const child = buildSubagentContext({
+      ctx: root,
+      threadId: "implementer-1",
+      persona: "implementer",
+      taskName: "Edit auth flow",
+      scope: ["src/auth"],
+      abortSignal: new AbortController().signal,
+    });
+
+    trackAppMutation(child, "write_file");
+
+    expect(child.mutationCount).toBe(1);
+    expect(root.mutationCount).toBe(1);
+    expect(root.workspaceMutated).toBe(true);
   });
 
   it("keeps schema introspection safe when no spawn persona is enabled", () => {
@@ -114,10 +138,14 @@ describe("spawn_agent schema", () => {
       ].every((tool) => tool.subagentOnly),
     ).toBe(true);
     expect(spawnAgentTool.requiresMutationLease).toBe(false);
+    expect(spawnAgentTool.requiresBlueprintApproval).toBe(false);
     expect(spawnAgentTool.usesEngineEndpoint).toBe(true);
     expect(cancelAgentTool.requiresMutationLease).toBe(false);
+    expect(cancelAgentTool.requiresBlueprintApproval).toBe(false);
     expect(sendMessageTool.requiresMutationLease).toBe(false);
+    expect(sendMessageTool.requiresBlueprintApproval).toBe(false);
     expect(followupTaskTool.requiresMutationLease).toBe(false);
+    expect(followupTaskTool.requiresBlueprintApproval).toBe(false);
     expect(followupTaskTool.usesEngineEndpoint).toBe(true);
   });
 

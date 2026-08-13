@@ -105,6 +105,22 @@ describe("sub-agent review orchestration", () => {
     });
   });
 
+  it("does not release a queue while another renderer owns its barrier", async () => {
+    mocks.runAutoReviewBarrier.mockResolvedValue({ outcome: "waiting" });
+    renderHook(() => useBackgroundAutoReview());
+
+    mocks.streamFinishedCallback?.({
+      chatId: 7,
+      outcome: "completed",
+      updatedFiles: true,
+      reviewBarrierRequested: true,
+      wasCancelled: false,
+    });
+
+    await waitFor(() => expect(mocks.runAutoReviewBarrier).toHaveBeenCalled());
+    expect(mocks.dispatchQueueEvent).not.toHaveBeenCalled();
+  });
+
   it("leaves queued turns to the queue review barrier", () => {
     expect(
       shouldStartBackgroundAutoReview({
@@ -175,6 +191,15 @@ describe("sub-agent review orchestration", () => {
       runQueuedReviewFlow({ runBarrier, streamRemediation }),
     ).resolves.toBe("released");
     expect(events).toEqual(["review", "fix", "verify"]);
+  });
+
+  it("keeps the queue paused while another renderer owns remediation", async () => {
+    await expect(
+      runQueuedReviewFlow({
+        runBarrier: async () => ({ outcome: "waiting" }),
+        streamRemediation: vi.fn(),
+      }),
+    ).resolves.toBe("paused");
   });
 
   it("releases the queued message when remediation fails", async () => {

@@ -238,7 +238,7 @@ export const agentContracts = {
       autoFix: z.boolean().optional(),
     }),
     output: z.object({
-      outcome: z.enum(["released", "skipped", "fix_required"]),
+      outcome: z.enum(["released", "skipped", "waiting", "fix_required"]),
       threadId: z.string().optional(),
       prompt: z.string().optional(),
     }),
@@ -252,7 +252,11 @@ export const agentContracts = {
 
   skipReviewAutoFix: defineContract({
     channel: "agent:skip-review-auto-fix",
-    input: z.object({ chatId: z.number(), threadId: z.string() }),
+    input: z.object({
+      chatId: z.number(),
+      threadId: z.string(),
+      remediationFailed: z.boolean().optional(),
+    }),
     output: z.void(),
   }),
 

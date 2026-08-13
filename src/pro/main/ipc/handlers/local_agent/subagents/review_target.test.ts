@@ -10,6 +10,7 @@ import { DyadErrorKind } from "@/errors/dyad_error";
 import {
   buildReviewTarget,
   REVIEW_MAX_FILE_BYTES,
+  REVIEW_MAX_EXCLUSION_COUNT,
   REVIEW_MAX_TOTAL_BYTES,
 } from "./review_target";
 
@@ -268,6 +269,33 @@ describe("buildReviewTarget", () => {
     expect(review.exclusions).toContain(
       "third.ts (aggregate review limit reached)",
     );
+  });
+
+  it("bounds displayed exclusions while hashing every excluded path", async () => {
+    const repo = await makeRepo();
+    const outside = path.join(
+      path.dirname(repo),
+      `${path.basename(repo)}-asset`,
+    );
+    await fs.writeFile(outside, "outside\n");
+    for (let index = 0; index < REVIEW_MAX_EXCLUSION_COUNT + 5; index++) {
+      await fs.symlink(
+        outside,
+        path.join(repo, `z-${index.toString().padStart(3, "0")}.txt`),
+      );
+    }
+
+    const before = await buildReviewTarget({ appPath: repo });
+    await fs.rename(path.join(repo, "z-204.txt"), path.join(repo, "z-999.txt"));
+    const after = await buildReviewTarget({ appPath: repo });
+
+    expect(before.exclusions).toHaveLength(REVIEW_MAX_EXCLUSION_COUNT + 1);
+    expect(before.exclusions.at(-1)).toBe(
+      "5 additional changed files excluded",
+    );
+    expect(after.exclusions).toEqual(before.exclusions);
+    expect(after.hash).not.toBe(before.hash);
+    await fs.rm(outside, { force: true });
   });
 });
 

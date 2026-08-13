@@ -110,7 +110,11 @@ export function SubagentTeamCard({
       if (remediated === "completed") {
         await ipc.agent.runAutoReviewBarrier({ chatId, verification: true });
       } else {
-        await ipc.agent.skipReviewAutoFix({ chatId, threadId: thread.id });
+        await ipc.agent.skipReviewAutoFix({
+          chatId,
+          threadId: thread.id,
+          remediationFailed: true,
+        });
       }
     },
     onSuccess: invalidateThreads,
@@ -544,9 +548,6 @@ function isSubagentCancellable(
     "idle",
     "waiting_for_writer",
     "waiting_for_auto_review",
-    "auto_fix_countdown",
-    "fixing_findings",
-    "verification_review",
     "needs_approval",
   ].includes(status);
 }

@@ -101,6 +101,25 @@ describe("sub-agent manager status policy", () => {
     second.destroy();
   });
 
+  it("keeps broadcasting when a renderer disappears during send", () => {
+    const broken = fakeWebContents();
+    const healthy = fakeWebContents();
+    broken.send.mockImplementation(() => {
+      throw new Error("Object has been destroyed");
+    });
+    setSubagentEventTarget(broken.target);
+    setSubagentEventTarget(healthy.target);
+
+    expect(() => emitSubagentUpdate(8, "review-2")).not.toThrow();
+    expect(healthy.send).toHaveBeenCalledWith("agent:subagent-update", {
+      chatId: 8,
+      threadId: "review-2",
+    });
+
+    broken.destroy();
+    healthy.destroy();
+  });
+
   it("waits through active workflows but treats idle and terminal states as complete", () => {
     expect(isWaitCompleteStatus("running")).toBe(false);
     expect(isWaitCompleteStatus("auto_fix_countdown")).toBe(false);
