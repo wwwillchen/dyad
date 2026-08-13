@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { streamText, type ModelMessage, type ToolSet } from "ai";
+import { stepCountIs, streamText, type ModelMessage, type ToolSet } from "ai";
 import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { WebContents } from "electron";
 import log from "electron-log";
@@ -57,6 +57,8 @@ const MODELS = {
 const MAX_DURABLE_REPORT_CHARS = 100_000;
 const MAX_MODEL_HISTORY_CHARS = 100_000;
 const AUTO_REVIEW_BARRIER_MAX_WAIT_MS = 10 * 60 * 1000;
+const ROOT_FINALIZATION_MAX_WAIT_MS = 10 * 60 * 1000;
+const SUBAGENT_MAX_STEPS = 50;
 const logger = log.scope("subagent_manager");
 
 const ACTIVE = ["queued", "running", "waiting_for_writer"] as const;
@@ -272,7 +274,10 @@ export async function spawnModelSubagent(params: {
           taskName: params.taskName,
           assignment: params.assignment,
           invocationSource: "model",
-          contextJson: { scope: params.scope },
+          contextJson: {
+            scope: params.scope,
+            sourceMessageId: params.ctx.messageId,
+          },
         });
         const run = (assignment: string) =>
           enqueueRun({
@@ -643,7 +648,12 @@ export async function runAutoReviewBarrier(params: {
   abortSignal?: AbortSignal;
   deadlineAt?: number;
 }): Promise<{
-  outcome: "released" | "skipped" | "waiting" | "fix_required";
+  outcome:
+    | "released"
+    | "skipped"
+    | "waiting"
+    | "fix_required"
+    | "verification_failed";
   threadId?: string;
   prompt?: string;
 }> {
@@ -692,6 +702,10 @@ export async function runAutoReviewBarrier(params: {
     summary = toSummary(await getThread(summary.id));
   }
   if (params.verification) {
+    const findingCount = Number(summary.result?.findingCount ?? 0);
+    if (summary.status !== "completed" || findingCount > 0) {
+      return { outcome: "verification_failed", threadId: summary.id };
+    }
     await completeRemediatedReviews(params.chatId);
     return { outcome: "released", threadId: summary.id };
   }
@@ -1081,12 +1095,15 @@ export async function waitForSubagentsAndBeginFinalization(
   appId: number,
   abortSignal?: AbortSignal,
 ): Promise<SubagentThreadSummary[]> {
+  const deadlineAt = Date.now() + ROOT_FINALIZATION_MAX_WAIT_MS;
   while (true) {
+    assertFinalizationWaitActive(abortSignal, deadlineAt);
     const summaries =
       threadIds.length > 0
         ? await waitForSubagents(chatId, threadIds, abortSignal)
         : [];
     const finalized = await withMutationAdmission(appId, async () => {
+      assertFinalizationWaitActive(abortSignal, deadlineAt);
       const pending =
         threadIds.length === 0
           ? []
@@ -1116,6 +1133,24 @@ export async function waitForSubagentsAndBeginFinalization(
     });
     if (finalized) return summaries;
     await waitForAbortableDelay(250, abortSignal);
+  }
+}
+
+function assertFinalizationWaitActive(
+  abortSignal: AbortSignal | undefined,
+  deadlineAt: number,
+): void {
+  if (abortSignal?.aborted) {
+    throw new DyadError(
+      "Waiting to finalize the app was cancelled.",
+      DyadErrorKind.UserCancelled,
+    );
+  }
+  if (Date.now() >= deadlineAt) {
+    throw new DyadError(
+      "Timed out waiting to finalize the app. Another app operation may still be active.",
+      DyadErrorKind.Conflict,
+    );
   }
 }
 
@@ -1162,12 +1197,19 @@ async function runThread(
       tools,
       abortSignal: controller.signal,
     });
-    const durableResult = boundDurableReport(result);
+    const durableResult = boundDurableReport(result.text);
     await appendAssistantMessage(threadId, durableResult);
     if (thread.persona === "implementer") {
       releaseMutationLease(appId, threadId);
     }
-    await finishThread(threadId, "completed", { report: durableResult }, null);
+    await finishThread(
+      threadId,
+      result.hitStepLimit ? "partial" : "completed",
+      { report: durableResult },
+      result.hitStepLimit
+        ? `Sub-agent stopped after ${SUBAGENT_MAX_STEPS} model steps.`
+        : null,
+    );
     shouldContinue = true;
   } catch (error) {
     if (controller.signal.aborted) return;
@@ -1205,7 +1247,7 @@ async function runReview(
       if (controller.signal.aborted) return;
     }
     if (!(await updateStatus(threadId, "running"))) return;
-    const report = await runModel({
+    const reviewResult = await runModel({
       threadId,
       appId,
       persona: "reviewer",
@@ -1213,6 +1255,7 @@ async function runReview(
       tools: {},
       abortSignal: controller.signal,
     });
+    const report = reviewResult.text;
     const parsed = parseReviewResult(report, target.files);
     const { target: currentTarget } = await buildCoordinatedReviewTarget({
       chatId: thread.chatId,
@@ -1260,7 +1303,7 @@ async function runModel(params: {
   assignment: string;
   tools: ToolSet;
   abortSignal: AbortSignal;
-}): Promise<string> {
+}): Promise<{ text: string; hitStepLimit: boolean }> {
   assertPro(params.persona);
   const claimedRootMessageIds = new Set<number>();
   const settings = personaModelSettings(params.persona);
@@ -1314,7 +1357,7 @@ async function runModel(params: {
         ],
       };
     },
-    stopWhen: () => false,
+    stopWhen: stepCountIs(SUBAGENT_MAX_STEPS),
     abortSignal: params.abortSignal,
   });
   const [text, usage, steps] = await Promise.all([
@@ -1341,7 +1384,10 @@ async function runModel(params: {
     })
     .where(eq(agentThreads.id, params.threadId));
   emit(thread.chatId, params.threadId);
-  return text;
+  return {
+    text,
+    hitStepLimit: steps.length >= SUBAGENT_MAX_STEPS,
+  };
 }
 
 function personaModelSettings(persona: SubagentPersona) {

@@ -1,12 +1,9 @@
-import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
-
-const execFileAsync = promisify(execFile);
+import { execAgentGit } from "@/ipc/utils/git_utils";
 
 // gpt-5.6-sol has a 372k-token context window. Keep the raw diff well below
 // that ceiling even for token-dense source, leaving room for instructions,
@@ -240,11 +237,15 @@ async function boundedGitDiff(
   rangeAndPath: string[],
 ): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync(
-      "git",
+    const result = await execAgentGit(
       ["diff", "--no-ext-diff", "--no-textconv", "--no-color", ...rangeAndPath],
-      { cwd, maxBuffer: REVIEW_MAX_FILE_BYTES + 64 * 1024 },
+      cwd,
+      { maxBuffer: REVIEW_MAX_FILE_BYTES + 64 * 1024 },
     );
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr || "Git diff failed.");
+    }
+    const { stdout } = result;
     return Buffer.byteLength(stdout) <= REVIEW_MAX_FILE_BYTES ? stdout : null;
   } catch (error) {
     if (
@@ -258,11 +259,13 @@ async function boundedGitDiff(
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, {
-    cwd,
+  const result = await execAgentGit(args, cwd, {
     maxBuffer: 20 * 1024 * 1024,
   });
-  return stdout;
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || "Git command failed.");
+  }
+  return result.stdout;
 }
 
 async function tryGit(cwd: string, args: string[]): Promise<string | null> {

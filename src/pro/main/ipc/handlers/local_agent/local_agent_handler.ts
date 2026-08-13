@@ -1837,10 +1837,6 @@ export async function handleLocalAgentStream(
         })
         .where(eq(messages.id, placeholderMessageId));
       await clearTodosOnCancel(event, appPath, chat.id, persistedTodos);
-      if (rootFinalizationActive) {
-        await endRootFinalization(chat.app.id);
-        rootFinalizationActive = false;
-      }
       return false; // Cancelled - don't consume quota
     }
 
@@ -1983,13 +1979,15 @@ export async function handleLocalAgentStream(
     }
 
     const workspaceChanged =
-      !readOnly &&
-      ((ctx.mutationCount ?? 0) > 0 || ctx.workspaceMutated === true);
+      (ctx.mutationCount ?? 0) > 0 || ctx.workspaceMutated === true;
     // Successful MCP tools may have changed app files even though their
     // schemas do not tell Dyad which tools are mutating. Preserve preview
     // refresh for that conservative case without treating it as sufficient
     // evidence to start an automatic Git review.
-    const updatedFiles = workspaceChanged || ctx.mcpToolRan === true;
+    const updatedFiles =
+      !readOnly &&
+      !planModeOnly &&
+      (workspaceChanged || ctx.mcpToolRan === true);
     const reviewBarrierRequested =
       updatedFiles &&
       !hitStepLimit &&
@@ -2013,16 +2011,8 @@ export async function handleLocalAgentStream(
       reviewBarrierRequested: reviewBarrierRequested || undefined,
     } satisfies ChatResponseEnd);
 
-    if (rootFinalizationActive) {
-      await endRootFinalization(chat.app.id);
-      rootFinalizationActive = false;
-    }
     return true; // Success
   } catch (error) {
-    if (rootFinalizationActive) {
-      await endRootFinalization(chat.app.id);
-      rootFinalizationActive = false;
-    }
     // Clean up any pending consent/questionnaire/integration requests for this chat to prevent
     // stale UI banners and orphaned promises
     clearPendingLocalAgentInputsForChat(req.chatId);
@@ -2065,6 +2055,10 @@ export async function handleLocalAgentStream(
     });
     return false; // Error - don't consume quota
   } finally {
+    if (rootFinalizationActive) {
+      await endRootFinalization(chat.app.id);
+      rootFinalizationActive = false;
+    }
     // If an in-progress tool's XML preview was overlaid in the renderer
     // and the stream tore down before onXmlComplete could commit and
     // clear it (cancel, error, abort), explicitly clear the overlay so

@@ -1669,7 +1669,7 @@ function agentGitEnvironment(): Record<string, string> {
   };
 }
 
-async function execAgentGit(
+export async function execAgentGit(
   args: string[],
   repoPath: string,
   options: {

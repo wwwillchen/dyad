@@ -266,7 +266,13 @@ export const ChatStreamHostEventSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("REVIEW_BARRIER_RESULT"),
-      outcome: z.enum(["released", "skipped", "waiting", "fix_required"]),
+      outcome: z.enum([
+        "released",
+        "skipped",
+        "waiting",
+        "fix_required",
+        "verification_failed",
+      ]),
       threadId: z.string().optional(),
       prompt: z.string().optional(),
       autoFixPolicy: z.enum(["queued-override", "user-setting"]).optional(),

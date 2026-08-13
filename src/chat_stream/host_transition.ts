@@ -548,6 +548,21 @@ export function transitionChatStreamHost(
           ],
         };
       }
+      if (event.outcome === "verification_failed") {
+        return {
+          kind: "applied",
+          state: {
+            ...state,
+            error:
+              "Reviewer found remaining issues after remediation. The queued prompts remain paused for review.",
+            reviewBarrier: {
+              phase: "idle",
+              threadId: event.threadId ?? state.reviewBarrier.threadId,
+            },
+          },
+          commands: [],
+        };
+      }
       if (event.outcome === "fix_required" && event.threadId && event.prompt) {
         return {
           kind: "applied",

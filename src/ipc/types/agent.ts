@@ -254,7 +254,13 @@ export const agentContracts = {
       autoFix: z.boolean().optional(),
     }),
     output: z.object({
-      outcome: z.enum(["released", "skipped", "waiting", "fix_required"]),
+      outcome: z.enum([
+        "released",
+        "skipped",
+        "waiting",
+        "fix_required",
+        "verification_failed",
+      ]),
       threadId: z.string().optional(),
       prompt: z.string().optional(),
     }),

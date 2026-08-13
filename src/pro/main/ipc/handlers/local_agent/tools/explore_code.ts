@@ -13,7 +13,7 @@ export function getExploreCodeAvailability(ctx: AgentContext): {
   return getExploreCodeAvailabilityForAppPath(ctx, ctx.appPath);
 }
 
-function getExploreCodeAvailabilityForAppPath(
+export function getExploreCodeAvailabilityForAppPath(
   ctx: AgentContext,
   appPath: string,
 ): {

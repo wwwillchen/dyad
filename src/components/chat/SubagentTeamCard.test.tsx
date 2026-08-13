@@ -184,6 +184,26 @@ describe("SubagentTeamCard", () => {
     });
   });
 
+  it("shows only non-reviewer threads spawned by this assistant message", async () => {
+    mocks.listSubagents.mockResolvedValue([
+      {
+        ...makeReview("current-explorer", 42, "current exploration"),
+        persona: "explorer",
+      },
+      {
+        ...makeReview("older-explorer", 41, "older exploration"),
+        persona: "explorer",
+      },
+    ]);
+
+    render(<SubagentTeamCard chatId={7} messageId={42} />, {
+      wrapper: makeWrapper(),
+    });
+
+    expect(await screen.findByText("Review current-explorer")).toBeTruthy();
+    expect(screen.queryByText("Review older-explorer")).toBeNull();
+  });
+
   it("starts a review for this exact assistant message", async () => {
     mocks.listSubagents.mockResolvedValue([]);
 

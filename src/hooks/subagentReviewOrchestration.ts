@@ -57,7 +57,12 @@ export function shouldResumePendingReview(params: {
 
 export async function runQueuedReviewFlow(params: {
   runBarrier: (verification?: boolean) => Promise<{
-    outcome: "released" | "skipped" | "waiting" | "fix_required";
+    outcome:
+      | "released"
+      | "skipped"
+      | "waiting"
+      | "fix_required"
+      | "verification_failed";
     threadId?: string;
     prompt?: string;
   }>;

@@ -19,7 +19,10 @@ import {
   runRawExploreCode,
 } from "./explore_code_raw";
 import { resolveTargetAppPath } from "./resolve_app_context";
-import { getExploreCodeAvailability } from "./explore_code";
+import {
+  getExploreCodeAvailability,
+  getExploreCodeAvailabilityForAppPath,
+} from "./explore_code";
 
 const baseSpawnShape = {
   task_name: z
@@ -286,10 +289,18 @@ export const compilerExploreTool: ToolDefinition<
   subagentOnly: true,
   isEnabled: (ctx) =>
     ctx.subagentPersona === "explorer" &&
-    getExploreCodeAvailability(ctx).enabled,
+    (getExploreCodeAvailability(ctx).enabled ||
+      [...ctx.referencedApps.values()].some(
+        (appPath) => getExploreCodeAvailabilityForAppPath(ctx, appPath).enabled,
+      )),
   execute: async (args, ctx) => {
     const appPath = resolveTargetAppPath(ctx, args.app_name);
-    const effectiveArgs = normalizeExploreCodeArgsForApp({ appPath, args });
+    const availability = getExploreCodeAvailabilityForAppPath(ctx, appPath);
+    const effectiveArgs = normalizeExploreCodeArgsForApp({
+      appPath,
+      args,
+      fallbackTsconfigPath: availability.tsconfigPath,
+    });
     return formatRawExploreCodeResult(
       await runRawExploreCode({ appPath, args: effectiveArgs }),
     );

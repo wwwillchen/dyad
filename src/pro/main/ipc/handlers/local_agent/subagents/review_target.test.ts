@@ -139,6 +139,24 @@ describe("buildReviewTarget", () => {
     expect(review.diff).toContain("+after");
   });
 
+  it.runIf(process.platform !== "win32")(
+    "does not execute a configured fsmonitor command",
+    async () => {
+      const repo = await makeRepo();
+      const marker = path.join(repo, "fsmonitor-ran");
+      const hook = path.join(repo, "fsmonitor.sh");
+      await fs.writeFile(hook, `#!/bin/sh\n: > '${marker}'\nprintf '0\\0'\n`, {
+        mode: 0o755,
+      });
+      await fs.chmod(hook, 0o755);
+      await git(repo, "config", "core.fsmonitor", hook);
+
+      await buildReviewTarget({ appPath: repo });
+
+      await expect(fs.access(marker)).rejects.toThrow();
+    },
+  );
+
   it("uses the message source commit for a working-tree review", async () => {
     const repo = await makeRepo();
     await fs.writeFile(

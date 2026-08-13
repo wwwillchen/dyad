@@ -240,8 +240,7 @@ export function SubagentTeamCard({
     );
   }
   const visibleThreads = threads.filter(
-    (thread) =>
-      thread.persona !== "reviewer" || thread.sourceMessageId === messageId,
+    (thread) => thread.sourceMessageId === messageId,
   );
   const review = threads.find(
     (thread) =>

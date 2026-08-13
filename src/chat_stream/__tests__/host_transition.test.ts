@@ -192,6 +192,27 @@ describe("main-hosted chat stream terminal projection", () => {
       state: { reviewBarrier: { phase: "idle", threadId: null } },
       commands: [{ type: "resume-after-review" }],
     });
+
+    const verificationFailed = transitionChatStreamHost(
+      {
+        ...state,
+        reviewBarrier: { phase: "verifying", threadId: "verification-1" },
+      },
+      {
+        type: "REVIEW_BARRIER_RESULT",
+        outcome: "verification_failed",
+        threadId: "verification-2",
+      },
+    );
+    expect(verificationFailed).toMatchObject({
+      kind: "applied",
+      state: {
+        queuePaused: true,
+        reviewBarrier: { phase: "idle", threadId: "verification-2" },
+        error: expect.stringContaining("remaining issues"),
+      },
+      commands: [],
+    });
   });
 
   it("keeps remediation continuation and verification in main-owned state", () => {

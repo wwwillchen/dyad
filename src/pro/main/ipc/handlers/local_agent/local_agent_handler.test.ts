@@ -1053,6 +1053,38 @@ describe("handleLocalAgentStream", () => {
       });
     });
 
+    it("does not report opaque MCP calls as file updates in read-only mode", async () => {
+      const { event, getMessagesByChannel } = createFakeEvent();
+      mockSettings = buildTestSettings({
+        enableDyadPro: true,
+        enableAutoReview: true,
+      });
+      mockChatData = buildTestChat();
+      vi.mocked(buildAgentToolSet).mockImplementationOnce((ctx) => {
+        ctx.mcpToolRan = true;
+        return {};
+      });
+      mockStreamResult = createFakeStream([
+        { type: "text-delta", text: "Inspected the app" },
+      ]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+          readOnly: true,
+        },
+      );
+
+      expect(
+        getMessagesByChannel("chat:response:end")[0].args[0],
+      ).toMatchObject({ updatedFiles: false });
+    });
+
     it("includes warning messages in the error payload when a tool fails after warning", async () => {
       const { event, getMessagesByChannel } = createFakeEvent();
       const invocationRef = {
