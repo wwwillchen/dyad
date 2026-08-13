@@ -82,14 +82,11 @@ describe("local_agent_prompt", () => {
     expect(prompt).toContain("App Blueprint (new apps only)");
     expect(prompt).toContain("write_app_blueprint");
     expect(prompt).toContain("planning_questionnaire");
-    expect(prompt).toContain("never exceed 3");
+    expect(prompt).toContain("aim for 3-4 quick questions; never exceed 5");
     expect(prompt).toContain("Do not ask the user technical questions");
     expect(prompt).toContain("whether the app requires user accounts");
     expect(prompt).toContain(
       "such as in a database, only on the user's device, or not persisted at all",
-    );
-    expect(prompt).toContain(
-      "prioritize the accounts and data-storage questions",
     );
   });
 
