@@ -550,6 +550,23 @@ export function buildAgentToolSet(
             tool.requiresMutationLease !== false;
           const processedArgs = await processArgPlaceholders(args, ctx);
 
+          // Reject tools that cannot pass the blueprint gate before asking
+          // the user for consent. Consent may wait indefinitely, but this
+          // precondition is synchronous and independent of mutation admission.
+          if (
+            toolModifiesState(tool, ctx) &&
+            tool.requiresBlueprintApproval !== false &&
+            !APP_BLUEPRINT_TOOLS.has(tool.name) &&
+            !PLANNING_SPECIFIC_TOOLS.has(tool.name) &&
+            !CAPABILITY_GATED_BLUEPRINT_TOOLS.has(tool.name)
+          ) {
+            assertAppBlueprintApproved({
+              toolName: tool.name,
+              chatId: ctx.chatId,
+              enabled: options.enableAppBlueprint !== false,
+            });
+          }
+
           // Consent can wait indefinitely for the user. Resolve it before
           // entering app-wide mutation admission so cancellation/finalization
           // and other actors are not parked behind a UI prompt.
@@ -564,32 +581,6 @@ export function buildAgentToolSet(
             if (mutationRequiresAdmission) {
               assertMutationLease(ctx);
             }
-            // Guard against state-modifying tools running before the app
-            // blueprint approval is resolved. `write_app_blueprint` owns the
-            // approval gate; blueprint tools themselves are allowed through so
-            // the flow can progress to approval. Skip entirely when the
-            // blueprint feature is disabled — otherwise a plan left over from
-            // before the toggle would permanently block the agent.
-            //
-            // When the feature is enabled, also block if NO plan exists yet —
-            // the prompt instructs the model to call write_app_blueprint first,
-            // but the prompt isn't an enforcement boundary. Without this check,
-            // a model that skips write_app_blueprint can still call e.g.
-            // write_file and bypass the required blueprint approval flow.
-            if (
-              toolModifiesState(tool, ctx) &&
-              tool.requiresBlueprintApproval !== false &&
-              !APP_BLUEPRINT_TOOLS.has(tool.name) &&
-              !PLANNING_SPECIFIC_TOOLS.has(tool.name) &&
-              !CAPABILITY_GATED_BLUEPRINT_TOOLS.has(tool.name)
-            ) {
-              assertAppBlueprintApproved({
-                toolName: tool.name,
-                chatId: ctx.chatId,
-                enabled: options.enableAppBlueprint !== false,
-              });
-            }
-
             // Track file edit tool usage before execution to capture all attempts
             // (including failures) for retry/fallback telemetry
             trackFileEditTool(ctx, tool.name, processedArgs);

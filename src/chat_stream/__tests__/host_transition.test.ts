@@ -213,6 +213,20 @@ describe("main-hosted chat stream terminal projection", () => {
       },
       commands: [],
     });
+
+    const timedOut = transitionChatStreamHost(state, {
+      type: "REVIEW_BARRIER_RESULT",
+      outcome: "waiting",
+    });
+    expect(timedOut).toMatchObject({
+      kind: "applied",
+      state: {
+        queuePaused: true,
+        reviewBarrier: { phase: "idle", threadId: null },
+        error: expect.stringContaining("timed out"),
+      },
+      commands: [{ type: "resume-after-review" }],
+    });
   });
 
   it("keeps remediation continuation and verification in main-owned state", () => {

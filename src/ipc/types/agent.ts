@@ -104,13 +104,9 @@ export type SubagentPersona = z.infer<typeof SubagentPersonaSchema>;
 export const SubagentStatusSchema = z.enum([
   "queued",
   "running",
-  "idle",
   "waiting_for_writer",
-  "waiting_for_auto_review",
   "auto_fix_countdown",
   "fixing_findings",
-  "verification_review",
-  "needs_approval",
   "completed",
   "partial",
   "review_outdated",

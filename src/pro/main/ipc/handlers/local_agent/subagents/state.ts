@@ -16,13 +16,9 @@ export interface SubagentLifecycleState {
 export const SUBAGENT_NONTERMINAL_STATUSES = [
   "queued",
   "running",
-  "idle",
   "waiting_for_writer",
-  "waiting_for_auto_review",
   "auto_fix_countdown",
   "fixing_findings",
-  "verification_review",
-  "needs_approval",
 ] as const;
 
 export const SUBAGENT_TERMINAL_STATUSES = [

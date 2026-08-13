@@ -36,10 +36,12 @@ export function SubagentTeamCard({
   chatId,
   messageId,
   rootIsStreaming = false,
+  showReviewAction = true,
 }: {
   chatId: number;
   messageId: number;
   rootIsStreaming?: boolean;
+  showReviewAction?: boolean;
 }) {
   const { settings } = useSettings();
   const { streamMessage } = useStreamChat();
@@ -250,6 +252,7 @@ export function SubagentTeamCard({
   const report =
     typeof review?.result?.report === "string" ? review.result.report : null;
   if (rootIsStreaming && visibleThreads.length === 0) return null;
+  if (!showReviewAction && visibleThreads.length === 0) return null;
 
   return (
     <div className="mt-3 rounded-lg border bg-muted/20 text-sm">
@@ -271,24 +274,26 @@ export function SubagentTeamCard({
             </span>
           </button>
         )}
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={
-            startReviewMutation.isPending ||
-            rootIsStreaming ||
-            review?.status === "running" ||
-            review?.status === "queued"
-          }
-          onClick={() => startReviewMutation.mutate()}
-        >
-          {review?.status === "running" || review?.status === "queued" ? (
-            <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-          ) : (
-            <SearchCheck className="mr-1 h-4 w-4" />
-          )}
-          {review ? review.taskName : "Review changes"}
-        </Button>
+        {showReviewAction && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={
+              startReviewMutation.isPending ||
+              rootIsStreaming ||
+              review?.status === "running" ||
+              review?.status === "queued"
+            }
+            onClick={() => startReviewMutation.mutate()}
+          >
+            {review?.status === "running" || review?.status === "queued" ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+            ) : (
+              <SearchCheck className="mr-1 h-4 w-4" />
+            )}
+            {review ? review.taskName : "Review changes"}
+          </Button>
+        )}
       </div>
       {expanded && visibleThreads.length > 0 && (
         <div className="space-y-2 border-t p-2">
@@ -558,12 +563,5 @@ function statusLabel(thread: SubagentThreadSummary): string {
 function isSubagentCancellable(
   status: SubagentThreadSummary["status"],
 ): boolean {
-  return [
-    "queued",
-    "running",
-    "idle",
-    "waiting_for_writer",
-    "waiting_for_auto_review",
-    "needs_approval",
-  ].includes(status);
+  return ["queued", "running", "waiting_for_writer"].includes(status);
 }

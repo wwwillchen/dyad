@@ -405,15 +405,14 @@ const ChatMessage = ({
                 </div>
               </div>
             ) : null}
-            {message.role === "assistant" &&
-              isLastMessage &&
-              selectedChatId != null && (
-                <SubagentTeamCard
-                  chatId={selectedChatId}
-                  messageId={message.id}
-                  rootIsStreaming={isStreaming}
-                />
-              )}
+            {message.role === "assistant" && selectedChatId != null && (
+              <SubagentTeamCard
+                chatId={selectedChatId}
+                messageId={message.id}
+                rootIsStreaming={isLastMessage && isStreaming}
+                showReviewAction={isLastMessage}
+              />
+            )}
           </div>
         )}
         {/* Render attachments outside the message box */}

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { stepCountIs, streamText, type ModelMessage, type ToolSet } from "ai";
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { WebContents } from "electron";
 import log from "electron-log";
 
@@ -545,7 +545,14 @@ export async function buildFixFindingsPrompt(
   }
   const sourceMessageId = Number(thread.contextJson?.sourceMessageId);
   const latest = await db.query.messages.findFirst({
-    where: and(eq(messages.chatId, chatId), eq(messages.role, "assistant")),
+    where: and(
+      eq(messages.chatId, chatId),
+      eq(messages.role, "assistant"),
+      or(
+        isNull(messages.isCompactionSummary),
+        eq(messages.isCompactionSummary, false),
+      ),
+    ),
     orderBy: [desc(messages.createdAt), desc(messages.id)],
   });
   const chat = await db.query.chats.findFirst({
@@ -670,6 +677,10 @@ export async function runAutoReviewBarrier(params: {
     where: and(
       eq(messages.chatId, params.chatId),
       eq(messages.role, "assistant"),
+      or(
+        isNull(messages.isCompactionSummary),
+        eq(messages.isCompactionSummary, false),
+      ),
     ),
     orderBy: [desc(messages.createdAt), desc(messages.id)],
   });
@@ -1887,11 +1898,8 @@ export function isReusableReviewStatus(status: string): boolean {
     "queued",
     "running",
     "waiting_for_writer",
-    "waiting_for_auto_review",
     "auto_fix_countdown",
     "fixing_findings",
-    "verification_review",
-    "needs_approval",
     "completed",
   ].includes(status);
 }
@@ -1913,10 +1921,8 @@ export function buildReboundReviewState(
 }
 
 export function isWaitCompleteStatus(status: string): boolean {
-  return (
-    !SUBAGENT_NONTERMINAL_STATUSES.includes(
-      status as (typeof SUBAGENT_NONTERMINAL_STATUSES)[number],
-    ) || status === "idle"
+  return !SUBAGENT_NONTERMINAL_STATUSES.includes(
+    status as (typeof SUBAGENT_NONTERMINAL_STATUSES)[number],
   );
 }
 

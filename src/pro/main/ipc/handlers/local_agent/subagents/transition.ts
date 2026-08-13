@@ -58,7 +58,6 @@ function changed(
 }
 
 const FOLLOWUP_RESUMABLE = new Set<SubagentLifecycleState["status"]>([
-  "idle",
   "completed",
   "partial",
   "review_outdated",

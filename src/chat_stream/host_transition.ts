@@ -538,14 +538,13 @@ export function transitionChatStreamHost(
       if (event.outcome === "waiting") {
         return {
           kind: "applied",
-          state,
-          commands: [
-            {
-              type: "run-review-barrier",
-              verification: state.reviewBarrier.phase === "verifying",
-              autoFixPolicy: event.autoFixPolicy,
-            },
-          ],
+          state: {
+            ...state,
+            error:
+              "Automatic review timed out. The queued prompts will resume.",
+            reviewBarrier: { phase: "idle", threadId: null },
+          },
+          commands: [{ type: "resume-after-review" }],
         };
       }
       if (event.outcome === "verification_failed") {

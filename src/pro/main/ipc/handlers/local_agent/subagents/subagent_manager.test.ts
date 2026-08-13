@@ -37,13 +37,9 @@ describe("sub-agent manager status policy", () => {
     expect(SUBAGENT_NONTERMINAL_STATUSES).toEqual([
       "queued",
       "running",
-      "idle",
       "waiting_for_writer",
-      "waiting_for_auto_review",
       "auto_fix_countdown",
       "fixing_findings",
-      "verification_review",
-      "needs_approval",
     ]);
   });
 
@@ -137,14 +133,10 @@ describe("sub-agent manager status policy", () => {
     expect(isWaitCompleteStatus("running")).toBe(false);
     expect(isWaitCompleteStatus("auto_fix_countdown")).toBe(false);
     expect(isWaitCompleteStatus("fixing_findings")).toBe(false);
-    expect(isWaitCompleteStatus("idle")).toBe(true);
     expect(isWaitCompleteStatus("completed")).toBe(true);
     expect(isWaitCompleteStatus("failed")).toBe(true);
-    expect(isTerminalSubagentStatus("idle")).toBe(false);
     expect(isTerminalSubagentStatus("completed")).toBe(true);
     expect(isTerminalSubagentStatus("failed")).toBe(true);
-    expect(isSubagentJoinReady("idle", true)).toBe(false);
-    expect(isSubagentJoinReady("idle", false)).toBe(true);
     expect(isSubagentJoinReady("failed", true)).toBe(true);
     expect(isSubagentJoinReady("completed", true, true)).toBe(false);
     expect(isSubagentJoinReady("completed", true, false)).toBe(true);

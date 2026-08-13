@@ -429,7 +429,12 @@ function createCommandRunner(
                   : undefined,
           });
           if (result.outcome === "waiting") {
-            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            emit({
+              type: "REVIEW_BARRIER_FAILED",
+              error:
+                "Automatic review timed out. The queued prompts will resume.",
+            });
+            return;
           }
           emit({
             type: "REVIEW_BARRIER_RESULT",

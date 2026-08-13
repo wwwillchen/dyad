@@ -196,12 +196,16 @@ describe("SubagentTeamCard", () => {
       },
     ]);
 
-    render(<SubagentTeamCard chatId={7} messageId={42} />, {
-      wrapper: makeWrapper(),
-    });
+    render(
+      <SubagentTeamCard chatId={7} messageId={42} showReviewAction={false} />,
+      {
+        wrapper: makeWrapper(),
+      },
+    );
 
     expect(await screen.findByText("Review current-explorer")).toBeTruthy();
     expect(screen.queryByText("Review older-explorer")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
   });
 
   it("starts a review for this exact assistant message", async () => {
@@ -484,11 +488,7 @@ describe("SubagentTeamCard", () => {
     });
   });
 
-  it.each([
-    "auto_fix_countdown",
-    "fixing_findings",
-    "verification_review",
-  ] as const)(
+  it.each(["auto_fix_countdown", "fixing_findings"] as const)(
     "hides Fix findings while review status is %s",
     async (status) => {
       mocks.listSubagents.mockResolvedValue([
