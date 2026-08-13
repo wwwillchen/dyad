@@ -236,12 +236,6 @@ export const agentContracts = {
     output: SubagentThreadSummarySchema,
   }),
 
-  startAutoReview: defineContract({
-    channel: "agent:start-auto-review",
-    input: z.object({ chatId: z.number(), sourceMessageId: z.number() }),
-    output: SubagentThreadSummarySchema,
-  }),
-
   runAutoReviewBarrier: defineContract({
     channel: "agent:run-auto-review-barrier",
     input: z.object({

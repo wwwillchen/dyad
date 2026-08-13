@@ -215,7 +215,7 @@ export function SubagentTeamCard({
     return () => clearInterval(timer);
   }, [visibleThreads]);
   const transcriptQueries = useQueries({
-    queries: threads.map((thread) => ({
+    queries: visibleThreads.map((thread) => ({
       queryKey: queryKeys.subagents.messages({ chatId, threadId: thread.id }),
       queryFn: () =>
         ipc.agent.getSubagentMessages({ chatId, threadId: thread.id }),
@@ -223,7 +223,10 @@ export function SubagentTeamCard({
     })),
   });
   const transcriptQueriesByThreadId = new Map(
-    threads.map((thread, index) => [thread.id, transcriptQueries[index]]),
+    visibleThreads.map((thread, index) => [
+      thread.id,
+      transcriptQueries[index],
+    ]),
   );
   if (!isPro) return null;
   if (query.isPending) {

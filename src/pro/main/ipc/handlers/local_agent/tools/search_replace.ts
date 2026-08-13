@@ -159,8 +159,11 @@ CRITICAL REQUIREMENTS FOR USING THIS TOOL:
       try {
         const functionName = extractFunctionNameFromPath(operationPath);
         if (ctx.allowDeploySideEffects === false) {
-          ctx.pendingFunctionDeploys.push(functionName);
-          ctx.onDeferredFunctionDeploy?.(functionName);
+          if (ctx.onDeferredFunctionDeploy) {
+            ctx.onDeferredFunctionDeploy(functionName);
+          } else if (!ctx.pendingFunctionDeploys.includes(functionName)) {
+            ctx.pendingFunctionDeploys.push(functionName);
+          }
         } else if (!ctx.isSharedModulesChanged) {
           await deploySupabaseFunction({
             supabaseProjectId: ctx.supabaseProjectId,

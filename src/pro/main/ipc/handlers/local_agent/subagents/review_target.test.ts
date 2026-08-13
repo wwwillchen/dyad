@@ -67,6 +67,24 @@ describe("buildReviewTarget", () => {
     expect(review.targetCommit).toBe(target.trim());
   });
 
+  it("classifies an unreachable immutable review range as a precondition", async () => {
+    const repo = await makeRepo();
+
+    await expect(
+      buildReviewTarget({
+        appPath: repo,
+        baseCommit: "missing-base",
+        targetCommit: "missing-target",
+      }),
+    ).rejects.toMatchObject({
+      name: "DyadError",
+      kind: DyadErrorKind.Precondition,
+      message: expect.stringContaining(
+        "Git could not resolve the requested review range",
+      ),
+    });
+  });
+
   it("uses the empty tree for an immutable target-only first commit", async () => {
     const repo = await makeRepo();
     await fs.writeFile(

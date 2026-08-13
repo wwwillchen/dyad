@@ -81,10 +81,6 @@ export function registerAgentToolHandlers() {
     setSubagentEventTarget(event.sender);
     return startReview({ ...params, invocationSource: "review_button" });
   });
-  handle(agentContracts.startAutoReview, async (event, params) => {
-    setSubagentEventTarget(event.sender);
-    return startReview({ ...params, invocationSource: "auto_review" });
-  });
   handle(agentContracts.runAutoReviewBarrier, async (event, params) => {
     setSubagentEventTarget(event.sender);
     const controller = new AbortController();

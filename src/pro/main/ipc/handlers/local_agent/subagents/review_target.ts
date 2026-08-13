@@ -243,7 +243,7 @@ async function boundedGitDiff(
       { maxBuffer: REVIEW_MAX_FILE_BYTES + 64 * 1024 },
     );
     if (result.exitCode !== 0) {
-      throw new Error(result.stderr || "Git diff failed.");
+      throw reviewGitError(result.stderr || "Git diff failed.");
     }
     const { stdout } = result;
     return Buffer.byteLength(stdout) <= REVIEW_MAX_FILE_BYTES ? stdout : null;
@@ -263,9 +263,16 @@ async function git(cwd: string, args: string[]): Promise<string> {
     maxBuffer: 20 * 1024 * 1024,
   });
   if (result.exitCode !== 0) {
-    throw new Error(result.stderr || "Git command failed.");
+    throw reviewGitError(result.stderr || "Git command failed.");
   }
   return result.stdout;
+}
+
+function reviewGitError(detail: string): DyadError {
+  return new DyadError(
+    `Git could not resolve the requested review range: ${detail.trim()}`,
+    DyadErrorKind.Precondition,
+  );
 }
 
 async function tryGit(cwd: string, args: string[]): Promise<string | null> {

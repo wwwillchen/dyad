@@ -81,8 +81,11 @@ export const writeFileTool: ToolDefinition<z.infer<typeof writeFileSchema>> = {
         return `Successfully wrote ${args.path}`;
       }
       if (ctx.allowDeploySideEffects === false) {
-        ctx.pendingFunctionDeploys.push(functionName);
-        ctx.onDeferredFunctionDeploy?.(functionName);
+        if (ctx.onDeferredFunctionDeploy) {
+          ctx.onDeferredFunctionDeploy(functionName);
+        } else if (!ctx.pendingFunctionDeploys.includes(functionName)) {
+          ctx.pendingFunctionDeploys.push(functionName);
+        }
       } else if (!ctx.isSharedModulesChanged) {
         try {
           await deploySupabaseFunction({

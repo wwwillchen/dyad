@@ -720,6 +720,9 @@ export async function runAutoReviewBarrier(params: {
     return { outcome: "released", threadId: summary.id };
   }
   const findingCount = Number(summary.result?.findingCount ?? 0);
+  if (params.autoFix === false) {
+    return { outcome: "released", threadId: summary.id };
+  }
   if (summary.status === "auto_fix_countdown") {
     const owner = autoFixOwnerByThread.get(summary.id);
     if (
@@ -734,10 +737,6 @@ export async function runAutoReviewBarrier(params: {
   } else if (summary.status !== "completed" || findingCount === 0) {
     return { outcome: "released", threadId: summary.id };
   }
-  if (params.autoFix === false) {
-    return { outcome: "released", threadId: summary.id };
-  }
-
   let autoFixAt = completedReview.autoFixAt ?? new Date(Date.now() + 10_000);
   if (summary.status === "completed") {
     assertAutoReviewNotAborted(params.abortSignal);
@@ -1004,7 +1003,12 @@ async function followupSubagentAdmitted(
       });
       emit(current.chatId, threadId);
       if (!isActive) {
-        await startPendingFollowup(threadId, selectedRun, true);
+        await startPendingFollowup(
+          threadId,
+          selectedRun,
+          true,
+          current.persona === "implementer",
+        );
         reservedImplementer = false;
       }
     } catch (error) {
@@ -1971,9 +1975,10 @@ function assertAutoReviewNotAborted(abortSignal?: AbortSignal): void {
 async function startPendingFollowup(
   threadId: string,
   runner?: (assignment: string) => void,
-  admissionOwned = false,
+  disposalAdmissionOwned = false,
+  mutationAdmissionOwned = false,
 ): Promise<void> {
-  if (!admissionOwned) {
+  if (!disposalAdmissionOwned) {
     const thread = await getThread(threadId);
     return subagentDisposalRegistry.withAdmission(thread.chatId, () =>
       startPendingFollowup(threadId, runner, true),
@@ -2033,7 +2038,7 @@ async function startPendingFollowup(
           (value): value is string => typeof value === "string",
         )
       : [];
-    await withMutationAdmission(chat.app.id, async () => {
+    const queueImplementerFollowup = async () => {
       if (!acquireMutationLease({ appId: chat.app.id, threadId, scope })) {
         throw new DyadError(
           "Another Implementer is already editing this app.",
@@ -2041,7 +2046,12 @@ async function startPendingFollowup(
         );
       }
       await queueFollowup(chat.app.id);
-    });
+    };
+    if (mutationAdmissionOwned) {
+      await queueImplementerFollowup();
+    } else {
+      await withMutationAdmission(chat.app.id, queueImplementerFollowup);
+    }
   });
 }
 
