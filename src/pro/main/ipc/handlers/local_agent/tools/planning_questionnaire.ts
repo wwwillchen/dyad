@@ -50,8 +50,8 @@ const planningQuestionnaireSchema = z.object({
   questions: z
     .array(QuestionSchema)
     .min(1, "questions array must not be empty")
-    .max(3, "questions array must have at most 3 questions")
-    .describe("A non empty array of 1-3 questions to present to the user"),
+    .max(5, "questions array must have at most 5 questions")
+    .describe("A non-empty array of 1-5 questions to present to the user"),
 });
 
 const DESCRIPTION = `Present a structured questionnaire to gather requirements from the user. The tool displays questions in the UI and waits for the user's responses, returning them as the tool result.
@@ -77,7 +77,7 @@ Each question object has these fields:
 </input_schema>
 
 <correct_example>
-Reasoning: The user asked to "build me a todo app". I need to clarify the tech stack and key features. I'll use radio for single-choice and checkbox for multi-choice.
+Reasoning: The user asked to "build me a todo app". I need to clarify the look and feel and key product features. I'll use radio for single-choice and checkbox for multi-choice.
 
 {
   "questions": [
@@ -108,7 +108,7 @@ WRONG — Empty options array:
 WRONG — Missing options for radio:
 { "type": "radio", "question": "..." }
 
-WRONG — More than 3 questions or more than 3 options
+WRONG — More than 5 questions or more than 3 options
 
 WRONG — Array with empty object (missing required "question" and "type" fields):
 { "questions": [{}] }

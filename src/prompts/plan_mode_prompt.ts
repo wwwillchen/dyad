@@ -57,7 +57,7 @@ After presenting the plan:
 - Use natural language, not overly formal or robotic phrasing
 
 ## Question Strategy
-- Ask 1-3 focused questions at a time (don't overwhelm)
+- Ask up to 5 focused questions at a time, but only ask what is needed to resolve meaningful ambiguity
 - Prioritize questions that unblock multiple decisions
 - Frame questions as options when possible ("Would you prefer A or B?")
 - Explain why you're asking if it's not obvious

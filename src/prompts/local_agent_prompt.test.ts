@@ -82,6 +82,21 @@ describe("local_agent_prompt", () => {
     expect(prompt).toContain("App Blueprint (new apps only)");
     expect(prompt).toContain("write_app_blueprint");
     expect(prompt).toContain("planning_questionnaire");
+    expect(prompt).toContain("ask up to 5 focused questions");
+    expect(prompt).toContain(
+      "Ask only the questions needed to resolve meaningful ambiguity",
+    );
+    expect(prompt).toContain("aim for 3-4 quick questions; never exceed 5");
+    expect(prompt).toContain(
+      "user-facing product requirements and high-level architectural needs",
+    );
+    expect(prompt).toContain("whether the app needs user accounts");
+    expect(prompt).toContain(
+      "whether it needs a database to store persistent app data",
+    );
+    expect(prompt).toContain(
+      "Do not ask the user to choose implementation details such as frameworks, libraries, hosting platforms, database providers, authentication providers, or other technology-specific options",
+    );
   });
 
   it("basic agent mode system prompt with app blueprint enabled", () => {
