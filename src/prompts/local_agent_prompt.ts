@@ -159,16 +159,13 @@ function developmentWorkflowBlock({
   const verifyTestsClause = testingEnabled
     ? " This app has e2e testing enabled: if you added or changed user-facing behavior that deserves coverage, add or update the relevant Playwright spec under `e2e-tests/`; also review the existing specs whose flows touch what you changed (read them, don't run the whole suite) and update any that no longer match. Then run the affected spec(s) with `run_tests` and fix any failures before finishing (skip trivial/cosmetic changes)."
     : "";
-  const clarifyQuestionCount = enableAppBlueprint
-    ? "For new apps, follow the question-count guidance in the app blueprint section. Otherwise, ask 1-3 focused questions."
-    : "Ask 1-3 focused questions.";
   const steps: string[] = [];
   if (enableAppBlueprint) {
     steps.push(APP_BLUEPRINT_WORKFLOW_STEP);
   }
   steps.push(
     understandStep,
-    `**Clarify (when needed):** Use \`planning_questionnaire\` when details are missing. ${clarifyQuestionCount} Choose text (open-ended), radio (pick one), or checkbox (pick many) for each question, with 2-3 likely options for radio/checkbox.
+    `**Clarify (when needed):** Use \`planning_questionnaire\` to ask up to 5 focused questions when details are missing. Ask only the questions needed to resolve meaningful ambiguity. Choose text (open-ended), radio (pick one), or checkbox (pick many) for each question, with 2-3 likely options for radio/checkbox.
    **Use when:** the request is vague (e.g. "Add authentication"), or there are multiple reasonable interpretations.
    **Skip when:** the request is specific and concrete (e.g. "Fix the login button", "Change color from blue to green").
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.`,
