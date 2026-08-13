@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useMutation,
   useQueries,
@@ -61,6 +61,11 @@ export function SubagentTeamCard({
     queryFn: () => ipc.agent.listSubagents({ chatId }),
     enabled: isPro,
   });
+  const threads = query.data ?? [];
+  const visibleThreads = useMemo(
+    () => threads.filter((thread) => thread.sourceMessageId === messageId),
+    [messageId, threads],
+  );
   const invalidateThreads = () =>
     queryClient.invalidateQueries({ queryKey: queryKeys.subagents.all });
   const startReviewMutation = useMutation({
@@ -183,20 +188,19 @@ export function SubagentTeamCard({
     onError: (error) => showError(error),
   });
 
-  useEffect(
-    () =>
-      ipc.events.agent.onSubagentUpdate((event) => {
-        if (event.chatId === chatId)
-          void queryClient.invalidateQueries({
-            queryKey: queryKeys.subagents.byChat({ chatId }),
-          });
-      }),
-    [chatId, queryClient],
-  );
+  useEffect(() => {
+    if (!showReviewAction) return;
+    return ipc.events.agent.onSubagentUpdate((event) => {
+      if (event.chatId === chatId)
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.subagents.byChat({ chatId }),
+        });
+    });
+  }, [chatId, queryClient, showReviewAction]);
   useEffect(() => {
     const activeDeadlines =
-      query.data
-        ?.map((thread) => thread.autoFixAt?.getTime())
+      visibleThreads
+        .map((thread) => thread.autoFixAt?.getTime())
         .filter((deadline): deadline is number =>
           deadline ? deadline > Date.now() : false,
         ) ?? [];
@@ -209,9 +213,7 @@ export function SubagentTeamCard({
       }
     }, 250);
     return () => clearInterval(timer);
-  }, [query.data]);
-
-  const threads = query.data ?? [];
+  }, [visibleThreads]);
   const transcriptQueries = useQueries({
     queries: threads.map((thread) => ({
       queryKey: queryKeys.subagents.messages({ chatId, threadId: thread.id }),
@@ -243,9 +245,6 @@ export function SubagentTeamCard({
       </div>
     );
   }
-  const visibleThreads = threads.filter(
-    (thread) => thread.sourceMessageId === messageId,
-  );
   const review = threads.find(
     (thread) =>
       thread.persona === "reviewer" && thread.sourceMessageId === messageId,

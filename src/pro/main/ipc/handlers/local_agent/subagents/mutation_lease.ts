@@ -11,12 +11,43 @@ interface MutationLease {
 
 const leases = new Map<number, MutationLease>();
 const finalizingApps = new Set<number>();
+const TOOL_FINALIZATION_WAIT_MS = 10 * 60 * 1000;
 
 export function withMutationAdmission<T>(
   appId: number,
   operation: () => Promise<T>,
 ): Promise<T> {
   return withLock(`subagent-finalization:${appId}`, operation);
+}
+
+export async function withMutationToolAdmission<T>(
+  ctx: AgentContext,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const deadlineAt = Date.now() + TOOL_FINALIZATION_WAIT_MS;
+  while (true) {
+    const result = await withMutationAdmission(ctx.appId, async () => {
+      if (finalizingApps.has(ctx.appId)) {
+        return { waiting: true as const };
+      }
+      assertMutationLease(ctx);
+      return { waiting: false as const, value: await operation() };
+    });
+    if (!result.waiting) return result.value;
+    if (ctx.abortSignal?.aborted) {
+      throw new DyadError(
+        "Waiting to modify the app was cancelled.",
+        DyadErrorKind.UserCancelled,
+      );
+    }
+    if (Date.now() >= deadlineAt) {
+      throw new DyadError(
+        "Timed out waiting for the app to finish finalizing.",
+        DyadErrorKind.Conflict,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 }
 
 export function acquireMutationLease(params: {

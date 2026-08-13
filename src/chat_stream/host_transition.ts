@@ -426,6 +426,7 @@ export function transitionChatStreamHost(
             : null;
         const isContinuation =
           state.reviewBarrier.phase === "awaiting-continuation" &&
+          completion !== null &&
           !isRemediation;
         const pausedByStepLimit =
           completion?.pausePromptQueue === true &&

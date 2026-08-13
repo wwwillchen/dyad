@@ -9,6 +9,7 @@ import {
   endAppFinalization,
   releaseMutationLease,
   withMutationAdmission,
+  withMutationToolAdmission,
 } from "./mutation_lease";
 
 describe("sub-agent mutation lease", () => {
@@ -137,6 +138,23 @@ describe("sub-agent mutation lease", () => {
     expect(() => assertMutationLease({ appId: 7 } as AgentContext)).toThrow(
       /currently being finalized/,
     );
+  });
+
+  it("waits for root finalization before admitting a mutation tool", async () => {
+    expect(beginAppFinalization(7)).toBe(true);
+    let ran = false;
+    const mutation = withMutationToolAdmission(
+      { appId: 7 } as AgentContext,
+      async () => {
+        ran = true;
+      },
+    );
+    await Promise.resolve();
+    expect(ran).toBe(false);
+
+    endAppFinalization(7);
+    await mutation;
+    expect(ran).toBe(true);
   });
 
   it("does not begin root finalization while a writer owns the lease", () => {

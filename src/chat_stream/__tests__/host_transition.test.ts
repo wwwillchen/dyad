@@ -301,6 +301,44 @@ describe("main-hosted chat stream terminal projection", () => {
     });
   });
 
+  it("does not settle an awaiting continuation for an unrelated queue mutation", () => {
+    const state: ChatStreamHostState = {
+      ...initialChatStreamHostState(),
+      queuePaused: true,
+      reviewBarrier: {
+        phase: "awaiting-continuation",
+        threadId: "review-1",
+      },
+    };
+
+    const result = transitionChatStreamHost(state, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 2,
+      paused: true,
+      entries: [
+        {
+          itemId: "queued-2",
+          intentId: "queued-2",
+          prompt: "later",
+          persistence: "main-session",
+          editable: true,
+          removable: true,
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      kind: "applied",
+      state: {
+        reviewBarrier: {
+          phase: "awaiting-continuation",
+          threadId: "review-1",
+        },
+      },
+      commands: [],
+    });
+  });
+
   it("reviews an empty queue in main using the user's auto-fix setting", () => {
     const state = appliedState(streamingState(), {
       type: "STREAM_ENDED",

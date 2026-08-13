@@ -78,10 +78,7 @@ import {
   isAcceptableImplementerJoinStatus,
   waitForSubagentsAndBeginFinalization,
 } from "./subagents/subagent_manager";
-import {
-  assertMutationLease,
-  withMutationAdmission,
-} from "./subagents/mutation_lease";
+import { withMutationToolAdmission } from "./subagents/mutation_lease";
 
 import type { ChatStreamParams, ChatResponseEnd } from "@/ipc/types";
 import {
@@ -2512,8 +2509,7 @@ async function getMcpTools(
               );
               callEmitted = true;
 
-              const res = await withMutationAdmission(ctx.appId, async () => {
-                assertMutationLease(ctx);
+              const res = await withMutationToolAdmission(ctx, async () => {
                 return mcpTool.execute(args, execCtx);
               });
               ctx.mcpToolRan = true;

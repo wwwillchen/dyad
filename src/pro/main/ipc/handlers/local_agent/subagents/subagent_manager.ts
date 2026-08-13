@@ -645,9 +645,6 @@ export async function runAutoReviewBarrier(params: {
   params.deadlineAt ??= Date.now() + AUTO_REVIEW_BARRIER_MAX_WAIT_MS;
   const settings = readSettings();
   const isPro = isDyadProEnabled(settings);
-  if (params.verification && isPro) {
-    await completeRemediatedReviews(params.chatId);
-  }
   if ((!settings.enableAutoReview && !params.verification) || !isPro) {
     return { outcome: "skipped" };
   }
@@ -680,7 +677,7 @@ export async function runAutoReviewBarrier(params: {
       throw error;
     }
     if (params.verification) {
-      await completeRemediatedReviews(params.chatId);
+      return { outcome: "verification_failed" };
     }
     return { outcome: "released" };
   }
@@ -1872,14 +1869,9 @@ function boundDurableReport(value: string): string {
 }
 
 export function isReusableReviewStatus(status: string): boolean {
-  return [
-    "queued",
-    "running",
-    "waiting_for_writer",
-    "auto_fix_countdown",
-    "fixing_findings",
-    "completed",
-  ].includes(status);
+  return ["queued", "running", "waiting_for_writer", "completed"].includes(
+    status,
+  );
 }
 
 export function buildReboundReviewState(

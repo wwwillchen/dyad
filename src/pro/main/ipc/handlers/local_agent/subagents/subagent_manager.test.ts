@@ -51,6 +51,8 @@ describe("sub-agent manager status policy", () => {
       "review_outdated",
       "partial",
       "entitlement_revoked",
+      "auto_fix_countdown",
+      "fixing_findings",
     ]) {
       expect(isReusableReviewStatus(status)).toBe(false);
     }

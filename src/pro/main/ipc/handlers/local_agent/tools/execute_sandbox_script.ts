@@ -15,10 +15,7 @@ import { sendTelemetryEvent } from "@/ipc/utils/telemetry";
 import { DYAD_MEDIA_DIR_NAME } from "@/ipc/utils/media_path_utils";
 import { readSettings } from "@/main/settings";
 import type { UserSettings } from "@/lib/schemas";
-import {
-  assertMutationLease,
-  withMutationAdmission,
-} from "../subagents/mutation_lease";
+import { withMutationToolAdmission } from "../subagents/mutation_lease";
 import { writeFileTool } from "./write_file";
 import {
   AgentContext,
@@ -489,8 +486,7 @@ function buildWriteFileCapability(ctx: AgentContext) {
     });
     await requireToolConsentOrThrow(writeFileTool, args, ctx);
 
-    return withMutationAdmission(ctx.appId, async () => {
-      assertMutationLease(ctx);
+    return withMutationToolAdmission(ctx, async () => {
       trackFileEditTool(ctx, writeFileTool.name, args);
       const result = await writeFileTool.execute(args, ctx);
       // Honor the tool's mutation predicate exactly like the main

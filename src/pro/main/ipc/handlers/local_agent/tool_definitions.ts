@@ -86,10 +86,7 @@ import { getSupabaseClientCode } from "@/supabase_admin/supabase_context";
 import { getNeonClientCode } from "@/neon_admin/neon_context";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { ExecuteAddDependencyError } from "@/ipc/processors/executeAddDependency";
-import {
-  assertMutationLease,
-  withMutationAdmission,
-} from "./subagents/mutation_lease";
+import { withMutationToolAdmission } from "./subagents/mutation_lease";
 
 function getToolErrorDisplayDetails(error: unknown): string {
   if (error instanceof ExecuteAddDependencyError) {
@@ -578,9 +575,6 @@ export function buildAgentToolSet(
                 DyadErrorKind.UserCancelled,
               );
             }
-            if (mutationRequiresAdmission) {
-              assertMutationLease(ctx);
-            }
             // Track file edit tool usage before execution to capture all attempts
             // (including failures) for retry/fallback telemetry
             trackFileEditTool(ctx, tool.name, processedArgs);
@@ -599,7 +593,7 @@ export function buildAgentToolSet(
           };
 
           return mutationRequiresAdmission
-            ? await withMutationAdmission(ctx.appId, invoke)
+            ? await withMutationToolAdmission(ctx, invoke)
             : await invoke();
         } catch (error) {
           const errorMessage = getToolErrorSummary(error);
