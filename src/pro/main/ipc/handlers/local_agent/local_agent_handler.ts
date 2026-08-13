@@ -1978,12 +1978,16 @@ export async function handleLocalAgentStream(
       }
     }
 
-    const updatedFiles =
+    const workspaceChanged =
       !readOnly &&
-      (Object.keys(fileEditTracker).length > 0 ||
-        ctx.workspaceMutated === true);
+      ((ctx.mutationCount ?? 0) > 0 || ctx.workspaceMutated === true);
+    // Successful MCP tools may have changed app files even though their
+    // schemas do not tell Dyad which tools are mutating. Preserve preview
+    // refresh for that conservative case without treating it as sufficient
+    // evidence to start an automatic Git review.
+    const updatedFiles = workspaceChanged || ctx.mcpToolRan === true;
     const reviewBarrierRequested =
-      updatedFiles &&
+      workspaceChanged &&
       !hitStepLimit &&
       isDyadProEnabled(settings) &&
       settings.enableAutoReview === true;
@@ -2511,6 +2515,7 @@ async function getMcpTools(
               callEmitted = true;
 
               const res = await mcpTool.execute(args, execCtx);
+              ctx.mcpToolRan = true;
               const safeResult = sanitizeMcpToolResult(res);
 
               ctx.onXmlComplete(

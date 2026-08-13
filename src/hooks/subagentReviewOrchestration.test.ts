@@ -1,11 +1,7 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SubagentThreadSummary } from "@/ipc/types/agent";
 
 const mocks = vi.hoisted(() => ({
-  startAutoReview: vi.fn(),
-  listSubagents: vi.fn(),
-  fixReviewFindings: vi.fn(),
   runAutoReviewBarrier: vi.fn(),
   skipReviewAutoFix: vi.fn(),
   dispatchQueueEvent: vi.fn(),
@@ -78,38 +74,6 @@ import {
   resumePendingReviewContinuation,
   setPendingReviewContinuation,
 } from "./subagentReviewContinuation";
-
-function review(
-  overrides: Partial<SubagentThreadSummary> = {},
-): SubagentThreadSummary {
-  return {
-    id: "review-1",
-    chatId: 7,
-    persona: "reviewer",
-    taskName: "review",
-    assignment: "review",
-    status: "completed",
-    provider: "openai",
-    model: "reviewer",
-    reasoningEffort: "medium",
-    result: { findingCount: 1 },
-    reviewBaseCommit: null,
-    reviewTargetCommit: null,
-    reviewDiffHash: "hash",
-    sourceMessageId: 42,
-    invocationSource: "auto_review",
-    autoFixAt: null,
-    error: null,
-    inputTokens: 0,
-    outputTokens: 0,
-    toolCallCount: 0,
-    createdAt: new Date(),
-    startedAt: new Date(),
-    completedAt: new Date(),
-    updatedAt: new Date(),
-    ...overrides,
-  };
-}
 
 describe("sub-agent review orchestration", () => {
   beforeEach(() => {
@@ -267,9 +231,14 @@ describe("sub-agent review orchestration", () => {
   });
 
   it("auto-fixes a background review only when enabled, then verifies", async () => {
-    mocks.startAutoReview.mockResolvedValue(review());
-    mocks.fixReviewFindings.mockResolvedValue({ prompt: "fix it" });
-    mocks.runAutoReviewBarrier.mockResolvedValue({ outcome: "released" });
+    mocks.runAutoReviewBarrier
+      .mockResolvedValueOnce({ outcome: "released" })
+      .mockResolvedValueOnce({
+        outcome: "fix_required",
+        threadId: "review-1",
+        prompt: "fix it",
+      })
+      .mockResolvedValueOnce({ outcome: "released" });
     const streamFix = vi.fn(async () => "completed" as const);
 
     await runBackgroundAutoReview({
@@ -279,6 +248,14 @@ describe("sub-agent review orchestration", () => {
       streamFix,
     });
 
+    expect(mocks.runAutoReviewBarrier).toHaveBeenNthCalledWith(1, {
+      chatId: 7,
+      autoFix: false,
+    });
+    expect(mocks.runAutoReviewBarrier).toHaveBeenNthCalledWith(2, {
+      chatId: 7,
+      autoFix: true,
+    });
     expect(streamFix).toHaveBeenCalledWith("fix it");
     expect(mocks.runAutoReviewBarrier).toHaveBeenCalledWith({
       chatId: 7,
@@ -287,8 +264,13 @@ describe("sub-agent review orchestration", () => {
   });
 
   it("verifies after a step-limited background remediation resumes", async () => {
-    mocks.startAutoReview.mockResolvedValue(review());
-    mocks.fixReviewFindings.mockResolvedValue({ prompt: "fix it" });
+    mocks.runAutoReviewBarrier
+      .mockResolvedValueOnce({ outcome: "released" })
+      .mockResolvedValueOnce({
+        outcome: "fix_required",
+        threadId: "review-1",
+        prompt: "fix it",
+      });
 
     await runBackgroundAutoReview({
       chatId: 12,
@@ -297,7 +279,7 @@ describe("sub-agent review orchestration", () => {
       streamFix: async () => "paused",
     });
 
-    expect(mocks.runAutoReviewBarrier).not.toHaveBeenCalled();
+    expect(mocks.runAutoReviewBarrier).toHaveBeenCalledTimes(2);
     expect(hasPendingReviewContinuation(12)).toBe(true);
 
     await expect(resumePendingReviewContinuation(12)).resolves.toBe(true);
@@ -309,7 +291,7 @@ describe("sub-agent review orchestration", () => {
   });
 
   it("reports a background review without fixing when auto-fix is disabled", async () => {
-    mocks.startAutoReview.mockResolvedValue(review());
+    mocks.runAutoReviewBarrier.mockResolvedValue({ outcome: "released" });
 
     await runBackgroundAutoReview({
       chatId: 7,
@@ -318,15 +300,17 @@ describe("sub-agent review orchestration", () => {
       streamFix: vi.fn(),
     });
 
-    expect(mocks.fixReviewFindings).not.toHaveBeenCalled();
-    expect(mocks.runAutoReviewBarrier).not.toHaveBeenCalled();
+    expect(mocks.runAutoReviewBarrier).toHaveBeenCalledWith({
+      chatId: 7,
+      autoFix: false,
+    });
   });
 
   it("reads the latest auto-fix setting after Reviewer completes", async () => {
-    let finishReview!: (value: SubagentThreadSummary) => void;
+    let finishReview!: (value: { outcome: "released" }) => void;
     let autoFix = true;
-    mocks.startAutoReview.mockReturnValue(
-      new Promise<SubagentThreadSummary>((resolve) => {
+    mocks.runAutoReviewBarrier.mockReturnValue(
+      new Promise((resolve) => {
         finishReview = resolve;
       }),
     );
@@ -337,28 +321,28 @@ describe("sub-agent review orchestration", () => {
       getAutoFix: () => autoFix,
       streamFix: vi.fn(),
     });
-    await vi.waitFor(() => expect(mocks.startAutoReview).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(mocks.runAutoReviewBarrier).toHaveBeenCalled(),
+    );
     autoFix = false;
-    finishReview(review({ chatId: 10 }));
+    finishReview({ outcome: "released" });
     await run;
 
-    expect(mocks.fixReviewFindings).not.toHaveBeenCalled();
+    expect(mocks.runAutoReviewBarrier).toHaveBeenCalledWith({
+      chatId: 10,
+      autoFix: false,
+    });
+    expect(mocks.runAutoReviewBarrier).toHaveBeenCalledTimes(1);
   });
 
   it("replays the newest background auto-review requested while one is active", async () => {
-    let resolveFirstReview!: (value: SubagentThreadSummary) => void;
-    const firstReview = new Promise<SubagentThreadSummary>((resolve) => {
+    let resolveFirstReview!: (value: { outcome: "released" }) => void;
+    const firstReview = new Promise<{ outcome: "released" }>((resolve) => {
       resolveFirstReview = resolve;
     });
-    mocks.startAutoReview
+    mocks.runAutoReviewBarrier
       .mockReturnValueOnce(firstReview)
-      .mockResolvedValueOnce(
-        review({
-          id: "review-2",
-          sourceMessageId: 43,
-          result: { findingCount: 0 },
-        }),
-      );
+      .mockResolvedValueOnce({ outcome: "released" });
 
     const firstRun = runBackgroundAutoReview({
       chatId: 9,
@@ -367,7 +351,7 @@ describe("sub-agent review orchestration", () => {
       streamFix: vi.fn(),
     });
     await vi.waitFor(() => {
-      expect(mocks.startAutoReview).toHaveBeenCalledTimes(1);
+      expect(mocks.runAutoReviewBarrier).toHaveBeenCalledTimes(1);
     });
 
     await runBackgroundAutoReview({
@@ -376,20 +360,17 @@ describe("sub-agent review orchestration", () => {
       getAutoFix: () => false,
       streamFix: vi.fn(),
     });
-    resolveFirstReview(
-      review({ sourceMessageId: 42, result: { findingCount: 0 } }),
-    );
+    resolveFirstReview({ outcome: "released" });
     await firstRun;
 
-    expect(mocks.startAutoReview).toHaveBeenCalledTimes(2);
-    expect(mocks.startAutoReview).toHaveBeenNthCalledWith(1, {
+    expect(mocks.runAutoReviewBarrier).toHaveBeenCalledTimes(2);
+    expect(mocks.runAutoReviewBarrier).toHaveBeenNthCalledWith(1, {
       chatId: 9,
-      sourceMessageId: 42,
+      autoFix: false,
     });
-    expect(mocks.startAutoReview).toHaveBeenNthCalledWith(2, {
+    expect(mocks.runAutoReviewBarrier).toHaveBeenNthCalledWith(2, {
       chatId: 9,
-      sourceMessageId: 43,
+      autoFix: false,
     });
-    expect(mocks.fixReviewFindings).not.toHaveBeenCalled();
   });
 });

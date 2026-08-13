@@ -190,6 +190,17 @@ export const createResponsesHandler =
       messageContent = generateDump(req);
     }
 
+    if (
+      lastUserText.includes("Review this exact diff.") &&
+      lastUserText.includes("Return JSON only, with this exact shape:")
+    ) {
+      messageContent = JSON.stringify({
+        status: "no_findings",
+        findings: [],
+        summary: "No actionable defects found in the reviewed change.",
+      });
+    }
+
     // See testAssertionsFixtures.ts: code synthesis for assertions the user
     // edited before approving the card. The proposal itself is an agent tool
     // call, which this route never serves.

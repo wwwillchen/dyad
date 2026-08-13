@@ -83,6 +83,10 @@ Agent tool definitions live in `src/pro/main/ipc/handlers/local_agent/tools/`. E
 
 ## Stream retries
 
+- Call `cancelOrphanedBaseStream(result)` only after code has accessed and is
+  consuming `result.fullStream`; calling it before awaiting `result.text`/
+  `steps` cancels the primary stream and can leave durable sub-agents stuck in
+  `running` forever.
 - Engine usage is only known after a model request completes. Before dispatching
   the next local-agent step, add an estimate of newly completed tool results to
   the last exact usage count and compact in `prepareStep` when that projection

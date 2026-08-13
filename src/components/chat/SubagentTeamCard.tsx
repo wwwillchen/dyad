@@ -52,7 +52,7 @@ export function SubagentTeamCard({
   const [expandedThreadIds, setExpandedThreadIds] = useState<Set<string>>(
     new Set(),
   );
-  const [, setNow] = useState(Date.now());
+  const [now, setNow] = useState(Date.now());
   const isPro = settings ? isDyadProEnabled(settings) : false;
   const query = useQuery({
     queryKey,
@@ -470,28 +470,31 @@ export function SubagentTeamCard({
                   </Button>
                 </div>
               </div>
-              {thread.persona === "reviewer" && thread.autoFixAt && (
-                <div className="mt-2 flex items-center justify-between rounded bg-amber-500/10 p-2 text-xs">
-                  <span aria-live="polite">
-                    Fixing findings in{" "}
-                    {Math.max(
-                      0,
-                      Math.ceil(
-                        (thread.autoFixAt.getTime() - Date.now()) / 1000,
-                      ),
-                    )}
-                    …
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={skipAutoFixMutation.isPending}
-                    onClick={() => skipAutoFixMutation.mutate(thread.id)}
-                  >
-                    Skip fix
-                  </Button>
-                </div>
-              )}
+              {thread.persona === "reviewer" &&
+                thread.status === "auto_fix_countdown" &&
+                thread.autoFixAt &&
+                thread.autoFixAt.getTime() > now && (
+                  <div className="mt-2 flex items-center justify-between rounded bg-amber-500/10 p-2 text-xs">
+                    <span aria-live="polite">
+                      Fixing findings in{" "}
+                      {Math.max(
+                        0,
+                        Math.ceil(
+                          (thread.autoFixAt.getTime() - Date.now()) / 1000,
+                        ),
+                      )}
+                      …
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={skipAutoFixMutation.isPending}
+                      onClick={() => skipAutoFixMutation.mutate(thread.id)}
+                    >
+                      Skip fix
+                    </Button>
+                  </div>
+                )}
               {thread.persona === "reviewer" &&
                 report &&
                 thread.id === review?.id && (

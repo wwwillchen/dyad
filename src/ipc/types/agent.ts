@@ -235,6 +235,7 @@ export const agentContracts = {
     input: z.object({
       chatId: z.number(),
       verification: z.boolean().optional(),
+      autoFix: z.boolean().optional(),
     }),
     output: z.object({
       outcome: z.enum(["released", "skipped", "fix_required"]),

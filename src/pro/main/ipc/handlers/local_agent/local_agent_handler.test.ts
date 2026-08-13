@@ -949,6 +949,78 @@ describe("handleLocalAgentStream", () => {
       });
     });
 
+    it("treats successful non-file mutations as workspace updates", async () => {
+      const { event, getMessagesByChannel } = createFakeEvent();
+      mockSettings = buildTestSettings({
+        enableDyadPro: true,
+        enableAutoReview: true,
+      });
+      mockChatData = buildTestChat();
+      vi.mocked(buildAgentToolSet).mockImplementationOnce((ctx) => {
+        ctx.mutationCount = 1;
+        return {};
+      });
+      mockStreamResult = createFakeStream([
+        { type: "text-delta", text: "Done" },
+      ]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      expect(
+        getMessagesByChannel("chat:response:end")[0].args[0],
+      ).toMatchObject({
+        updatedFiles: true,
+        pausePromptQueue: true,
+        reviewBarrierRequested: true,
+      });
+    });
+
+    it("refreshes preview after MCP tools without requesting a Git review", async () => {
+      const { event, getMessagesByChannel } = createFakeEvent();
+      mockSettings = buildTestSettings({
+        enableDyadPro: true,
+        enableAutoReview: true,
+      });
+      mockChatData = buildTestChat();
+      vi.mocked(buildAgentToolSet).mockImplementationOnce((ctx) => {
+        ctx.mcpToolRan = true;
+        return {};
+      });
+      mockStreamResult = createFakeStream([
+        { type: "text-delta", text: "Done" },
+      ]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      expect(
+        getMessagesByChannel("chat:response:end")[0].args[0],
+      ).toMatchObject({ updatedFiles: true });
+      expect(
+        getMessagesByChannel("chat:response:end")[0].args[0],
+      ).toMatchObject({
+        reviewBarrierRequested: undefined,
+        pausePromptQueue: undefined,
+      });
+    });
+
     it("includes warning messages in the error payload when a tool fails after warning", async () => {
       const { event, getMessagesByChannel } = createFakeEvent();
       const invocationRef = {

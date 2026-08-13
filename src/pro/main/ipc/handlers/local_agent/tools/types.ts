@@ -94,6 +94,8 @@ export interface AgentContext {
   fileEditTracker: FileEditTracker;
   /** True after a tool has successfully changed workspace contents this turn. */
   workspaceMutated?: boolean;
+  /** True after any directly registered or sandbox-hosted MCP tool succeeds. */
+  mcpToolRan?: boolean;
   /**
    * Turn-scoped count of successfully completed tool invocations that change
    * the app or its data: file edits (including sandbox write_file host calls)

@@ -6,7 +6,6 @@ import {
 } from "@/chat_stream/ChatStreamProvider";
 import { ipc } from "@/ipc/types";
 import type { ChatResponseEnd } from "@/ipc/types";
-import type { SubagentThreadSummary } from "@/ipc/types/agent";
 import { isDyadProEnabled } from "@/lib/schemas";
 import { showError } from "@/lib/toast";
 
@@ -100,49 +99,24 @@ const pendingBackgroundAutoReviews = new Map<
   number,
   BackgroundAutoReviewParams
 >();
-const ACTIVE_REVIEW_STATUSES = new Set<SubagentThreadSummary["status"]>([
-  "queued",
-  "running",
-  "waiting_for_writer",
-]);
-
-async function waitForReview(
-  chatId: number,
-  initial: SubagentThreadSummary,
-): Promise<SubagentThreadSummary> {
-  let review = initial;
-  while (ACTIVE_REVIEW_STATUSES.has(review.status)) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    const threads = await ipc.agent.listSubagents({ chatId });
-    const updated = threads.find((thread) => thread.id === review.id);
-    if (!updated) return review;
-    review = updated;
-  }
-  return review;
-}
-
 async function runSingleBackgroundAutoReview(
   params: BackgroundAutoReviewParams,
 ): Promise<void> {
-  const started = await ipc.agent.startAutoReview({
+  await ipc.agent.runAutoReviewBarrier({
     chatId: params.chatId,
-    sourceMessageId: params.sourceMessageId,
+    autoFix: false,
   });
-  const completed = await waitForReview(params.chatId, started);
   if (pendingBackgroundAutoReviews.has(params.chatId)) return;
-  if (
-    !params.getAutoFix() ||
-    completed.status !== "completed" ||
-    Number(completed.result?.findingCount ?? 0) === 0
-  ) {
+  if (!params.getAutoFix()) return;
+  const barrier = await ipc.agent.runAutoReviewBarrier({
+    chatId: params.chatId,
+    autoFix: true,
+  });
+  if (barrier.outcome !== "fix_required" || !barrier.prompt) {
     return;
   }
 
-  const { prompt } = await ipc.agent.fixReviewFindings({
-    chatId: params.chatId,
-    threadId: completed.id,
-  });
-  const remediated = await params.streamFix(prompt);
+  const remediated = await params.streamFix(barrier.prompt);
   if (remediated === "paused") {
     setPendingReviewContinuation(params.chatId, async () => {
       await ipc.agent.runAutoReviewBarrier({
@@ -154,10 +128,12 @@ async function runSingleBackgroundAutoReview(
     return;
   }
   if (remediated === "failed") {
-    await ipc.agent.skipReviewAutoFix({
-      chatId: params.chatId,
-      threadId: completed.id,
-    });
+    if (barrier.threadId) {
+      await ipc.agent.skipReviewAutoFix({
+        chatId: params.chatId,
+        threadId: barrier.threadId,
+      });
+    }
     return;
   }
   await ipc.agent.runAutoReviewBarrier({

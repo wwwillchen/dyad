@@ -469,6 +469,24 @@ describe("SubagentTeamCard", () => {
     },
   );
 
+  it("hides a stale auto-fix countdown outside the countdown status", async () => {
+    mocks.listSubagents.mockResolvedValue([
+      {
+        ...makeReview("current-message", 42, "current report"),
+        status: "interrupted_by_restart",
+        autoFixAt: new Date(Date.now() + 60_000),
+      },
+    ]);
+
+    render(<SubagentTeamCard chatId={7} messageId={42} />, {
+      wrapper: makeWrapper(),
+    });
+
+    expect(await screen.findByText("current report")).toBeTruthy();
+    expect(screen.queryByText(/Fixing findings in/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Skip fix" })).toBeNull();
+  });
+
   it("disables one-way messages for inactive sub-agents", async () => {
     mocks.listSubagents.mockResolvedValue([
       {

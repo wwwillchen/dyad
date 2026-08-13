@@ -6,14 +6,11 @@ import log from "electron-log";
 
 import { db } from "@/db";
 import { agentMessages, agentThreads, chats, messages } from "@/db/schema";
-import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 import { getAiHeaders, getProviderOptions } from "@/ipc/utils/provider_options";
 import { withLock } from "@/ipc/utils/lock_utils";
-import {
-  cancelOrphanedBaseStream,
-  fastTextOutput,
-} from "@/ipc/utils/stream_text_utils";
+import { fastTextOutput } from "@/ipc/utils/stream_text_utils";
 import type {
   SubagentMessage,
   SubagentPersona,
@@ -84,6 +81,7 @@ export async function recoverInterruptedSubagents(): Promise<void> {
     .update(agentThreads)
     .set({
       status: "interrupted_by_restart",
+      autoFixAt: null,
       completedAt: new Date(),
       updatedAt: new Date(),
       error: "Dyad restarted while this sub-agent was active.",
@@ -247,66 +245,74 @@ export async function startReview(params: {
       DyadErrorKind.Precondition,
     );
   }
-  const existing = await db.query.agentThreads.findFirst({
-    where: and(
-      eq(agentThreads.chatId, params.chatId),
-      eq(agentThreads.reviewDiffHash, target.hash),
-    ),
-    orderBy: [desc(agentThreads.createdAt)],
-  });
-  if (existing && isReusableReviewStatus(existing.status)) {
-    const existingSourceMessageId = existing.contextJson?.sourceMessageId;
-    if (existingSourceMessageId !== params.sourceMessageId) {
-      const reboundState = buildReboundReviewState(
-        existing.contextJson,
-        params.sourceMessageId,
-      );
-      const [rebound] = await db
-        .update(agentThreads)
-        .set(reboundState)
-        .where(eq(agentThreads.id, existing.id))
-        .returning();
-      emit(params.chatId, existing.id);
-      return toSummary(rebound);
-    }
-    return toSummary(existing);
-  }
-  const thread = await createThread({
-    chatId: params.chatId,
-    persona: "reviewer",
-    taskName: `Review ${target.files.length} changed file${target.files.length === 1 ? "" : "s"}`,
-    assignment: "Independently review the latest assistant turn's changes.",
-    invocationSource: params.invocationSource,
-    contextJson: {
-      sourceMessageId: params.sourceMessageId,
-      files: target.files,
-      exclusions: target.exclusions,
-    },
-    review: target,
-  });
-  if (!target.diff.trim()) {
-    const partial = buildAllExcludedReviewResult(target.exclusions);
-    await appendAssistantMessage(thread.id, partial.report);
-    await finishThread(thread.id, "partial", partial, partial.report);
-    return toSummary(await getThread(thread.id));
-  }
-  const run = (followup?: string) =>
-    enqueueRun({
-      threadId: thread.id,
-      chatId: params.chatId,
-      source: params.invocationSource,
-      run: () =>
-        runReview(
-          thread.id,
-          chat.app.id,
-          getDyadAppPath(chat.app.path),
-          target,
-          followup,
+  // Every renderer window observes stream completion, but review creation is
+  // main-owned. Serialize the reusable-review check with thread creation so
+  // concurrent windows cannot both observe a miss and create duplicate rows.
+  return withLock(
+    `subagent-review:${params.chatId}:${target.hash}`,
+    async () => {
+      const existing = await db.query.agentThreads.findFirst({
+        where: and(
+          eq(agentThreads.chatId, params.chatId),
+          eq(agentThreads.reviewDiffHash, target.hash),
         ),
-    });
-  followupRunners.set(thread.id, run);
-  run();
-  return toSummary(thread);
+        orderBy: [desc(agentThreads.createdAt)],
+      });
+      if (existing && isReusableReviewStatus(existing.status)) {
+        const existingSourceMessageId = existing.contextJson?.sourceMessageId;
+        if (existingSourceMessageId !== params.sourceMessageId) {
+          const reboundState = buildReboundReviewState(
+            existing.contextJson,
+            params.sourceMessageId,
+          );
+          const [rebound] = await db
+            .update(agentThreads)
+            .set(reboundState)
+            .where(eq(agentThreads.id, existing.id))
+            .returning();
+          emit(params.chatId, existing.id);
+          return toSummary(rebound);
+        }
+        return toSummary(existing);
+      }
+      const thread = await createThread({
+        chatId: params.chatId,
+        persona: "reviewer",
+        taskName: `Review ${target.files.length} changed file${target.files.length === 1 ? "" : "s"}`,
+        assignment: "Independently review the latest assistant turn's changes.",
+        invocationSource: params.invocationSource,
+        contextJson: {
+          sourceMessageId: params.sourceMessageId,
+          files: target.files,
+          exclusions: target.exclusions,
+        },
+        review: target,
+      });
+      if (!target.diff.trim()) {
+        const partial = buildAllExcludedReviewResult(target.exclusions);
+        await appendAssistantMessage(thread.id, partial.report);
+        await finishThread(thread.id, "partial", partial, partial.report);
+        return toSummary(await getThread(thread.id));
+      }
+      const run = (followup?: string) =>
+        enqueueRun({
+          threadId: thread.id,
+          chatId: params.chatId,
+          source: params.invocationSource,
+          run: () =>
+            runReview(
+              thread.id,
+              chat.app.id,
+              getDyadAppPath(chat.app.path),
+              target,
+              followup,
+            ),
+        });
+      followupRunners.set(thread.id, run);
+      run();
+      return toSummary(thread);
+    },
+  );
 }
 
 export async function cancelSubagent(
@@ -516,6 +522,7 @@ export function buildRemediationPrompt(
 export async function runAutoReviewBarrier(params: {
   chatId: number;
   verification?: boolean;
+  autoFix?: boolean;
 }): Promise<{
   outcome: "released" | "skipped" | "fix_required";
   threadId?: string;
@@ -545,7 +552,14 @@ export async function runAutoReviewBarrier(params: {
       invocationSource: "auto_review",
       allowWhenAutoReviewDisabled: params.verification === true,
     });
-  } catch {
+  } catch (error) {
+    if (
+      !isDyadError(error) ||
+      (error.kind !== DyadErrorKind.Precondition &&
+        error.kind !== DyadErrorKind.NotFound)
+    ) {
+      throw error;
+    }
     if (params.verification) {
       await completeRemediatedReviews(params.chatId);
     }
@@ -566,6 +580,9 @@ export async function runAutoReviewBarrier(params: {
   const findingCount = Number(summary.result?.findingCount ?? 0);
   if (summary.status !== "completed" || findingCount === 0)
     return { outcome: "released", threadId: summary.id };
+  if (params.autoFix === false) {
+    return { outcome: "released", threadId: summary.id };
+  }
 
   const autoFixAt = new Date(Date.now() + 10_000);
   const countdownClaim = await db
@@ -603,15 +620,30 @@ export async function runAutoReviewBarrier(params: {
     emit(summary.chatId, summary.id);
     return { outcome: "released", threadId: summary.id };
   }
-  return {
-    outcome: "fix_required",
-    threadId: summary.id,
-    prompt: await buildFixFindingsPrompt(
-      params.chatId,
-      summary.id,
-      "queued_message_override",
-    ),
-  };
+  try {
+    return {
+      outcome: "fix_required",
+      threadId: summary.id,
+      prompt: await buildFixFindingsPrompt(
+        params.chatId,
+        summary.id,
+        "queued_message_override",
+      ),
+    };
+  } catch (error) {
+    await db
+      .update(agentThreads)
+      .set({ status: "completed", autoFixAt: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(agentThreads.id, summary.id),
+          eq(agentThreads.status, "auto_fix_countdown"),
+          isNull(agentThreads.remediationSource),
+        ),
+      );
+    emit(summary.chatId, summary.id);
+    throw error;
+  }
 }
 
 async function completeRemediatedReviews(chatId: number): Promise<void> {
@@ -1080,7 +1112,6 @@ async function runModel(params: {
     stopWhen: () => false,
     abortSignal: params.abortSignal,
   });
-  cancelOrphanedBaseStream(result);
   const [text, usage, steps] = await Promise.all([
     result.text,
     result.totalUsage,
