@@ -186,11 +186,7 @@ export function useBackgroundAutoReview(): void {
 
     if (event.wasCancelled) {
       clearPendingReviewContinuation(event.chatId);
-      if (
-        suppressAutoReview ||
-        event.reviewBarrierRequested ||
-        hasPendingContinuation
-      ) {
+      if (suppressAutoReview || hasPendingContinuation) {
         void resumeQueue(event.chatId).catch(showError);
       }
       return;
@@ -216,61 +212,10 @@ export function useBackgroundAutoReview(): void {
 
     if (suppressAutoReview) return;
 
+    // Queued review barriers are main-owned by the chat-stream actor. The
+    // renderer observes their progress but must not start, settle, or release
+    // the authoritative FIFO lifecycle.
     if (event.reviewBarrierRequested && snapshot.queue.length > 0) {
-      void runQueuedReviewFlow({
-        runBarrier: (verification) =>
-          ipc.agent.runAutoReviewBarrier({
-            chatId: event.chatId,
-            verification,
-          }),
-        streamRemediation: (prompt) => {
-          remediationChatIdsRef.current.add(event.chatId);
-          return new Promise<ReviewRemediationOutcome>((resolve) => {
-            manager.ensure(event.chatId).send({
-              type: "submit",
-              request: {
-                chatId: event.chatId,
-                prompt,
-                requestedChatMode: "local-agent",
-                onSettled: ({ success, pausedByStepLimit }) => {
-                  resolve(
-                    pausedByStepLimit
-                      ? "paused"
-                      : success
-                        ? "completed"
-                        : "failed",
-                  );
-                },
-              },
-            });
-          }).finally(() => {
-            remediationChatIdsRef.current.delete(event.chatId);
-          });
-        },
-        onRemediationFailed: (threadId) =>
-          ipc.agent.skipReviewAutoFix({
-            chatId: event.chatId,
-            threadId,
-            remediationFailed: true,
-          }),
-        onRemediationPaused: () => {
-          setPendingReviewContinuation(event.chatId, async () => {
-            await ipc.agent.runAutoReviewBarrier({
-              chatId: event.chatId,
-              verification: true,
-            });
-            await resumeQueue(event.chatId);
-          });
-        },
-      })
-        .then(async (outcome) => {
-          if (outcome === "released") await resumeQueue(event.chatId);
-        })
-        .catch(async (error) => {
-          clearPendingReviewContinuation(event.chatId);
-          await resumeQueue(event.chatId).catch(showError);
-          showError(error);
-        });
       return;
     }
 
@@ -286,13 +231,12 @@ export function useBackgroundAutoReview(): void {
           isDyadProEnabled(currentSettings) &&
           currentSettings.enableAutoReview === true,
         hasQueuedMessages:
-          snapshot.queue.length > 0 || snapshot.phase === "streaming",
+          snapshot.queuePaused ||
+          snapshot.queue.length > 0 ||
+          snapshot.phase === "streaming",
         suppressAutoReview,
       })
     ) {
-      if (event.reviewBarrierRequested) {
-        void resumeQueue(event.chatId).catch(showError);
-      }
       return;
     }
 

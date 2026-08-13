@@ -997,7 +997,7 @@ export async function handleLocalAgentStream(
     // so the system prompt stays static and cacheable.
     if (referencedApps.length > 0) {
       injectReferencedAppsReminder(messageHistory, referencedApps, {
-        codeExplorerAvailable: ctx.canUseExplorerSubagent === true,
+        codeExplorerAvailable: agentTools.spawn_agent != undefined,
       });
     }
 

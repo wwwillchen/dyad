@@ -139,4 +139,208 @@ describe("main-hosted chat stream terminal projection", () => {
     expect(finalized.state.phase).toBe("errored");
     expect(finalized.commands).toEqual([{ type: "dispatch-next" }]);
   });
+
+  it("starts and settles queued review barriers in the main actor", () => {
+    let state = appliedState(streamingState(), {
+      type: "STREAM_ENDED",
+      intentId: intent.intentId,
+      invocationRef,
+      targetAppId: 3,
+      response: {
+        chatId: 7,
+        invocationRef,
+        updatedFiles: true,
+        pausePromptQueue: true,
+        reviewBarrierRequested: true,
+      },
+    });
+    const finalized = transitionChatStreamHost(state, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 1,
+      paused: true,
+      entries: [
+        {
+          itemId: "queued",
+          intentId: "queued",
+          prompt: "next",
+          persistence: "main-session",
+          editable: true,
+          removable: true,
+        },
+      ],
+    });
+    expect(finalized).toMatchObject({
+      kind: "applied",
+      state: { reviewBarrier: { phase: "reviewing" } },
+      commands: [
+        {
+          type: "run-review-barrier",
+          verification: false,
+          autoFixPolicy: "queued-override",
+        },
+      ],
+    });
+    if (finalized.kind !== "applied") return;
+    state = finalized.state;
+
+    const released = transitionChatStreamHost(state, {
+      type: "REVIEW_BARRIER_RESULT",
+      outcome: "released",
+    });
+    expect(released).toMatchObject({
+      kind: "applied",
+      state: { reviewBarrier: { phase: "idle", threadId: null } },
+      commands: [{ type: "resume-after-review" }],
+    });
+  });
+
+  it("keeps remediation continuation and verification in main-owned state", () => {
+    const remediationIntent: SerializableChatTurnIntent = {
+      ...intent,
+      intentId: "remediation",
+      owner: { kind: "review-remediation", threadId: "review-1" },
+    };
+    let state: ChatStreamHostState = {
+      ...initialChatStreamHostState(),
+      reviewBarrier: {
+        phase: "remediating" as const,
+        threadId: "review-1",
+      },
+    };
+    state = appliedState(state, { type: "SUBMIT", intent: remediationIntent });
+    state = appliedState(state, {
+      type: "ADMISSION_ACCEPTED",
+      intentId: remediationIntent.intentId,
+      invocationRef,
+      targetAppId: 3,
+    });
+    state = appliedState(state, {
+      type: "STREAM_ENDED",
+      intentId: remediationIntent.intentId,
+      invocationRef,
+      targetAppId: 3,
+      response: {
+        chatId: 7,
+        invocationRef,
+        updatedFiles: true,
+        pausePromptQueue: true,
+      },
+    });
+    state = appliedState(state, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 2,
+      paused: true,
+      entries: [],
+    });
+    expect(state.reviewBarrier).toEqual({
+      phase: "awaiting-continuation",
+      threadId: "review-1",
+    });
+
+    state = appliedState(state, { type: "SUBMIT", intent });
+    state = appliedState(state, {
+      type: "ADMISSION_ACCEPTED",
+      intentId: intent.intentId,
+      invocationRef,
+      targetAppId: 3,
+    });
+    state = appliedState(state, {
+      type: "STREAM_ENDED",
+      intentId: intent.intentId,
+      invocationRef,
+      targetAppId: 3,
+      response: { chatId: 7, invocationRef, updatedFiles: true },
+    });
+    const continued = transitionChatStreamHost(state, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 3,
+      paused: true,
+      entries: [],
+    });
+    expect(continued).toMatchObject({
+      kind: "applied",
+      state: {
+        reviewBarrier: { phase: "verifying", threadId: "review-1" },
+      },
+      commands: [{ type: "run-review-barrier", verification: true }],
+    });
+  });
+
+  it("reviews an empty queue in main using the user's auto-fix setting", () => {
+    const state = appliedState(streamingState(), {
+      type: "STREAM_ENDED",
+      intentId: intent.intentId,
+      invocationRef,
+      targetAppId: 3,
+      response: {
+        chatId: 7,
+        invocationRef,
+        updatedFiles: true,
+        pausePromptQueue: true,
+        reviewBarrierRequested: true,
+      },
+    });
+    const finalized = transitionChatStreamHost(state, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 1,
+      paused: true,
+      entries: [],
+    });
+    expect(finalized).toMatchObject({
+      kind: "applied",
+      state: { reviewBarrier: { phase: "reviewing" } },
+      commands: [
+        {
+          type: "run-review-barrier",
+          verification: false,
+          autoFixPolicy: "user-setting",
+        },
+      ],
+    });
+  });
+
+  it("verifies successful remediation edits instead of treating review pause as a step limit", () => {
+    const remediationIntent: SerializableChatTurnIntent = {
+      ...intent,
+      intentId: "remediation-success",
+      owner: { kind: "review-remediation", threadId: "review-1" },
+    };
+    let state: ChatStreamHostState = {
+      ...initialChatStreamHostState(),
+      reviewBarrier: { phase: "remediating", threadId: "review-1" },
+    };
+    state = appliedState(state, { type: "SUBMIT", intent: remediationIntent });
+    state = appliedState(state, {
+      type: "ADMISSION_ACCEPTED",
+      intentId: remediationIntent.intentId,
+      invocationRef,
+      targetAppId: 3,
+    });
+    state = appliedState(state, {
+      type: "STREAM_ENDED",
+      intentId: remediationIntent.intentId,
+      invocationRef,
+      targetAppId: 3,
+      response: {
+        chatId: 7,
+        invocationRef,
+        updatedFiles: true,
+        pausePromptQueue: true,
+        reviewBarrierRequested: true,
+      },
+    });
+    const finalized = transitionChatStreamHost(state, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 2,
+      paused: true,
+      entries: [],
+    });
+    expect(finalized).toMatchObject({
+      kind: "applied",
+      state: {
+        reviewBarrier: { phase: "verifying", threadId: "review-1" },
+      },
+      commands: [{ type: "run-review-barrier", verification: true }],
+    });
+  });
 });

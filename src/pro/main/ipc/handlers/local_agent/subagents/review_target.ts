@@ -80,21 +80,23 @@ export async function buildReviewTarget(params: {
     includedBytes += bytes;
   };
 
-  if (params.baseCommit && params.targetCommit) {
+  if (params.targetCommit) {
+    const immutableBase = params.baseCommit?.trim() || EMPTY_TREE;
+    const immutableTarget = params.targetCommit.trim();
     const files = await git(params.appPath, [
       "diff",
       "--no-ext-diff",
       "--no-textconv",
       "--name-only",
       "-z",
-      params.baseCommit,
-      params.targetCommit,
+      immutableBase,
+      immutableTarget,
       "--",
     ]).then(nulSeparated);
     for (const file of files) {
       const value = await boundedGitDiff(params.appPath, [
-        params.baseCommit,
-        params.targetCommit,
+        immutableBase,
+        immutableTarget,
         "--",
         file,
       ]);

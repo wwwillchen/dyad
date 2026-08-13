@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -82,8 +82,7 @@ describe("sub-agent review orchestration", () => {
     mocks.dispatchQueueEvent.mockResolvedValue(undefined);
   });
 
-  it("runs and releases the queued-message barrier from the production completion hook", async () => {
-    mocks.runAutoReviewBarrier.mockResolvedValue({ outcome: "released" });
+  it("leaves queued-message barrier ownership in the main actor", async () => {
     renderHook(() => useBackgroundAutoReview());
 
     mocks.streamFinishedCallback?.({
@@ -94,19 +93,12 @@ describe("sub-agent review orchestration", () => {
       wasCancelled: false,
     });
 
-    await waitFor(() => {
-      expect(mocks.runAutoReviewBarrier).toHaveBeenCalledWith({
-        chatId: 7,
-        verification: undefined,
-      });
-      expect(mocks.dispatchQueueEvent).toHaveBeenCalledWith(7, {
-        type: "RESUME_QUEUE",
-      });
-    });
+    await Promise.resolve();
+    expect(mocks.runAutoReviewBarrier).not.toHaveBeenCalled();
+    expect(mocks.dispatchQueueEvent).not.toHaveBeenCalled();
   });
 
-  it("does not release a queue while another renderer owns its barrier", async () => {
-    mocks.runAutoReviewBarrier.mockResolvedValue({ outcome: "waiting" });
+  it("does not let a renderer release a main-owned queued barrier", async () => {
     renderHook(() => useBackgroundAutoReview());
 
     mocks.streamFinishedCallback?.({
@@ -117,7 +109,8 @@ describe("sub-agent review orchestration", () => {
       wasCancelled: false,
     });
 
-    await waitFor(() => expect(mocks.runAutoReviewBarrier).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(mocks.runAutoReviewBarrier).not.toHaveBeenCalled();
     expect(mocks.dispatchQueueEvent).not.toHaveBeenCalled();
   });
 

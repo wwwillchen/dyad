@@ -51,6 +51,12 @@ export const ChatTurnOwnerSchema = z.discriminatedUnion("kind", [
       handoffId: z.string().min(1).max(MAX_CHAT_WIRE_ID_CHARS),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("review-remediation"),
+      threadId: z.string().min(1).max(MAX_CHAT_WIRE_ID_CHARS),
+    })
+    .strict(),
 ]);
 
 export const SerializableChatTurnIntentSchema = z
@@ -255,6 +261,21 @@ export const ChatStreamHostEventSchema = z.discriminatedUnion("type", [
       queueRevision: expectedQueueRevision,
       paused: z.boolean(),
       entries: z.array(ChatQueueEntrySchema),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("REVIEW_BARRIER_RESULT"),
+      outcome: z.enum(["released", "skipped", "waiting", "fix_required"]),
+      threadId: z.string().optional(),
+      prompt: z.string().optional(),
+      autoFixPolicy: z.enum(["queued-override", "user-setting"]).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("REVIEW_BARRIER_FAILED"),
+      error: z.string(),
     })
     .strict(),
 ]);

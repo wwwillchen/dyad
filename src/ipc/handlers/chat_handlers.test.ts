@@ -56,6 +56,16 @@ vi.mock("@/user_input/main", () => ({
   },
 }));
 
+vi.mock(
+  "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager",
+  () => ({
+    settleSubagentsForChatDeletion: vi.fn(async () => {
+      deletionOrder.push("settle-subagents");
+      return () => deletionOrder.push("release-subagents");
+    }),
+  }),
+);
+
 describe("registerChatHandlers", () => {
   let harness: HandlerTestHarness;
 
@@ -211,10 +221,12 @@ describe("registerChatHandlers", () => {
     expect(deletionOrder).toEqual([
       "actor-barrier",
       "barrier",
+      "settle-subagents",
       "settle-input",
       "settle-actors",
       "drain-actor",
       "drain",
+      "release-subagents",
       "release",
       "actor-release",
       "row-deleted",

@@ -701,6 +701,38 @@ describe("handleLocalAgentStream", () => {
     });
   });
 
+  describe("referenced app reminders", () => {
+    it("does not advertise Explorer when spawn_agent is absent", async () => {
+      const { event } = createFakeEvent();
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat();
+      mockStreamResult = createFakeStream([]);
+      vi.mocked(buildAgentToolSet).mockReturnValue({});
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "inspect the referenced app" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+          referencedApps: [
+            { appName: "Reference App", appPath: "/tmp/reference-app" },
+          ],
+        },
+      );
+
+      const streamOptions = vi.mocked(streamText).mock.calls[0]?.[0] as {
+        messages?: ModelMessage[];
+      };
+      expect(JSON.stringify(streamOptions.messages)).toContain("Reference App");
+      expect(JSON.stringify(streamOptions.messages)).not.toContain(
+        "You may assign an Explorer",
+      );
+    });
+  });
+
   describe("Pro status validation", () => {
     it("should send error when Dyad Pro is not enabled", async () => {
       // Arrange

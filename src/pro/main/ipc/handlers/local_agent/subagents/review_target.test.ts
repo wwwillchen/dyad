@@ -67,6 +67,48 @@ describe("buildReviewTarget", () => {
     expect(review.targetCommit).toBe(target.trim());
   });
 
+  it("uses the empty tree for an immutable target-only first commit", async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(
+      path.join(repo, "first.ts"),
+      "export const first = true;\n",
+    );
+    await git(repo, "add", ".");
+    await git(repo, "commit", "-m", "first");
+    const target = (await git(repo, "rev-parse", "HEAD")).trim();
+
+    const review = await buildReviewTarget({
+      appPath: repo,
+      baseCommit: null,
+      targetCommit: target,
+    });
+
+    expect(review.baseCommit).toBeNull();
+    expect(review.targetCommit).toBe(target);
+    expect(review.files).toEqual(["first.ts"]);
+    expect(review.diff).toContain("+export const first = true;");
+  });
+
+  it("keeps a target-only review pinned when HEAD advances", async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(path.join(repo, "target.ts"), "target version\n");
+    await git(repo, "add", ".");
+    await git(repo, "commit", "-m", "target");
+    const target = (await git(repo, "rev-parse", "HEAD")).trim();
+    await fs.writeFile(path.join(repo, "later.ts"), "later version\n");
+    await git(repo, "add", ".");
+    await git(repo, "commit", "-m", "later head");
+
+    const review = await buildReviewTarget({
+      appPath: repo,
+      targetCommit: target,
+    });
+
+    expect(review.files).toEqual(["target.ts"]);
+    expect(review.diff).toContain("+target version");
+    expect(review.diff).not.toContain("later version");
+  });
+
   it("does not execute configured textconv filters", async () => {
     const repo = await makeRepo();
     await fs.writeFile(

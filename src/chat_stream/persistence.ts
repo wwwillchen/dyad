@@ -129,7 +129,9 @@ export function toQueueEntry(
     requestedChatMode: intent.requestedChatMode,
     persistence: intent.owner === undefined ? "durable" : "main-session",
     editable: intent.owner === undefined,
-    removable: intent.owner?.kind !== "plan-handoff",
+    removable:
+      intent.owner?.kind !== "plan-handoff" &&
+      intent.owner?.kind !== "review-remediation",
   };
 }
 

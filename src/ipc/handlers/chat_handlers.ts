@@ -32,6 +32,7 @@ import {
 import { waitForChatActorIdle } from "@/ipc/services/chat_actor_service";
 import { appOperationCoordinator } from "@/ipc/services/app_operation_coordinator";
 import { withChatQueueLock } from "@/chat_stream/queue_lock";
+import { settleSubagentsForChatDeletion } from "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager";
 
 const logger = log.scope("chat_handlers");
 
@@ -43,10 +44,11 @@ async function mutateChatAfterDrainingStreams({
 }: {
   chatId: number;
   sender: WebContents;
-  beforeLock?: () => Promise<void>;
+  beforeLock?: () => Promise<void | (() => void)>;
   mutation: () => Promise<void>;
 }): Promise<void> {
   const releaseActorAdmissionBlock = beginChatActorMutation(chatId);
+  let releaseBeforeLock: (() => void) | undefined;
   try {
     const chat = await db.query.chats.findFirst({
       columns: { appId: true },
@@ -58,7 +60,9 @@ async function mutateChatAfterDrainingStreams({
 
     const releaseStreamAdmissionBlock = blockNewStreamsForChat(chatId);
     try {
-      await beforeLock?.();
+      const beforeLockResult = beforeLock ? await beforeLock() : undefined;
+      releaseBeforeLock =
+        typeof beforeLockResult === "function" ? beforeLockResult : undefined;
       // Drain outside the app lock: an aborted stream may need the same lock to
       // finish a file write. The admission blocks close the gaps before and
       // after draining so another turn cannot enter around the mutation.
@@ -73,6 +77,7 @@ async function mutateChatAfterDrainingStreams({
         mutation,
       );
     } finally {
+      releaseBeforeLock?.();
       releaseStreamAdmissionBlock();
     }
   } finally {
@@ -268,8 +273,15 @@ export function registerChatHandlers() {
       chatId,
       sender: event.sender,
       beforeLock: async () => {
-        await userInputRegistry.settleChat(chatId);
-        await settleChatActorsForDeletion(chatId);
+        const releaseSubagents = await settleSubagentsForChatDeletion(chatId);
+        try {
+          await userInputRegistry.settleChat(chatId);
+          await settleChatActorsForDeletion(chatId);
+          return releaseSubagents;
+        } catch (error) {
+          releaseSubagents();
+          throw error;
+        }
       },
       mutation: async () => {
         await db.delete(chats).where(eq(chats.id, chatId));

@@ -24,6 +24,7 @@ import {
   planHandoffKey,
 } from "@/plan_handoff/transport";
 import { entityDisposalBus } from "@/window_infrastructure/main/entity_disposal_bus";
+import { settleSubagentsForChatDeletion } from "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager";
 
 export async function settleChatActorsForDeletion(
   chatId: number,
@@ -43,12 +44,15 @@ export async function deleteOwnedChatAfterSettlingActors(
   chatId: number,
 ): Promise<void> {
   const releaseAdmission = beginChatActorDeletion(chatId);
+  let releaseSubagents: (() => void) | undefined;
   try {
+    releaseSubagents = await settleSubagentsForChatDeletion(chatId);
     await userInputRegistry.settleChat(chatId);
     await settleChatActorsForDeletion(chatId);
     await db.delete(chats).where(eq(chats.id, chatId));
     entityDisposalBus.publish({ kind: "chat", id: chatId });
   } finally {
+    releaseSubagents?.();
     releaseAdmission();
   }
 }

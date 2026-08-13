@@ -17,9 +17,22 @@ import {
   reviewFollowupAvailability,
   setSubagentEventTarget,
   SUBAGENT_NONTERMINAL_STATUSES,
+  waitForAbortableDelay,
 } from "./subagent_manager";
 
 describe("sub-agent manager status policy", () => {
+  it("rejects immediately when a delay receives an already-aborted signal", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      waitForAbortableDelay(10_000, controller.signal),
+    ).rejects.toMatchObject({
+      name: "DyadError",
+      kind: "user_cancelled",
+    });
+  });
+
   it("recovers every persisted nonterminal state after restart", () => {
     expect(SUBAGENT_NONTERMINAL_STATUSES).toEqual([
       "queued",

@@ -49,6 +49,15 @@ export interface ChatStreamHostState {
     readonly outcome: "applied" | "rejected";
     readonly error?: string;
   } | null;
+  readonly reviewBarrier: {
+    readonly phase:
+      | "idle"
+      | "reviewing"
+      | "remediating"
+      | "awaiting-continuation"
+      | "verifying";
+    readonly threadId: string | null;
+  };
 }
 
 export type ChatStreamHostCommand =
@@ -88,4 +97,19 @@ export type ChatStreamHostCommand =
       readonly response?: ChatResponseEnd;
       readonly error?: string;
     }
+  | {
+      readonly type: "run-review-barrier";
+      readonly verification: boolean;
+      readonly autoFixPolicy?: "queued-override" | "user-setting";
+    }
+  | {
+      readonly type: "submit-review-remediation";
+      readonly threadId: string;
+      readonly prompt: string;
+    }
+  | {
+      readonly type: "fail-review-remediation";
+      readonly threadId: string;
+    }
+  | { readonly type: "resume-after-review" }
   | { readonly type: "dispatch-next" };

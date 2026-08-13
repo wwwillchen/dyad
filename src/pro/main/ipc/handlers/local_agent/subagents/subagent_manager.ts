@@ -39,6 +39,15 @@ import {
   parseReviewResult,
   STRUCTURED_REVIEW_INSTRUCTIONS,
 } from "./review_result";
+import { subagentDisposalRegistry } from "./subagent_disposal_registry";
+import {
+  applySubagentLifecycleTransition,
+  type SubagentLifecyclePatch,
+} from "./controller";
+import { SUBAGENT_NONTERMINAL_STATUSES, subagentLifecycleState } from "./state";
+import type { SubagentLifecycleEvent } from "./transition";
+
+export { SUBAGENT_NONTERMINAL_STATUSES } from "./state";
 
 const MODELS = {
   explorer: { provider: "openai", name: "gpt-5.6-luna", effort: "high" },
@@ -50,23 +59,13 @@ const MAX_MODEL_HISTORY_CHARS = 100_000;
 const AUTO_REVIEW_BARRIER_MAX_WAIT_MS = 10 * 60 * 1000;
 const logger = log.scope("subagent_manager");
 
-export const SUBAGENT_NONTERMINAL_STATUSES = [
-  "queued",
-  "running",
-  "idle",
-  "waiting_for_writer",
-  "waiting_for_auto_review",
-  "auto_fix_countdown",
-  "fixing_findings",
-  "verification_review",
-  "needs_approval",
-] as const;
 const ACTIVE = ["queued", "running", "waiting_for_writer"] as const;
 const abortControllers = new Map<string, AbortController>();
 const cancelledThreadIds = new Set<string>();
 const autoFixOwnerByThread = new Map<string, number>();
 const followupRunners = new Map<string, (assignment: string) => void>();
 const followupStarts = new Set<string>();
+const followupCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const activeRunsByChat = new Map<number, Set<string>>();
 const pendingRuns: Array<{
   threadId: string;
@@ -83,16 +82,111 @@ export function setSubagentEventTarget(target: WebContents): void {
 }
 
 export async function recoverInterruptedSubagents(): Promise<void> {
-  await db
-    .update(agentThreads)
-    .set({
-      status: "interrupted_by_restart",
-      autoFixAt: null,
-      completedAt: new Date(),
-      updatedAt: new Date(),
-      error: "Dyad restarted while this sub-agent was active.",
-    })
-    .where(inArray(agentThreads.status, [...SUBAGENT_NONTERMINAL_STATUSES]));
+  const interrupted = await db.query.agentThreads.findMany({
+    where: inArray(agentThreads.status, [...SUBAGENT_NONTERMINAL_STATUSES]),
+  });
+  for (const thread of interrupted) {
+    await applyThreadLifecycle(thread, { type: "INTERRUPT_FOR_RESTART" });
+  }
+}
+
+/**
+ * Close sub-agent admission for a chat and settle every memory-owned run before
+ * its database rows can disappear through a chat/app cascade deletion.
+ * The returned release callback must be held until the destructive mutation
+ * either commits or aborts.
+ */
+export async function settleSubagentsForChatDeletion(
+  chatId: number,
+): Promise<() => void> {
+  const disposal = subagentDisposalRegistry.beginDisposal(chatId);
+  try {
+    await disposal.drainAdmissions();
+    const chat = await db.query.chats.findFirst({
+      columns: { appId: true },
+      where: eq(chats.id, chatId),
+    });
+    const threads = await db.query.agentThreads.findMany({
+      columns: { id: true, persona: true },
+      where: eq(agentThreads.chatId, chatId),
+    });
+    const threadIds = new Set(threads.map(({ id }) => id));
+
+    for (let index = pendingRuns.length - 1; index >= 0; index--) {
+      if (pendingRuns[index].chatId === chatId) pendingRuns.splice(index, 1);
+    }
+    for (const { id } of threads) {
+      abortControllers.get(id)?.abort();
+      followupRunners.delete(id);
+      followupStarts.delete(id);
+      const cleanupTimer = followupCleanupTimers.get(id);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
+      followupCleanupTimers.delete(id);
+      autoFixOwnerByThread.delete(id);
+      cancelledThreadIds.add(id);
+    }
+
+    await Promise.all(
+      threads.map(({ id }) =>
+        finishThread(id, "cancelled", null, "The owning chat was deleted."),
+      ),
+    );
+    if (chat) {
+      for (const thread of threads) {
+        if (
+          thread.persona === "implementer" &&
+          !abortControllers.has(thread.id)
+        ) {
+          releaseMutationLease(chat.appId, thread.id);
+        }
+      }
+    }
+
+    await disposal.waitForActiveRuns();
+    activeRunsByChat.delete(chatId);
+    for (const id of threadIds) {
+      cancelledThreadIds.delete(id);
+      const cleanupTimer = followupCleanupTimers.get(id);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
+      followupCleanupTimers.delete(id);
+    }
+    if (chat) {
+      for (const thread of threads) {
+        if (thread.persona === "implementer") {
+          releaseMutationLease(chat.appId, thread.id);
+        }
+      }
+    }
+    return () => disposal.release();
+  } catch (error) {
+    disposal.release();
+    throw error;
+  }
+}
+
+/** Close admission synchronously while a parent deletion prepares all chats. */
+export function blockSubagentAdmissionsForChat(chatId: number): () => void {
+  return subagentDisposalRegistry.beginDisposal(chatId).release;
+}
+
+export async function settleAllSubagentsForReset(): Promise<() => void> {
+  const reset = subagentDisposalRegistry.beginReset();
+  const releases: Array<() => void> = [];
+  try {
+    await reset.drainAdmissions();
+    const chatRows = await db.select({ id: chats.id }).from(chats);
+    for (const { id } of chatRows) {
+      releases.push(await settleSubagentsForChatDeletion(id));
+    }
+    return () => {
+      for (const release of releases.reverse()) release();
+      reset.release();
+    };
+  } catch (error) {
+    for (const release of releases.reverse()) release();
+    reset.release();
+    throw error;
+  }
 }
 
 export async function listSubagents(
@@ -152,59 +246,64 @@ export async function spawnModelSubagent(params: {
   await preflightPersonaModel(params.persona);
 
   const threadId = crypto.randomUUID();
-  const reserved =
-    params.persona !== "implementer" ||
-    (await withMutationAdmission(params.ctx.appId, async () =>
-      acquireMutationLease({
-        appId: params.ctx.appId,
-        threadId,
-        scope: params.scope,
-      }),
-    ));
-  if (!reserved) {
-    throw new DyadError(
-      "Another Implementer is already editing this app.",
-      DyadErrorKind.Conflict,
-    );
-  }
-  let thread: Awaited<ReturnType<typeof createThread>>;
-  try {
-    thread = await createThread({
-      id: threadId,
-      chatId: params.ctx.chatId,
-      persona: params.persona,
-      taskName: params.taskName,
-      assignment: params.assignment,
-      invocationSource: "model",
-      contextJson: { scope: params.scope },
-    });
-  } catch (error) {
-    releaseMutationLease(params.ctx.appId, threadId);
-    throw error;
-  }
-  const run = (assignment: string) =>
-    enqueueRun({
-      threadId: thread.id,
-      chatId: params.ctx.chatId,
-      source: "model",
-      run: () =>
-        runThread(
-          thread.id,
-          params.ctx.appId,
-          assignment,
-          (abortSignal) =>
-            params.buildTools({
-              threadId: thread.id,
-              persona: params.persona,
-              taskName: params.taskName,
-              scope: params.scope,
-              abortSignal,
-            }),
-          params.scope,
-        ),
-    });
-  followupRunners.set(thread.id, run);
-  run(params.assignment);
+  const thread = await subagentDisposalRegistry.withAdmission(
+    params.ctx.chatId,
+    async () => {
+      const reserved =
+        params.persona !== "implementer" ||
+        (await withMutationAdmission(params.ctx.appId, async () =>
+          acquireMutationLease({
+            appId: params.ctx.appId,
+            threadId,
+            scope: params.scope,
+          }),
+        ));
+      if (!reserved) {
+        throw new DyadError(
+          "Another Implementer is already editing this app.",
+          DyadErrorKind.Conflict,
+        );
+      }
+      try {
+        const thread = await createThread({
+          id: threadId,
+          chatId: params.ctx.chatId,
+          persona: params.persona,
+          taskName: params.taskName,
+          assignment: params.assignment,
+          invocationSource: "model",
+          contextJson: { scope: params.scope },
+        });
+        const run = (assignment: string) =>
+          enqueueRun({
+            threadId: thread.id,
+            chatId: params.ctx.chatId,
+            source: "model",
+            run: () =>
+              runThread(
+                thread.id,
+                params.ctx.appId,
+                assignment,
+                (abortSignal) =>
+                  params.buildTools({
+                    threadId: thread.id,
+                    persona: params.persona,
+                    taskName: params.taskName,
+                    scope: params.scope,
+                    abortSignal,
+                  }),
+                params.scope,
+              ),
+          });
+        followupRunners.set(thread.id, run);
+        run(params.assignment);
+        return thread;
+      } catch (error) {
+        releaseMutationLease(params.ctx.appId, threadId);
+        throw error;
+      }
+    },
+  );
   return thread.id;
 }
 
@@ -256,9 +355,8 @@ export async function startReview(params: {
   // Every renderer window observes stream completion, but review creation is
   // main-owned. Serialize the reusable-review check with thread creation so
   // concurrent windows cannot both observe a miss and create duplicate rows.
-  return withLock(
-    `subagent-review:${params.chatId}:${target.hash}`,
-    async () => {
+  return withLock(`subagent-review:${params.chatId}:${target.hash}`, () =>
+    subagentDisposalRegistry.withAdmission(params.chatId, async () => {
       const existing = await db.query.agentThreads.findFirst({
         where: and(
           eq(agentThreads.chatId, params.chatId),
@@ -313,7 +411,7 @@ export async function startReview(params: {
       followupRunners.set(thread.id, run);
       run();
       return toSummary(thread);
-    },
+    }),
   );
 }
 
@@ -375,39 +473,37 @@ export async function skipReviewAutoFix(
   assertPro("reviewer");
   const thread = await getOwnedThread(chatId, threadId);
   if (remediationFailed && thread.status === "fixing_findings") {
-    const updated = await db
-      .update(agentThreads)
-      .set(buildFailedRemediationState(thread.resultJson))
-      .where(
-        and(
-          eq(agentThreads.id, threadId),
-          eq(agentThreads.status, "fixing_findings"),
-        ),
-      )
-      .returning({ id: agentThreads.id });
+    const result = await applyThreadLifecycle(thread, {
+      type: "FAIL_REMEDIATION",
+      error: "Review remediation did not complete.",
+    });
     autoFixOwnerByThread.delete(threadId);
-    if (updated.length > 0) emit(thread.chatId, threadId);
+    if (result === "conflict") {
+      throw new DyadError(
+        "Review remediation changed before failure settlement.",
+        DyadErrorKind.Conflict,
+      );
+    }
     return;
   }
-  const updated = await db
-    .update(agentThreads)
-    .set({ status: "completed", autoFixAt: null, updatedAt: new Date() })
-    .where(
-      and(
-        eq(agentThreads.id, threadId),
-        eq(agentThreads.status, "auto_fix_countdown"),
-        isNull(agentThreads.remediationSource),
-      ),
-    )
-    .returning({ id: agentThreads.id });
-  if (updated.length === 0 && thread.status !== "completed") {
+  let current = thread;
+  while (true) {
+    const result = await applyThreadLifecycle(current, {
+      type: "SKIP_AUTO_FIX",
+    });
+    if (result === "applied") break;
+    const latest = await getOwnedThread(chatId, threadId);
+    if (latest.status === "completed" && !latest.remediationSource) break;
+    if (latest.status === "auto_fix_countdown" && !latest.remediationSource) {
+      current = latest;
+      continue;
+    }
     throw new DyadError(
       "Automatic fixes have already started for this review.",
       DyadErrorKind.Precondition,
     );
   }
   autoFixOwnerByThread.delete(threadId);
-  if (updated.length > 0) emit(thread.chatId, threadId);
 }
 
 export function buildFailedRemediationState(
@@ -487,30 +583,16 @@ export async function buildFixFindingsPrompt(
     thread.resultJson,
     reviewedFiles,
   );
-  const claimed = await db
-    .update(agentThreads)
-    .set({
-      remediationSource,
-      status: "fixing_findings",
-      autoFixAt: null,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(agentThreads.id, thread.id),
-        eq(agentThreads.chatId, chatId),
-        eq(agentThreads.status, remediationClaimStatus(remediationSource)),
-        isNull(agentThreads.remediationSource),
-      ),
-    )
-    .returning({ id: agentThreads.id });
-  if (claimed.length === 0) {
+  const claim = await applyThreadLifecycle(thread, {
+    type: "CLAIM_REMEDIATION",
+    source: remediationSource,
+  });
+  if (claim !== "applied") {
     throw new DyadError(
       "Fixes have already been started for this review.",
       DyadErrorKind.Conflict,
     );
   }
-  emit(chatId, thread.id);
   return prompt;
 }
 
@@ -627,6 +709,7 @@ export async function runAutoReviewBarrier(params: {
       ) {
         return waitForAutoFixOwner(params, summary.id, owner);
       }
+      assertAutoReviewNotAborted(params.abortSignal);
       autoFixOwnerByThread.set(summary.id, params.callerId ?? 0);
       return {
         outcome: "fix_required",
@@ -646,6 +729,7 @@ export async function runAutoReviewBarrier(params: {
     ) {
       return waitForAutoFixOwner(params, summary.id, owner);
     }
+    assertAutoReviewNotAborted(params.abortSignal);
     autoFixOwnerByThread.set(summary.id, params.callerId ?? 0);
   } else if (summary.status !== "completed" || findingCount === 0) {
     return { outcome: "released", threadId: summary.id };
@@ -656,18 +740,12 @@ export async function runAutoReviewBarrier(params: {
 
   let autoFixAt = completedReview.autoFixAt ?? new Date(Date.now() + 10_000);
   if (summary.status === "completed") {
-    const countdownClaim = await db
-      .update(agentThreads)
-      .set({ status: "auto_fix_countdown", autoFixAt, updatedAt: new Date() })
-      .where(
-        and(
-          eq(agentThreads.id, summary.id),
-          eq(agentThreads.status, "completed"),
-          isNull(agentThreads.remediationSource),
-        ),
-      )
-      .returning({ id: agentThreads.id });
-    if (countdownClaim.length === 0) {
+    assertAutoReviewNotAborted(params.abortSignal);
+    const countdownClaim = await applyThreadLifecycle(completedReview, {
+      type: "BEGIN_AUTO_FIX_COUNTDOWN",
+      autoFixAtMs: autoFixAt.getTime(),
+    });
+    if (countdownClaim !== "applied") {
       const owner = autoFixOwnerByThread.get(summary.id);
       if (
         owner !== undefined &&
@@ -679,8 +757,13 @@ export async function runAutoReviewBarrier(params: {
       await new Promise((resolve) => setTimeout(resolve, 50));
       return runAutoReviewBarrier(params);
     }
+    if (params.abortSignal?.aborted) {
+      const claimed = await getOwnedThread(params.chatId, summary.id);
+      await applyThreadLifecycle(claimed, { type: "SKIP_AUTO_FIX" });
+      autoFixOwnerByThread.delete(summary.id);
+      assertAutoReviewNotAborted(params.abortSignal);
+    }
     autoFixOwnerByThread.set(summary.id, params.callerId ?? 0);
-    emit(summary.chatId, summary.id);
   }
   while (Date.now() < autoFixAt.getTime()) {
     if (!(await waitForAutoReviewPoll(params))) {
@@ -693,6 +776,7 @@ export async function runAutoReviewBarrier(params: {
     return { outcome: "released", threadId: summary.id };
   }
   try {
+    assertAutoReviewNotAborted(params.abortSignal);
     return {
       outcome: "fix_required",
       threadId: summary.id,
@@ -708,38 +792,28 @@ export async function runAutoReviewBarrier(params: {
       autoFixOwnerByThread.delete(summary.id);
       return { outcome: "released", threadId: summary.id };
     }
-    await db
-      .update(agentThreads)
-      .set({ status: "completed", autoFixAt: null, updatedAt: new Date() })
-      .where(
-        and(
-          eq(agentThreads.id, summary.id),
-          eq(agentThreads.status, "auto_fix_countdown"),
-          isNull(agentThreads.remediationSource),
-        ),
-      );
-    emit(summary.chatId, summary.id);
+    await applyThreadLifecycle(current, { type: "SKIP_AUTO_FIX" });
     autoFixOwnerByThread.delete(summary.id);
     throw error;
   }
 }
 
 async function completeRemediatedReviews(chatId: number): Promise<void> {
-  const completedAt = new Date();
-  const completed = await db
-    .update(agentThreads)
-    .set({ status: "completed", completedAt, updatedAt: completedAt })
-    .where(
-      and(
-        eq(agentThreads.chatId, chatId),
-        eq(agentThreads.persona, "reviewer"),
-        eq(agentThreads.status, "fixing_findings"),
-      ),
-    )
-    .returning({ id: agentThreads.id });
+  const completed = await db.query.agentThreads.findMany({
+    where: and(
+      eq(agentThreads.chatId, chatId),
+      eq(agentThreads.persona, "reviewer"),
+      eq(agentThreads.status, "fixing_findings"),
+    ),
+  });
   for (const thread of completed) {
-    autoFixOwnerByThread.delete(thread.id);
-    emit(chatId, thread.id);
+    if (
+      (await applyThreadLifecycle(thread, {
+        type: "COMPLETE_REMEDIATION",
+      })) === "applied"
+    ) {
+      autoFixOwnerByThread.delete(thread.id);
+    }
   }
 }
 
@@ -777,6 +851,16 @@ export async function sendSubagentMessage(
   content: string,
 ): Promise<void> {
   assertPro();
+  return subagentDisposalRegistry.withAdmission(chatId, () =>
+    sendSubagentMessageAdmitted(chatId, threadId, content),
+  );
+}
+
+async function sendSubagentMessageAdmitted(
+  chatId: number,
+  threadId: string,
+  content: string,
+): Promise<void> {
   const thread = await getOwnedThread(chatId, threadId);
   const append = async () => {
     const current = await getOwnedThread(chatId, threadId);
@@ -813,6 +897,26 @@ export async function followupSubagent(
   },
 ): Promise<SubagentPersona> {
   assertPro();
+  return subagentDisposalRegistry.withAdmission(chatId, () =>
+    followupSubagentAdmitted(chatId, threadId, assignment, currentTurn),
+  );
+}
+
+async function followupSubagentAdmitted(
+  chatId: number,
+  threadId: string,
+  assignment: string,
+  currentTurn?: {
+    ctx: AgentContext;
+    buildTools: (params: {
+      threadId: string;
+      persona: "explorer" | "implementer";
+      taskName: string;
+      scope: string[];
+      abortSignal: AbortSignal;
+    }) => ToolSet;
+  },
+): Promise<SubagentPersona> {
   const thread = await getOwnedThread(chatId, threadId);
   assertPersonaEnabled(thread.persona);
   if (thread.persona === "implementer" && !currentTurn) {
@@ -900,7 +1004,7 @@ export async function followupSubagent(
       });
       emit(current.chatId, threadId);
       if (!isActive) {
-        await startPendingFollowup(threadId, selectedRun);
+        await startPendingFollowup(threadId, selectedRun, true);
         reservedImplementer = false;
       }
     } catch (error) {
@@ -1378,38 +1482,50 @@ async function createThread(params: {
   return row;
 }
 
+async function applyThreadLifecycle(
+  thread: typeof agentThreads.$inferSelect,
+  event: SubagentLifecycleEvent,
+): Promise<"applied" | "ignored" | "conflict"> {
+  const state = subagentLifecycleState({
+    status: thread.status,
+    remediationSource: thread.remediationSource,
+  });
+  const result = await applySubagentLifecycleTransition({
+    state,
+    event,
+    persist: async (expected, patch) => {
+      const updated = await db
+        .update(agentThreads)
+        .set(patch as SubagentLifecyclePatch)
+        .where(
+          and(
+            eq(agentThreads.id, thread.id),
+            eq(agentThreads.status, expected.status),
+            expected.remediationSource === null
+              ? isNull(agentThreads.remediationSource)
+              : eq(agentThreads.remediationSource, expected.remediationSource),
+          ),
+        )
+        .returning({ id: agentThreads.id });
+      return updated.length > 0;
+    },
+  });
+  if (result.kind === "applied") emit(thread.chatId, thread.id);
+  return result.kind;
+}
+
 async function updateStatus(
   threadId: string,
-  status: "running",
+  _status: "running",
 ): Promise<boolean> {
   const thread = await getThread(threadId);
-  const updated = await db
-    .update(agentThreads)
-    .set({ status, startedAt: new Date(), updatedAt: new Date() })
-    .where(
-      and(
-        eq(agentThreads.id, threadId),
-        inArray(agentThreads.status, [...SUBAGENT_NONTERMINAL_STATUSES]),
-      ),
-    )
-    .returning({ id: agentThreads.id });
-  if (updated.length > 0) emit(thread.chatId, threadId);
-  return updated.length > 0;
+  const result = await applyThreadLifecycle(thread, { type: "START" });
+  return result === "applied";
 }
 
 async function setWaitingForWriter(threadId: string): Promise<void> {
   const thread = await getThread(threadId);
-  const updated = await db
-    .update(agentThreads)
-    .set({ status: "waiting_for_writer", updatedAt: new Date() })
-    .where(
-      and(
-        eq(agentThreads.id, threadId),
-        inArray(agentThreads.status, [...SUBAGENT_NONTERMINAL_STATUSES]),
-      ),
-    )
-    .returning({ id: agentThreads.id });
-  if (updated.length > 0) emit(thread.chatId, threadId);
+  await applyThreadLifecycle(thread, { type: "WAIT_FOR_WRITER" });
 }
 
 async function finishThread(
@@ -1425,23 +1541,12 @@ async function finishThread(
   error: string | null,
 ): Promise<void> {
   const thread = await getThread(threadId);
-  const updated = await db
-    .update(agentThreads)
-    .set({
-      status,
-      resultJson,
-      error,
-      completedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(agentThreads.id, threadId),
-        inArray(agentThreads.status, [...SUBAGENT_NONTERMINAL_STATUSES]),
-      ),
-    )
-    .returning({ id: agentThreads.id });
-  if (updated.length > 0) emit(thread.chatId, threadId);
+  await applyThreadLifecycle(thread, {
+    type: "FINISH",
+    status,
+    resultJson,
+    error,
+  });
 }
 
 async function appendAssistantMessage(
@@ -1610,17 +1715,7 @@ async function markReviewOutdated(
   thread: typeof agentThreads.$inferSelect,
   error: string,
 ): Promise<void> {
-  const now = new Date();
-  await db
-    .update(agentThreads)
-    .set({
-      status: "review_outdated",
-      error,
-      completedAt: now,
-      updatedAt: now,
-    })
-    .where(eq(agentThreads.id, thread.id));
-  emit(thread.chatId, thread.id);
+  await applyThreadLifecycle(thread, { type: "MARK_REVIEW_OUTDATED", error });
 }
 
 function assertPersonaEnabled(persona: SubagentPersona): void {
@@ -1816,7 +1911,7 @@ export function buildAllExcludedReviewResult(exclusions: string[]) {
   return { findingCount: 0, report };
 }
 
-async function waitForAbortableDelay(
+export async function waitForAbortableDelay(
   delayMs: number,
   abortSignal?: AbortSignal,
 ): Promise<void> {
@@ -1824,6 +1919,7 @@ async function waitForAbortableDelay(
     await new Promise((resolve) => setTimeout(resolve, delayMs));
     return;
   }
+  assertAutoReviewNotAborted(abortSignal);
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       abortSignal.removeEventListener("abort", onAbort);
@@ -1842,10 +1938,25 @@ async function waitForAbortableDelay(
   });
 }
 
+function assertAutoReviewNotAborted(abortSignal?: AbortSignal): void {
+  if (!abortSignal?.aborted) return;
+  throw new DyadError(
+    "Waiting for sub-agents was cancelled.",
+    DyadErrorKind.UserCancelled,
+  );
+}
+
 async function startPendingFollowup(
   threadId: string,
   runner?: (assignment: string) => void,
+  admissionOwned = false,
 ): Promise<void> {
+  if (!admissionOwned) {
+    const thread = await getThread(threadId);
+    return subagentDisposalRegistry.withAdmission(thread.chatId, () =>
+      startPendingFollowup(threadId, runner, true),
+    );
+  }
   await withLock(`subagent-followup:${threadId}`, async () => {
     if (followupStarts.has(threadId)) return;
     const run = runner ?? followupRunners.get(threadId);
@@ -1864,20 +1975,10 @@ async function startPendingFollowup(
     const queueFollowup = async (acquiredAppId: number | null) => {
       followupStarts.add(threadId);
       try {
-        await db
-          .update(agentThreads)
-          .set({
-            status: "queued",
-            invocationSource: "followup",
-            resultJson: null,
-            remediationSource: null,
-            error: null,
-            startedAt: null,
-            completedAt: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(agentThreads.id, threadId));
-        emit(thread.chatId, threadId);
+        const lifecycle = await applyThreadLifecycle(thread, {
+          type: "QUEUE_FOLLOWUP",
+        });
+        if (lifecycle !== "applied") return;
         run("Continue by addressing the queued root messages in order.");
         acquiredAppId = null;
       } catch (error) {
@@ -1938,6 +2039,16 @@ async function schedulePendingFollowup(threadId: string): Promise<void> {
 }
 
 function enqueueRun(item: (typeof pendingRuns)[number]): void {
+  if (subagentDisposalRegistry.isAdmissionClosed(item.chatId)) {
+    followupRunners.delete(item.threadId);
+    void finishThread(
+      item.threadId,
+      "cancelled",
+      null,
+      "The owning chat is being deleted.",
+    );
+    return;
+  }
   if (item.source === "auto_review") {
     for (let index = pendingRuns.length - 1; index >= 0; index--) {
       const pending = pendingRuns[index];
@@ -1966,6 +2077,7 @@ function enqueueRun(item: (typeof pendingRuns)[number]): void {
 }
 
 function drainRuns(chatId: number): void {
+  if (subagentDisposalRegistry.isAdmissionClosed(chatId)) return;
   const active = activeRunsByChat.get(chatId) ?? new Set<string>();
   activeRunsByChat.set(chatId, active);
   while (active.size < 3) {
@@ -1973,7 +2085,7 @@ function drainRuns(chatId: number): void {
     if (index < 0) break;
     const [item] = pendingRuns.splice(index, 1);
     active.add(item.threadId);
-    void item
+    const run = item
       .run()
       .catch((error) =>
         logger.error(`Sub-agent run ${item.threadId} rejected`, error),
@@ -1986,13 +2098,22 @@ function drainRuns(chatId: number): void {
         ) {
           activeRunsByChat.delete(chatId);
         }
-        const cleanupTimer = setTimeout(
-          () => void cleanupFollowupRunnerIfIdle(item.threadId),
-          5_000,
-        );
+        const cleanupTimer = setTimeout(() => {
+          followupCleanupTimers.delete(item.threadId);
+          void cleanupFollowupRunnerIfIdle(item.threadId).catch((error) =>
+            logger.error(
+              `Failed to clean up sub-agent runner ${item.threadId}`,
+              error,
+            ),
+          );
+        }, 5_000);
         cleanupTimer.unref();
+        const previousCleanupTimer = followupCleanupTimers.get(item.threadId);
+        if (previousCleanupTimer) clearTimeout(previousCleanupTimer);
+        followupCleanupTimers.set(item.threadId, cleanupTimer);
         drainRuns(chatId);
       });
+    void subagentDisposalRegistry.trackActiveRun(chatId, run);
   }
 }
 

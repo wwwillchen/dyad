@@ -82,16 +82,50 @@ testSkipIfWindows(
       timeout: Timeout.LONG,
     });
 
-    await expect(po.page.getByText("No findings", { exact: true })).toBeVisible(
-      {
-        timeout: Timeout.LONG,
-      },
-    );
     await expect(
       po.page
         .getByTestId("messages-list")
         .getByText("queued after review", { exact: true }),
     ).toBeVisible({ timeout: Timeout.LONG });
+    // Once the queued turn becomes the latest assistant message, the team card
+    // intentionally follows that message and no longer renders the preceding
+    // review. Verify the durable review result through IPC instead of racing
+    // that transient UI handoff.
+    await expect
+      .poll(
+        () =>
+          po.page.evaluate(async () => {
+            const threads = await (
+              window as typeof window & {
+                electron: {
+                  ipcRenderer: {
+                    invoke: (
+                      channel: string,
+                      input: unknown,
+                    ) => Promise<
+                      Array<{
+                        persona: string;
+                        status: string;
+                        result?: { findingCount?: number };
+                      }>
+                    >;
+                  };
+                };
+              }
+            ).electron.ipcRenderer.invoke("agent:list-subagents", {
+              chatId: 1,
+            });
+            const review = threads.find(
+              (thread) => thread.persona === "reviewer",
+            );
+            return {
+              status: review?.status,
+              findingCount: review?.result?.findingCount,
+            };
+          }),
+        { timeout: Timeout.LONG },
+      )
+      .toEqual({ status: "completed", findingCount: 0 });
     await po.chatActions.waitForChatCompletion({ timeout: Timeout.LONG });
   },
 );
