@@ -28,6 +28,11 @@ export interface SupabaseDeployProgress {
   functionName?: string;
 }
 
+export interface SupabaseDeploySummary {
+  functionCount: number;
+  prunedFunctionNames: string[];
+}
+
 export async function mapSettledWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
@@ -259,6 +264,7 @@ export async function deploySupabaseFunctions({
   skipPruneEdgeFunctions,
   functionNames,
   onProgress,
+  onSummary,
 }: {
   appPath: string;
   supabaseProjectId: string;
@@ -266,15 +272,21 @@ export async function deploySupabaseFunctions({
   skipPruneEdgeFunctions: boolean;
   functionNames?: string[];
   onProgress?: (progress: SupabaseDeployProgress) => void;
+  onSummary?: (summary: SupabaseDeploySummary) => void;
 }): Promise<string[]> {
   const functionsDir = path.join(appPath, "supabase", "functions");
+  const prunedFunctionNames: string[] = [];
+  let functionCount = 0;
+  const finish = (errors: string[]) => {
+    onSummary?.({ functionCount, prunedFunctionNames });
+    return errors;
+  };
 
-  // Check if supabase/functions directory exists
   try {
     await fs.access(functionsDir);
   } catch {
     logger.info(`No supabase/functions directory found at ${functionsDir}`);
-    return [];
+    return finish([]);
   }
 
   const errors: string[] = [];
@@ -298,6 +310,7 @@ export async function deploySupabaseFunctions({
           return false;
         })
       : allValidFunctions;
+    functionCount = validFunctions.length;
     if (missingRequestedFunctionNames.length > 0) {
       const errorMessage = `Requested Supabase functions do not exist locally or are missing index.ts: ${missingRequestedFunctionNames.join(", ")}`;
       logger.error(errorMessage);
@@ -310,11 +323,16 @@ export async function deploySupabaseFunctions({
 
     if (validFunctions.length === 0) {
       logger.info("No valid functions to deploy");
-      if (!requestedFunctionNames) {
-        return [];
-      }
       if (errors.length > 0) {
-        return errors;
+        return finish(errors);
+      }
+      // An empty complete local set is not enough evidence that every remote
+      // function should be deleted. The project may have been connected with
+      // remote-only production functions, or the last local function may have
+      // just been removed. Manual whole-set sync therefore falls back to a
+      // deploy-only no-op instead of pruning the entire remote project.
+      if (allValidFunctions.length === 0) {
+        return finish([]);
       }
     }
 
@@ -441,6 +459,7 @@ export async function deploySupabaseFunctions({
                 functionName: fn.slug,
                 organizationSlug: supabaseOrganizationSlug,
               });
+              prunedFunctionNames.push(fn.slug);
               logger.info(`Pruned dangling edge function: ${fn.slug}`);
             } catch (deleteError: any) {
               const errorMessage = `Failed to prune edge function ${fn.slug}: ${deleteError.message}`;
@@ -469,7 +488,7 @@ export async function deploySupabaseFunctions({
     errors.push(errorMessage);
   }
 
-  return errors;
+  return finish(errors);
 }
 
 /**
@@ -486,6 +505,7 @@ export async function deployAllSupabaseFunctions(args: {
   supabaseOrganizationSlug: string | null;
   skipPruneEdgeFunctions: boolean;
   onProgress?: (progress: SupabaseDeployProgress) => void;
+  onSummary?: (summary: SupabaseDeploySummary) => void;
 }): Promise<string[]> {
   return deploySupabaseFunctions(args);
 }
