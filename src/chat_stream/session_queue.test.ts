@@ -298,6 +298,7 @@ describe("main-session follow-up queue", () => {
     expect(markIntentTerminal(database, intent, false)).toEqual({
       queueRevision: 0,
       queuePaused: false,
+      queuePauseReason: null,
       queue: [],
     });
     expect(getIntentAcceptance(intent.intentId)).toBeUndefined();

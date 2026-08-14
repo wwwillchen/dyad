@@ -114,12 +114,16 @@ export const ChatStreamIntentEventSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("SUBMIT"),
       intent: SerializableChatTurnIntentSchema,
+      observedStopPolicyVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z
     .object({
       type: z.literal("CANCEL"),
       invocationRef: ChatStreamInvocationRefSchema,
+      pauseQueue: z.boolean().optional(),
+      stopId: z.string().min(1).max(MAX_CHAT_WIRE_ID_CHARS).optional(),
+      observedStopPolicyVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z
@@ -140,6 +144,7 @@ export const ChatStreamIntentEventSchema = z.discriminatedUnion("type", [
       type: z.literal("RESUME_QUEUE"),
       expectedQueueRevision,
       mutationId: queueMutationId,
+      observedStopPolicyVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z
@@ -196,6 +201,9 @@ export const ChatStreamHostEventSchema = z.discriminatedUnion("type", [
       intentId: z.string(),
       entry: ChatQueueEntrySchema,
       queueRevision: expectedQueueRevision,
+      queuePaused: z.boolean(),
+      resumeQueue: z.boolean(),
+      observedStopPolicyVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z
@@ -239,12 +247,31 @@ export const ChatStreamHostEventSchema = z.discriminatedUnion("type", [
       queueRevision: expectedQueueRevision,
       paused: z.boolean(),
       entries: z.array(ChatQueueEntrySchema),
+      resumeQueue: z.boolean().optional(),
+      observedStopPolicyVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z
     .object({
       type: z.literal("QUEUE_MUTATION_REJECTED"),
       mutationId: queueMutationId,
+      error: z.string(),
+      queueRevision: expectedQueueRevision,
+      paused: z.boolean(),
+      entries: z.array(ChatQueueEntrySchema),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("QUEUE_PARKED"),
+      queueRevision: expectedQueueRevision,
+      paused: z.literal(true),
+      entries: z.array(ChatQueueEntrySchema),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("QUEUE_PARK_FAILED"),
       error: z.string(),
       queueRevision: expectedQueueRevision,
       paused: z.boolean(),
@@ -305,7 +332,9 @@ export const ChatStreamRemoteSnapshotSchema = z
     error: z.string().nullable(),
     queueRevision: expectedQueueRevision,
     queuePaused: z.boolean(),
+    queuePauseReason: z.enum(["stop", "manual", "step-limit"]).nullable(),
     queue: z.array(ChatQueueEntrySchema),
+    stopPolicyVersion: z.number().int().nonnegative(),
     capabilities: z
       .object({
         canSubmit: z.boolean(),
@@ -371,7 +400,9 @@ export function unavailableChatStreamSnapshot(
     error: null,
     queueRevision: 0,
     queuePaused: false,
+    queuePauseReason: null,
     queue: [],
+    stopPolicyVersion: 0,
     capabilities: {
       canSubmit: true,
       canCancel: false,

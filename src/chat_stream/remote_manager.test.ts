@@ -174,6 +174,136 @@ describe("ChatStreamRemoteManager", () => {
     manager.dispose();
   });
 
+  it("captures the Stop policy from bootstrap instead of the unavailable placeholder", async () => {
+    let resolveBootstrap!: (snapshot: MachineSnapshotEnvelope) => void;
+    let subscribedAddress!: MachineAddress;
+    const dispatch = vi.fn(async (envelope: MachineDispatchEnvelope) => ({
+      kind: "applied" as const,
+      actorInstanceId: "actor",
+      revision: 5,
+      transactionSequence: 1,
+      messageId: envelope.messageId,
+    }));
+    const connection: ChatStreamRemoteConnection = {
+      getStatus: () => "connected",
+      onStatusChange: () => () => undefined,
+      onSnapshot: () => () => undefined,
+      onDisposed: () => () => undefined,
+      subscribe: (address) => {
+        subscribedAddress = address;
+        return new Promise((resolve) => {
+          resolveBootstrap = resolve;
+        });
+      },
+      unsubscribe: () => Promise.resolve(),
+      dispatch,
+    };
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      connection,
+    );
+    const actor = manager.ensure(7);
+
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "send after an earlier Stop" },
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+
+    resolveBootstrap({
+      ...subscribedAddress,
+      actorInstanceId: "actor",
+      revision: 4,
+      encodedState: {
+        ...unavailableChatStreamSnapshot(7),
+        revision: 4,
+        queuePaused: true,
+        queuePauseReason: "stop",
+        stopPolicyVersion: 3,
+      },
+    });
+
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        encodedEvent: expect.objectContaining({
+          type: "SUBMIT",
+          observedStopPolicyVersion: 3,
+        }),
+      }),
+    );
+
+    manager.dispose();
+  });
+
+  it("reserves queued submissions before a cross-window Stop overtakes bootstrap", async () => {
+    let resolveBootstrap!: (snapshot: MachineSnapshotEnvelope) => void;
+    let subscribedAddress!: MachineAddress;
+    const dispatch = vi.fn(async (envelope: MachineDispatchEnvelope) => ({
+      kind: "applied" as const,
+      actorInstanceId: "actor",
+      revision: 5,
+      transactionSequence: 1,
+      messageId: envelope.messageId,
+    }));
+    const connection: ChatStreamRemoteConnection = {
+      getStatus: () => "connected",
+      onStatusChange: () => () => undefined,
+      onSnapshot: () => () => undefined,
+      onDisposed: () => () => undefined,
+      subscribe: (address) => {
+        subscribedAddress = address;
+        return new Promise((resolve) => {
+          resolveBootstrap = resolve;
+        });
+      },
+      unsubscribe: () => Promise.resolve(),
+      dispatch,
+      observeChatSubmissionStopPolicy: vi.fn(async () => 0),
+    };
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      connection,
+    );
+    const actor = manager.ensure(7);
+
+    actor.send({ type: "submit", request: { chatId: 7, prompt: "first" } });
+    actor.send({ type: "submit", request: { chatId: 7, prompt: "second" } });
+    actor.send({ type: "cancel" });
+
+    resolveBootstrap({
+      ...subscribedAddress,
+      actorInstanceId: "actor",
+      revision: 4,
+      encodedState: {
+        ...unavailableChatStreamSnapshot(7),
+        revision: 4,
+        queuePaused: true,
+        queuePauseReason: "stop",
+        stopPolicyVersion: 3,
+      },
+    });
+
+    await vi.waitFor(() => {
+      const submit = dispatch.mock.calls.find(
+        ([envelope]) =>
+          (envelope.encodedEvent as { type?: string }).type === "SUBMIT",
+      );
+      expect(submit?.[0]).toEqual(
+        expect.objectContaining({
+          encodedEvent: expect.objectContaining({
+            type: "SUBMIT",
+            observedStopPolicyVersion: 0,
+          }),
+        }),
+      );
+    });
+
+    manager.dispose();
+  });
+
   it("handles a pending completion in the first bootstrap snapshot", async () => {
     let resolveBootstrap!: (snapshot: MachineSnapshotEnvelope) => void;
     const dispatch = vi.fn(
@@ -478,6 +608,17 @@ describe("ChatStreamRemoteManager", () => {
     ref.send({ type: "cancel" });
 
     await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          encodedEvent: expect.objectContaining({
+            type: "CANCEL",
+            pauseQueue: true,
+          }),
+        }),
+      ),
+    );
+
+    await vi.waitFor(() =>
       expect(consoleError).toHaveBeenCalledWith(
         "[chat-stream] Failed to cancel the chat",
         expect.any(Error),
@@ -485,6 +626,138 @@ describe("ChatStreamRemoteManager", () => {
     );
 
     consoleError.mockRestore();
+    release();
+    manager.dispose();
+  });
+
+  it("re-cancels the specific optimistic submission when a later tail fails", async () => {
+    let resolveSubmit!: () => void;
+    let submittedInvocationRef:
+      | { kind: "chat-stream"; entityKey: number; operationId: string }
+      | undefined;
+    let submitResolved = false;
+    let submitCount = 0;
+    let revision = 1;
+    const dispatch = vi.fn((envelope: MachineDispatchEnvelope) => {
+      const event = envelope.encodedEvent as {
+        type: string;
+        intent?: {
+          invocationRef?: {
+            kind: "chat-stream";
+            entityKey: number;
+            operationId: string;
+          };
+        };
+      };
+      const receipt = () => ({
+        kind: "applied" as const,
+        actorInstanceId: "actor",
+        revision: ++revision,
+        transactionSequence: revision,
+        messageId: envelope.messageId,
+      });
+      if (event.type !== "SUBMIT") return Promise.resolve(receipt());
+      submitCount += 1;
+      if (submitCount > 1) {
+        return Promise.resolve({
+          kind: "rejected" as const,
+          messageId: envelope.messageId,
+          reason: "revision-conflict" as const,
+        });
+      }
+      submittedInvocationRef = event.intent?.invocationRef;
+      return new Promise<ReturnType<typeof receipt>>((resolve) => {
+        resolveSubmit = () => {
+          submitResolved = true;
+          resolve(receipt());
+        };
+      });
+    });
+    const connection: ChatStreamRemoteConnection = {
+      getStatus: () => "connected",
+      onStatusChange: () => () => undefined,
+      onSnapshot: () => () => undefined,
+      onDisposed: () => () => undefined,
+      subscribe: async (address) => ({
+        ...address,
+        actorInstanceId: "actor",
+        revision,
+        encodedState:
+          submitResolved && submittedInvocationRef
+            ? {
+                ...unavailableChatStreamSnapshot(7),
+                revision,
+                phase: "streaming",
+                invocationRef: submittedInvocationRef,
+                capabilities: {
+                  canSubmit: true,
+                  canCancel: true,
+                  canPauseQueue: true,
+                  canResumeQueue: false,
+                },
+              }
+            : unavailableChatStreamSnapshot(7),
+      }),
+      unsubscribe: () => Promise.resolve(),
+      dispatch,
+    };
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      connection,
+    );
+    const actor = manager.ensure(7);
+    const release = actor.subscribe(() => undefined);
+    await vi.waitFor(() => expect(actor.getSnapshot().phase).toBe("idle"));
+
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "cancel while dispatching" },
+    });
+    await vi.waitFor(() =>
+      expect(
+        dispatch.mock.calls.some(
+          ([envelope]) =>
+            (envelope.encodedEvent as { type: string }).type === "SUBMIT",
+        ),
+      ).toBe(true),
+    );
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "later tail that fails" },
+    });
+    actor.send({ type: "cancel" });
+    await vi.waitFor(() =>
+      expect(
+        dispatch.mock.calls.filter(
+          ([envelope]) =>
+            (envelope.encodedEvent as { type: string }).type === "CANCEL",
+        ),
+      ).toHaveLength(1),
+    );
+
+    resolveSubmit();
+
+    await vi.waitFor(() => expect(submitCount).toBe(2));
+    await vi.waitFor(() =>
+      expect(
+        dispatch.mock.calls.filter(
+          ([envelope]) =>
+            (envelope.encodedEvent as { type: string }).type === "CANCEL",
+        ),
+      ).toHaveLength(2),
+    );
+    const cancelEvents = dispatch.mock.calls
+      .map(
+        ([envelope]) =>
+          envelope.encodedEvent as {
+            type: string;
+            invocationRef?: typeof submittedInvocationRef;
+          },
+      )
+      .filter((event) => event.type === "CANCEL");
+    expect(cancelEvents[1]?.invocationRef).toEqual(submittedInvocationRef);
+
     release();
     manager.dispose();
   });

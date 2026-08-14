@@ -19,6 +19,7 @@ import { userInputRegistry } from "@/user_input/main";
 import { db } from "@/db";
 import { chats } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import {
   PLAN_HANDOFF_MACHINE_ID,
   planHandoffKey,
@@ -119,6 +120,21 @@ export async function waitForChatActorIdle(
   return didRequestCancellation;
 }
 
+export function observeChatSubmissionStopPolicy(chatId: number): number {
+  assertChatActorAdmissionOpen(chatId);
+  const chat = db
+    .select({ id: chats.id })
+    .from(chats)
+    .where(eq(chats.id, chatId))
+    .get();
+  if (!chat) {
+    throw new DyadError(`Chat ${chatId} not found`, DyadErrorKind.NotFound);
+  }
+  return remoteMachineHost
+    .localRef(chatStreamDefinition, chatStreamKey(chatId))
+    .getSnapshot().stopPolicyVersion;
+}
+
 export async function waitForAppChatActorsIdle(
   appId: number,
   options: { cancelActive?: boolean; signal?: AbortSignal } = {},
@@ -210,7 +226,11 @@ export async function dispatchChatIntentAndWait(
     signal?.addEventListener("abort", abort, { once: true });
     inspect();
   });
-  actor.send({ type: "SUBMIT", intent });
+  actor.send({
+    type: "SUBMIT",
+    intent,
+    observedStopPolicyVersion: actor.getSnapshot().stopPolicyVersion,
+  });
   return settled;
 }
 

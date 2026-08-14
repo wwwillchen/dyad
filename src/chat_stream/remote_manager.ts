@@ -35,6 +35,7 @@ type JotaiStore = ReturnType<typeof createStore>;
 
 export type ChatStreamRemoteConnection = RemoteMachineClientConnection & {
   start?: () => () => void;
+  observeChatSubmissionStopPolicy?: (chatId: number) => Promise<number>;
 };
 
 export interface StreamFinishedEvent {
@@ -50,6 +51,10 @@ export interface StreamFinishedEvent {
 interface PendingSubmission {
   request: StreamRequest;
   invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>;
+  dispatch: Promise<boolean>;
+  observedStopPolicyVersion: Promise<
+    { kind: "observed"; value: number } | { kind: "failed"; error: unknown }
+  >;
   acceptanceDelivered: boolean;
   releaseSubscription: () => void;
 }
@@ -118,7 +123,7 @@ export class ChatStreamRemoteManager {
     (event: StreamFinishedEvent) => void
   >();
   private readonly pendingSubmissions = new Map<string, PendingSubmission>();
-  private readonly submissionTails = new Map<number, Promise<void>>();
+  private readonly submissionTails = new Map<number, Promise<boolean>>();
   private readonly snapshotListeners = new Map<number, Set<() => void>>();
   private readonly optimisticSnapshots = new Map<
     number,
@@ -259,6 +264,7 @@ export class ChatStreamRemoteManager {
     let releaseSettlement = IDLE_UNSUBSCRIBE;
     try {
       await actor.resync();
+      const observedStopPolicyVersion = actor.getSnapshot().stopPolicyVersion;
       const mutationId = this.ids.next("chat-queue");
       const settlement = new Promise<
         NonNullable<ChatStreamRemoteSnapshot["lastQueueMutation"]>
@@ -276,6 +282,7 @@ export class ChatStreamRemoteManager {
         ...event,
         mutationId,
         expectedQueueRevision: mutationQueueRevision,
+        ...(event.type === "RESUME_QUEUE" ? { observedStopPolicyVersion } : {}),
       } as ChatStreamIntentEvent);
       if (receipt.kind === "rejected") {
         throw new Error(`Chat queue request rejected: ${receipt.reason}`);
@@ -345,11 +352,67 @@ export class ChatStreamRemoteManager {
         this.submit(event.request);
         return;
       case "cancel": {
-        const invocationRef = this.getSnapshot(chatId).invocationRef;
+        const snapshot = this.getSnapshot(chatId);
+        const invocationRef = snapshot.invocationRef;
         if (!invocationRef) return;
+        const stopId = this.ids.next("chat-stop");
+        const observedStopPolicyVersion = snapshot.stopPolicyVersion;
+        const optimistic = [...this.pendingSubmissions.entries()].find(
+          ([, pending]) =>
+            !pending.acceptanceDelivered &&
+            pending.request.chatId === chatId &&
+            pending.invocationRef.operationId === invocationRef.operationId,
+        );
+        if (optimistic) {
+          const [intentId] = optimistic;
+          const pending = this.takePendingSubmission(intentId);
+          this.notifySnapshotListeners(chatId);
+          pending?.request.onSettled?.({ success: false });
+          if (pending) {
+            void pending.dispatch
+              .then(async (wasDispatched) => {
+                if (!wasDispatched || this.disposed) return;
+                const actor = this.actor(chatId);
+                await actor.resync();
+                if (this.disposed) return;
+                const current = actor.getSnapshot();
+                if (
+                  current.invocationRef?.operationId ===
+                    invocationRef.operationId &&
+                  current.capabilities.canCancel
+                ) {
+                  this.dispatchCompatibilityCommand(
+                    chatId,
+                    {
+                      type: "CANCEL",
+                      invocationRef,
+                      pauseQueue: true,
+                      stopId,
+                      observedStopPolicyVersion,
+                    },
+                    "cancel the chat",
+                  );
+                }
+              })
+              .catch((error) => {
+                if (!this.disposed) {
+                  this.reportCompatibilityDispatchFailure(
+                    "cancel the chat",
+                    error,
+                  );
+                }
+              });
+          }
+        }
         this.dispatchCompatibilityCommand(
           chatId,
-          { type: "CANCEL", invocationRef },
+          {
+            type: "CANCEL",
+            invocationRef,
+            pauseQueue: true,
+            stopId,
+            observedStopPolicyVersion,
+          },
           "cancel the chat",
         );
         return;
@@ -401,16 +464,32 @@ export class ChatStreamRemoteManager {
       entityKey: request.chatId,
       operationId: this.ids.next("chat-stream"),
     } as const;
-    this.pendingSubmissions.set(intentId, {
+    const actorView = actor.getView();
+    const stopPolicyObservation =
+      actorView.snapshot.kind === "available"
+        ? Promise.resolve(actorView.state.stopPolicyVersion)
+        : this.connection.observeChatSubmissionStopPolicy
+          ? this.connection.observeChatSubmissionStopPolicy(request.chatId)
+          : this.subscriptions
+              .get(request.chatId)!
+              .bootstrap.then(() => actor.getSnapshot().stopPolicyVersion);
+    const observedStopPolicyVersion = stopPolicyObservation.then(
+      (value) => ({ kind: "observed" as const, value }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
+    const pending: PendingSubmission = {
       request,
       invocationRef,
+      dispatch: Promise.resolve(false),
+      observedStopPolicyVersion,
       acceptanceDelivered: false,
       releaseSubscription: release,
-    });
+    };
+    this.pendingSubmissions.set(intentId, pending);
     this.notifySnapshotListeners(request.chatId);
     const previous = this.submissionTails.get(request.chatId);
-    const submission = (previous ?? Promise.resolve())
-      .catch(() => undefined)
+    const submission = (previous ?? Promise.resolve(false))
+      .catch(() => false)
       .then(() =>
         this.prepareAndDispatchSubmission(
           request,
@@ -419,6 +498,7 @@ export class ChatStreamRemoteManager {
           invocationRef,
         ),
       );
+    pending.dispatch = submission;
     this.submissionTails.set(request.chatId, submission);
     void submission.finally(() => {
       if (this.submissionTails.get(request.chatId) === submission) {
@@ -432,11 +512,18 @@ export class ChatStreamRemoteManager {
     actor: ReturnType<ChatStreamRemoteManager["actor"]>,
     intentId: string,
     invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
-      if (this.disposed || !this.pendingSubmissions.has(intentId)) return;
-      await this.subscriptions.get(request.chatId)?.bootstrap;
-      if (this.disposed || !this.pendingSubmissions.has(intentId)) return;
+      if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
+      const [stopPolicyObservation] = await Promise.all([
+        this.pendingSubmissions.get(intentId)!.observedStopPolicyVersion,
+        this.subscriptions.get(request.chatId)?.bootstrap,
+      ]);
+      if (stopPolicyObservation.kind === "failed") {
+        throw stopPolicyObservation.error;
+      }
+      const observedStopPolicyVersion = stopPolicyObservation.value;
+      if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
       const attachments =
         request.attachments && request.attachments.length > 0
           ? await convertFileAttachmentsToChatAttachments(request.attachments)
@@ -461,19 +548,25 @@ export class ChatStreamRemoteManager {
           serializeImmutableChatTurnPayload(withoutHash),
         ),
       };
-      if (this.disposed || !this.pendingSubmissions.has(intentId)) return;
-      const receipt = await actor.dispatch({ type: "SUBMIT", intent });
+      if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
+      const receipt = await actor.dispatch({
+        type: "SUBMIT",
+        intent,
+        observedStopPolicyVersion,
+      });
       if (receipt.kind === "rejected") {
         throw new Error(`Chat submission rejected: ${receipt.reason}`);
       }
+      return true;
     } catch (error) {
       const pending = this.takePendingSubmission(intentId);
-      if (!pending) return;
+      if (!pending) return false;
       this.notifySnapshotListeners(request.chatId);
       pending.request.onAcceptanceError?.(
         error instanceof Error ? error : new Error(String(error)),
       );
       pending.request.onSettled?.({ success: false });
+      return false;
     }
   }
 

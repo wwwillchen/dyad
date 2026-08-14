@@ -36,6 +36,7 @@ import {
   isSessionQueuedIntent,
   markIntentTerminal,
   mutateChatQueue,
+  parkChatQueue,
   claimQueueHead,
   persistQueuedIntent,
   persistSessionQueuedIntent,
@@ -55,6 +56,7 @@ import {
   type ChatStreamWireEvent,
   unavailableChatStreamSnapshot,
 } from "./transport";
+import { canCancelActiveChatStreamPhase } from "./transition";
 
 async function requireExistingChat(chatId: number): Promise<number> {
   const chat = db
@@ -82,10 +84,12 @@ function projectSnapshot(
     error: state.error,
     queueRevision: state.queueRevision,
     queuePaused: state.queuePaused,
+    queuePauseReason: state.queuePauseReason,
     queue: [...state.queue],
+    stopPolicyVersion: state.stopPolicyVersion,
     capabilities: {
       canSubmit: true,
-      canCancel: state.phase === "admitting" || state.phase === "streaming",
+      canCancel: canCancelActiveChatStreamPhase(state.phase),
       canPauseQueue: !state.queuePaused,
       canResumeQueue: state.queuePaused,
     },
@@ -133,7 +137,7 @@ function createCommandRunner(
       try {
         const queue = await mutateChatQueue(db, context.key.chatId, {
           type: "mutate-queue",
-          mutation: { type: "resume" },
+          mutation: { type: "resume", preserveStopPause: true },
           expectedQueueRevision: snapshot.queueRevision,
           mutationId: randomUUID(),
         });
@@ -162,8 +166,12 @@ function createCommandRunner(
         try {
           const result =
             command.intent.owner?.kind === "user-input-follow-up"
-              ? persistSessionQueuedIntent(db, command.intent)
-              : persistQueuedIntent(db, command.intent);
+              ? persistSessionQueuedIntent(db, command.intent, {
+                  resumeQueue: command.resumeQueue,
+                })
+              : persistQueuedIntent(db, command.intent, {
+                  resumeQueue: command.resumeQueue,
+                });
           if (result.kind === "replayed") {
             emit({
               type: "ADMISSION_REPLAYED",
@@ -171,12 +179,35 @@ function createCommandRunner(
               acceptance: result.acceptance,
               acceptedMessageId: result.acceptedMessageId,
             });
+            if (result.queue) {
+              emit({
+                type: "QUEUE_MUTATED",
+                queueRevision: result.queue.queueRevision,
+                paused: result.queue.queuePaused,
+                entries: result.queue.queue,
+                resumeQueue: command.resumeQueue,
+                ...(command.observedStopPolicyVersion === undefined
+                  ? {}
+                  : {
+                      observedStopPolicyVersion:
+                        command.observedStopPolicyVersion,
+                    }),
+              });
+            }
           } else {
             emit({
               type: "ADMISSION_QUEUED",
               intentId: command.intent.intentId,
               entry: result.entry,
               queueRevision: result.queueRevision,
+              queuePaused: result.queuePaused,
+              resumeQueue: command.resumeQueue,
+              ...(command.observedStopPolicyVersion === undefined
+                ? {}
+                : {
+                    observedStopPolicyVersion:
+                      command.observedStopPolicyVersion,
+                  }),
             });
           }
         } catch (error) {
@@ -354,8 +385,46 @@ function createCommandRunner(
         }
         return;
       }
+      case "park-queue": {
+        try {
+          const queue = await parkChatQueue(db, context.key.chatId);
+          emit({
+            type: "QUEUE_PARKED",
+            queueRevision: queue.queueRevision,
+            paused: true,
+            entries: queue.queue,
+          });
+        } catch (error) {
+          const queue = loadAuthoritativeQueue();
+          emit({
+            type: "QUEUE_PARK_FAILED",
+            error: error instanceof Error ? error.message : String(error),
+            queueRevision: queue.queueRevision,
+            paused: queue.queuePaused,
+            entries: queue.queue,
+          });
+        }
+        return;
+      }
       case "mutate-queue": {
         try {
+          if (
+            command.mutation.type === "resume" &&
+            command.observedStopPolicyVersion !== undefined &&
+            command.observedStopPolicyVersion !==
+              context.getSnapshot().stopPolicyVersion
+          ) {
+            const queue = loadAuthoritativeQueue();
+            emit({
+              type: "QUEUE_MUTATION_REJECTED",
+              mutationId: command.mutationId,
+              error: "A newer Stop changed the queue; try resuming again.",
+              queueRevision: queue.queueRevision,
+              paused: queue.queuePaused,
+              entries: queue.queue,
+            });
+            return;
+          }
           const queue = await mutateChatQueue(db, context.key.chatId, command);
           emit({
             type: "QUEUE_MUTATED",
@@ -363,6 +432,11 @@ function createCommandRunner(
             queueRevision: queue.queueRevision,
             paused: queue.queuePaused,
             entries: queue.queue,
+            ...(command.observedStopPolicyVersion === undefined
+              ? {}
+              : {
+                  observedStopPolicyVersion: command.observedStopPolicyVersion,
+                }),
           });
         } catch (error) {
           console.error("[chat-stream] Queue mutation failed", error);
@@ -384,15 +458,24 @@ function createCommandRunner(
           throw new Error("Finalization does not match the active chat intent");
         }
         try {
+          const pauseForStepLimit =
+            command.response?.pausePromptQueue === true &&
+            command.response.reviewBarrierRequested !== true;
+          const pauseForReview =
+            command.response?.reviewBarrierRequested === true ||
+            active.intent.owner?.kind === "review-remediation" ||
+            context.getSnapshot().reviewBarrier.phase ===
+              "awaiting-continuation";
+          const pauseForStop =
+            active.queueResumedAfterCancel !== true &&
+            active.pauseQueueOnCancel === true;
           const queue = markIntentTerminal(
             db,
             active.intent,
-            command.response?.pausePromptQueue === true ||
-              active.intent.owner?.kind === "review-remediation" ||
-              context.getSnapshot().reviewBarrier.phase ===
-                "awaiting-continuation",
+            pauseForStepLimit || pauseForReview || pauseForStop,
             command.error !== undefined ||
               command.response?.wasCancelled === true,
+            pauseForStop ? "stop" : pauseForStepLimit ? "step-limit" : "manual",
           );
           publishChatInvalidations(context.key.chatId, active.targetAppId);
           emit({
@@ -475,6 +558,7 @@ function createCommandRunner(
               ...withoutHash,
               payloadHash: computeChatTurnPayloadHash(withoutHash),
             },
+            observedStopPolicyVersion: command.observedStopPolicyVersion,
           });
         } catch (error) {
           emit({
@@ -529,10 +613,11 @@ function createCommandRunner(
               });
               return;
             }
-            const phaseBeforeDispatch = context.getSnapshot().phase;
+            const snapshotBeforeDispatch = context.getSnapshot();
             if (
-              phaseBeforeDispatch !== "idle" &&
-              phaseBeforeDispatch !== "errored"
+              snapshotBeforeDispatch.queuePaused ||
+              (snapshotBeforeDispatch.phase !== "idle" &&
+                snapshotBeforeDispatch.phase !== "errored")
             ) {
               const queue = await retryQueueDispatchPersistence(() =>
                 restoreClaimedQueueHead(
@@ -551,7 +636,12 @@ function createCommandRunner(
             }
             // Move the actor out of idle before publishing the shorter queue so
             // that projection refresh cannot schedule a second head concurrently.
-            emit({ type: "SUBMIT", intent: claimed.intent });
+            emit({
+              type: "SUBMIT",
+              intent: claimed.intent,
+              observedStopPolicyVersion:
+                snapshotBeforeDispatch.stopPolicyVersion,
+            });
             emit({
               type: "QUEUE_MUTATED",
               queueRevision: claimed.queue.queueRevision,
@@ -680,18 +770,46 @@ export const chatStreamDefinition = {
             DyadErrorKind.Auth,
           );
         }
+        if (
+          event.observedStopPolicyVersion !== undefined &&
+          currentState &&
+          event.observedStopPolicyVersion > currentState.stopPolicyVersion
+        ) {
+          throw new DyadError(
+            "Chat submission observed an unknown Stop policy version",
+            DyadErrorKind.Auth,
+          );
+        }
         event.intent.originWindowSessionId = sender.windowSessionId;
       }
-      if (
-        event.type === "CANCEL" &&
-        (!currentState?.active ||
-          currentState.active.invocationRef.operationId !==
-            event.invocationRef.operationId)
-      ) {
-        throw new DyadError(
-          "Cancellation does not target the active chat stream",
-          DyadErrorKind.Auth,
-        );
+      if (event.type === "CANCEL") {
+        if (event.invocationRef.entityKey !== key.chatId) {
+          throw new DyadError(
+            "Cancellation does not belong to the routed chat",
+            DyadErrorKind.Auth,
+          );
+        }
+        if (
+          event.observedStopPolicyVersion !== undefined &&
+          currentState &&
+          event.observedStopPolicyVersion > currentState.stopPolicyVersion
+        ) {
+          throw new DyadError(
+            "Chat cancellation observed an unknown Stop policy version",
+            DyadErrorKind.Auth,
+          );
+        }
+        if (
+          event.pauseQueue !== true &&
+          (!currentState?.active ||
+            currentState.active.invocationRef.operationId !==
+              event.invocationRef.operationId)
+        ) {
+          throw new DyadError(
+            "Cancellation does not target the active chat stream",
+            DyadErrorKind.Auth,
+          );
+        }
       }
     },
   },

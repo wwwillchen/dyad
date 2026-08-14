@@ -499,6 +499,12 @@ export const chatContracts = {
     output: z.boolean(),
   }),
 
+  observeSubmissionStopPolicy: defineContract({
+    channel: "chat:observe-submission-stop-policy",
+    input: z.number().int().positive(),
+    output: z.number().int().nonnegative(),
+  }),
+
   // Renderer→main ack for stress-test backpressure on the canned test
   // streaming path. The handler is registered unconditionally, but real
   // LLM streams omit `chunkSeq`, so the renderer only invokes this

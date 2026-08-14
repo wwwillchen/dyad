@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { apps, chats, chatQueueEntries, chatTurnIntents } from "@/db/schema";
+import {
+  apps,
+  chats,
+  chatQueueEntries,
+  chatQueueStates,
+  chatTurnIntents,
+} from "@/db/schema";
 import { DyadErrorKind } from "@/errors/dyad_error";
 import { createInMemoryTestDb, type TestDb } from "@/testing/test_db";
 import {
@@ -14,6 +20,7 @@ import {
   markIntentAccepted,
   markIntentTerminal,
   mutateChatQueue,
+  parkChatQueue,
   persistAcceptedChatTurn,
   persistQueuedIntent,
   restoreClaimedQueueHead,
@@ -90,6 +97,108 @@ describe("chat stream persistence", () => {
 
     expect(database.select().from(chatTurnIntents).all()).toEqual([]);
     expect(database.select().from(chatQueueEntries).all()).toEqual([]);
+  });
+
+  it("parks the queue idempotently without a renderer revision", async () => {
+    persistQueuedIntent(database, intent("turn-1"));
+
+    await expect(parkChatQueue(database, chatId)).resolves.toMatchObject({
+      queueRevision: 2,
+      queuePaused: true,
+      queuePauseReason: "stop",
+      queue: [{ intentId: "turn-1" }],
+    });
+    await expect(parkChatQueue(database, chatId)).resolves.toMatchObject({
+      queueRevision: 2,
+      queuePaused: true,
+    });
+    expect(
+      database
+        .select()
+        .from(chatQueueStates)
+        .where(eq(chatQueueStates.chatId, chatId))
+        .get(),
+    ).toMatchObject({ revision: 2, paused: true, pauseReason: "stop" });
+  });
+
+  it("atomically appends and resumes an explicitly sent queued intent", async () => {
+    persistQueuedIntent(database, intent("first"));
+    await parkChatQueue(database, chatId);
+
+    expect(
+      persistQueuedIntent(database, intent("second"), { resumeQueue: true }),
+    ).toMatchObject({
+      kind: "queued",
+      queueRevision: 3,
+      queuePaused: false,
+    });
+    expect(loadChatQueue(database, chatId)).toMatchObject({
+      queueRevision: 3,
+      queuePaused: false,
+      queue: [{ intentId: "first" }, { intentId: "second" }],
+    });
+    expect(
+      database
+        .select()
+        .from(chatQueueStates)
+        .where(eq(chatQueueStates.chatId, chatId))
+        .get(),
+    ).toMatchObject({ revision: 3, paused: false });
+  });
+
+  it("does not durably clear a Stop pause for a guarded review release", async () => {
+    persistQueuedIntent(database, intent("queued"));
+    const parked = await parkChatQueue(database, chatId);
+
+    const queue = await mutateChatQueue(database, chatId, {
+      type: "mutate-queue",
+      mutation: { type: "resume", preserveStopPause: true },
+      expectedQueueRevision: parked.queueRevision,
+      mutationId: "idle-resume",
+      observedStopPolicyVersion: 1,
+    });
+
+    expect(queue).toMatchObject({
+      queuePaused: true,
+      queuePauseReason: "stop",
+    });
+    expect(
+      database
+        .select()
+        .from(chatQueueStates)
+        .where(eq(chatQueueStates.chatId, chatId))
+        .get(),
+    ).toMatchObject({ paused: true, pauseReason: "stop" });
+  });
+
+  it("resumes the authoritative queue when a queued send is replayed", async () => {
+    const queuedIntent = intent("queued");
+    persistQueuedIntent(database, queuedIntent);
+    await parkChatQueue(database, chatId);
+
+    expect(
+      persistQueuedIntent(database, queuedIntent, { resumeQueue: true }),
+    ).toMatchObject({
+      kind: "replayed",
+      acceptance: "queued",
+      queue: {
+        queueRevision: 3,
+        queuePaused: false,
+        queue: [{ intentId: "queued" }],
+      },
+    });
+    expect(loadChatQueue(database, chatId)).toMatchObject({
+      queueRevision: 3,
+      queuePaused: false,
+      queue: [{ intentId: "queued" }],
+    });
+    expect(
+      database
+        .select()
+        .from(chatQueueStates)
+        .where(eq(chatQueueStates.chatId, chatId))
+        .get(),
+    ).toMatchObject({ revision: 3, paused: false });
   });
 
   it("bounds the aggregate queue projection before transport", () => {
@@ -313,7 +422,21 @@ describe("chat stream persistence", () => {
     expect(hydrated).toEqual({
       queueRevision: 2,
       queuePaused: true,
+      queuePauseReason: "manual",
       queue: [expect.objectContaining({ intentId: "turn-1" })],
+    });
+  });
+
+  it("restores a Stop-parked durable queue with its pause reason", async () => {
+    persistQueuedIntent(database, intent("turn-1"));
+    await parkChatQueue(database, chatId);
+    disposeSessionChatQueue(chatId);
+
+    expect(hydrateChatStreamPersistence(database, chatId)).toMatchObject({
+      queueRevision: 2,
+      queuePaused: true,
+      queuePauseReason: "stop",
+      queue: [{ intentId: "turn-1" }],
     });
   });
 

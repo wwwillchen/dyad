@@ -14,11 +14,16 @@ export interface ChatStreamHostState {
     readonly intent: SerializableChatTurnIntent;
     readonly invocationRef: ChatStreamInvocationRef;
     readonly targetAppId: number | null;
+    readonly pauseQueueOnCancel?: boolean;
+    readonly queueResumedAfterCancel?: boolean;
   } | null;
   readonly error: string | null;
   readonly queueRevision: number;
   readonly queuePaused: boolean;
+  readonly queuePauseReason: "stop" | "manual" | "step-limit" | null;
   readonly queue: readonly ChatQueueEntry[];
+  readonly stopPolicyVersion: number;
+  readonly lastStopId: string | null;
   readonly lastAcceptance: {
     readonly intentId: string;
     readonly acceptance:
@@ -44,6 +49,8 @@ export interface ChatStreamHostState {
     readonly error?: string;
   } | null;
   readonly pendingQueueMutationId: string | null;
+  readonly pendingQueuePauseMutationId: string | null;
+  readonly pendingQueueResumeMutationId: string | null;
   readonly lastQueueMutation: {
     readonly mutationId: string;
     readonly outcome: "applied" | "rejected";
@@ -70,16 +77,19 @@ export type ChatStreamHostCommand =
   | {
       readonly type: "persist-queued";
       readonly intent: SerializableChatTurnIntent;
+      readonly resumeQueue: boolean;
+      readonly observedStopPolicyVersion?: number;
     }
   | {
       readonly type: "cancel-active";
       readonly invocationRef: ChatStreamInvocationRef;
     }
+  | { readonly type: "park-queue" }
   | {
       readonly type: "mutate-queue";
       readonly mutation:
         | { type: "pause" }
-        | { type: "resume" }
+        | { type: "resume"; preserveStopPause?: boolean }
         | {
             type: "edit";
             itemId: string;
@@ -92,6 +102,7 @@ export type ChatStreamHostCommand =
         | { type: "clear" };
       readonly expectedQueueRevision: number;
       readonly mutationId: string;
+      readonly observedStopPolicyVersion?: number;
     }
   | {
       readonly type: "finalize";
@@ -108,6 +119,7 @@ export type ChatStreamHostCommand =
       readonly type: "submit-review-remediation";
       readonly threadId: string;
       readonly prompt: string;
+      readonly observedStopPolicyVersion: number;
     }
   | {
       readonly type: "fail-review-remediation";

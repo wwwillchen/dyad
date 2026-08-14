@@ -1,16 +1,28 @@
 import type { ChatStreamRemoteSnapshot } from "./transport";
 
+export function canCancelActiveChatStreamPhase(
+  phase: ChatStreamRemoteSnapshot["phase"],
+): boolean {
+  return phase === "admitting" || phase === "streaming";
+}
+
+export function canCancelChatStreamPhase(
+  phase: ChatStreamRemoteSnapshot["phase"],
+): boolean {
+  return (
+    phase === "admitting" ||
+    phase === "streaming" ||
+    phase === "cancelling" ||
+    phase === "finalizing"
+  );
+}
+
 /** True while the main-owned stream is active from the user's point of view. */
 export function isStreamActive(
   state: Pick<ChatStreamRemoteSnapshot, "phase"> | { readonly type: string },
 ): boolean {
   if ("phase" in state) {
-    return (
-      state.phase === "admitting" ||
-      state.phase === "streaming" ||
-      state.phase === "cancelling" ||
-      state.phase === "finalizing"
-    );
+    return canCancelChatStreamPhase(state.phase);
   }
   return (
     state.type === "starting" ||

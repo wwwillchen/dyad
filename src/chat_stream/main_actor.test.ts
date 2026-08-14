@@ -10,13 +10,18 @@ import {
   createSequentialIdSource,
 } from "@/state_machines/testing";
 import { TwoWindowHarness } from "@/testing/two_window_harness";
-import type { ChatStreamExecutionObserver } from "@/ipc/handlers/chat_stream_handlers";
+import {
+  cancelActiveStreamsForChat,
+  type ChatStreamExecutionObserver,
+} from "@/ipc/handlers/chat_stream_handlers";
 import {
   beginChatActorDeletion,
   assertChatActorAdmissionOpen,
 } from "@/ipc/services/chat_actor_deletion_fence";
 import { computeChatTurnPayloadHash } from "@/ipc/utils/chat_turn_intent_hash";
 import { chatStreamDefinition } from "./definition";
+import { initialChatStreamHostState } from "./host_transition";
+import { markIntentTerminal } from "./persistence";
 import { ChatStreamRemoteManager } from "./remote_manager";
 import {
   chatStreamClientDefinition,
@@ -32,6 +37,8 @@ const execution = vi.hoisted(() => ({
   replayedQueuedIntentIds: new Set<string>(),
   claimFailures: 0,
   claimAttempts: 0,
+  afterClaim: null as (() => Promise<void>) | null,
+  claimedEntries: new Map<string, ChatQueueEntry>(),
   convertAttachments: vi.fn(async () => []),
 }));
 const review = vi.hoisted(() => ({
@@ -51,6 +58,7 @@ vi.mock("@/lib/chatAttachmentConversion", () => ({
 const persisted = vi.hoisted(() => ({
   revision: 0,
   paused: false,
+  pauseReason: null as "stop" | "manual" | "step-limit" | null,
   entries: [] as ChatQueueEntry[],
   intents: new Map<string, SerializableChatTurnIntent>(),
 }));
@@ -127,11 +135,13 @@ vi.mock("./persistence", () => ({
   loadChatQueue: vi.fn(() => ({
     queueRevision: persisted.revision,
     queuePaused: persisted.paused,
+    queuePauseReason: persisted.pauseReason,
     queue: [...persisted.entries],
   })),
   hydrateChatStreamPersistence: vi.fn(() => ({
     queueRevision: persisted.revision,
     queuePaused: persisted.paused,
+    queuePauseReason: persisted.pauseReason,
     queue: [...persisted.entries],
   })),
   stageActiveIntent: vi.fn(
@@ -161,7 +171,35 @@ vi.mock("./persistence", () => ({
   disposeSessionChatQueue: vi.fn(),
   persistSessionQueuedIntent: vi.fn(),
   persistQueuedIntent: vi.fn(
-    (_database: unknown, intent: SerializableChatTurnIntent) => {
+    (
+      _database: unknown,
+      intent: SerializableChatTurnIntent,
+      options?: { resumeQueue?: boolean },
+    ) => {
+      if (persisted.intents.has(intent.intentId)) {
+        let queue:
+          | {
+              queueRevision: number;
+              queuePaused: boolean;
+              queue: ChatQueueEntry[];
+            }
+          | undefined;
+        if (options?.resumeQueue) {
+          if (persisted.paused) persisted.revision += 1;
+          persisted.paused = false;
+          persisted.pauseReason = null;
+          queue = {
+            queueRevision: persisted.revision,
+            queuePaused: persisted.paused,
+            queue: [...persisted.entries],
+          };
+        }
+        return {
+          kind: "replayed" as const,
+          acceptance: "queued" as const,
+          queue,
+        };
+      }
       execution.admissions.push(intent.prompt);
       const entry: ChatQueueEntry = {
         itemId: intent.intentId,
@@ -174,10 +212,15 @@ vi.mock("./persistence", () => ({
       persisted.intents.set(intent.intentId, intent);
       persisted.entries.push(entry);
       persisted.revision += 1;
+      if (options?.resumeQueue) {
+        persisted.paused = false;
+        persisted.pauseReason = null;
+      }
       return {
         kind: "queued" as const,
         entry,
         queueRevision: persisted.revision,
+        queuePaused: persisted.paused,
       };
     },
   ),
@@ -188,6 +231,7 @@ vi.mock("./persistence", () => ({
       command: { mutation: { type: string } },
     ) => {
       persisted.paused = command.mutation.type === "pause";
+      persisted.pauseReason = persisted.paused ? "manual" : null;
       persisted.revision += 1;
       return {
         queueRevision: persisted.revision,
@@ -196,6 +240,16 @@ vi.mock("./persistence", () => ({
       };
     },
   ),
+  parkChatQueue: vi.fn(async () => {
+    persisted.paused = true;
+    persisted.pauseReason = "stop";
+    persisted.revision += 1;
+    return {
+      queueRevision: persisted.revision,
+      queuePaused: persisted.paused,
+      queue: [...persisted.entries],
+    };
+  }),
   markIntentTerminal: vi.fn(() => ({
     queueRevision: persisted.revision,
     queuePaused: persisted.paused,
@@ -213,6 +267,8 @@ vi.mock("./persistence", () => ({
     const intent = persisted.intents.get(entry.intentId);
     if (!intent) return null;
     persisted.revision += 1;
+    execution.claimedEntries.set(entry.intentId, entry);
+    await execution.afterClaim?.();
     return {
       intent,
       queue: {
@@ -222,11 +278,20 @@ vi.mock("./persistence", () => ({
       },
     };
   }),
-  restoreClaimedQueueHead: vi.fn(async () => ({
-    queueRevision: persisted.revision,
-    queuePaused: persisted.paused,
-    queue: [...persisted.entries],
-  })),
+  restoreClaimedQueueHead: vi.fn(async () => {
+    const [intentId, entry] =
+      execution.claimedEntries.entries().next().value ?? [];
+    if (intentId && entry) {
+      execution.claimedEntries.delete(intentId);
+      persisted.entries.unshift(entry);
+      persisted.revision += 1;
+    }
+    return {
+      queueRevision: persisted.revision,
+      queuePaused: persisted.paused,
+      queue: [...persisted.entries],
+    };
+  }),
 }));
 
 function turn(intentId: string): SerializableChatTurnIntent {
@@ -259,6 +324,8 @@ describe("main-hosted chat stream actor", () => {
     execution.replayedQueuedIntentIds.clear();
     execution.claimFailures = 0;
     execution.claimAttempts = 0;
+    execution.afterClaim = null;
+    execution.claimedEntries.clear();
     execution.convertAttachments.mockReset();
     execution.convertAttachments.mockResolvedValue([]);
     review.runAutoReviewBarrier.mockReset();
@@ -267,6 +334,7 @@ describe("main-hosted chat stream actor", () => {
     review.skipReviewAutoFix.mockResolvedValue(undefined);
     persisted.revision = 0;
     persisted.paused = false;
+    persisted.pauseReason = null;
     persisted.entries = [];
     persisted.intents.clear();
   });
@@ -286,8 +354,6 @@ describe("main-hosted chat stream actor", () => {
         removable: true,
       },
     ];
-    execution.replayedQueuedIntentIds.add(queued.intentId);
-
     const clock = createFakeClock();
     const host = new ActorHost({
       placement: "main",
@@ -319,9 +385,69 @@ describe("main-hosted chat stream actor", () => {
       phase: "idle",
       queuePaused: true,
       queue: [{ intentId: "queued" }],
-      lastAcceptance: { intentId: "queued", acceptance: "queued" },
     });
-    expect(execution.observers.size).toBe(0);
+    expect(execution.observers.has("queued")).toBe(false);
+
+    release();
+    client.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("resumes a recovered Stop-parked queue FIFO on the next send", async () => {
+    const queued = turn("queued-before-restart");
+    persisted.paused = true;
+    persisted.pauseReason = "stop";
+    persisted.revision = 2;
+    persisted.intents.set(queued.intentId, queued);
+    persisted.entries = [
+      {
+        itemId: queued.intentId,
+        intentId: queued.intentId,
+        prompt: queued.prompt,
+        persistence: "durable",
+        editable: true,
+        removable: true,
+      },
+    ];
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const client = new RemoteMachineClient(
+      duplex.connect(),
+      createSequentialIdSource(),
+    );
+    client.start();
+    const actor = client.actor(chatStreamClientDefinition, chatStreamKey(7));
+    const release = actor.subscribe(() => undefined);
+    await actor.resync();
+
+    await actor.dispatch({
+      type: "SUBMIT",
+      intent: turn("sent-after-restart"),
+      observedStopPolicyVersion: 0,
+    });
+    await flush();
+
+    expect(actor.getSnapshot()).toMatchObject({
+      phase: "streaming",
+      queuePaused: false,
+      queue: [{ intentId: "sent-after-restart" }],
+    });
+    expect(execution.observers.has("queued-before-restart")).toBe(true);
+    expect(execution.observers.has("sent-after-restart")).toBe(false);
 
     release();
     client.dispose();
@@ -373,6 +499,68 @@ describe("main-hosted chat stream actor", () => {
       phase: "streaming",
       queue: [],
     });
+
+    release();
+    client.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("restores a claimed queue head when the queue is parked before dispatch", async () => {
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const client = new RemoteMachineClient(
+      duplex.connect(),
+      createSequentialIdSource(),
+    );
+    client.start();
+    const actor = client.actor(chatStreamClientDefinition, chatStreamKey(7));
+    const release = actor.subscribe(() => undefined);
+    await actor.resync();
+
+    await actor.dispatch({ type: "SUBMIT", intent: turn("first") });
+    await flush();
+    await actor.dispatch({ type: "SUBMIT", intent: turn("second") });
+    await flush();
+    execution.afterClaim = async () => {
+      execution.afterClaim = null;
+      await actor.dispatch({
+        type: "PAUSE_QUEUE",
+        expectedQueueRevision: actor.getSnapshot().queueRevision,
+        mutationId: "park-after-claim",
+      });
+      await vi.waitFor(() =>
+        expect(actor.getSnapshot().queuePaused).toBe(true),
+      );
+    };
+
+    execution.observers.get("first")?.onEnd?.({
+      chatId: 7,
+      invocationRef: turn("first").invocationRef,
+      updatedFiles: false,
+    });
+
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot()).toMatchObject({
+        phase: "idle",
+        queuePaused: true,
+        queue: [{ intentId: "second" }],
+      }),
+    );
+    expect(execution.observers.has("second")).toBe(false);
 
     release();
     client.dispose();
@@ -530,6 +718,276 @@ describe("main-hosted chat stream actor", () => {
     await host.dispose();
   });
 
+  it("stops a renderer-only optimistic admission and parks the queue", async () => {
+    let releaseAttachment!: () => void;
+    const attachmentGate = new Promise<void>((resolve) => {
+      releaseAttachment = resolve;
+    });
+    execution.convertAttachments.mockImplementationOnce(async () => {
+      await attachmentGate;
+      return [];
+    });
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      duplex.connect(),
+    );
+    const onSettled = vi.fn();
+    manager.start();
+    const actor = manager.ensure(7);
+    const release = actor.subscribe(() => undefined);
+    await flush();
+
+    actor.send({
+      type: "submit",
+      request: {
+        chatId: 7,
+        prompt: "cancel before serialization",
+        attachments: [{ file: {} as File, type: "chat-context" }],
+        onSettled,
+      },
+    });
+    expect(actor.getSnapshot()).toMatchObject({
+      phase: "admitting",
+      capabilities: { canCancel: false },
+    });
+
+    actor.send({ type: "cancel" });
+
+    await vi.waitFor(() => expect(persisted.paused).toBe(true));
+    expect(onSettled).toHaveBeenCalledExactlyOnceWith({ success: false });
+    expect(actor.getSnapshot().phase).toBe("idle");
+    releaseAttachment();
+    await flush();
+    expect(execution.admissions).toEqual([]);
+
+    release();
+    manager.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("parks pre-Stop tails and resumes them FIFO on a later Send", async () => {
+    let releaseAttachment!: () => void;
+    const attachmentGate = new Promise<void>((resolve) => {
+      releaseAttachment = resolve;
+    });
+    execution.convertAttachments.mockImplementationOnce(async () => {
+      await attachmentGate;
+      return [];
+    });
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      duplex.connect(),
+    );
+    manager.start();
+    const actor = manager.ensure(7);
+    const release = actor.subscribe(() => undefined);
+    await flush();
+
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "active before Stop" },
+    });
+    await vi.waitFor(() =>
+      expect(
+        [...execution.observers.values()].some(
+          (observer) => observer.intent.prompt === "active before Stop",
+        ),
+      ).toBe(true),
+    );
+    actor.send({
+      type: "submit",
+      request: {
+        chatId: 7,
+        prompt: "keep this queued",
+        attachments: [{ file: {} as File, type: "chat-context" }],
+      },
+    });
+    actor.send({ type: "cancel" });
+
+    await vi.waitFor(() => expect(persisted.paused).toBe(true));
+    releaseAttachment();
+    await vi.waitFor(() =>
+      expect(persisted.entries).toEqual([
+        expect.objectContaining({ prompt: "keep this queued" }),
+      ]),
+    );
+    expect(
+      [...execution.observers.values()].map(
+        (observer) => observer.intent.prompt,
+      ),
+    ).not.toContain("keep this queued");
+    expect(actor.getSnapshot()).toMatchObject({
+      phase: "idle",
+      queuePaused: true,
+      queue: [expect.objectContaining({ prompt: "keep this queued" })],
+    });
+
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "send after Stop" },
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        [...execution.observers.values()].map(
+          (observer) => observer.intent.prompt,
+        ),
+      ).toContain("keep this queued"),
+    );
+    expect(
+      [...execution.observers.values()].map(
+        (observer) => observer.intent.prompt,
+      ),
+    ).not.toContain("send after Stop");
+    expect(persisted.paused).toBe(false);
+    expect(persisted.entries).toEqual([
+      expect.objectContaining({ prompt: "send after Stop" }),
+    ]);
+    expect(actor.getSnapshot()).toMatchObject({
+      phase: "streaming",
+      queuePaused: false,
+      queue: [expect.objectContaining({ prompt: "send after Stop" })],
+    });
+
+    release();
+    manager.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("keeps delayed cross-window submissions behind the authoritative Stop cutoff", async () => {
+    let releaseAttachment!: () => void;
+    const attachmentGate = new Promise<void>((resolve) => {
+      releaseAttachment = resolve;
+    });
+    execution.convertAttachments.mockImplementationOnce(async () => {
+      await attachmentGate;
+      return [];
+    });
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const [windowA, windowB] = windows.createPair();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const managerA = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      duplex.connect(windowA),
+    );
+    const managerB = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(1_000),
+      duplex.connect(windowB),
+    );
+    managerA.start();
+    managerB.start();
+    const actorA = managerA.ensure(7);
+    const actorB = managerB.ensure(7);
+    const releaseA = actorA.subscribe(() => undefined);
+    const releaseB = actorB.subscribe(() => undefined);
+    await flush();
+
+    actorA.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "active in window A" },
+    });
+    await vi.waitFor(() =>
+      expect(
+        [...execution.observers.values()].some(
+          (observer) => observer.intent.prompt === "active in window A",
+        ),
+      ).toBe(true),
+    );
+
+    actorB.send({
+      type: "submit",
+      request: {
+        chatId: 7,
+        prompt: "serializing in window B",
+        attachments: [{ file: {} as File, type: "chat-context" }],
+      },
+    });
+    actorA.send({ type: "cancel" });
+    expect(actorB.getSnapshot().stopPolicyVersion).toBe(0);
+    actorB.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "submitted just after Stop" },
+    });
+
+    await vi.waitFor(() => expect(persisted.paused).toBe(true));
+    await vi.waitFor(() =>
+      expect(actorB.getSnapshot().stopPolicyVersion).toBe(1),
+    );
+    releaseAttachment();
+    await vi.waitFor(() =>
+      expect(persisted.entries.map((entry) => entry.prompt)).toEqual([
+        "serializing in window B",
+        "submitted just after Stop",
+      ]),
+    );
+    const observedPrompts = [...execution.observers.values()].map(
+      (observer) => observer.intent.prompt,
+    );
+    expect(observedPrompts).not.toContain("serializing in window B");
+    expect(observedPrompts).not.toContain("submitted just after Stop");
+    expect(actorA.getSnapshot()).toMatchObject({
+      phase: "idle",
+      queuePaused: true,
+      stopPolicyVersion: 1,
+    });
+
+    releaseA();
+    releaseB();
+    managerA.dispose();
+    managerB.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
   it("bootstraps actor interest before dispatching a first submission", async () => {
     const clock = createFakeClock();
     const host = new ActorHost({
@@ -635,6 +1093,8 @@ describe("main-hosted chat stream actor", () => {
   });
 
   it("settles a durable review barrier without renderer ownership", async () => {
+    const { markIntentTerminal } = await import("./persistence");
+    vi.mocked(markIntentTerminal).mockClear();
     const clock = createFakeClock();
     const host = new ActorHost({
       placement: "main",
@@ -680,6 +1140,13 @@ describe("main-hosted chat stream actor", () => {
       expect(actor.getSnapshot().queuePaused).toBe(false);
       expect(execution.admissions).toContain("queued");
     });
+    expect(markIntentTerminal).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ intentId: "review" }),
+      true,
+      false,
+      "manual",
+    );
 
     const reloaded = new ChatStreamRemoteManager(
       createStore(),
@@ -930,6 +1397,45 @@ describe("main-hosted chat stream actor", () => {
     expect(computeChatTurnPayloadHash(authorizedPayload)).toBe(payloadHash);
   });
 
+  it("allows a stale cancellation intent to park the queue", async () => {
+    await expect(
+      chatStreamDefinition.remote.authorizeDispatch({
+        sender: {
+          webContentsId: 1,
+          windowSessionId: "renderer-window",
+        },
+        key: chatStreamKey(7),
+        event: {
+          type: "CANCEL",
+          invocationRef: turn("stale").invocationRef!,
+          pauseQueue: true,
+        },
+        currentState: initialChatStreamHostState(),
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects a queue-parking cancellation routed from another chat", async () => {
+    await expect(
+      chatStreamDefinition.remote.authorizeDispatch({
+        sender: {
+          webContentsId: 1,
+          windowSessionId: "renderer-window",
+        },
+        key: chatStreamKey(7),
+        event: {
+          type: "CANCEL",
+          invocationRef: {
+            ...turn("other-chat").invocationRef!,
+            entityKey: 8,
+          },
+          pauseQueue: true,
+        },
+        currentState: initialChatStreamHostState(),
+      }),
+    ).rejects.toMatchObject({ kind: "auth" });
+  });
+
   it("rejects subscriptions and dispatches while chat deletion is fenced", async () => {
     const releaseDeletion = beginChatActorDeletion(7);
     try {
@@ -1015,6 +1521,122 @@ describe("main-hosted chat stream actor", () => {
 
     manager.dispose();
     await transport.dispose();
+    await host.dispose();
+  });
+
+  it("keeps a main-accepted submission pending across a second Stop", async () => {
+    let resolveFirstCancel!: (cancelled: boolean) => void;
+    vi.mocked(cancelActiveStreamsForChat).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirstCancel = resolve;
+        }),
+    );
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      duplex.connect(),
+    );
+    const actor = manager.ensure(7);
+    const release = actor.subscribe(() => undefined);
+    const onSettled = vi.fn();
+
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "stop twice", onSettled },
+    });
+    await vi.waitFor(() => expect(actor.getSnapshot().phase).toBe("streaming"));
+
+    actor.send({ type: "cancel" });
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot().phase).toBe("cancelling"),
+    );
+    actor.send({ type: "cancel" });
+
+    await flush();
+    expect(onSettled).not.toHaveBeenCalled();
+    resolveFirstCancel(true);
+    await vi.waitFor(() =>
+      expect(onSettled).toHaveBeenCalledExactlyOnceWith({
+        success: false,
+        pausedByStepLimit: undefined,
+      }),
+    );
+    await flush();
+    expect(onSettled).toHaveBeenCalledTimes(1);
+
+    release();
+    manager.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("keeps Stop precedence when a cancelled turn requests review", async () => {
+    let resolveCancel!: (cancelled: boolean) => void;
+    vi.mocked(cancelActiveStreamsForChat).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCancel = resolve;
+        }),
+    );
+    vi.mocked(markIntentTerminal).mockClear();
+    const host = new ActorHost({
+      placement: "main",
+      clock: createFakeClock(),
+      ids: createSequentialIdSource(),
+    });
+    host.register(chatStreamDefinition);
+    const actor = host.ensure(chatStreamDefinition, chatStreamKey(7));
+    const activeIntent = turn("stopped-review");
+
+    actor.enqueue({ type: "SUBMIT", intent: activeIntent });
+    await vi.waitFor(() =>
+      expect(execution.observers.has(activeIntent.intentId)).toBe(true),
+    );
+    actor.enqueue({
+      type: "CANCEL",
+      invocationRef: activeIntent.invocationRef!,
+      pauseQueue: true,
+      observedStopPolicyVersion: 0,
+    });
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot().phase).toBe("cancelling"),
+    );
+
+    execution.observers.get(activeIntent.intentId)?.onEnd?.({
+      chatId: 7,
+      invocationRef: activeIntent.invocationRef!,
+      updatedFiles: true,
+      wasCancelled: true,
+      pausePromptQueue: true,
+      reviewBarrierRequested: true,
+    });
+
+    await vi.waitFor(() =>
+      expect(markIntentTerminal).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ intentId: activeIntent.intentId }),
+        true,
+        true,
+        "stop",
+      ),
+    );
+    resolveCancel(true);
     await host.dispose();
   });
 

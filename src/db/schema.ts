@@ -248,6 +248,9 @@ export const chatQueueStates = sqliteTable("chat_queue_states", {
     .references(() => chats.id, { onDelete: "cascade" }),
   revision: integer("revision").notNull().default(0),
   paused: integer("paused", { mode: "boolean" }).notNull().default(false),
+  pauseReason: text("pause_reason", {
+    enum: ["stop", "manual", "step-limit"],
+  }),
   updatedAt: integer("updated_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),

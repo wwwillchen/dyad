@@ -436,9 +436,9 @@ export function ChatInput({ chatId }: { chatId?: number }) {
   }, []);
 
   // Auto-clear pause state when queue becomes empty (Users expect that deleting
-  // all queued messages returns them to normal send mode). Keep the Stop latch
-  // until cancellation settles so a late submission admitted by the stream
-  // machine cannot land in an unpaused queue.
+  // all queued messages returns them to normal send mode). Keep the
+  // authoritative Stop policy until cancellation settles so a late submission
+  // admitted by the stream machine cannot land in an unpaused queue.
 
   useEffect(() => {
     if (
@@ -619,8 +619,9 @@ export function ChatInput({ chatId }: { chatId?: number }) {
       return;
     }
 
-    // Queue while actively streaming. If we're paused but currently idle,
-    // send the new message immediately and keep existing queued items paused.
+    // Queue while actively streaming. When Stop parked the queue but the actor
+    // is idle, the main actor appends this prompt and resumes FIFO. Explicit
+    // Pause and step-limit pauses instead let this new turn run immediately.
     if (isStreaming) {
       const queued = queueMessage({
         prompt: currentInput,
@@ -661,27 +662,17 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     // still has prompts they care about queued — deleting them here silently
     // lost work, including the queue restored (paused) after a restart.
     //
-    // Latch unconditionally rather than gating on `queuedMessages`: that is a
-    // render-time snapshot, and the machine can admit a follow-up into the live
-    // queue after it. Skipping the latch on a stale empty snapshot would let
-    // finalization dispatch that item, so Stop would start a new generation.
-    // A latch with a genuinely empty queue is harmless — the empty-queue effect
-    // above clears it after cancellation settles.
+    // The cancel intent also tells the authoritative actor to park the queue.
+    // Keeping those actions in one actor transition prevents queue revision
+    // races while still parking follow-ups admitted during cancellation.
     // Always reset editing state when cancelling, regardless of pause state
     if (editingQueuedMessageId) {
       resetEditingState();
     }
-    // Enter the authoritative cancelling state before publishing the pause
-    // latch. This prevents the empty-queue effect from observing the latch
-    // without also observing that cancellation is settling.
     if (chatId) {
       // The stream machine reconciles the cancel with the real terminal
       // event (including cancels fired before main registered the stream).
       cancelStream();
-    }
-    // Do NOT reset pause state here; queued messages should remain paused after stopping
-    if (!isPaused) {
-      pauseQueue();
     }
   };
 

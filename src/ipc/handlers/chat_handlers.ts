@@ -29,7 +29,10 @@ import {
   beginChatActorMutation,
   settleChatActorsForDeletion,
 } from "@/ipc/services/chat_actor_deletion_service";
-import { waitForChatActorIdle } from "@/ipc/services/chat_actor_service";
+import {
+  observeChatSubmissionStopPolicy,
+  waitForChatActorIdle,
+} from "@/ipc/services/chat_actor_service";
 import { appOperationCoordinator } from "@/ipc/services/app_operation_coordinator";
 import { withChatQueueLock } from "@/chat_stream/queue_lock";
 import {
@@ -89,6 +92,10 @@ async function mutateChatAfterDrainingStreams({
 }
 
 export function registerChatHandlers() {
+  createTypedHandler(
+    chatContracts.observeSubmissionStopPolicy,
+    async (_, chatId) => observeChatSubmissionStopPolicy(chatId),
+  );
   createTypedHandler(chatContracts.createChat, async (event, input) => {
     const { appId, initialChatMode, firstPromptCreationOperationId } =
       typeof input === "number"

@@ -123,6 +123,19 @@ Background and before/after examples of why this pattern exists:
   idempotency key through every queue, IPC, and persistence boundary. Make the
   receiving boundary durably deduplicate acceptance, and acknowledge only
   after that acceptance; a renderer-local enqueue is not durable acceptance.
+  Cross-window cancellation cutoffs must likewise be main-owned and versioned;
+  have every submission source, including main-owned follow-ups and internal
+  redispatch, echo the authoritative version it observed so delayed pre-cancel
+  work cannot masquerade as an explicit post-cancel resume. If a renderer has
+  not bootstrapped its actor snapshot, observe or reserve that version in main
+  when submission begins; never fill it from a later bootstrap snapshot, which
+  may already include an intervening Stop. When admission or
+  persistence completes asynchronously, gate follow-up dispatch on the current
+  main-owned cutoff as well as the completion payload; a stale unpaused result
+  must not override a newer Stop latch. Establish every in-memory guard used by
+  later transitions in the policy-starting transition itself (for example,
+  set both the Stop reason/version and `queuePaused` before asynchronously
+  persisting the pause); metadata alone does not close the command-yield race.
   Bounded dedup caches may evict settled history, never unresolved receipts;
   reject excess in-flight work through a separate bounded admission limit.
   Scope renderer retries to the stable window-session identity, not an
@@ -541,6 +554,10 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
 - Model hydration explicitly when persisted state gates machine behavior.
   Persist through an adapter-owned, debounced command using a versioned zod
   schema; do not let components write snapshots independently.
+- Persist semantic discriminators that affect post-restart transitions, not
+  only coarse flags derived from them. For legacy rows, choose an explicit
+  conservative fallback (for example, a paused queue without a reason hydrates
+  as manually paused) and test both legacy and fully persisted recovery paths.
 - When a side effect can make recovery state externally observable (for
   example, detaching Git HEAD), force and await persistence of the exact
   committed checkpoint before starting it. Observer error isolation must not
