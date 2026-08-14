@@ -225,7 +225,7 @@ describe("pause queue (integration)", () => {
     }
   }, 60_000);
 
-  it("sends immediately while stopped with a paused queue", async () => {
+  it("sends immediately while idle with a manually paused queue", async () => {
     const chatId = await harness.createChat();
     harness.mount({ chatId });
 
@@ -237,10 +237,6 @@ describe("pause queue (integration)", () => {
     );
 
     const queueHeader = screen.getByTestId("queue-header");
-    const stopButton = screen.getByRole("button", {
-      name: /cancel generation/i,
-    });
-
     fireEvent.click(screen.getByRole("button", { name: /pause queue/i }));
     await screen.findByText("Paused");
 
@@ -251,7 +247,7 @@ describe("pause queue (integration)", () => {
         payload !== null &&
         (payload as { chatId?: number }).chatId === chatId,
     );
-    fireEvent.click(stopButton);
+    await harness.waitForStreamEnd(chatId);
     await streamEnded;
     await screen.findByLabelText(/^(sendMessage|Send message)$/, undefined, {
       timeout: 15_000,
@@ -274,5 +270,53 @@ describe("pause queue (integration)", () => {
     expect(queueHeader.textContent).toMatch(queuedCountText(3));
     expect(screen.getByText("Paused")).toBeTruthy();
     await immediateStreamEnded;
+  }, 60_000);
+
+  it("resumes the stopped queue in FIFO order on the next submission", async () => {
+    const chatId = await harness.createChat();
+    harness.mount({ chatId });
+
+    await startMediumStream(harness, chatId);
+    await queueMessages(harness, chatId, [
+      "tc=1 [sleep=medium] stopped 1",
+      "stopped 2",
+      "stopped 3",
+    ]);
+
+    const queueHeader = screen.getByTestId("queue-header");
+    fireEvent.click(screen.getByRole("button", { name: /pause queue/i }));
+    await screen.findByText("Paused");
+    fireEvent.click(screen.getByRole("button", { name: /cancel generation/i }));
+    await waitForStreamTermination();
+    expect(queueHeader.textContent).toMatch(queuedCountText(3));
+
+    const resumedStreamEnded = harness.waitForEvent(
+      "chat:stream:end",
+      (payload) =>
+        typeof payload === "object" &&
+        payload !== null &&
+        (payload as { chatId?: number }).chatId === chatId,
+    );
+    await harness.pressEnterInChat("submitted after stop", { chatId });
+
+    await waitFor(() => expect(screen.queryByText("Paused")).toBeNull(), {
+      timeout: 15_000,
+    });
+    await waitFor(() => {
+      expect(
+        within(queueHeader).queryByText("tc=1 [sleep=medium] stopped 1"),
+      ).toBeNull();
+      expect(within(queueHeader).getByText("stopped 2")).toBeTruthy();
+      expect(within(queueHeader).getByText("stopped 3")).toBeTruthy();
+      expect(
+        within(queueHeader).getByText("submitted after stop"),
+      ).toBeTruthy();
+    });
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /cancel generation/i }),
+    );
+    await resumedStreamEnded;
+    await waitForStreamTermination();
   }, 60_000);
 });

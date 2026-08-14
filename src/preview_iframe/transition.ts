@@ -103,27 +103,39 @@ export function transition(
     }
     case "NAVIGATED_IN_APP": {
       if (!event.url) return ignore(state, "empty-url");
+      // A cross-document back/forward moves within the history that is already
+      // here rather than rewriting any of it. Prefer the exact entry because
+      // two distinct browser slots may canonicalize to the same URL; only fall
+      // back to equivalence when the browser changed the spelling on load.
+      if (event.kind === "documentLoad" && event.historyEffect === "traverse") {
+        const exactPosition = state.history.indexOf(event.url);
+        const position =
+          exactPosition !== -1
+            ? exactPosition
+            : state.history.findIndex((entry) => sameUrl(entry, event.url));
+        const currentUrl = state.history[position];
+        if (position === -1 || !currentUrl) {
+          return ignore(state, "unknown-history-entry");
+        }
+        return applied({
+          ...state,
+          position,
+          currentUrl,
+          currentUrlSource: "app",
+          preservedUrl: currentUrl,
+        });
+      }
       // A document load caused by Dyad's own navigation must not be misread as
       // the app's doing: that navigation already set `currentUrl` to this URL
       // before the document loaded, so it is ignored rather than downgrading
       // provenance to "app". `replaceState` shares the check for the same
       // reason — it too can only restate the slot it is already in.
-      if (event.kind !== "pushState" && event.url === state.currentUrl) {
+      if (
+        event.kind !== "pushState" &&
+        state.currentUrl !== null &&
+        sameUrl(event.url, state.currentUrl)
+      ) {
         return ignore(state, "already-current-url");
-      }
-      // A cross-document back/forward moves within the history that is already
-      // here rather than rewriting any of it. Overwriting the current slot
-      // would lose both the entry the user left and the one they arrived at.
-      if (event.kind === "documentLoad" && event.historyEffect === "traverse") {
-        const position = state.history.indexOf(event.url);
-        if (position === -1) return ignore(state, "unknown-history-entry");
-        return applied({
-          ...state,
-          position,
-          currentUrl: event.url,
-          currentUrlSource: "app",
-          preservedUrl: event.url,
-        });
       }
       // A plain link or `<form>` submit grows the browser's history exactly as
       // `pushState` does, and the preview's history has to grow with it: its
@@ -393,6 +405,15 @@ export function transition(
 function sameOrigin(left: string, right: string): boolean {
   try {
     return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
+}
+
+function sameUrl(left: string, right: string): boolean {
+  if (left === right) return true;
+  try {
+    return new URL(left).href === new URL(right).href;
   } catch {
     return false;
   }
