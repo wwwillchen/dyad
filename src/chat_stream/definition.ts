@@ -408,15 +408,24 @@ function createCommandRunner(
       }
       case "mutate-queue": {
         try {
-          let queue = await mutateChatQueue(db, context.key.chatId, command);
           if (
             command.mutation.type === "resume" &&
             command.observedStopPolicyVersion !== undefined &&
             command.observedStopPolicyVersion !==
               context.getSnapshot().stopPolicyVersion
           ) {
-            queue = await parkChatQueue(db, context.key.chatId);
+            const queue = loadAuthoritativeQueue();
+            emit({
+              type: "QUEUE_MUTATION_REJECTED",
+              mutationId: command.mutationId,
+              error: "A newer Stop changed the queue; try resuming again.",
+              queueRevision: queue.queueRevision,
+              paused: queue.queuePaused,
+              entries: queue.queue,
+            });
+            return;
           }
+          const queue = await mutateChatQueue(db, context.key.chatId, command);
           emit({
             type: "QUEUE_MUTATED",
             mutationId: command.mutationId,
