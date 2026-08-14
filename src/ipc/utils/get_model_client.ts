@@ -370,7 +370,7 @@ async function getProModelClient({
   ) {
     return {
       model: provider.responses(modelId, {
-        providerId: model.provider === "auto" ? "openai" : model.provider,
+        providerId: "openai",
       }),
       builtinProviderId: model.provider,
     };
