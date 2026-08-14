@@ -916,14 +916,21 @@ export async function parkChatQueue(
   database: ChatDatabase,
   chatId: number,
 ): Promise<ReturnType<typeof loadChatQueue>> {
-  // Chat-stream queue lifecycle is intentionally process-memory-only
-  // (`restartPersistence: "ephemeral"`). There is no durable queue-state row
-  // to update; the database parameter is retained for the shared facade shape.
   return withChatQueueLock(chatId, async () => {
     const aggregate = queueFor(chatId);
     if (!aggregate.paused) {
+      const nextRevision = aggregate.revision + 1;
+      database
+        .update(chatQueueStates)
+        .set({
+          revision: nextRevision,
+          paused: true,
+          updatedAt: new Date(),
+        })
+        .where(eq(chatQueueStates.chatId, chatId))
+        .run();
       aggregate.paused = true;
-      aggregate.revision += 1;
+      aggregate.revision = nextRevision;
     }
     return loadChatQueue(database, chatId);
   });

@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { apps, chats, chatQueueEntries, chatTurnIntents } from "@/db/schema";
+import {
+  apps,
+  chats,
+  chatQueueEntries,
+  chatQueueStates,
+  chatTurnIntents,
+} from "@/db/schema";
 import { DyadErrorKind } from "@/errors/dyad_error";
 import { createInMemoryTestDb, type TestDb } from "@/testing/test_db";
 import {
@@ -105,6 +111,13 @@ describe("chat stream persistence", () => {
       queueRevision: 2,
       queuePaused: true,
     });
+    expect(
+      database
+        .select()
+        .from(chatQueueStates)
+        .where(eq(chatQueueStates.chatId, chatId))
+        .get(),
+    ).toMatchObject({ revision: 2, paused: true });
   });
 
   it("bounds the aggregate queue projection before transport", () => {

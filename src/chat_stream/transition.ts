@@ -1,5 +1,11 @@
 import type { ChatStreamRemoteSnapshot } from "./transport";
 
+export function canCancelActiveChatStreamPhase(
+  phase: ChatStreamRemoteSnapshot["phase"],
+): boolean {
+  return phase === "admitting" || phase === "streaming";
+}
+
 export function canCancelChatStreamPhase(
   phase: ChatStreamRemoteSnapshot["phase"],
 ): boolean {

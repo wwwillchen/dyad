@@ -163,6 +163,12 @@ vi.mock("./persistence", () => ({
   persistSessionQueuedIntent: vi.fn(),
   persistQueuedIntent: vi.fn(
     (_database: unknown, intent: SerializableChatTurnIntent) => {
+      if (persisted.intents.has(intent.intentId)) {
+        return {
+          kind: "replayed" as const,
+          acceptance: "queued" as const,
+        };
+      }
       execution.admissions.push(intent.prompt);
       const entry: ChatQueueEntry = {
         itemId: intent.intentId,
@@ -597,6 +603,74 @@ describe("main-hosted chat stream actor", () => {
     releaseAttachment();
     await flush();
     expect(execution.admissions).toEqual([]);
+
+    release();
+    manager.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("parks later optimistic submissions that predate Stop", async () => {
+    let releaseAttachment!: () => void;
+    const attachmentGate = new Promise<void>((resolve) => {
+      releaseAttachment = resolve;
+    });
+    execution.convertAttachments.mockImplementationOnce(async () => {
+      await attachmentGate;
+      return [];
+    });
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      duplex.connect(),
+    );
+    manager.start();
+    const actor = manager.ensure(7);
+    const release = actor.subscribe(() => undefined);
+    await flush();
+
+    actor.send({
+      type: "submit",
+      request: {
+        chatId: 7,
+        prompt: "cancel before serialization",
+        attachments: [{ file: {} as File, type: "chat-context" }],
+      },
+    });
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "keep this queued" },
+    });
+    actor.send({ type: "cancel" });
+
+    await vi.waitFor(() => expect(persisted.paused).toBe(true));
+    releaseAttachment();
+    await vi.waitFor(() =>
+      expect(persisted.entries).toEqual([
+        expect.objectContaining({ prompt: "keep this queued" }),
+      ]),
+    );
+    expect(execution.observers.size).toBe(0);
+    expect(actor.getSnapshot()).toMatchObject({
+      phase: "idle",
+      queuePaused: true,
+      queue: [expect.objectContaining({ prompt: "keep this queued" })],
+    });
 
     release();
     manager.dispose();

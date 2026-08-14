@@ -50,6 +50,7 @@ export interface StreamFinishedEvent {
 interface PendingSubmission {
   request: StreamRequest;
   invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>;
+  dispatch: Promise<boolean>;
   acceptanceDelivered: boolean;
   releaseSubscription: () => void;
 }
@@ -356,12 +357,11 @@ export class ChatStreamRemoteManager {
           );
           if (optimistic) {
             const [intentId] = optimistic;
-            const submission = this.submissionTails.get(chatId);
             const pending = this.takePendingSubmission(intentId);
             this.notifySnapshotListeners(chatId);
             pending?.request.onSettled?.({ success: false });
-            if (submission) {
-              void submission
+            if (pending) {
+              void pending.dispatch
                 .then(async (wasDispatched) => {
                   if (!wasDispatched || this.disposed) return;
                   const actor = this.actor(chatId);
@@ -445,12 +445,14 @@ export class ChatStreamRemoteManager {
       entityKey: request.chatId,
       operationId: this.ids.next("chat-stream"),
     } as const;
-    this.pendingSubmissions.set(intentId, {
+    const pending: PendingSubmission = {
       request,
       invocationRef,
+      dispatch: Promise.resolve(false),
       acceptanceDelivered: false,
       releaseSubscription: release,
-    });
+    };
+    this.pendingSubmissions.set(intentId, pending);
     this.notifySnapshotListeners(request.chatId);
     const previous = this.submissionTails.get(request.chatId);
     const submission = (previous ?? Promise.resolve(false))
@@ -463,6 +465,7 @@ export class ChatStreamRemoteManager {
           invocationRef,
         ),
       );
+    pending.dispatch = submission;
     this.submissionTails.set(request.chatId, submission);
     void submission.finally(() => {
       if (this.submissionTails.get(request.chatId) === submission) {

@@ -56,7 +56,7 @@ import {
   type ChatStreamWireEvent,
   unavailableChatStreamSnapshot,
 } from "./transport";
-import { canCancelChatStreamPhase } from "./transition";
+import { canCancelActiveChatStreamPhase } from "./transition";
 
 async function requireExistingChat(chatId: number): Promise<number> {
   const chat = db
@@ -87,7 +87,7 @@ function projectSnapshot(
     queue: [...state.queue],
     capabilities: {
       canSubmit: true,
-      canCancel: canCancelChatStreamPhase(state.phase),
+      canCancel: canCancelActiveChatStreamPhase(state.phase),
       canPauseQueue: !state.queuePaused,
       canResumeQueue: state.queuePaused,
     },

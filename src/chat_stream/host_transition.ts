@@ -120,7 +120,10 @@ export function transitionChatStreamHost(
 > {
   switch (event.type) {
     case "SUBMIT": {
-      if (state.phase === "idle" || state.phase === "errored") {
+      if (
+        (state.phase === "idle" || state.phase === "errored") &&
+        !state.queuePaused
+      ) {
         const invocationRef = event.intent.invocationRef;
         if (!invocationRef) {
           return {

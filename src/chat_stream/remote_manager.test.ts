@@ -500,12 +500,13 @@ describe("ChatStreamRemoteManager", () => {
     manager.dispose();
   });
 
-  it("resyncs before re-cancelling an optimistic submission dispatched in flight", async () => {
+  it("re-cancels the specific optimistic submission when a later tail fails", async () => {
     let resolveSubmit!: () => void;
     let submittedInvocationRef:
       | { kind: "chat-stream"; entityKey: number; operationId: string }
       | undefined;
     let submitResolved = false;
+    let submitCount = 0;
     let revision = 1;
     const dispatch = vi.fn((envelope: MachineDispatchEnvelope) => {
       const event = envelope.encodedEvent as {
@@ -526,6 +527,14 @@ describe("ChatStreamRemoteManager", () => {
         messageId: envelope.messageId,
       });
       if (event.type !== "SUBMIT") return Promise.resolve(receipt());
+      submitCount += 1;
+      if (submitCount > 1) {
+        return Promise.resolve({
+          kind: "rejected" as const,
+          messageId: envelope.messageId,
+          reason: "revision-conflict" as const,
+        });
+      }
       submittedInvocationRef = event.intent?.invocationRef;
       return new Promise<ReturnType<typeof receipt>>((resolve) => {
         resolveSubmit = () => {
@@ -583,6 +592,10 @@ describe("ChatStreamRemoteManager", () => {
         ),
       ).toBe(true),
     );
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "later tail that fails" },
+    });
     actor.send({ type: "cancel" });
     await vi.waitFor(() =>
       expect(
@@ -595,6 +608,7 @@ describe("ChatStreamRemoteManager", () => {
 
     resolveSubmit();
 
+    await vi.waitFor(() => expect(submitCount).toBe(2));
     await vi.waitFor(() =>
       expect(
         dispatch.mock.calls.filter(

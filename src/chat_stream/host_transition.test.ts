@@ -4,7 +4,10 @@ import {
   transitionChatStreamHost,
 } from "./host_transition";
 import type { SerializableChatTurnIntent } from "./transport";
-import { canCancelChatStreamPhase } from "./transition";
+import {
+  canCancelActiveChatStreamPhase,
+  canCancelChatStreamPhase,
+} from "./transition";
 
 function intent(intentId: string): SerializableChatTurnIntent {
   return {
@@ -63,6 +66,25 @@ describe("transitionChatStreamHost", () => {
     expect(submitted.kind).toBe("applied");
     if (submitted.kind !== "applied") return;
     expect(submitted.state).toBe(cancelling);
+    expect(submitted.commands).toEqual([
+      { type: "persist-queued", intent: intent("late") },
+    ]);
+  });
+
+  it("queues a submission that reaches an idle but parked actor", () => {
+    const parked = {
+      ...initialChatStreamHostState(),
+      queuePaused: true,
+    };
+
+    const submitted = transitionChatStreamHost(parked, {
+      type: "SUBMIT",
+      intent: intent("late"),
+    });
+
+    expect(submitted.kind).toBe("applied");
+    if (submitted.kind !== "applied") return;
+    expect(submitted.state).toBe(parked);
     expect(submitted.commands).toEqual([
       { type: "persist-queued", intent: intent("late") },
     ]);
@@ -344,6 +366,13 @@ describe("transitionChatStreamHost", () => {
     ).toBe(true);
     expect(canCancelChatStreamPhase("idle")).toBe(false);
     expect(canCancelChatStreamPhase("errored")).toBe(false);
+  });
+
+  it("advertises active cancellation only before settlement", () => {
+    expect(canCancelActiveChatStreamPhase("admitting")).toBe(true);
+    expect(canCancelActiveChatStreamPhase("streaming")).toBe(true);
+    expect(canCancelActiveChatStreamPhase("cancelling")).toBe(false);
+    expect(canCancelActiveChatStreamPhase("finalizing")).toBe(false);
   });
 
   it("retries queue parking when cancellation fails", () => {
