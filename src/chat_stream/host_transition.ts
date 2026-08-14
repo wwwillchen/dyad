@@ -26,7 +26,11 @@ export function initialChatStreamHostState(input?: {
     lastCompletion: null,
     pendingQueueMutationId: null,
     lastQueueMutation: null,
-    reviewBarrier: { phase: "idle", threadId: null },
+    reviewBarrier: {
+      phase: "idle",
+      threadId: null,
+      resumeQueueOnRelease: false,
+    },
   };
 }
 
@@ -436,13 +440,20 @@ export function transitionChatStreamHost(
             ? {
                 phase: "awaiting-continuation" as const,
                 threadId: remediationThreadId,
+                resumeQueueOnRelease: state.reviewBarrier.resumeQueueOnRelease,
               }
             : completion?.outcome === "completed"
               ? {
                   phase: "verifying" as const,
                   threadId: remediationThreadId,
+                  resumeQueueOnRelease:
+                    state.reviewBarrier.resumeQueueOnRelease,
                 }
-              : { phase: "idle" as const, threadId: null }
+              : {
+                  phase: "idle" as const,
+                  threadId: null,
+                  resumeQueueOnRelease: false,
+                }
           : isContinuation
             ? pausedByStepLimit
               ? state.reviewBarrier
@@ -450,10 +461,20 @@ export function transitionChatStreamHost(
                 ? {
                     phase: "verifying" as const,
                     threadId: state.reviewBarrier.threadId,
+                    resumeQueueOnRelease:
+                      state.reviewBarrier.resumeQueueOnRelease,
                   }
-                : { phase: "idle" as const, threadId: null }
+                : {
+                    phase: "idle" as const,
+                    threadId: null,
+                    resumeQueueOnRelease: false,
+                  }
             : completion?.reviewBarrierRequested === true
-              ? { phase: "reviewing" as const, threadId: null }
+              ? {
+                  phase: "reviewing" as const,
+                  threadId: null,
+                  resumeQueueOnRelease: !state.queuePaused,
+                }
               : state.reviewBarrier;
         const reviewCommands: ChatStreamHostCommand[] = isRemediation
           ? pausedByStepLimit
@@ -541,11 +562,16 @@ export function transitionChatStreamHost(
           kind: "applied",
           state: {
             ...state,
-            error:
-              "Automatic review timed out. The queued prompts will resume.",
-            reviewBarrier: { phase: "idle", threadId: null },
+            error: "Automatic review timed out.",
+            reviewBarrier: {
+              phase: "idle",
+              threadId: null,
+              resumeQueueOnRelease: false,
+            },
           },
-          commands: [{ type: "resume-after-review" }],
+          commands: state.reviewBarrier.resumeQueueOnRelease
+            ? [{ type: "resume-after-review" }]
+            : [],
         };
       }
       if (event.outcome === "verification_failed") {
@@ -558,6 +584,7 @@ export function transitionChatStreamHost(
             reviewBarrier: {
               phase: "idle",
               threadId: event.threadId ?? state.reviewBarrier.threadId,
+              resumeQueueOnRelease: false,
             },
           },
           commands: [],
@@ -571,6 +598,7 @@ export function transitionChatStreamHost(
             reviewBarrier: {
               phase: "remediating",
               threadId: event.threadId,
+              resumeQueueOnRelease: state.reviewBarrier.resumeQueueOnRelease,
             },
           },
           commands: [
@@ -586,9 +614,15 @@ export function transitionChatStreamHost(
         kind: "applied",
         state: {
           ...state,
-          reviewBarrier: { phase: "idle", threadId: null },
+          reviewBarrier: {
+            phase: "idle",
+            threadId: null,
+            resumeQueueOnRelease: false,
+          },
         },
-        commands: [{ type: "resume-after-review" }],
+        commands: state.reviewBarrier.resumeQueueOnRelease
+          ? [{ type: "resume-after-review" }]
+          : [],
       };
     case "REVIEW_BARRIER_FAILED":
       if (state.reviewBarrier.phase === "idle") {
@@ -599,9 +633,15 @@ export function transitionChatStreamHost(
         state: {
           ...state,
           error: event.error,
-          reviewBarrier: { phase: "idle", threadId: null },
+          reviewBarrier: {
+            phase: "idle",
+            threadId: null,
+            resumeQueueOnRelease: false,
+          },
         },
-        commands: [{ type: "resume-after-review" }],
+        commands: state.reviewBarrier.resumeQueueOnRelease
+          ? [{ type: "resume-after-review" }]
+          : [],
       };
     case "QUEUE_MUTATION_REJECTED":
       if (event.mutationId !== state.pendingQueueMutationId) {

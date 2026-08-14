@@ -196,7 +196,11 @@ describe("main-hosted chat stream terminal projection", () => {
     const verificationFailed = transitionChatStreamHost(
       {
         ...state,
-        reviewBarrier: { phase: "verifying", threadId: "verification-1" },
+        reviewBarrier: {
+          phase: "verifying",
+          threadId: "verification-1",
+          resumeQueueOnRelease: true,
+        },
       },
       {
         type: "REVIEW_BARRIER_RESULT",
@@ -240,6 +244,7 @@ describe("main-hosted chat stream terminal projection", () => {
       reviewBarrier: {
         phase: "remediating" as const,
         threadId: "review-1",
+        resumeQueueOnRelease: true,
       },
     };
     state = appliedState(state, { type: "SUBMIT", intent: remediationIntent });
@@ -270,6 +275,7 @@ describe("main-hosted chat stream terminal projection", () => {
     expect(state.reviewBarrier).toEqual({
       phase: "awaiting-continuation",
       threadId: "review-1",
+      resumeQueueOnRelease: true,
     });
 
     state = appliedState(state, { type: "SUBMIT", intent });
@@ -308,6 +314,7 @@ describe("main-hosted chat stream terminal projection", () => {
       reviewBarrier: {
         phase: "awaiting-continuation",
         threadId: "review-1",
+        resumeQueueOnRelease: true,
       },
     };
 
@@ -380,7 +387,11 @@ describe("main-hosted chat stream terminal projection", () => {
     };
     let state: ChatStreamHostState = {
       ...initialChatStreamHostState(),
-      reviewBarrier: { phase: "remediating", threadId: "review-1" },
+      reviewBarrier: {
+        phase: "remediating",
+        threadId: "review-1",
+        resumeQueueOnRelease: true,
+      },
     };
     state = appliedState(state, { type: "SUBMIT", intent: remediationIntent });
     state = appliedState(state, {
@@ -414,6 +425,47 @@ describe("main-hosted chat stream terminal projection", () => {
         reviewBarrier: { phase: "verifying", threadId: "review-1" },
       },
       commands: [{ type: "run-review-barrier", verification: true }],
+    });
+  });
+
+  it("preserves a user-paused queue when a review barrier releases", () => {
+    const alreadyPaused = {
+      ...streamingState(),
+      queuePaused: true,
+    };
+    const ended = appliedState(alreadyPaused, {
+      type: "STREAM_ENDED",
+      intentId: intent.intentId,
+      invocationRef,
+      targetAppId: 3,
+      response: {
+        chatId: 7,
+        invocationRef,
+        updatedFiles: true,
+        pausePromptQueue: true,
+        reviewBarrierRequested: true,
+      },
+    });
+    const finalized = appliedState(ended, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 2,
+      paused: true,
+      entries: [],
+    });
+
+    expect(finalized.reviewBarrier).toMatchObject({
+      phase: "reviewing",
+      resumeQueueOnRelease: false,
+    });
+    expect(
+      transitionChatStreamHost(finalized, {
+        type: "REVIEW_BARRIER_RESULT",
+        outcome: "released",
+      }),
+    ).toMatchObject({
+      kind: "applied",
+      state: { queuePaused: true },
+      commands: [],
     });
   });
 });

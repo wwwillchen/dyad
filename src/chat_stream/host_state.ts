@@ -57,6 +57,8 @@ export interface ChatStreamHostState {
       | "awaiting-continuation"
       | "verifying";
     readonly threadId: string | null;
+    /** Whether the review barrier, rather than the user, paused the queue. */
+    readonly resumeQueueOnRelease: boolean;
   };
 }
 

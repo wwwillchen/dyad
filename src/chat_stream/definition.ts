@@ -431,8 +431,7 @@ function createCommandRunner(
           if (result.outcome === "waiting") {
             emit({
               type: "REVIEW_BARRIER_FAILED",
-              error:
-                "Automatic review timed out. The queued prompts will resume.",
+              error: "Automatic review timed out.",
             });
             return;
           }
