@@ -8,7 +8,9 @@ export const APP_OPERATION_RESOURCES = [
   "media", // Uploaded, generated, and screenshot files in the media library.
   "metadata", // General app fields not owned by a more specific resource.
   "provider", // Supabase/Neon associations and provider lifecycle state.
-  "repository", // Code files plus Git commits, refs, index, and working tree.
+  "repository", // Umbrella for Git refs plus the index and working tree.
+  "repository-ref", // Git HEAD and refs, excluding index and working-tree files.
+  "repository-worktree", // Git index and working-tree files.
   "runtime", // The preview process, port, proxy, and sandbox lifecycle.
   "runtime-config", // Environment/configuration consumed by the runtime.
   "test-files", // Test inputs, generated configuration, and test artifacts.
@@ -42,6 +44,18 @@ export interface AppOperationRequest {
   operation: string;
   resources: readonly (AppOperationResource | AppOperationAccess)[];
   /**
+   * While this operation is active, later compatible work may pass an earlier
+   * queued operation that is blocked exclusively by bypass-enabled active
+   * operations. Intended for long-lived sessions: a working-tree writer queued
+   * behind one must not turn that session into a transitive barrier for a ref
+   * snapshot the session itself permits.
+   *
+   * Once the session releases, ordinary writer fairness resumes. A compatible
+   * operation that already bypassed may finish first, but new readers cannot
+   * continue bypassing the queued writer behind that ordinary operation.
+   */
+  allowCompatibleQueueBypass?: boolean;
+  /**
    * Refuse this operation outright while a recording session holds the app,
    * instead of queueing behind it. Names the action in the imperative, e.g.
    * "delete a test".
@@ -65,6 +79,7 @@ interface NormalizedAppOperationRequest {
   appId: number;
   operation: string;
   resources: readonly AppOperationAccess[];
+  allowCompatibleQueueBypass?: boolean;
 }
 
 interface PendingOperation {
@@ -96,19 +111,29 @@ function normalizeResources(
   for (const access of resources) {
     const resource = typeof access === "string" ? access : access.resource;
     const mode = typeof access === "string" ? "write" : access.mode;
-    const current = normalized.get(resource);
-    if (current === "write" || current === mode) continue;
-    normalized.set(resource, mode);
+    // `repository` remains the broad, backwards-compatible claim. Expanding
+    // it here lets callers opt into the narrower ref/worktree domains without
+    // auditing every existing repository operation at once.
+    const expandedResources =
+      resource === "repository"
+        ? (["repository-ref", "repository-worktree"] as const)
+        : ([resource] as const);
+    for (const expandedResource of expandedResources) {
+      const current = normalized.get(expandedResource);
+      if (current === "write" || current === mode) continue;
+      normalized.set(expandedResource, mode);
+    }
   }
   return [...normalized.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([resource, mode]) => ({ resource, mode }));
 }
 
-function requestsConflict(
+function conflictingResources(
   left: NormalizedAppOperationRequest,
   right: NormalizedAppOperationRequest,
-): boolean {
+): readonly AppOperationResource[] {
+  const conflicts: AppOperationResource[] = [];
   for (const leftAccess of left.resources) {
     const rightAccess = right.resources.find(
       ({ resource }) => resource === leftAccess.resource,
@@ -117,10 +142,50 @@ function requestsConflict(
       rightAccess &&
       (leftAccess.mode === "write" || rightAccess.mode === "write")
     ) {
-      return true;
+      conflicts.push(leftAccess.resource);
     }
   }
-  return false;
+  return conflicts;
+}
+
+function requestsConflict(
+  left: NormalizedAppOperationRequest,
+  right: NormalizedAppOperationRequest,
+): boolean {
+  return conflictingResources(left, right).length > 0;
+}
+
+function canBypassBlockedOperation(
+  blocked: PendingOperation,
+  pending: PendingOperation,
+  blockers: readonly PendingOperation[],
+): boolean {
+  const directBlockers = blockers.filter((blocker) =>
+    requestsConflict(blocker.request, blocked.request),
+  );
+  const blockerResources = new Set(
+    directBlockers.flatMap((blocker) =>
+      blocker.request.resources.map(({ resource }) => resource),
+    ),
+  );
+  // The session may relax fairness only inside domains it currently owns.
+  // Otherwise a repository writer blocked by the session could reorder two
+  // operations that conflict only on an unrelated resource such as chat data.
+  const bypassedConflictResources = conflictingResources(
+    blocked.request,
+    pending.request,
+  );
+  return (
+    directBlockers.length > 0 &&
+    bypassedConflictResources.every((resource) =>
+      blockerResources.has(resource),
+    ) &&
+    directBlockers.every(
+      (blocker) =>
+        blocker.request.allowCompatibleQueueBypass === true &&
+        !requestsConflict(blocker.request, pending.request),
+    )
+  );
 }
 
 /**
@@ -267,11 +332,14 @@ export class AppOperationCoordinator {
     const ready: PendingOperation[] = [];
 
     for (const pending of state.queue) {
-      const conflictsWithActive = [...state.active, ...ready].some((active) =>
+      const activeAndReady = [...state.active, ...ready];
+      const conflictsWithActive = activeAndReady.some((active) =>
         requestsConflict(active.request, pending.request),
       );
-      const wouldBypassBlocked = blocked.some((earlier) =>
-        requestsConflict(earlier.request, pending.request),
+      const wouldBypassBlocked = blocked.some(
+        (earlier) =>
+          requestsConflict(earlier.request, pending.request) &&
+          !canBypassBlockedOperation(earlier, pending, activeAndReady),
       );
       if (conflictsWithActive || wouldBypassBlocked) {
         blocked.push(pending);

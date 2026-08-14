@@ -121,6 +121,191 @@ describe("AppOperationCoordinator", () => {
     expect(order).toEqual(["reader-1", "writer", "reader-2"]);
   });
 
+  it("allows ref snapshots during a working-tree session", async () => {
+    const coordinator = new AppOperationCoordinator();
+    const sessionRelease = deferred();
+    const refSnapshot = vi.fn();
+    const generalRepositoryRead = vi.fn();
+
+    const session = coordinator.run(
+      {
+        appId: 1,
+        operation: "run-app-tests",
+        resources: [readAppResource("repository-ref"), "repository-worktree"],
+      },
+      () => sessionRelease.promise,
+    );
+    const concurrentSnapshot = coordinator.run(
+      {
+        appId: 1,
+        operation: "create-chat",
+        resources: [readAppResource("repository-ref")],
+      },
+      async () => refSnapshot(),
+    );
+    const blockedGeneralRead = coordinator.run(
+      {
+        appId: 1,
+        operation: "read-repository",
+        resources: [readAppResource("repository")],
+      },
+      async () => generalRepositoryRead(),
+    );
+
+    await concurrentSnapshot;
+    expect(refSnapshot).toHaveBeenCalledOnce();
+    expect(generalRepositoryRead).not.toHaveBeenCalled();
+
+    sessionRelease.resolve();
+    await Promise.all([session, blockedGeneralRead]);
+    expect(generalRepositoryRead).toHaveBeenCalledOnce();
+  });
+
+  it("keeps broad repository writers exclusive with both subresources", async () => {
+    const coordinator = new AppOperationCoordinator();
+    const writerRelease = deferred();
+    const refReader = vi.fn();
+    const worktreeReader = vi.fn();
+
+    const writer = coordinator.run(
+      { appId: 1, operation: "checkout", resources: ["repository"] },
+      () => writerRelease.promise,
+    );
+    const refRead = coordinator.run(
+      {
+        appId: 1,
+        operation: "read-head",
+        resources: [readAppResource("repository-ref")],
+      },
+      async () => refReader(),
+    );
+    const worktreeRead = coordinator.run(
+      {
+        appId: 1,
+        operation: "read-files",
+        resources: [readAppResource("repository-worktree")],
+      },
+      async () => worktreeReader(),
+    );
+
+    await Promise.resolve();
+    expect(refReader).not.toHaveBeenCalled();
+    expect(worktreeReader).not.toHaveBeenCalled();
+
+    writerRelease.resolve();
+    await Promise.all([writer, refRead, worktreeRead]);
+    expect(refReader).toHaveBeenCalledOnce();
+    expect(worktreeReader).toHaveBeenCalledOnce();
+  });
+
+  it("lets a long-lived session prevent transitive writer blocking", async () => {
+    const coordinator = new AppOperationCoordinator();
+    const sessionRelease = deferred();
+    const firstSnapshotRelease = deferred();
+    const writerRelease = deferred();
+    const order: string[] = [];
+
+    const session = coordinator.run(
+      {
+        appId: 1,
+        operation: "recording",
+        resources: [readAppResource("repository-ref"), "repository-worktree"],
+        allowCompatibleQueueBypass: true,
+      },
+      () => sessionRelease.promise,
+    );
+    const writer = coordinator.run(
+      { appId: 1, operation: "write-repository", resources: ["repository"] },
+      async () => {
+        order.push("writer");
+        await writerRelease.promise;
+      },
+    );
+    const firstSnapshot = coordinator.run(
+      {
+        appId: 1,
+        operation: "create-chat-1",
+        resources: [readAppResource("repository-ref")],
+      },
+      async () => {
+        order.push("snapshot-1");
+        await firstSnapshotRelease.promise;
+      },
+    );
+
+    await vi.waitFor(() => expect(order).toEqual(["snapshot-1"]));
+    sessionRelease.resolve();
+    await session;
+
+    const secondSnapshot = coordinator.run(
+      {
+        appId: 1,
+        operation: "create-chat-2",
+        resources: [readAppResource("repository-ref")],
+      },
+      async () => {
+        order.push("snapshot-2");
+      },
+    );
+    await Promise.resolve();
+    expect(order).toEqual(["snapshot-1"]);
+
+    firstSnapshotRelease.resolve();
+    await firstSnapshot;
+    await vi.waitFor(() => expect(order).toEqual(["snapshot-1", "writer"]));
+    writerRelease.resolve();
+    await Promise.all([writer, secondSnapshot]);
+    expect(order).toEqual(["snapshot-1", "writer", "snapshot-2"]);
+  });
+
+  it("does not let a session reorder resources it does not own", async () => {
+    const coordinator = new AppOperationCoordinator();
+    const sessionRelease = deferred();
+    const restoreRelease = deferred();
+    const order: string[] = [];
+
+    const session = coordinator.run(
+      {
+        appId: 1,
+        operation: "recording",
+        resources: [readAppResource("repository-ref"), "repository-worktree"],
+        allowCompatibleQueueBypass: true,
+      },
+      () => sessionRelease.promise,
+    );
+    const restore = coordinator.run(
+      {
+        appId: 1,
+        operation: "restore-version",
+        resources: ["chat-content", "repository"],
+      },
+      async () => {
+        order.push("restore");
+        await restoreRelease.promise;
+      },
+    );
+    const deleteMessage = coordinator.run(
+      {
+        appId: 1,
+        operation: "delete-message",
+        resources: ["chat-content"],
+      },
+      async () => {
+        order.push("delete-message");
+      },
+    );
+
+    await Promise.resolve();
+    expect(order).toEqual([]);
+
+    sessionRelease.resolve();
+    await session;
+    await vi.waitFor(() => expect(order).toEqual(["restore"]));
+    restoreRelease.resolve();
+    await Promise.all([restore, deleteMessage]);
+    expect(order).toEqual(["restore", "delete-message"]);
+  });
+
   it("acquires multi-resource operations atomically without deadlock", async () => {
     const coordinator = new AppOperationCoordinator();
     const release = deferred();

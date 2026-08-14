@@ -223,7 +223,8 @@ export function registerRecordingHandlers() {
         // with startup reconciliation.
         const recordingResources = [
           readAppResource("app-path"),
-          "repository",
+          readAppResource("repository-ref"),
+          "repository-worktree",
           "provider",
           "runtime",
           "runtime-config",
@@ -295,6 +296,7 @@ export function registerRecordingHandlers() {
               appId,
               operation: "start-recording",
               resources: recordingResources,
+              allowCompatibleQueueBypass: true,
             },
             async () => {
               let prepared: PreparedIsolation | undefined;
