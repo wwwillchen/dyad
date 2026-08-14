@@ -93,6 +93,20 @@ vi.mock("@/ipc/services/chat_actor_deletion_service", () => ({
   settleChatActorsForDeletion: settleChatActorsForDeletionMock,
 }));
 
+vi.mock(
+  "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager",
+  () => ({
+    blockSubagentAdmissionsForChat: vi.fn(
+      () => () => deletionOrder.push("release-subagent-admission"),
+    ),
+    settleSubagentsForChatDeletion: vi.fn(async () => {
+      deletionOrder.push("settle-subagents");
+      return () => deletionOrder.push("release-subagents");
+    }),
+    settleAllSubagentsForReset: vi.fn(async () => () => undefined),
+  }),
+);
+
 settleChatActorsForDeletionMock.mockImplementation(async () => {
   deletionOrder.push("settle-actors");
 });
@@ -512,8 +526,11 @@ describe("app naming handlers", () => {
       expect(getAppRow(appId)).toBeUndefined();
       expect(deletionOrder).toEqual([
         "barrier",
+        "settle-subagents",
         "quiesce-actors",
         "settle-actors",
+        "release-subagent-admission",
+        "release-subagents",
         "release",
       ]);
     });

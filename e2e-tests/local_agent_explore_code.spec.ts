@@ -1,88 +1,145 @@
-import { expect } from "@playwright/test";
-import fs from "node:fs";
-import path from "node:path";
+import { expect, type Locator, type Page } from "@playwright/test";
+
 import { testSkipIfWindows, Timeout } from "./helpers/test_helper";
 
-testSkipIfWindows("local-agent - explore_code experiment", async ({ po }) => {
-  await po.setUpDyadPro({ localAgent: true });
-  await po.importApp("minimal");
-  await po.chatActions.selectLocalAgentMode();
-
-  await po.page.evaluate(async () => {
-    await (window as any).electron.ipcRenderer.invoke("set-user-settings", {
-      enableCodeExplorer: false,
-    });
+async function queueMessage(page: Page, chatInput: Locator, message: string) {
+  await chatInput.fill(message);
+  await expect(chatInput).toContainText(message);
+  await chatInput.press("Enter");
+  await expect(page.locator("li", { hasText: message })).toBeVisible({
+    timeout: Timeout.MEDIUM,
   });
-  await expect
-    .poll(() => po.settings.recordSettings().enableCodeExplorer)
-    .toBe(false);
+}
 
-  await po.sendPrompt("[dump]");
-  await po.snapshotServerDump("request", { name: "disabled" });
-
-  await po.page.evaluate(async () => {
-    await (window as any).electron.ipcRenderer.invoke("set-user-settings", {
-      enableCodeExplorer: true,
-    });
-  });
-  await expect
-    .poll(() => po.settings.recordSettings().enableCodeExplorer)
-    .toBe(true);
-
-  await po.appManagement.ensurePnpmInstall();
-  await po.appManagement.ensureCodeExplorerReady();
-  const appPath = await po.appManagement.getCurrentAppPath();
-  const nodeModulesPath = path.join(appPath, "node_modules");
-  const typeScriptPackagePath = path.join(
-    nodeModulesPath,
-    "typescript",
-    "package.json",
-  );
-  const typeScriptPackage = JSON.parse(
-    fs.readFileSync(typeScriptPackagePath, "utf8"),
-  );
-  const typeScriptPackageDir = path.dirname(typeScriptPackagePath);
-  const backupRoot = fs.mkdtempSync(
-    path.join(nodeModulesPath, ".dyad-typescript-backup-"),
-  );
-  const backupPackageDir = path.join(backupRoot, "typescript");
-  let packageMoved = false;
-  try {
-    // Replace the package (which may be a pnpm store symlink) with an isolated
-    // stub instead of mutating shared package-manager state.
-    fs.renameSync(typeScriptPackageDir, backupPackageDir);
-    packageMoved = true;
-    fs.mkdirSync(typeScriptPackageDir);
-    // Mimic TS7's installed-package shape: package metadata and CLI are
-    // available, but the legacy CommonJS compiler API has no root export.
-    fs.writeFileSync(
-      typeScriptPackagePath,
-      JSON.stringify({
-        ...typeScriptPackage,
-        version: "7.0.0-test",
-        exports: { "./package.json": "./package.json" },
-      }),
-    );
-    await po.chatActions.clickNewChat();
+testSkipIfWindows(
+  "local-agent - sub-agent tools replace root explore_code",
+  async ({ po }) => {
+    await po.setUpDyadPro({ localAgent: true });
+    await po.importApp("minimal");
     await po.chatActions.selectLocalAgentMode();
-    await po.sendPrompt("tc=local-agent/explore-code");
 
-    const card = po.page.getByTestId("dyad-explore-code");
-    await expect(card).toBeVisible({ timeout: Timeout.LONG });
-    await card.click();
-    await expect(card).toContainText("explore_code report");
-    await expect(card).toContainText("used bundled TypeScript");
-    await expect(card).toContainText("Results are best-effort");
-    await expect(card).toContainText("src/App.tsx");
-    await expect(card).toContainText("compiler-backed symbol window");
-    await expect(card).toContainText("Read targets");
+    await po.sendPrompt("[dump]");
+    await po.snapshotServerDump("request", { name: "subagents" });
+  },
+);
 
-    await po.snapshotMessages();
-  } finally {
-    fs.rmSync(typeScriptPackageDir, { recursive: true, force: true });
-    if (packageMoved) {
-      fs.renameSync(backupPackageDir, typeScriptPackageDir);
+testSkipIfWindows(
+  "local-agent - Explorer appears inline and returns partial findings",
+  async ({ po }) => {
+    await po.setUpDyadPro({ localAgent: true, autoApprove: true });
+    await po.importApp("minimal");
+    await po.chatActions.selectLocalAgentMode();
+
+    await po.sendPrompt("tc=local-agent/subagent-spawn");
+
+    await expect(
+      po.page.getByRole("button", {
+        name: /Inspect app entry explorer · Partial findings/,
+      }),
+    ).toBeVisible({ timeout: Timeout.LONG });
+    await expect
+      .poll(
+        () =>
+          po.page.evaluate(async () => {
+            const threads = await (window as any).electron.ipcRenderer.invoke(
+              "agent:list-subagents",
+              { chatId: 1 },
+            );
+            return threads.map((thread: any) => ({
+              persona: thread.persona,
+              taskName: thread.taskName,
+              status: thread.status,
+            }));
+          }),
+        { timeout: Timeout.LONG },
+      )
+      .toContainEqual({
+        persona: "explorer",
+        taskName: "Inspect app entry",
+        status: "partial",
+      });
+  },
+);
+
+testSkipIfWindows(
+  "local-agent - queued prompt waits for automatic review",
+  async ({ po }) => {
+    await po.setUpDyadPro({ localAgent: true, autoApprove: true });
+    await po.page.evaluate(async () => {
+      await (window as any).electron.ipcRenderer.invoke("set-user-settings", {
+        enableAutoReview: true,
+      });
+    });
+    await po.importApp("minimal");
+    await po.chatActions.selectLocalAgentMode();
+
+    await po.sendPrompt("tc=local-agent/review-barrier", {
+      skipWaitForCompletion: true,
+    });
+    const chatInput = po.chatActions.getChatInput();
+    await expect(chatInput).toBeVisible();
+    await queueMessage(po.page, chatInput, "queued after review");
+
+    await expect(po.page.getByText(/1 Queued/)).toBeVisible();
+    const teamButton = po.page.getByRole("button", { name: /Agent team/ });
+    await expect(teamButton).toBeVisible({ timeout: Timeout.LONG });
+    if ((await teamButton.getAttribute("aria-expanded")) !== "true") {
+      await teamButton.click();
     }
-    fs.rmSync(backupRoot, { recursive: true, force: true });
-  }
-});
+    await expect(po.page.getByText("Paused", { exact: true })).toBeVisible();
+    await expect(
+      po.page
+        .getByTestId("messages-list")
+        .getByText("queued after review", { exact: true }),
+    ).not.toBeVisible();
+    await expect(po.page.getByText("reviewer", { exact: true })).toBeVisible({
+      timeout: Timeout.LONG,
+    });
+
+    await expect(
+      po.page
+        .getByTestId("messages-list")
+        .getByText("queued after review", { exact: true }),
+    ).toBeVisible({ timeout: Timeout.LONG });
+    // Once the queued turn becomes the latest assistant message, the team card
+    // intentionally follows that message and no longer renders the preceding
+    // review. Verify the durable review result through IPC instead of racing
+    // that transient UI handoff.
+    await expect
+      .poll(
+        () =>
+          po.page.evaluate(async () => {
+            const threads = await (
+              window as typeof window & {
+                electron: {
+                  ipcRenderer: {
+                    invoke: (
+                      channel: string,
+                      input: unknown,
+                    ) => Promise<
+                      Array<{
+                        persona: string;
+                        status: string;
+                        result?: { findingCount?: number };
+                      }>
+                    >;
+                  };
+                };
+              }
+            ).electron.ipcRenderer.invoke("agent:list-subagents", {
+              chatId: 1,
+            });
+            const review = threads.find(
+              (thread) => thread.persona === "reviewer",
+            );
+            return {
+              status: review?.status,
+              findingCount: review?.result?.findingCount,
+            };
+          }),
+        { timeout: Timeout.LONG },
+      )
+      .toEqual({ status: "completed", findingCount: 0 });
+    await po.chatActions.waitForChatCompletion({ timeout: Timeout.LONG });
+  },
+);

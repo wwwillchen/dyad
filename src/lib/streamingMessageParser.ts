@@ -81,6 +81,7 @@ const DYAD_CUSTOM_TAG_NAMES = [
   "dyad-search-chats",
   "dyad-read-chat",
   "dyad-explore-chat-history",
+  "dyad-subagent",
 ];
 const DYAD_CUSTOM_TAG_SET = new Set(DYAD_CUSTOM_TAG_NAMES);
 

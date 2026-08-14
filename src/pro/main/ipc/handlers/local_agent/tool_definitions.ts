@@ -4,6 +4,7 @@
  */
 
 import { IpcMainInvokeEvent } from "electron";
+import log from "electron-log";
 import { readSettings, writeSettings } from "@/main/settings";
 import type { SqlConsentMetadata } from "@/shared/sqlConsentMetadata";
 import {
@@ -38,10 +39,18 @@ import { generateTestAssertionsTool } from "./tools/generate_test_assertions";
 import { rebuildAppTool, restartAppTool } from "./tools/app_lifecycle";
 import { grepTool } from "./tools/grep";
 import { codeSearchTool } from "./tools/code_search";
-import { exploreCodeTool } from "./tools/explore_code";
 import { exploreChatHistoryTool } from "./tools/explore_chat_history";
 import { searchChatsTool } from "./tools/search_chats";
 import { readChatTool } from "./tools/read_chat";
+import {
+  cancelAgentTool,
+  exploreCodeTool,
+  followupTaskTool,
+  listAgentsTool,
+  sendMessageTool,
+  spawnAgentTool,
+  waitAgentsTool,
+} from "./tools/subagent_tools";
 import { planningQuestionnaireTool } from "./tools/planning_questionnaire";
 import { writePlanTool } from "./tools/write_plan";
 import { exitPlanTool } from "./tools/exit_plan";
@@ -78,6 +87,21 @@ import { getSupabaseClientCode } from "@/supabase_admin/supabase_context";
 import { getNeonClientCode } from "@/neon_admin/neon_context";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { ExecuteAddDependencyError } from "@/ipc/processors/executeAddDependency";
+import { withMutationToolAdmission } from "./subagents/mutation_lease";
+
+const logger = log.scope("local_agent_tools");
+
+function recordStreamingToolActivity(
+  ctx: AgentContext,
+  activity: Parameters<NonNullable<AgentContext["onToolActivity"]>>[0],
+): void {
+  const update = ctx.onToolActivity?.(activity);
+  if (update) {
+    void update.catch((error) =>
+      logger.warn("Failed to record streaming sub-agent activity", error),
+    );
+  }
+}
 
 function getToolErrorDisplayDetails(error: unknown): string {
   if (error instanceof ExecuteAddDependencyError) {
@@ -114,10 +138,16 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   gitRestoreFileTool,
   grepTool,
   codeSearchTool,
-  exploreCodeTool,
   exploreChatHistoryTool,
   searchChatsTool,
   readChatTool,
+  exploreCodeTool,
+  spawnAgentTool,
+  listAgentsTool,
+  waitAgentsTool,
+  cancelAgentTool,
+  sendMessageTool,
+  followupTaskTool,
   getSupabaseProjectInfoTool,
   getNeonProjectInfoTool,
   getDatabaseTableSchemaTool,
@@ -239,6 +269,11 @@ export async function requireAgentToolConsent(
     inputPreview?: string | null;
     metadata?: SqlConsentMetadata | null;
     abortSignal?: AbortSignal;
+    subagent?: {
+      threadId: string;
+      persona: "explorer" | "implementer";
+      taskName: string;
+    };
   },
 ): Promise<boolean> {
   const current = getAgentToolConsent(params.toolName);
@@ -268,6 +303,7 @@ export async function requireAgentToolConsent(
     toolDescription: params.toolDescription,
     inputPreview: params.inputPreview,
     metadata: params.metadata,
+    subagent: params.subagent,
     classifier: "none",
   });
   const response = await userInputRegistry.park(requestId, params.abortSignal);
@@ -357,6 +393,10 @@ function convertToolResultForAiSdk(
   );
 }
 
+function serializeActivityOutput(result: ToolResult): string {
+  return typeof result === "string" ? result : JSON.stringify(result);
+}
+
 export interface BuildAgentToolSetOptions {
   /**
    * If true, exclude tools that modify state (files, database, etc.).
@@ -435,6 +475,16 @@ function toolModifiesState(
   return tool.modifiesState === true;
 }
 
+function toolAllowedInReadOnlyModes(
+  tool: (typeof TOOL_DEFINITIONS)[number],
+  ctx: AgentContext,
+): boolean {
+  if (typeof tool.allowInReadOnlyModes === "function") {
+    return tool.allowInReadOnlyModes(ctx);
+  }
+  return tool.allowInReadOnlyModes === true;
+}
+
 /**
  * Whether a tool belongs in this turn's tool set. Single source of truth for
  * inclusion, so a caller that needs the answer before the set is built (e.g. a
@@ -453,6 +503,7 @@ export function shouldIncludeTool(
   if (
     options.planModeOnly &&
     toolModifiesState(tool, ctx) &&
+    !toolAllowedInReadOnlyModes(tool, ctx) &&
     !PLANNING_SPECIFIC_TOOLS.has(tool.name)
   ) {
     return false;
@@ -466,6 +517,9 @@ export function shouldIncludeTool(
     return false;
   }
   if (options.freeModelMode && tool.usesEngineEndpoint) {
+    return false;
+  }
+  if (tool.subagentOnly && !ctx.isDyadPro) {
     return false;
   }
   // search_chats is superseded by the explore_chat_history sub-agent wherever
@@ -487,7 +541,11 @@ export function shouldIncludeTool(
     return false;
   }
   // In read-only mode, skip tools that modify state.
-  if (options.readOnly && toolModifiesState(tool, ctx)) {
+  if (
+    options.readOnly &&
+    toolModifiesState(tool, ctx) &&
+    !toolAllowedInReadOnlyModes(tool, ctx)
+  ) {
     return false;
   }
   if (tool.isEnabled) {
@@ -515,61 +573,138 @@ export function buildAgentToolSet(
 
     toolSet[tool.name] = {
       description: tool.description,
-      inputSchema: tool.inputSchema,
-      execute: async (args: any) => {
+      inputSchema: tool.getInputSchema?.(ctx) ?? tool.inputSchema,
+      execute: async (
+        args: any,
+        executionOptions?: { toolCallId?: string },
+      ) => {
+        const toolCallId = executionOptions?.toolCallId;
+        let presentationXml = "";
+        const invocationCtx =
+          toolCallId && ctx.onToolActivity
+            ? {
+                ...ctx,
+                onXmlStream: (xml: string) => {
+                  presentationXml = xml;
+                  recordStreamingToolActivity(ctx, {
+                    toolCallId,
+                    toolName: tool.name,
+                    status: "pending",
+                    presentationXml: xml,
+                  });
+                },
+                onXmlComplete: (xml: string) => {
+                  presentationXml = xml;
+                  recordStreamingToolActivity(ctx, {
+                    toolCallId,
+                    toolName: tool.name,
+                    status: "pending",
+                    presentationXml: xml,
+                  });
+                },
+              }
+            : ctx;
         try {
-          // Guard against state-modifying tools running before the app
-          // blueprint approval is resolved. `write_app_blueprint` owns the
-          // approval gate; blueprint tools themselves are allowed through so
-          // the flow can progress to approval. Skip entirely when the
-          // blueprint feature is disabled — otherwise a plan left over from
-          // before the toggle would permanently block the agent.
-          //
-          // When the feature is enabled, also block if NO plan exists yet —
-          // the prompt instructs the model to call write_app_blueprint first,
-          // but the prompt isn't an enforcement boundary. Without this check,
-          // a model that skips write_app_blueprint can still call e.g.
-          // write_file and bypass the required blueprint approval flow.
+          const mutationRequiresAdmission =
+            toolModifiesState(tool, ctx) &&
+            tool.requiresMutationLease !== false;
+          const processedArgs = await processArgPlaceholders(
+            args,
+            invocationCtx,
+          );
+
+          if (toolCallId && invocationCtx.onToolActivity) {
+            presentationXml = tool.buildXml?.(processedArgs, false) ?? "";
+            await invocationCtx.onToolActivity({
+              toolCallId,
+              toolName: tool.name,
+              status: "pending",
+              presentationXml,
+              inputJson: processedArgs,
+            });
+          }
+
+          // Reject tools that cannot pass the blueprint gate before asking
+          // the user for consent. Consent may wait indefinitely, but this
+          // precondition is synchronous and independent of mutation admission.
           if (
             toolModifiesState(tool, ctx) &&
+            tool.requiresBlueprintApproval !== false &&
             !APP_BLUEPRINT_TOOLS.has(tool.name) &&
             !PLANNING_SPECIFIC_TOOLS.has(tool.name) &&
             !CAPABILITY_GATED_BLUEPRINT_TOOLS.has(tool.name)
           ) {
             assertAppBlueprintApproved({
               toolName: tool.name,
-              chatId: ctx.chatId,
+              chatId: invocationCtx.chatId,
               enabled: options.enableAppBlueprint !== false,
             });
           }
 
-          const processedArgs = await processArgPlaceholders(args, ctx);
+          // Consent can wait indefinitely for the user. Resolve it before
+          // entering app-wide mutation admission so cancellation/finalization
+          // and other actors are not parked behind a UI prompt.
+          await requireToolConsentOrThrow(tool, processedArgs, invocationCtx);
+          const invoke = async () => {
+            if (invocationCtx.abortSignal?.aborted) {
+              throw new DyadError(
+                "This agent run was cancelled.",
+                DyadErrorKind.UserCancelled,
+              );
+            }
+            // Track file edit tool usage before execution to capture all attempts
+            // (including failures) for retry/fallback telemetry
+            trackFileEditTool(invocationCtx, tool.name, processedArgs);
+            const result = await tool.execute(processedArgs, invocationCtx);
 
-          // Check consent before executing the tool
-          await requireToolConsentOrThrow(tool, processedArgs, ctx);
+            // Only completed mutations unblock run_tests. Failed tool calls are
+            // still present in fileEditTracker for retry/fallback telemetry, but
+            // must not masquerade as a code change.
+            trackAppMutation(
+              invocationCtx,
+              tool.name,
+              shouldTrackToolMutation(
+                tool,
+                processedArgs,
+                result,
+                invocationCtx,
+              ),
+            );
 
-          // Track file edit tool usage before execution to capture all attempts
-          // (including failures) for retry/fallback telemetry
-          trackFileEditTool(ctx, tool.name, processedArgs);
-          const result = await tool.execute(processedArgs, ctx);
+            if (toolCallId && invocationCtx.onToolActivity) {
+              await invocationCtx.onToolActivity({
+                toolCallId,
+                toolName: tool.name,
+                status: "completed",
+                presentationXml,
+                inputJson: processedArgs,
+                outputText: serializeActivityOutput(result),
+              });
+            }
 
-          // Only completed mutations unblock run_tests. Failed tool calls are
-          // still present in fileEditTracker for retry/fallback telemetry, but
-          // must not masquerade as a code change.
-          trackAppMutation(
-            ctx,
-            tool.name,
-            shouldTrackToolMutation(tool, processedArgs, result, ctx),
-          );
+            return convertToolResultForAiSdk(result);
+          };
 
-          return convertToolResultForAiSdk(result);
+          return mutationRequiresAdmission
+            ? await withMutationToolAdmission(invocationCtx, invoke)
+            : await invoke();
         } catch (error) {
           const errorMessage = getToolErrorSummary(error);
           const errorDetails = getToolErrorDisplayDetails(error);
 
-          ctx.onXmlComplete(
-            `<dyad-output type="error" message="Tool '${tool.name}' failed: ${escapeXmlAttr(errorMessage)}">${escapeXmlContent(errorDetails)}</dyad-output>`,
-          );
+          const errorXml = `<dyad-output type="error" message="Tool '${tool.name}' failed: ${escapeXmlAttr(errorMessage)}">${escapeXmlContent(errorDetails)}</dyad-output>`;
+          invocationCtx.onXmlComplete(errorXml);
+          if (toolCallId && invocationCtx.onToolActivity) {
+            await invocationCtx.onToolActivity({
+              toolCallId,
+              toolName: tool.name,
+              status: invocationCtx.abortSignal?.aborted ? "aborted" : "error",
+              presentationXml: errorXml,
+              inputJson:
+                typeof args === "object" && args !== null ? args : undefined,
+              error: errorDetails,
+            });
+          }
           throw error;
         }
       },

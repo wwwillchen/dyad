@@ -1,12 +1,14 @@
 import { LargeLanguageModel } from "@/lib/schemas";
 import { LanguageModel } from "@/ipc/types";
 import { getLanguageModels } from "../shared/language_model_helpers";
+import { getAutoSidekickRuntimeModel } from "@/lib/autoSidekick";
 
 export async function findLanguageModel(
   model: LargeLanguageModel,
 ): Promise<LanguageModel | undefined> {
+  const runtimeModel = getAutoSidekickRuntimeModel(model);
   const models = await getLanguageModels({
-    providerId: model.provider,
+    providerId: runtimeModel.provider,
   });
 
   if (model.customModelId) {
@@ -18,5 +20,5 @@ export async function findLanguageModel(
     }
   }
 
-  return models.find((m) => m.apiName === model.name);
+  return models.find((m) => m.apiName === runtimeModel.name);
 }

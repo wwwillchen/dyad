@@ -41,6 +41,9 @@ export interface StreamFinishedEvent {
   chatId: number;
   invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>;
   outcome: "completed" | "cancelled" | "errored";
+  updatedFiles: boolean;
+  reviewBarrierRequested: boolean;
+  wasCancelled: boolean;
   chatSummary?: string;
 }
 
@@ -65,6 +68,15 @@ interface RemoteChatRef {
 }
 
 const IDLE_UNSUBSCRIBE: () => void = () => undefined;
+
+export function projectPausedByStepLimit(completion: {
+  pausePromptQueue?: boolean;
+  reviewBarrierRequested?: boolean;
+}): boolean | undefined {
+  return completion.pausePromptQueue === undefined
+    ? undefined
+    : completion.pausePromptQueue && completion.reviewBarrierRequested !== true;
+}
 
 export type QueueMutationWithoutRevision =
   | Omit<
@@ -568,7 +580,7 @@ export class ChatStreamRemoteManager {
           ) {
             pending.request.onSettled?.({
               success: replayedCompletion.outcome === "completed",
-              pausedByStepLimit: replayedCompletion.pausePromptQueue,
+              pausedByStepLimit: projectPausedByStepLimit(replayedCompletion),
             });
             this.takePendingSubmission(acceptance.intentId);
           }
@@ -605,7 +617,7 @@ export class ChatStreamRemoteManager {
     if (pending) {
       const result: StreamSettledResult = {
         success: completion.outcome === "completed",
-        pausedByStepLimit: completion.pausePromptQueue,
+        pausedByStepLimit: projectPausedByStepLimit(completion),
       };
       pending.request.onSettled?.(result);
     }
@@ -735,6 +747,9 @@ export class ChatStreamRemoteManager {
         chatId,
         invocationRef: completion.invocationRef,
         outcome: completion.outcome,
+        updatedFiles: completion.updatedFiles === true,
+        reviewBarrierRequested: completion.reviewBarrierRequested === true,
+        wasCancelled: completion.outcome === "cancelled",
         chatSummary: completion.chatSummary,
       });
     }

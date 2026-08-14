@@ -34,6 +34,15 @@ const execution = vi.hoisted(() => ({
   claimAttempts: 0,
   convertAttachments: vi.fn(async () => []),
 }));
+const review = vi.hoisted(() => ({
+  runAutoReviewBarrier: vi.fn(),
+  skipReviewAutoFix: vi.fn(),
+}));
+
+vi.mock(
+  "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager",
+  () => review,
+);
 
 vi.mock("@/lib/chatAttachmentConversion", () => ({
   convertFileAttachmentsToChatAttachments: execution.convertAttachments,
@@ -252,6 +261,10 @@ describe("main-hosted chat stream actor", () => {
     execution.claimAttempts = 0;
     execution.convertAttachments.mockReset();
     execution.convertAttachments.mockResolvedValue([]);
+    review.runAutoReviewBarrier.mockReset();
+    review.runAutoReviewBarrier.mockResolvedValue({ outcome: "released" });
+    review.skipReviewAutoFix.mockReset();
+    review.skipReviewAutoFix.mockResolvedValue(undefined);
     persisted.revision = 0;
     persisted.paused = false;
     persisted.entries = [];
@@ -616,6 +629,152 @@ describe("main-hosted chat stream actor", () => {
     releaseReloaded();
     releaseProducer();
     reloaded.dispose();
+    producer.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("settles a durable review barrier without renderer ownership", async () => {
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const producer = new RemoteMachineClient(
+      duplex.connect(),
+      createSequentialIdSource(),
+    );
+    producer.start();
+    const actor = producer.actor(chatStreamClientDefinition, chatStreamKey(7));
+    const releaseProducer = actor.subscribe(() => undefined);
+    await actor.resync();
+    await actor.dispatch({ type: "SUBMIT", intent: turn("review") });
+    await flush();
+    await actor.dispatch({ type: "SUBMIT", intent: turn("queued") });
+    await flush();
+    persisted.paused = true;
+    execution.observers.get("review")?.onEnd?.({
+      chatId: 7,
+      invocationRef: turn("review").invocationRef,
+      updatedFiles: true,
+      pausePromptQueue: true,
+      reviewBarrierRequested: true,
+    });
+    await vi.waitFor(() => {
+      expect(actor.getSnapshot().lastCompletion?.intentId).toBe("review");
+      expect(review.runAutoReviewBarrier).toHaveBeenCalledWith({
+        chatId: 7,
+        verification: false,
+        autoFix: true,
+      });
+      expect(actor.getSnapshot().queuePaused).toBe(false);
+      expect(execution.admissions).toContain("queued");
+    });
+
+    const reloaded = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      duplex.connect(),
+    );
+    const terminalEffect = vi.fn();
+    reloaded.start();
+    reloaded.subscribeStreamFinished(terminalEffect);
+    const releaseReloaded = reloaded.ensure(7).subscribe(() => undefined);
+
+    await flush();
+    expect(terminalEffect).not.toHaveBeenCalled();
+
+    releaseReloaded();
+    releaseProducer();
+    reloaded.dispose();
+    producer.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("runs review remediation and verification without a renderer callback", async () => {
+    review.runAutoReviewBarrier
+      .mockResolvedValueOnce({
+        outcome: "fix_required",
+        threadId: "review-thread",
+        prompt: "fix reviewed findings",
+      })
+      .mockResolvedValueOnce({ outcome: "released" });
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const producer = new RemoteMachineClient(
+      duplex.connect(),
+      createSequentialIdSource(),
+    );
+    producer.start();
+    const actor = producer.actor(chatStreamClientDefinition, chatStreamKey(7));
+    const release = actor.subscribe(() => undefined);
+    await actor.resync();
+    await actor.dispatch({ type: "SUBMIT", intent: turn("review") });
+    await flush();
+    await actor.dispatch({ type: "SUBMIT", intent: turn("queued") });
+    await flush();
+    persisted.paused = true;
+    execution.observers.get("review")?.onEnd?.({
+      chatId: 7,
+      invocationRef: turn("review").invocationRef,
+      updatedFiles: true,
+      pausePromptQueue: true,
+      reviewBarrierRequested: true,
+    });
+
+    let remediation: ChatStreamExecutionObserver | undefined;
+    await vi.waitFor(() => {
+      remediation = [...execution.observers.values()].find(
+        (observer) => observer.intent.owner?.kind === "review-remediation",
+      );
+      expect(remediation?.intent.prompt).toBe("fix reviewed findings");
+      expect(remediation?.intent.owner).toEqual({
+        kind: "review-remediation",
+        threadId: "review-thread",
+      });
+    });
+    remediation?.onEnd?.({
+      chatId: 7,
+      invocationRef: remediation.intent.invocationRef,
+      updatedFiles: true,
+      pausePromptQueue: true,
+      reviewBarrierRequested: true,
+    });
+
+    await vi.waitFor(() => {
+      expect(review.runAutoReviewBarrier).toHaveBeenNthCalledWith(2, {
+        chatId: 7,
+        verification: true,
+      });
+      expect(actor.getSnapshot().queuePaused).toBe(false);
+      expect(execution.admissions).toContain("queued");
+    });
+
+    release();
     producer.dispose();
     await transport.dispose();
     await host.dispose();

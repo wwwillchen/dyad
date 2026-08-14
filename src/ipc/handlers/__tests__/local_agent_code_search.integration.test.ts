@@ -31,8 +31,8 @@ describe("local-agent code_search (integration)", () => {
         isTestMode: true,
         enableDyadPro: true,
         providerSettings: { auto: { apiKey: { value: "testdyadkey" } } },
-        // The e2e disabled the code explorer so code_search stays in the
-        // toolset (explore_code supersedes it when available).
+        // Exercise the direct fallback when Explorer delegation is disabled.
+        enableExplorerSubagent: false,
         enableCodeExplorer: false,
       },
     });

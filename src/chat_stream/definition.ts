@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { z } from "zod";
 import { db } from "@/db";
 import { chats } from "@/db/schema";
@@ -15,6 +16,12 @@ import {
   publishChatInvalidations,
 } from "@/ipc/services/chat_actor_platform";
 import { assertChatActorAdmissionOpen } from "@/ipc/services/chat_actor_deletion_fence";
+import { computeChatTurnPayloadHash } from "@/ipc/utils/chat_turn_intent_hash";
+import { readSettings } from "@/main/settings";
+import {
+  runAutoReviewBarrier,
+  skipReviewAutoFix,
+} from "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager";
 import type { ChatStreamHostCommand, ChatStreamHostState } from "./host_state";
 import {
   initialChatStreamHostState,
@@ -117,6 +124,36 @@ function createCommandRunner(
         queuePaused: snapshot.queuePaused,
         queue: [...snapshot.queue],
       };
+    }
+  };
+  const resumeReviewQueue = async (): Promise<void> => {
+    while (true) {
+      const snapshot = context.getSnapshot();
+      if (!snapshot.queuePaused) return;
+      try {
+        const queue = await mutateChatQueue(db, context.key.chatId, {
+          type: "mutate-queue",
+          mutation: { type: "resume" },
+          expectedQueueRevision: snapshot.queueRevision,
+          mutationId: randomUUID(),
+        });
+        emit({
+          type: "QUEUE_MUTATED",
+          queueRevision: queue.queueRevision,
+          paused: queue.queuePaused,
+          entries: queue.queue,
+        });
+        return;
+      } catch (error) {
+        try {
+          await requireExistingChat(context.key.chatId);
+        } catch {
+          // Entity disposal makes the queue irrelevant and disposes the actor.
+          return;
+        }
+        console.error("[chat-stream] Retrying review queue release", error);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
     }
   };
   return async (command: ChatStreamHostCommand): Promise<void> => {
@@ -350,7 +387,10 @@ function createCommandRunner(
           const queue = markIntentTerminal(
             db,
             active.intent,
-            command.response?.pausePromptQueue === true,
+            command.response?.pausePromptQueue === true ||
+              active.intent.owner?.kind === "review-remediation" ||
+              context.getSnapshot().reviewBarrier.phase ===
+                "awaiting-continuation",
             command.error !== undefined ||
               command.response?.wasCancelled === true,
           );
@@ -374,6 +414,90 @@ function createCommandRunner(
             entries: queue.queue,
           });
         }
+        return;
+      }
+      case "run-review-barrier": {
+        try {
+          const result = await runAutoReviewBarrier({
+            chatId: context.key.chatId,
+            verification: command.verification,
+            autoFix:
+              command.autoFixPolicy === "queued-override"
+                ? true
+                : command.autoFixPolicy === "user-setting"
+                  ? readSettings().autoFixReviewIssues === true
+                  : undefined,
+          });
+          if (result.outcome === "waiting") {
+            emit({
+              type: "REVIEW_BARRIER_FAILED",
+              error: "Automatic review timed out.",
+            });
+            return;
+          }
+          emit({
+            type: "REVIEW_BARRIER_RESULT",
+            ...result,
+            autoFixPolicy: command.autoFixPolicy,
+          });
+        } catch (error) {
+          emit({
+            type: "REVIEW_BARRIER_FAILED",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      case "submit-review-remediation": {
+        try {
+          const appId = await requireExistingChat(context.key.chatId);
+          const intentId = `review-remediation:${command.threadId}:${randomUUID()}`;
+          const withoutHash = {
+            schemaVersion: 1 as const,
+            intentId,
+            chatId: context.key.chatId,
+            appId,
+            invocationRef: {
+              kind: "chat-stream" as const,
+              entityKey: context.key.chatId,
+              operationId: randomUUID(),
+            },
+            prompt: command.prompt,
+            requestedChatMode: "local-agent" as const,
+            owner: {
+              kind: "review-remediation" as const,
+              threadId: command.threadId,
+            },
+          };
+          emit({
+            type: "SUBMIT",
+            intent: {
+              ...withoutHash,
+              payloadHash: computeChatTurnPayloadHash(withoutHash),
+            },
+          });
+        } catch (error) {
+          emit({
+            type: "REVIEW_BARRIER_FAILED",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      case "fail-review-remediation": {
+        try {
+          await skipReviewAutoFix(context.key.chatId, command.threadId, true);
+        } catch (error) {
+          console.error(
+            "[chat-stream] Failed to settle review remediation",
+            error,
+          );
+        }
+        await resumeReviewQueue();
+        return;
+      }
+      case "resume-after-review": {
+        await resumeReviewQueue();
         return;
       }
       case "dispatch-next": {

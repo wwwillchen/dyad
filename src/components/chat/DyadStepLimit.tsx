@@ -10,6 +10,7 @@ import { PauseCircle, Play, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useStreamChat } from "@/hooks/useStreamChat";
 import { selectedChatIdAtom } from "@/atoms/chatAtoms";
+import { hasPendingReviewContinuation } from "@/hooks/subagentReviewContinuation";
 
 interface DyadStepLimitProps {
   node: {
@@ -38,7 +39,11 @@ export function DyadStepLimit({ node, children }: DyadStepLimitProps) {
       chatId,
       onSettled: ({ success, pausedByStepLimit }) => {
         setIsLoading(false);
-        if (success && !pausedByStepLimit) {
+        if (
+          success &&
+          !pausedByStepLimit &&
+          !hasPendingReviewContinuation(chatId)
+        ) {
           clearPauseOnly();
         }
       },

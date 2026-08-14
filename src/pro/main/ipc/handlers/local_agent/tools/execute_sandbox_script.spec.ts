@@ -19,6 +19,10 @@ import { writeFileTool } from "./write_file";
 import type { AgentContext } from "./types";
 import type { McpToolDef } from "./mcp_type_defs";
 import { buildAgentToolSet, shouldIncludeTool } from "../tool_definitions";
+import {
+  acquireMutationLease,
+  releaseMutationLease,
+} from "../subagents/mutation_lease";
 
 vi.mock("@/ipc/utils/sandbox/execution", () => ({
   isSandboxSupportedPlatform: vi.fn(() => true),
@@ -96,6 +100,7 @@ describe("executeSandboxScriptTool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(assertAllowedGuestPath).mockImplementation(() => undefined);
+    vi.mocked(assertSandboxWritePathAllowed).mockResolvedValue(undefined);
     vi.mocked(readSettings).mockReturnValue({
       enableSandboxScriptExecution: true,
     } as ReturnType<typeof readSettings>);
@@ -127,6 +132,7 @@ describe("executeSandboxScriptTool", () => {
         readOnly: true,
       }),
     ).toBe(false);
+    expect(executeSandboxScriptTool.requiresMutationLease).toBe(false);
   });
 
   it("includes the generated script in sandbox failure messages", async () => {
@@ -542,6 +548,38 @@ describe("executeSandboxScriptTool", () => {
       guestPath: "out/a.txt",
     });
     expect(ctx.requireConsent).not.toHaveBeenCalled();
+  });
+
+  it("admits sandbox writes at the host capability boundary", async () => {
+    vi.mocked(executeSandboxScriptInProcess).mockResolvedValue({
+      value: "done",
+      truncated: false,
+      executionMs: 3,
+    });
+    const ctx = createWritableSandboxContext();
+    await executeSandboxScriptTool.execute(
+      {
+        script: 'write_file("out/a.txt", "hello");',
+        execution_thread: "main",
+      },
+      ctx,
+    );
+    const capabilities = vi.mocked(executeSandboxScriptInProcess).mock
+      .calls[0][0].capabilities;
+    const writeFile = capabilities?.write_file;
+    acquireMutationLease({
+      appId: ctx.appId,
+      threadId: "other-implementer",
+      scope: ["src"],
+    });
+
+    try {
+      await expect(writeFile?.("out/a.txt", "hello")).rejects.toMatchObject({
+        kind: DyadErrorKind.Conflict,
+      });
+    } finally {
+      releaseMutationLease(ctx.appId, "other-implementer");
+    }
   });
 
   it("with execution_thread: 'worker', invokes runSandboxScript and does not inject MCP capabilities", async () => {

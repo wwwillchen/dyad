@@ -601,11 +601,13 @@ export class PageObject {
     replaceDumpPath = false,
     name,
     stable = true,
+    normalizeVersionNumbers = false,
     timeout,
   }: {
     replaceDumpPath?: boolean;
     name?: string;
     stable?: boolean;
+    normalizeVersionNumbers?: boolean;
     timeout?: number;
   } = {}) {
     const messagesList = this.page.getByTestId("messages-list");
@@ -616,7 +618,9 @@ export class PageObject {
 
     await this.expectStableMessageAriaSnapshot(async () => {
       const rawSnapshot = await messagesList.ariaSnapshot({ timeout });
-      let normalizedSnapshot = normalizeMessagesAriaSnapshot(rawSnapshot);
+      let normalizedSnapshot = normalizeMessagesAriaSnapshot(rawSnapshot, {
+        normalizeVersionNumbers,
+      });
       if (replaceDumpPath) {
         // Scrub machine-specific paths after snapshotting so React-owned DOM is not mutated.
         normalizedSnapshot = normalizedSnapshot

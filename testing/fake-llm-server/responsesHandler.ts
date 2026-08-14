@@ -190,6 +190,17 @@ export const createResponsesHandler =
       messageContent = generateDump(req);
     }
 
+    const isSubagentReviewerRequest =
+      lastUserText.includes("Review this exact diff.") &&
+      lastUserText.includes("Return JSON only, with this exact shape:");
+    if (isSubagentReviewerRequest) {
+      messageContent = JSON.stringify({
+        status: "no_findings",
+        findings: [],
+        summary: "No actionable defects found in the reviewed change.",
+      });
+    }
+
     // See testAssertionsFixtures.ts: code synthesis for assertions the user
     // edited before approving the card. The proposal itself is an agent tool
     // call, which this route never serves.
@@ -222,6 +233,14 @@ export const createResponsesHandler =
         });
         if (req.destroyed) return;
       }
+    }
+
+    // Match the chat-completions fake route: keep Reviewer observably active
+    // long enough for E2E tests to verify that the authoritative queue remains
+    // paused while review is running.
+    if (isSubagentReviewerRequest) {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      if (res.destroyed) return;
     }
 
     const responseId = `resp_${Date.now()}`;

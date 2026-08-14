@@ -23,18 +23,19 @@ export type ReportAction =
   | "skip_explore_result";
 export type Confidence = "high" | "medium" | "low";
 
-export const MAX_PRIMARY_FILES = 5;
+export const MAX_PRIMARY_FILES = 8;
 export const MAX_READ_TARGETS = 8;
 const MAX_FLOW_LINKS_INPUT = 12;
-const MAX_RENDERED_FLOW_LINKS = 4;
-const MAX_MACHINE_PATHS = 8;
+const MAX_RENDERED_FLOW_LINKS = 12;
+const MAX_REPORT_PATHS = 8;
 const MAX_SEARCH_TARGETS = 5;
-const MAX_REPORT_CHARS = 8_000;
+const MAX_REPORT_CHARS = 16_000;
 const MAX_ROLE_CHARS = 40;
-const MAX_FACT_CHARS = 120;
-const MAX_PURPOSE_CHARS = 64;
+const MAX_FACT_CHARS = 400;
+const MAX_PURPOSE_CHARS = 120;
 const MAX_REPORT_QUERY_CHARS = 110;
-const MAX_REPORT_MISSING_CHARS = 220;
+const MAX_SUMMARY_CHARS = 1_000;
+const MAX_REPORT_MISSING_CHARS = 1_000;
 const MAX_REPORT_SEARCH_TARGET_CHARS = 140;
 const MAX_REPORT_WARNINGS = 3;
 const MAX_REPORT_WARNING_CHARS = 420;
@@ -44,6 +45,13 @@ const MAX_REPORT_WARNING_CHARS = 420;
 // excerpts those from observed source), nor the action/confidence (those are
 // derived from the surviving evidence by deriveOutcome).
 export const submitReportSchema = z.object({
+  summary: z
+    .string()
+    .min(1)
+    .max(MAX_SUMMARY_CHARS)
+    .describe(
+      "Concise answer-oriented overview supported by the selected observed candidates. Include important conclusions that do not fit a sequential flow.",
+    ),
   primaryCandidateIds: z.array(candidateIdSchema).max(MAX_PRIMARY_FILES),
   flow: z
     .array(
@@ -71,7 +79,7 @@ export const submitReportSchema = z.object({
     )
     .max(MAX_READ_TARGETS)
     .optional(),
-  missingCoverage: z.array(z.string().max(180)).max(3).optional(),
+  missingCoverage: z.array(z.string().max(300)).max(3).optional(),
   searchSuggestions: z
     .array(
       z.object({
@@ -106,6 +114,7 @@ export interface ResolvedReadTarget {
 }
 
 export interface ResolvedSelection {
+  summary: string;
   primary: ExplorerCandidate[];
   flow: ResolvedFlowLink[];
   readTargets: ResolvedReadTarget[];
@@ -117,6 +126,16 @@ export interface ResolvedSelection {
 export interface Outcome {
   action: ReportAction;
   confidence: Confidence;
+}
+
+function deriveFallbackSummary(flow: ResolvedFlowLink[]): string {
+  if (flow.length === 0) {
+    return "No answer-oriented summary was submitted.";
+  }
+  return flow
+    .slice(0, 3)
+    .map((link) => link.fact)
+    .join(" ");
 }
 
 // Resolve the model's candidate IDs against observed evidence. Hallucinated IDs
@@ -179,6 +198,8 @@ export function resolveSelection({
     droppedReasons.push("search_suggestion_invalid");
   }
 
+  const summary = selection.summary?.trim() || deriveFallbackSummary(flow);
+
   const referencedAnything =
     selection.primaryCandidateIds.length > 0 ||
     (selection.flow ?? []).length > 0 ||
@@ -194,6 +215,7 @@ export function resolveSelection({
   }
 
   return {
+    summary,
     primary,
     flow,
     readTargets,
@@ -379,13 +401,16 @@ export function buildReport({
   resolved: ResolvedSelection;
   outcome: Outcome;
   warnings?: string[];
-}): { text: string; machine: ReportMachine } {
+}): string {
   const renderedFlow = getRenderedFlowLinks(resolved.flow);
   const renderedPathSet = new Set<string>();
   const lines: string[] = [
     "## explore_code report",
     `Query: "${truncateInline(query, MAX_REPORT_QUERY_CHARS)}" | Intent: ${intent} | Confidence: ${outcome.confidence} | Action: ${outcome.action}`,
     ...renderWarnings(warnings),
+    "",
+    "Summary:",
+    truncateInline(resolved.summary, MAX_SUMMARY_CHARS),
     "",
     "Flow:",
   ];
@@ -438,7 +463,7 @@ export function buildReport({
     );
   }
 
-  const machinePathCandidates = getMachinePathCandidates({
+  const reportPathCandidates = getReportPathCandidates({
     primary: resolved.primary,
     flow: resolved.flow,
     readTargets: renderedReadTargets,
@@ -455,7 +480,7 @@ export function buildReport({
         MAX_REPORT_SEARCH_TARGET_CHARS,
       ),
     );
-    for (const candidate of machinePathCandidates) {
+    for (const candidate of reportPathCandidates) {
       if (searchTargets.some((target) => target.includes(candidate.path))) {
         renderedPathSet.add(candidate.path);
       }
@@ -463,7 +488,7 @@ export function buildReport({
     lines.push("Search targets:", ...searchTargets);
   }
 
-  const remainingPathCandidates = machinePathCandidates.filter(
+  const remainingPathCandidates = reportPathCandidates.filter(
     (candidate) => !renderedPathSet.has(candidate.path),
   );
   if (remainingPathCandidates.length > 0) {
@@ -475,27 +500,12 @@ export function buildReport({
     );
   }
 
-  const machine: ReportMachine = {
-    action: outcome.action,
-    confidence: outcome.confidence,
-    paths: machinePathCandidates.map((candidate) => ({
-      path: candidate.path,
-      range: formatRange(clampRangeForReport(candidate.range)),
-    })),
-  };
-  lines.push("", "```json", JSON.stringify(machine), "```");
-  return { text: clampReportLength(lines.join("\n")), machine };
-}
-
-export interface ReportMachine {
-  action: ReportAction;
-  confidence: Confidence;
-  paths: Array<{ path: string; range: string }>;
+  return clampReportLength(lines.join("\n"));
 }
 
 // Deterministic fallback when the model never produced a usable selection
 // (e.g. it stopped early, or referenced only hallucinated IDs). Keeps the same
-// external shape so the parent + cache parse it identically.
+// external shape so the parent receives a useful grounded report.
 export function buildDeterministicReport({
   query,
   intent,
@@ -512,14 +522,6 @@ export function buildDeterministicReport({
   const readTargets = primary.filter((candidate) => candidate.range);
   const action: ReportAction =
     readTargets.length > 0 ? "read_targets" : "targeted_gap_search";
-  const machine: ReportMachine = {
-    action,
-    confidence: "low",
-    paths: primary.map((candidate) => ({
-      path: candidate.path,
-      range: formatRange(clampRangeForReport(candidate.range)),
-    })),
-  };
   const searchTargets =
     action === "targeted_gap_search" ? getQueryTerms(query) : [];
   const toolNames =
@@ -532,13 +534,23 @@ export function buildDeterministicReport({
       `Query: "${query}" | Intent: ${intent} | Confidence: low | Action: ${action}`,
       ...renderWarnings(warnings),
       "",
+      "Summary:",
+      primary.length > 0
+        ? `Exploration identified ${primary.length} relevant code location${primary.length === 1 ? "" : "s"}, but the model did not submit a structured summary.`
+        : "Exploration did not identify a relevant code location.",
+      "",
       "Flow:",
       primary.length > 0
         ? primary
-            .map(
-              (candidate, index) =>
+            .map((candidate, index) => {
+              const quote = bestObservedQuote(candidate, query);
+              return [
                 `${index + 1}. ${formatCandidateRef(clampCandidateRange(candidate))} (observed) - ${candidate.provenance.join("; ")}`,
-            )
+                quote ? `> ${quote}` : "",
+              ]
+                .filter(Boolean)
+                .join("\n");
+            })
             .join("\n")
         : "none",
       "",
@@ -559,10 +571,6 @@ export function buildDeterministicReport({
       searchTargets.length > 0
         ? ["Search targets:", ...searchTargets].join("\n")
         : "",
-      "",
-      "```json",
-      JSON.stringify(machine),
-      "```",
     ]
       .filter((line) => line !== "")
       .join("\n"),
@@ -580,8 +588,11 @@ function getRenderedFlowLinks(flow: ResolvedFlowLink[]): RenderedFlowLink[] {
   const seenPaths = new Set<string>();
   const rendered: RenderedFlowLink[] = [];
   for (const link of flow) {
+    const range = clampRangeForReport(link.candidate.range);
     const ref = seenPaths.has(link.candidate.path)
-      ? `same file:${formatRange(clampRangeForReport(link.candidate.range))}`
+      ? range
+        ? `same file:${formatRange(range)}`
+        : "same file"
       : formatCandidateRef(clampCandidateRange(link.candidate));
     seenPaths.add(link.candidate.path);
     rendered.push({ ...link, ref });
@@ -619,7 +630,7 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function getMachinePathCandidates({
+function getReportPathCandidates({
   primary,
   flow,
   readTargets,
@@ -642,7 +653,7 @@ function getMachinePathCandidates({
     seen.add(key);
     candidates.push(candidate);
   }
-  return candidates.slice(0, MAX_MACHINE_PATHS);
+  return candidates.slice(0, MAX_REPORT_PATHS);
 }
 
 function truncateInline(text: string, maxChars: number): string {
@@ -658,15 +669,5 @@ function clampReportLength(report: string): string {
     return report;
   }
   const suffix = "\n[TRUNCATED: report exceeded density budget]";
-  const jsonMatch = /\n```json\n[\s\S]*?\n```$/.exec(report);
-  if (!jsonMatch) {
-    return `${report.slice(0, MAX_REPORT_CHARS - suffix.length)}${suffix}`;
-  }
-  const jsonBlock = jsonMatch[0];
-  const prefixBudget = MAX_REPORT_CHARS - jsonBlock.length - suffix.length;
-  if (prefixBudget <= 0) {
-    return `${report.slice(0, MAX_REPORT_CHARS - suffix.length)}${suffix}`;
-  }
-  const prefix = report.slice(0, jsonMatch.index);
-  return `${prefix.slice(0, prefixBudget)}${suffix}${jsonBlock}`;
+  return `${report.slice(0, MAX_REPORT_CHARS - suffix.length)}${suffix}`;
 }

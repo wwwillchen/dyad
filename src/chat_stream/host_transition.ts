@@ -26,6 +26,11 @@ export function initialChatStreamHostState(input?: {
     lastCompletion: null,
     pendingQueueMutationId: null,
     lastQueueMutation: null,
+    reviewBarrier: {
+      phase: "idle",
+      threadId: null,
+      resumeQueueOnRelease: false,
+    },
   };
 }
 
@@ -358,6 +363,7 @@ export function transitionChatStreamHost(
             outcome: event.response.wasCancelled ? "cancelled" : "completed",
             chatSummary: event.response.chatSummary,
             pausePromptQueue: event.response.pausePromptQueue,
+            reviewBarrierRequested: event.response.reviewBarrierRequested,
             updatedFiles: event.response.updatedFiles,
             extraFiles: event.response.extraFiles,
             extraFilesError: event.response.extraFilesError,
@@ -412,6 +418,100 @@ export function transitionChatStreamHost(
           event.mutationId === state.pendingQueueMutationId
             ? null
             : state.pendingQueueMutationId;
+        const finalizedIntent =
+          state.phase === "finalizing" ? state.active?.intent : undefined;
+        const completion =
+          state.phase === "finalizing" ? state.lastCompletion : null;
+        const isRemediation =
+          finalizedIntent?.owner?.kind === "review-remediation";
+        const remediationThreadId =
+          finalizedIntent?.owner?.kind === "review-remediation"
+            ? finalizedIntent.owner.threadId
+            : null;
+        const isContinuation =
+          state.reviewBarrier.phase === "awaiting-continuation" &&
+          completion !== null &&
+          !isRemediation;
+        const pausedByStepLimit =
+          completion?.pausePromptQueue === true &&
+          completion.reviewBarrierRequested !== true;
+        const reviewBarrier = isRemediation
+          ? pausedByStepLimit
+            ? {
+                phase: "awaiting-continuation" as const,
+                threadId: remediationThreadId,
+                resumeQueueOnRelease: state.reviewBarrier.resumeQueueOnRelease,
+              }
+            : completion?.outcome === "completed"
+              ? {
+                  phase: "verifying" as const,
+                  threadId: remediationThreadId,
+                  resumeQueueOnRelease:
+                    state.reviewBarrier.resumeQueueOnRelease,
+                }
+              : {
+                  phase: "idle" as const,
+                  threadId: null,
+                  resumeQueueOnRelease: false,
+                }
+          : isContinuation
+            ? pausedByStepLimit
+              ? state.reviewBarrier
+              : completion?.outcome === "completed"
+                ? {
+                    phase: "verifying" as const,
+                    threadId: state.reviewBarrier.threadId,
+                    resumeQueueOnRelease:
+                      state.reviewBarrier.resumeQueueOnRelease,
+                  }
+                : {
+                    phase: "idle" as const,
+                    threadId: null,
+                    resumeQueueOnRelease: false,
+                  }
+            : completion?.reviewBarrierRequested === true
+              ? {
+                  phase: "reviewing" as const,
+                  threadId: null,
+                  resumeQueueOnRelease: !state.queuePaused,
+                }
+              : state.reviewBarrier;
+        const reviewCommands: ChatStreamHostCommand[] = isRemediation
+          ? pausedByStepLimit
+            ? []
+            : completion?.outcome === "completed"
+              ? [{ type: "run-review-barrier", verification: true }]
+              : [
+                  {
+                    type: "fail-review-remediation",
+                    threadId: remediationThreadId!,
+                  },
+                ]
+          : isContinuation
+            ? pausedByStepLimit
+              ? []
+              : completion?.outcome === "completed"
+                ? [{ type: "run-review-barrier", verification: true }]
+                : state.reviewBarrier.threadId
+                  ? [
+                      {
+                        type: "fail-review-remediation",
+                        threadId: state.reviewBarrier.threadId,
+                      },
+                    ]
+                  : [{ type: "resume-after-review" }]
+            : completion?.reviewBarrierRequested === true
+              ? [
+                  {
+                    type: "run-review-barrier",
+                    verification: false,
+                    autoFixPolicy:
+                      event.entries.length > 0
+                        ? "queued-override"
+                        : "user-setting",
+                  },
+                ]
+              : [];
         return {
           kind: "applied",
           state: {
@@ -420,6 +520,7 @@ export function transitionChatStreamHost(
             queuePaused: event.paused,
             queue: event.entries,
             pendingQueueMutationId,
+            reviewBarrier,
             ...(event.mutationId
               ? {
                   lastQueueMutation: {
@@ -439,14 +540,109 @@ export function transitionChatStreamHost(
               : {}),
           },
           commands:
-            pendingQueueMutationId === null &&
-            !event.paused &&
-            event.entries.length > 0 &&
-            (state.phase === "idle" || state.phase === "finalizing")
-              ? [{ type: "dispatch-next" }]
-              : [],
+            reviewCommands.length > 0
+              ? reviewCommands
+              : pendingQueueMutationId === null &&
+                  !event.paused &&
+                  event.entries.length > 0 &&
+                  (state.phase === "idle" || state.phase === "finalizing")
+                ? [{ type: "dispatch-next" }]
+                : [],
         };
       }
+    case "REVIEW_BARRIER_RESULT":
+      if (
+        state.reviewBarrier.phase !== "reviewing" &&
+        state.reviewBarrier.phase !== "verifying"
+      ) {
+        return ignore(state, "invalid-host-event");
+      }
+      if (event.outcome === "waiting") {
+        return {
+          kind: "applied",
+          state: {
+            ...state,
+            error: "Automatic review timed out.",
+            reviewBarrier: {
+              phase: "idle",
+              threadId: null,
+              resumeQueueOnRelease: false,
+            },
+          },
+          commands: state.reviewBarrier.resumeQueueOnRelease
+            ? [{ type: "resume-after-review" }]
+            : [],
+        };
+      }
+      if (event.outcome === "verification_failed") {
+        return {
+          kind: "applied",
+          state: {
+            ...state,
+            error:
+              "Reviewer found remaining issues after remediation. The queued prompts remain paused for review.",
+            reviewBarrier: {
+              phase: "idle",
+              threadId: event.threadId ?? state.reviewBarrier.threadId,
+              resumeQueueOnRelease: false,
+            },
+          },
+          commands: [],
+        };
+      }
+      if (event.outcome === "fix_required" && event.threadId && event.prompt) {
+        return {
+          kind: "applied",
+          state: {
+            ...state,
+            reviewBarrier: {
+              phase: "remediating",
+              threadId: event.threadId,
+              resumeQueueOnRelease: state.reviewBarrier.resumeQueueOnRelease,
+            },
+          },
+          commands: [
+            {
+              type: "submit-review-remediation",
+              threadId: event.threadId,
+              prompt: event.prompt,
+            },
+          ],
+        };
+      }
+      return {
+        kind: "applied",
+        state: {
+          ...state,
+          reviewBarrier: {
+            phase: "idle",
+            threadId: null,
+            resumeQueueOnRelease: false,
+          },
+        },
+        commands: state.reviewBarrier.resumeQueueOnRelease
+          ? [{ type: "resume-after-review" }]
+          : [],
+      };
+    case "REVIEW_BARRIER_FAILED":
+      if (state.reviewBarrier.phase === "idle") {
+        return ignore(state, "invalid-host-event");
+      }
+      return {
+        kind: "applied",
+        state: {
+          ...state,
+          error: event.error,
+          reviewBarrier: {
+            phase: "idle",
+            threadId: null,
+            resumeQueueOnRelease: false,
+          },
+        },
+        commands: state.reviewBarrier.resumeQueueOnRelease
+          ? [{ type: "resume-after-review" }]
+          : [],
+      };
     case "QUEUE_MUTATION_REJECTED":
       if (event.mutationId !== state.pendingQueueMutationId) {
         return ignore(state, "invalid-host-event");

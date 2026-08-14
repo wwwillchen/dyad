@@ -16,6 +16,7 @@ import { AgentContext, escapeXmlAttr, escapeXmlContent } from "./types";
 import { jsonSchemaToTs } from "./json_schema_to_ts";
 import { buildMcpAutoApprove } from "../mcp_auto_consent";
 import { sanitizeMcpToolResult } from "@/ipc/utils/mcp_result_sanitizer";
+import { withMutationToolAdmission } from "../subagents/mutation_lease";
 
 const MCP_RESULT_TYPE = `type McpResult = {
   content: Array<
@@ -194,9 +195,12 @@ export function buildMcpCapabilityMap(params: {
       );
 
       try {
-        const res = await mcpTool.execute(args, {
-          toolCallId: `mcp-sandbox-${def.toolKey}`,
-          messages: [],
+        params.ctx.mcpToolRan = true;
+        const res = await withMutationToolAdmission(params.ctx, async () => {
+          return mcpTool.execute(args, {
+            toolCallId: `mcp-sandbox-${def.toolKey}`,
+            messages: [],
+          });
         });
         // The SDK sometimes returns a plain string for text-only MCP
         // tools. Wrap it into the McpResult shape we advertise in the

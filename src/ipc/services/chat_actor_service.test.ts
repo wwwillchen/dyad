@@ -67,6 +67,9 @@ const persistence = vi.hoisted(() => ({
     () => "queued" | "message-accepted" | "rejected" | undefined
   >(() => undefined),
 }));
+const subagents = vi.hoisted(() => ({
+  settle: vi.fn(async () => vi.fn()),
+}));
 
 vi.mock("@/ipc/services/distributed_machine_actor_host", () => ({
   remoteMachineHost: host,
@@ -102,6 +105,13 @@ vi.mock("@/chat_stream/persistence", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/chat_stream/persistence")>()),
   getIntentAcceptance: persistence.getIntentAcceptance,
 }));
+vi.mock(
+  "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager",
+  () => ({
+    blockSubagentAdmissionsForChat: vi.fn(() => vi.fn()),
+    settleSubagentsForChatDeletion: subagents.settle,
+  }),
+);
 
 import {
   beginAppChatActorMutation,
@@ -134,6 +144,7 @@ describe("waitForChatActorIdle", () => {
     cleanup.findChats.mockResolvedValue([]);
     persistence.getIntentAcceptance.mockReset();
     persistence.getIntentAcceptance.mockReturnValue(undefined);
+    subagents.settle.mockClear();
   });
 
   it("treats an absent actor as already idle without creating it", async () => {
@@ -296,6 +307,7 @@ describe("waitForChatActorIdle", () => {
   it("settles and disposes an owned chat before compensating its row", async () => {
     await deleteOwnedChatAfterSettlingActors(7);
 
+    expect(subagents.settle).toHaveBeenCalledWith(7);
     expect(cleanup.settleChat).toHaveBeenCalledWith(7);
     expect(host.entityDeleted).toHaveBeenNthCalledWith(
       1,

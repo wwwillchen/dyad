@@ -121,21 +121,27 @@ describe("codeSearchTool", () => {
   });
 
   describe("isEnabled", () => {
-    it("is enabled for Dyad Pro when the code explorer setting is disabled", () => {
+    it("is enabled inside Explorer when compiler exploration is disabled", () => {
+      mockContext.subagentThreadId = "explorer-1";
+      mockContext.subagentPersona = "explorer";
       mocks.readSettings.mockReturnValue({ enableCodeExplorer: false });
       mocks.isCodeExplorerReady.mockReturnValue(true);
 
       expect(codeSearchTool.isEnabled?.(mockContext)).toBe(true);
     });
 
-    it("is disabled when explore_code is enabled and ready for the current app", () => {
+    it("is disabled inside Explorer when compiler exploration is enabled and ready", () => {
+      mockContext.subagentThreadId = "explorer-1";
+      mockContext.subagentPersona = "explorer";
       mocks.readSettings.mockReturnValue({ enableCodeExplorer: true });
       mocks.isCodeExplorerReady.mockReturnValue(true);
 
       expect(codeSearchTool.isEnabled?.(mockContext)).toBe(false);
     });
 
-    it("stays enabled when the code explorer setting is on but the app is not ready", () => {
+    it("stays enabled inside Explorer when compiler exploration is not ready", () => {
+      mockContext.subagentThreadId = "explorer-1";
+      mockContext.subagentPersona = "explorer";
       mocks.readSettings.mockReturnValue({ enableCodeExplorer: true });
       mocks.isCodeExplorerReady.mockReturnValue(false);
 
@@ -149,6 +155,18 @@ describe("codeSearchTool", () => {
       expect(
         codeSearchTool.isEnabled?.({ ...mockContext, isDyadPro: false }),
       ).toBe(false);
+    });
+
+    it("is disabled for a root turn when the Explorer sub-agent is available", () => {
+      mockContext.canUseExplorerSubagent = true;
+
+      expect(codeSearchTool.isEnabled?.(mockContext)).toBe(false);
+    });
+
+    it("stays enabled for a root turn when the Explorer sub-agent is unavailable", () => {
+      mockContext.canUseExplorerSubagent = false;
+
+      expect(codeSearchTool.isEnabled?.(mockContext)).toBe(true);
     });
   });
 

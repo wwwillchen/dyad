@@ -35,6 +35,7 @@ export interface ChatStreamHostState {
     readonly outcome: "completed" | "cancelled" | "errored";
     readonly chatSummary?: string;
     readonly pausePromptQueue?: boolean;
+    readonly reviewBarrierRequested?: boolean;
     readonly updatedFiles?: boolean;
     readonly extraFiles?: string[];
     readonly extraFilesError?: string;
@@ -48,6 +49,17 @@ export interface ChatStreamHostState {
     readonly outcome: "applied" | "rejected";
     readonly error?: string;
   } | null;
+  readonly reviewBarrier: {
+    readonly phase:
+      | "idle"
+      | "reviewing"
+      | "remediating"
+      | "awaiting-continuation"
+      | "verifying";
+    readonly threadId: string | null;
+    /** Whether the review barrier, rather than the user, paused the queue. */
+    readonly resumeQueueOnRelease: boolean;
+  };
 }
 
 export type ChatStreamHostCommand =
@@ -87,4 +99,19 @@ export type ChatStreamHostCommand =
       readonly response?: ChatResponseEnd;
       readonly error?: string;
     }
+  | {
+      readonly type: "run-review-barrier";
+      readonly verification: boolean;
+      readonly autoFixPolicy?: "queued-override" | "user-setting";
+    }
+  | {
+      readonly type: "submit-review-remediation";
+      readonly threadId: string;
+      readonly prompt: string;
+    }
+  | {
+      readonly type: "fail-review-remediation";
+      readonly threadId: string;
+    }
+  | { readonly type: "resume-after-review" }
   | { readonly type: "dispatch-next" };

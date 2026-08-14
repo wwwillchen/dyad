@@ -69,6 +69,7 @@ export function trackAppMutation(
     return;
   }
   ctx.mutationCount = (ctx.mutationCount ?? 0) + 1;
+  ctx.onWorkspaceMutation?.();
 }
 
 /**

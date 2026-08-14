@@ -7,6 +7,7 @@ import { IpcMainInvokeEvent } from "electron";
 import { jsonrepair } from "jsonrepair";
 import { AgentToolConsent } from "@/lib/schemas";
 import { AgentTodo } from "@/ipc/types";
+import type { SubagentPersona } from "@/ipc/types";
 import type { AppFrameworkType } from "@/lib/framework_constants";
 import type { SqlConsentMetadata } from "@/shared/sqlConsentMetadata";
 import type { McpToolDef } from "./mcp_type_defs";
@@ -57,6 +58,8 @@ export const APP_MUTATING_TOOL_NAMES = [
   "add_integration",
   "enable_nitro",
   "generate_image",
+  "git_restore_file",
+  "generate_test_assertions",
 ] as const;
 
 export interface AgentContext {
@@ -93,6 +96,8 @@ export interface AgentContext {
   fileEditTracker: FileEditTracker;
   /** True after a tool has successfully changed workspace contents this turn. */
   workspaceMutated?: boolean;
+  /** True after any directly registered or sandbox-hosted MCP tool succeeds. */
+  mcpToolRan?: boolean;
   /**
    * Turn-scoped count of successfully completed tool invocations that change
    * the app or its data: file edits (including sandbox write_file host calls)
@@ -101,11 +106,40 @@ export interface AgentContext {
    * through ANY mutating tool — not just write_file/search_replace.
    */
   mutationCount?: number;
+  /** Propagates successful child-tool mutations to the owning root turn. */
+  onWorkspaceMutation?: () => void;
   /**
    * If true, the user has Dyad Pro enabled.
    * Engine-dependent tools require this to access the Dyad Pro API.
    */
   isDyadPro: boolean;
+  /** The durable child thread currently executing this tool, if any. */
+  subagentThreadId?: string;
+  /** Persona for a child tool invocation. Root turns leave this undefined. */
+  subagentPersona?: "explorer" | "reviewer" | "implementer";
+  /** Explicit relative path prefixes an Implementer may mutate. */
+  subagentPathScope?: string[];
+  /** Child threads spawned by this root turn, joined before deploy/commit. */
+  spawnedSubagentThreadIds?: string[];
+  /** Implementer children that must finish before root deploy/commit. */
+  spawnedImplementerThreadIds?: string[];
+  /** Explorer reports already returned directly to the root as tool results. */
+  deliveredExplorerThreadIds?: string[];
+  /**
+   * Whether file tools may deploy server functions immediately. Implementer
+   * children disable this so deployment stays owned by the root turn.
+   */
+  allowDeploySideEffects?: boolean;
+  /** Propagates child shared-module edits to the root turn's deploy tracker. */
+  onSharedServerModuleChange?: (relativePath: string) => void;
+  /** Propagates child function deploy work to the root turn. */
+  onDeferredFunctionDeploy?: (functionName: string) => void;
+  /** Turn-scoped schema gates for root orchestration tools. */
+  canUseExplorerSubagent?: boolean;
+  /** True when settings or the selected Auto Sidekick model enables it. */
+  canUseImplementerSubagent?: boolean;
+  /** Whether root turns may manage and message existing child threads. */
+  canUseAdvancedSubagentTools?: boolean;
   /**
    * If true, this turn is using a Dyad Free model. Some Pro-enabled
    * conveniences, such as MCP auto-approval, should stay disabled.
@@ -122,6 +156,20 @@ export interface AgentContext {
    */
   onXmlComplete: (finalXml: string) => void;
   /**
+   * Optional durable presentation sink used by sub-agents. The generic tool
+   * wrapper calls it with the AI SDK call identity so parallel child tools
+   * cannot overwrite one another's UI activity.
+   */
+  onToolActivity?: (activity: {
+    toolCallId: string;
+    toolName: string;
+    status: "pending" | "completed" | "error" | "aborted";
+    presentationXml: string;
+    inputJson?: Record<string, unknown>;
+    outputText?: string;
+    error?: string;
+  }) => Promise<void>;
+  /**
    * Re-read this turn's assistant message from the DB and adopt it as the
    * in-progress response. Only for a tool that blocks while something outside
    * the stream rewrites a card it already committed (the assertion review
@@ -134,6 +182,12 @@ export interface AgentContext {
     toolDescription?: string | null;
     inputPreview?: string | null;
     metadata?: SqlConsentMetadata | null;
+    abortSignal?: AbortSignal;
+    subagent?: {
+      threadId: string;
+      persona: Extract<SubagentPersona, "explorer" | "implementer">;
+      taskName: string;
+    };
   }) => Promise<boolean>;
   /**
    * Append a user message to be sent after the tool result.
@@ -293,6 +347,8 @@ export interface ToolDefinition<T = any> {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: z.ZodType<T>;
+  /** Build a turn-specific schema when capabilities change the valid input. */
+  readonly getInputSchema?: (ctx: AgentContext) => z.ZodType<T>;
   readonly defaultConsent: AgentToolConsent;
   /**
    * If true, this tool modifies state (files, database, etc.).
@@ -301,6 +357,24 @@ export interface ToolDefinition<T = any> {
    * conditionally exposed by the current turn context.
    */
   readonly modifiesState?: boolean | ((ctx: AgentContext) => boolean);
+  /**
+   * Allows a state-modifying orchestration tool in Ask and Plan when its
+   * turn-scoped capabilities cannot mutate the app or external state.
+   */
+  readonly allowInReadOnlyModes?: boolean | ((ctx: AgentContext) => boolean);
+  /** Sub-agent capability; hidden and runtime-rejected for non-Pro users. */
+  readonly subagentOnly?: boolean;
+  /**
+   * Whether a state-modifying tool must own the app mutation lease. Set false
+   * for orchestration controls whose state is durable metadata, not workspace
+   * mutation; writable children acquire their own lease in the manager.
+   */
+  readonly requiresMutationLease?: boolean;
+  /**
+   * Whether this state-modifying tool must wait for app-blueprint approval.
+   * Set false for durable orchestration metadata that cannot change the app.
+   */
+  readonly requiresBlueprintApproval?: boolean;
   /**
    * If true, this tool calls a Dyad Engine endpoint outside the main model
    * generation endpoint.

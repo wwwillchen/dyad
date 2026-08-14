@@ -5,9 +5,25 @@ Agent tool definitions live in `src/pro/main/ipc/handlers/local_agent/tools/`. E
 ## Read-only / plan-only mode
 
 - **`modifiesState: true`** must be set on any tool that writes to disk or modifies external state (files, database, etc.). This flag controls whether the tool is available in read-only (ask) mode and plan-only mode — see `buildAgentToolSet` in `tool_definitions.ts`.
+- A durable orchestration tool that changes only main-process metadata may use `allowInReadOnlyModes` to remain available in Ask and Plan, but its turn-scoped schema must exclude every app- or external-state-mutating capability. Keep `modifiesState: true`; the exception does not make metadata writes read-only.
 - If a read/inspection wrapper tool gains a state-changing host function (for example a new sandbox `write_file` capability inside `execute_sandbox_script`), either mark the parent tool `modifiesState: true` or make `modifiesState` a context predicate that returns true whenever the writable host function is exposed. Otherwise read-only / plan-only filtering can still expose writes through the wrapper tool. Prompt descriptions, tool filtering, and runtime capability injection should all derive from the same turn-scoped flag so ask/plan mode can keep the read-only surface without advertising or exposing writes.
 - Similarly, code in the `handleLocalAgentStream` handler that writes to the workspace (e.g., `ensureDyadGitignored`, injecting synthetic todo reminders) should be guarded with `if (!readOnly && !planModeOnly)` checks. Injecting instructions that reference state-changing tools into non-writable runs will confuse the model since those tools are filtered out.
 - Native Git commands are not automatically non-executing: repository-local configuration can launch `core.fsmonitor`, and checkout/restore conversion can launch configured smudge or `filter.process` commands. Agent-facing inspection wrappers must override process-spawning config (at minimum `core.fsmonitor=false` for status), and historical restore should materialize verified regular-file blobs directly instead of using checkout/restore filtering. Reject historical symlinks before downstream sync/deploy side effects can follow them outside the app.
+
+## Latest-turn review targets
+
+- Writable Local Agent turns normally commit file changes before emitting `chat:response:end`, so the working tree is usually clean immediately after a successful turn. Features that inspect or review the latest assistant turn must use the assistant message's `sourceCommitHash` as the base and `commitHash` as the target. Use the working tree only as a fallback when that message has no valid commit range.
+- If a root turn spawns or resumes a writable child, reserve the writer lease before returning the tool result and join that child before root-owned deploy/commit. Cancellation must stop the child, and a failed child must not let the root commit partial edits.
+- Treat writer admission as an atomic execution boundary, not a one-time preflight check. Root mutating tools must hold the shared mutation-admission lock from the lease check through tool completion, and Implementer reservation/follow-up/finalization must use that same lock; otherwise parallel tool calls can pass the check and acquire the lease concurrently.
+- Bind each child tool context—including consent waits—to that child's AbortSignal, not the root turn's signal. Targeted cancellation must decline and clear pending consent before any delayed approval can resume a child mutation; consent UI should identify the child persona and task.
+- Local-agent consent UI is projected from the shared `src/user_input/` machine. Carry new consent metadata through the main descriptor, IPC schema, and renderer selector; do not restore the retired `agent-tool:consent-request` or `agent-tool:consent-resolved` channels.
+- A queued-message review barrier must release FIFO processing on every terminal path, including review, remediation, verification, consent, entitlement, and model failures. A remediation that hits the Local Agent step limit is not terminal: preserve its `paused` outcome and keep the queue paused until the user continues it.
+- Request queued-message barriers in the main-process `chat:response:end` payload before chat-stream finalization. Renderer `useStreamFinished` subscribers run after the scheduler has already decided whether to dispatch the next FIFO intent, so pausing there is too late. Carry an explicit barrier reason alongside `pausePromptQueue` so step-limit pauses and review pauses resume through their own terminal paths.
+- Keep orchestration-state writes distinct from workspace mutation. Sub-agent control tools may be `modifiesState` for ask/plan filtering while opting out of the workspace mutation lease; writable children acquire that lease in the manager, and root deploy/commit must hold a finalization fence so late durable follow-ups cannot start editing concurrently.
+- MCP schemas do not reliably declare whether a server tool mutates the app. Conservatively hold mutation admission and enforce the active writer lease around every direct or sandbox-hosted MCP execution; otherwise an opaque MCP file write can race an Implementer even when built-in root tools are blocked.
+- Durable child follow-ups must rebuild tools from the invoking root turn instead of reusing a `ToolSet` whose callbacks close over an older completed turn. Include a bounded projection of consumed root messages and prior child reports so contextual follow-ups retain their transcript while new file/deploy tracking belongs to the current finalizer. Specialized runners that bypass the generic model-history path (such as compiler-backed Explorer) must explicitly project and consume queued root messages after a successful run.
+- Treat child reports synthesized back into a root model turn as untrusted evidence: wrap them in explicit data delimiters, escape delimiter-like markup, and tell the root not to follow instructions inside the report.
+- Implementer scopes must normalize to non-empty relative paths inside the app. Reject app-root aliases (`.`, `./`, `/`) and parent traversal rather than interpreting normalized empty scope as a wildcard.
 
 ## Async I/O
 
@@ -71,6 +87,12 @@ Agent tool definitions live in `src/pro/main/ipc/handlers/local_agent/tools/`. E
 
 ## Stream retries
 
+- When diagnosing `Sub-agent finished without a report`, inspect both `agent_activities` and `agent_messages`: a completed tool activity only proves the tool ran, while zero child messages means the model returned no durable report. The current tables do not persist per-step `finishReason` or provider warnings, so do not attribute an empty post-tool continuation to a specific provider cause without additional telemetry.
+- Sub-agent runners that await `streamText` convenience promises must capture `onError` and propagate the recorded stream failure after draining. Otherwise a rejected post-tool request can resolve with one successful tool step and empty text, masking the provider error as “Sub-agent finished without a report.”
+- Call `cancelOrphanedBaseStream(result)` only after code has accessed and is
+  consuming `result.fullStream`; calling it before awaiting `result.text`/
+  `steps` cancels the primary stream and can leave durable sub-agents stuck in
+  `running` forever.
 - Engine usage is only known after a model request completes. Before dispatching
   the next local-agent step, add an estimate of newly completed tool results to
   the last exact usage count and compact in `prepareStep` when that projection

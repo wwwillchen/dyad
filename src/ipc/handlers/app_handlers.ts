@@ -71,6 +71,11 @@ import { userInputRegistry } from "@/user_input/main";
 import { clearLegacyWindowSessionPersistence } from "@/window_infrastructure/main/window_session";
 import { appRelaunchRequest } from "@/main/app_relaunch_request";
 import { deleteTempTestUser } from "../utils/supabase_test_user";
+import {
+  blockSubagentAdmissionsForChat,
+  settleAllSubagentsForReset,
+  settleSubagentsForChatDeletion,
+} from "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager";
 
 /**
  * Read screenshot entries for a single app directory, filtered by filename
@@ -589,6 +594,7 @@ async function deleteAppByIdExclusive(
   let imageGenerationDeletion: ImageGenerationDeletionFence | undefined;
   let releaseChatCreation: (() => void) | undefined;
   const releaseChatActorAdmission: (() => void)[] = [];
+  const releaseSubagentAdmission: (() => void)[] = [];
   let deletionCommitted = false;
   let imageGenerationCleanupFailed = false;
   let imageGenerationCleanupError: unknown;
@@ -617,6 +623,16 @@ async function deleteAppByIdExclusive(
     releaseChatActorAdmission.push(
       ...appChats.map(({ id: chatId }) => beginChatActorDeletion(chatId)),
     );
+    releaseSubagentAdmission.push(
+      ...appChats.map(({ id: chatId }) =>
+        blockSubagentAdmissionsForChat(chatId),
+      ),
+    );
+    for (const { id: chatId } of appChats) {
+      releaseSubagentAdmission.push(
+        await settleSubagentsForChatDeletion(chatId),
+      );
+    }
     await Promise.all(
       appChats.map(({ id: chatId }) =>
         waitForChatActorIdle(chatId, { cancelActive: true }),
@@ -729,6 +745,7 @@ async function deleteAppByIdExclusive(
       );
     }
   } finally {
+    for (const release of releaseSubagentAdmission) release();
     for (const release of releaseChatActorAdmission) release();
     releaseChatCreation?.();
     try {
@@ -1846,12 +1863,15 @@ export function registerAppHandlers() {
 
   createTypedHandler(systemContracts.resetAll, async () => {
     const appRunReset = appRunActorService.beginReset();
+    const subagentResetPromise = settleAllSubagentsForReset();
+    let releaseSubagentReset: (() => void) | undefined;
     let appRunResetCommitted = false;
     let appRunResetCompleted = false;
     versionPreviewService.beginReset();
     githubOpsService.beginReset();
     imageGenerationService.beginReset();
     try {
+      releaseSubagentReset = await subagentResetPromise;
       logger.log("start: resetting all apps and settings.");
       appRuntimeService.cleanupAll();
       // Stop all running apps first
@@ -1939,6 +1959,7 @@ export function registerAppHandlers() {
       logger.log("reset all complete.");
       appRunResetCompleted = true;
     } finally {
+      releaseSubagentReset?.();
       if (appRunResetCompleted) {
         appRunReset.release();
       } else if (!appRunResetCommitted) {

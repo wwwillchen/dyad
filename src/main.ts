@@ -93,6 +93,7 @@ import {
   startChatSearchIndexer,
   stopChatSearchIndexer,
 } from "./pro/main/ipc/handlers/local_agent/chat_search_indexer";
+import { recoverInterruptedSubagents } from "./pro/main/ipc/handlers/local_agent/subagents/subagent_manager";
 import { cleanupOldMediaFiles } from "./ipc/utils/media_cleanup";
 import { scrubGithubTokenFromRemotes } from "./ipc/utils/git_remote_token_scrub";
 import { encryptStoredMcpSecrets } from "./ipc/utils/mcp_secret_encryption";
@@ -410,6 +411,10 @@ export async function onReady() {
     app.quit();
     return;
   }
+
+  void recoverInterruptedSubagents().catch((error) =>
+    logger.error("Failed to reconcile interrupted sub-agents", error),
+  );
 
   // Reconcile any Neon test branches / Supabase test users leaked by a previous
   // session that crashed mid test-run. Fire-and-forget: best-effort cleanup

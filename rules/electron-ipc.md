@@ -156,6 +156,10 @@ pre-hydration atoms can erase unrelated restored entities.
 
 ## Handler expectations
 
+- Keep handler registration free of database-dependent startup work. Handlers
+  register before `onReady()` initializes SQLite; run restart reconciliation
+  immediately after `initializeDatabase()` instead, or the first access fails
+  once and is never retried.
 - Handlers should `throw new Error("...")` on failure instead of returning `{ success: false }` style payloads.
 - Entity-loading handlers that enrich a valid local row with optional external metadata must catch enrichment failures and return the base entity with nullable enrichment fields. Letting an OAuth/API failure reject the whole load can make renderer queries misreport an existing entity as missing.
 - For **non-bug** failures (validation, not found, auth, user refusal, etc.), prefer `DyadError` with the right `DyadErrorKind` so PostHog does not flood with `$exception` events — see [rules/dyad-errors.md](dyad-errors.md).

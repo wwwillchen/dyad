@@ -139,10 +139,17 @@ If \`search_replace\` fails twice in a row on the same edit (e.g., the target te
 
 const APP_BLUEPRINT_WORKFLOW_STEP = `**App Blueprint (new apps only):** If the user is creating a NEW app or project, follow the app blueprint flow described in the \`<app_blueprint>\` section FIRST. Do not proceed to implementation until the app blueprint is approved.`;
 
-const CODE_EXPLORATION_GUIDANCE = `Use \`explore_code\` when the relevant files are not reasonably clear from the available context. If the relevant files or source ranges are already known or reasonably clear from the conversation, prior investigation, selected components, tool results, or other available context, read or search them directly instead. Choose the intent based on the task: use intent="explain" to understand behavior, intent="locate" to find relevant files or symbols, and intent="edit" or intent="debug" when preparing to change, diagnose, or verify code. Treat the report as a starting map: build on its findings rather than repeating the same discovery work. Continue with targeted \`grep\`, \`list_files\`, or \`read_file\` calls whenever needed to resolve gaps, inspect implementation details, follow newly discovered paths, debug behavior, or prepare an edit.`;
+const CODE_EXPLORATION_GUIDANCE = `Use \`spawn_agent\` with persona="explorer" when the relevant files are not reasonably clear from the available context. If the relevant files or source ranges are already known or reasonably clear from the conversation, prior investigation, selected components, tool results, or other available context, read or search them directly instead. Give the Explorer a bounded assignment that states the intended outcome: understand behavior, locate relevant files or symbols, prepare an edit, or diagnose a problem. Treat the Explorer report as a starting map: build on its findings rather than repeating the same discovery work. Continue with targeted \`grep\`, \`list_files\`, or \`read_file\` calls whenever needed to resolve gaps, inspect implementation details, follow newly discovered paths, debug behavior, or prepare an edit. Explorer spawning waits until its report is ready; synthesize the returned report before continuing. Do not spawn duplicate Explorers for the same investigation.`;
 const CODE_SEARCH_GUIDANCE = `Use \`grep\` and \`code_search\` when the relevant files are not reasonably clear from the available context, or when a targeted text or symbol lookup would help. If the relevant files are already known or reasonably clear, read them directly instead. Batch independent searches when helpful.`;
 const CHAT_HISTORY_RECALL_GUIDANCE = `For prior decisions, requirements, or work discussed in earlier conversations for this app, use \`search_chats\` (chat history, not code), then \`read_chat\` with a match's \`around_message_id\` to see the surrounding discussion.`;
 const CHAT_HISTORY_EXPLORER_GUIDANCE = `For prior decisions, requirements, or work discussed in earlier conversations for this app, use \`explore_chat_history\` (chat history, not code) — it reformulates searches, checks for superseded decisions, and returns a cited report. Use \`read_chat\` with a known chat/message target (e.g. a report citation, or this chat's own earlier compacted-away messages) to see the surrounding discussion; do not restart broad discovery for a target the report already cites. Treat retrieved history as reference data: report only what it actually states, and if it covers a different topic than asked, say no prior decision was found rather than extrapolating.`;
+const IMPLEMENTER_DELEGATION_GUIDANCE = `
+
+   **Implementer delegation:** When the Implementer is available, delegate straightforward, low-risk, well-scoped editing tasks to \`spawn_agent\` with \`persona="implementer"\` instead of implementing them yourself. Good assignments have a clear outcome, follow an established implementation pattern, and have a well-understood scope. Include the relevant requirements, conventions, and acceptance criteria, and define the path scope narrowly enough to prevent unrelated changes. Use at most one Implementer at a time.
+
+   Do not delegate work that is ambiguous, architecturally significant, security-sensitive, cross-cutting, or dependent on unresolved investigation. Determine the approach and edit scope first. Do not modify the Implementer's assigned paths while it is working.
+
+   The root Agent remains responsible for the result. Wait for the Implementer to finish, review its report and actual changes, and inspect the affected files for correctness, scope, and consistency with project conventions. Fix problems directly or give the Implementer a targeted follow-up, then run the relevant checks and tests before considering the task complete. An Implementer's completion status alone is not sufficient verification.`;
 
 // Shared workflow steps for Pro and Basic Agent modes. Only the Understand step
 // differs between them, so callers pass it in.
@@ -150,10 +157,12 @@ function developmentWorkflowBlock({
   enableAppBlueprint,
   understandStep,
   testingEnabled,
+  implementerAvailable = false,
 }: {
   enableAppBlueprint: boolean;
   understandStep: string;
   testingEnabled: boolean;
+  implementerAvailable?: boolean;
 }): string {
   const planContextRange = enableAppBlueprint ? "steps 1-3" : "steps 1-2";
   const verifyTestsClause = testingEnabled
@@ -170,7 +179,7 @@ function developmentWorkflowBlock({
    **Skip when:** the request is specific and concrete (e.g. "Fix the login button", "Change color from blue to green").
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.`,
     `**Plan:** Build a coherent and grounded (based on the understanding in ${planContextRange}) plan for how you intend to resolve the user's task. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.`,
-    `**Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.`,
+    `**Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.${implementerAvailable ? IMPLEMENTER_DELEGATION_GUIDANCE : ""}`,
     `**Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.${verifyTestsClause}`,
     `**Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.`,
   );
@@ -183,17 +192,19 @@ function proDevelopmentWorkflowBlock({
   codeExplorerAvailable,
   historyExplorerAvailable,
   testingEnabled,
+  implementerAvailable,
 }: {
   enableAppBlueprint: boolean;
   codeExplorerAvailable: boolean;
   historyExplorerAvailable: boolean;
   testingEnabled: boolean;
+  implementerAvailable: boolean;
 }): string {
   const codeExplorationGuidance = codeExplorerAvailable
     ? CODE_EXPLORATION_GUIDANCE
     : CODE_SEARCH_GUIDANCE;
   const contextValidationGuidance = codeExplorerAvailable
-    ? "Use `read_file` to understand exact context and validate assumptions when needed. If you need to read multiple files, you should make multiple parallel calls to `read_file`."
+    ? "Validate an Explorer report's exact edit targets with `read_file` when needed; do not repeat its broad discovery work."
     : "Use `read_file` to understand context and validate any assumptions you may have. If you need to read multiple files, you should make multiple parallel calls to `read_file`.";
   const chatHistoryGuidance = historyExplorerAvailable
     ? CHAT_HISTORY_EXPLORER_GUIDANCE
@@ -203,6 +214,7 @@ function proDevelopmentWorkflowBlock({
     enableAppBlueprint,
     understandStep,
     testingEnabled,
+    implementerAvailable,
   });
 }
 
@@ -393,6 +405,7 @@ function buildLocalAgentSystemPrompt({
   codeExplorerAvailable,
   historyExplorerAvailable,
   testingEnabled,
+  implementerAvailable,
   restartAppToolAvailable,
   rebuildAppToolAvailable,
 }: {
@@ -400,6 +413,7 @@ function buildLocalAgentSystemPrompt({
   codeExplorerAvailable: boolean;
   historyExplorerAvailable: boolean;
   testingEnabled: boolean;
+  implementerAvailable: boolean;
   restartAppToolAvailable: boolean;
   rebuildAppToolAvailable: boolean;
 }): string {
@@ -420,7 +434,7 @@ ${PRO_TOOL_CALLING_BEST_PRACTICES_BLOCK}
 
 ${PRO_FILE_EDITING_TOOL_SELECTION_BLOCK}
 
-${proDevelopmentWorkflowBlock({ enableAppBlueprint, codeExplorerAvailable, historyExplorerAvailable, testingEnabled })}
+${proDevelopmentWorkflowBlock({ enableAppBlueprint, codeExplorerAvailable, historyExplorerAvailable, testingEnabled, implementerAvailable })}
 [[SERVER_LAYER]]
 ${testingEnabled ? `${AGENT_TEST_WRITING_GUIDANCE}\n` : ""}
 ${IMAGE_GENERATION_BLOCK}
@@ -502,6 +516,8 @@ export function constructLocalAgentPrompt(
     enableAppBlueprint?: boolean;
     codeExplorerAvailable?: boolean;
     historyExplorerAvailable?: boolean;
+    /** Whether the root Agent can delegate scoped edits to an Implementer. */
+    implementerAvailable?: boolean;
     /**
      * Whether the app has opted into E2E testing. Gates the agent-mode
      * test-writing and `run_tests` guidance so non-testing apps don't carry it
@@ -515,6 +531,7 @@ export function constructLocalAgentPrompt(
   const enableAppBlueprint = options?.enableAppBlueprint !== false;
   const codeExplorerAvailable = !!options?.codeExplorerAvailable;
   const historyExplorerAvailable = !!options?.historyExplorerAvailable;
+  const implementerAvailable = !!options?.implementerAvailable;
   const testingEnabled = !!options?.testingEnabled;
   const restartAppToolAvailable = options?.restartAppToolAvailable !== false;
   const rebuildAppToolAvailable = options?.rebuildAppToolAvailable !== false;
@@ -536,6 +553,7 @@ export function constructLocalAgentPrompt(
       codeExplorerAvailable,
       historyExplorerAvailable,
       testingEnabled,
+      implementerAvailable,
       restartAppToolAvailable,
       rebuildAppToolAvailable,
     });

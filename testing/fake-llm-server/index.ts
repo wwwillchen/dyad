@@ -348,6 +348,16 @@ export function createFakeLlmApp(getPort: () => number) {
       modelsByProvider: {
         openai: [
           {
+            apiName: "gpt-5.6-luna",
+            displayName: "GPT 5.6 Luna",
+            description: "Sub-agent Explorer and Implementer model",
+          },
+          {
+            apiName: "gpt-5.6-sol",
+            displayName: "GPT 5.6 Sol",
+            description: "Sub-agent Reviewer model",
+          },
+          {
             apiName: "gpt-5.2",
             displayName: "GPT 5.2",
             description: "Remote catalog OpenAI model",

@@ -97,7 +97,6 @@ import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalid
 import { cancelOrphanedBaseStream } from "../utils/stream_text_utils";
 import { cleanFullResponse } from "../utils/cleanFullResponse";
 import { escapeXmlAttr, escapeXmlContent } from "../../../shared/xmlEscape";
-import { isCodeExplorerReady } from "../processors/code_explorer";
 import { appendCancelledResponseNotice } from "@/shared/chatCancellation";
 import {
   isModelRefusal,
@@ -136,6 +135,7 @@ import {
   isTurboEditsV2Enabled,
 } from "@/lib/schemas";
 import { isFreeProModel } from "@/lib/freeProModel";
+import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
 import {
   assertChatModeCompatibleWithModel,
   normalizeStoredChatMode,
@@ -1749,12 +1749,14 @@ ${componentSnippet}
         );
 
         const frameworkType = detectFrameworkType(appPath);
-        // Gate on Pro to match the `explore_code` tool's `isEnabled`, so the
-        // prompt never points the model at a tool that isn't in the toolset.
+        // Match the Explorer persona's actual tool gate so the prompt never
+        // points the model at spawn_agent(persona="explorer") when that
+        // persona is disabled. Code-index readiness is independent now that
+        // spawn_agent replaces the old explore_code tool.
         const codeExplorerAvailable =
           isDyadProEnabled(settings) &&
-          !!settings.enableCodeExplorer &&
-          isCodeExplorerReady(appPath);
+          settings.enableExplorerSubagent !== false &&
+          settings.agentToolConsents?.["spawn_agent"] !== "never";
         // Mirrors explore_chat_history's toolset inclusion (Pro, and not
         // consent-"never") so the prompt never points the model at a tool
         // that isn't in the toolset. Consent is read from settings directly
@@ -1762,6 +1764,10 @@ ${componentSnippet}
         const historyExplorerAvailable =
           isDyadProEnabled(settings) &&
           settings.agentToolConsents?.["explore_chat_history"] !== "never";
+        const implementerAvailable =
+          selectedChatMode === "local-agent" &&
+          isDyadProEnabled(settings) &&
+          isImplementerSubagentEnabled(settings);
         const restartAppToolAvailable =
           settings.agentToolConsents?.["restart_app"] !== "never";
         const rebuildAppToolAvailable =
@@ -1781,6 +1787,7 @@ ${componentSnippet}
             settings.enableAppBlueprint && updatedChat.app.needsAppBlueprint,
           codeExplorerAvailable,
           historyExplorerAvailable,
+          implementerAvailable,
           testingEnabled: !!updatedChat.app?.testingEnabled,
           restartAppToolAvailable,
           rebuildAppToolAvailable,

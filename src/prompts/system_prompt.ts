@@ -679,6 +679,7 @@ export const constructSystemPrompt = ({
   enableAppBlueprint,
   codeExplorerAvailable,
   historyExplorerAvailable,
+  implementerAvailable,
   testingEnabled,
   restartAppToolAvailable,
   rebuildAppToolAvailable,
@@ -718,6 +719,8 @@ export const constructSystemPrompt = ({
    * `search_chats`.
    */
   historyExplorerAvailable?: boolean;
+  /** If true, include root-Agent guidance for delegating scoped edits. */
+  implementerAvailable?: boolean;
   /**
    * Whether the app has opted into E2E testing. Gates the local-agent
    * test-writing and `run_tests` guidance (see `constructLocalAgentPrompt`).
@@ -740,6 +743,7 @@ export const constructSystemPrompt = ({
       enableAppBlueprint,
       codeExplorerAvailable,
       historyExplorerAvailable,
+      implementerAvailable,
       testingEnabled,
       restartAppToolAvailable,
       rebuildAppToolAvailable,

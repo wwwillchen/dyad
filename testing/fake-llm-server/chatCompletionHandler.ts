@@ -375,11 +375,24 @@ export const createChatCompletionHandler =
       messageContent += "\n\n" + generateDump(req);
     }
 
-    const responseDelayMs = userTextContent.includes("[sleep=long]")
-      ? 30_000
-      : userTextContent.includes("[sleep=medium]")
-        ? 10_000
-        : 0;
+    const isSubagentReviewerRequest =
+      userTextContent.includes("Review this exact diff.") &&
+      userTextContent.includes("Return JSON only, with this exact shape:");
+    if (isSubagentReviewerRequest) {
+      messageContent = JSON.stringify({
+        status: "no_findings",
+        findings: [],
+        summary: "No actionable defects found in the reviewed change.",
+      });
+    }
+
+    const responseDelayMs = isSubagentReviewerRequest
+      ? 1_500
+      : userTextContent.includes("[sleep=long]")
+        ? 30_000
+        : userTextContent.includes("[sleep=medium]")
+          ? 10_000
+          : 0;
     if (
       responseDelayMs > 0 &&
       (await waitForDelayOrDisconnect(res, responseDelayMs))

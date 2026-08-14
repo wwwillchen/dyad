@@ -51,6 +51,12 @@ export const ChatTurnOwnerSchema = z.discriminatedUnion("kind", [
       handoffId: z.string().min(1).max(MAX_CHAT_WIRE_ID_CHARS),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("review-remediation"),
+      threadId: z.string().min(1).max(MAX_CHAT_WIRE_ID_CHARS),
+    })
+    .strict(),
 ]);
 
 export const SerializableChatTurnIntentSchema = z
@@ -257,6 +263,27 @@ export const ChatStreamHostEventSchema = z.discriminatedUnion("type", [
       entries: z.array(ChatQueueEntrySchema),
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("REVIEW_BARRIER_RESULT"),
+      outcome: z.enum([
+        "released",
+        "skipped",
+        "waiting",
+        "fix_required",
+        "verification_failed",
+      ]),
+      threadId: z.string().optional(),
+      prompt: z.string().optional(),
+      autoFixPolicy: z.enum(["queued-override", "user-setting"]).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("REVIEW_BARRIER_FAILED"),
+      error: z.string(),
+    })
+    .strict(),
 ]);
 export type ChatStreamHostEvent = z.infer<typeof ChatStreamHostEventSchema>;
 export type ChatStreamWireEvent = ChatStreamIntentEvent | ChatStreamHostEvent;
@@ -308,6 +335,7 @@ export const ChatStreamRemoteSnapshotSchema = z
         outcome: z.enum(["completed", "cancelled", "errored"]),
         chatSummary: z.string().optional(),
         pausePromptQueue: z.boolean().optional(),
+        reviewBarrierRequested: z.boolean().optional(),
         updatedFiles: z.boolean().optional(),
         extraFiles: z.array(z.string()).optional(),
         extraFilesError: z.string().optional(),

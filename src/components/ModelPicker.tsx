@@ -62,6 +62,12 @@ import {
   getEffortSettings,
   getModelPreferenceKey,
 } from "@/lib/modelEffort";
+import {
+  AUTO_SIDEKICK_CHAT_MODE,
+  AUTO_SIDEKICK_DISPLAY_NAME,
+  AUTO_SIDEKICK_MODEL_NAME,
+  isAutoSidekickModel,
+} from "@/lib/autoSidekick";
 
 const SCROLL_AREA_CLASS = "max-h-100 overflow-y-auto scrollbar-on-hover";
 
@@ -156,9 +162,11 @@ export function ModelPicker() {
       model: model.name,
       effortLevel: modelSelection.effortLevel,
     });
-    const fallbackChatMode = isFreeProBuildModeCombination(model, selectedMode)
-      ? FREE_PRO_MODEL_FALLBACK_CHAT_MODE
-      : undefined;
+    const fallbackChatMode = isAutoSidekickModel(model)
+      ? AUTO_SIDEKICK_CHAT_MODE
+      : isFreeProBuildModeCombination(model, selectedMode)
+        ? FREE_PRO_MODEL_FALLBACK_CHAT_MODE
+        : undefined;
 
     const preferenceUpdate = rememberEffort
       ? {
@@ -250,6 +258,9 @@ export function ModelPicker() {
     };
 
   const getModelDisplayName = () => {
+    if (isAutoSidekickModel(selectedModel)) {
+      return AUTO_SIDEKICK_DISPLAY_NAME;
+    }
     if (selectedModel.provider === "ollama") {
       return (
         ollamaModels.find(
@@ -287,7 +298,7 @@ export function ModelPicker() {
   };
 
   // Get auto provider models (if any)
-  const autoModels =
+  const catalogAutoModels =
     !loading && modelsByProviders && modelsByProviders["auto"]
       ? modelsByProviders["auto"].filter((model) => {
           if (model.apiName === FREE_PRO_MODEL_NAME) {
@@ -302,6 +313,28 @@ export function ModelPicker() {
           return true;
         })
       : [];
+  const regularAutoModel = catalogAutoModels.find(
+    (model) => model.apiName === "auto",
+  );
+  const autoModels = regularAutoModel
+    ? catalogAutoModels.flatMap((model) =>
+        model.apiName === "auto" && dyadProEnabled
+          ? [
+              model,
+              {
+                ...model,
+                apiName: AUTO_SIDEKICK_MODEL_NAME,
+                displayName: AUTO_SIDEKICK_DISPLAY_NAME,
+                description:
+                  "Uses Auto and delegates straightforward implementation tasks to a Sidekick",
+                tag: "New",
+                tagColor:
+                  "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+              },
+            ]
+          : [model],
+      )
+    : catalogAutoModels;
 
   // Determine availability of local models
   const hasOllamaModels =

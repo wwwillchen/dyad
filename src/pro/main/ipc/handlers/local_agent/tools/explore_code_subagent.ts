@@ -31,12 +31,14 @@ import {
 } from "./explore_code_raw";
 import {
   annotateObservationResult,
+  buildCandidate,
   candidatesFromGrepResult,
   candidatesFromListFilesResult,
   candidatesFromRawExploreCodeResult,
   candidatesFromReadFileResult,
   createCandidateRegistry,
   formatObservationResult,
+  getQueryTerms,
   getObservedCandidates,
   type CandidateRegistry,
   type ExplorerCandidate,
@@ -88,11 +90,25 @@ interface ReadOnlyToolBudget {
 export async function runExploreCodeSubagent({
   args,
   ctx,
+  tools: durableTools,
   onProgress,
+  onUsage,
+  onFinalized,
 }: {
   args: ExploreCodeArgs;
   ctx: AgentContext;
+  tools?: ToolSet;
   onProgress?: (progressText: string) => void;
+  onUsage?: (usage: {
+    inputTokens: number;
+    outputTokens: number;
+    toolCallCount: number;
+    stepCount: number;
+  }) => Promise<void> | void;
+  onFinalized?: (result: {
+    usedFallback: boolean;
+    observationCount: number;
+  }) => void;
 }): Promise<string> {
   const storedSettings = readSettings();
   assertDyadValueAvailable(storedSettings);
@@ -131,6 +147,7 @@ export async function runExploreCodeSubagent({
   const tools = buildExploreCodeSubagentTools({
     args,
     ctx,
+    durableTools,
     observations,
     candidateRegistry,
     readOnlyToolBudget,
@@ -194,19 +211,34 @@ export async function runExploreCodeSubagent({
           observations,
           acceptedRef,
           stepCount: subagentStepCount,
+          exploreCodeAvailable: Boolean(tools.explore_code),
         });
       },
       stopWhen: [stepCountIs(SUBAGENT_MAX_STEPS), () => reportFinalized],
       abortSignal: ctx.abortSignal,
     });
     const fullStream = streamResult.fullStream;
-    cancelOrphanedBaseStream(streamResult);
 
     for await (const _part of fullStream) {
       // Drain the stream so tool calls execute.
     }
 
-    if (observations.length === 0) {
+    const [usage, steps] = await Promise.all([
+      streamResult.totalUsage ?? Promise.resolve(undefined),
+      streamResult.steps ?? Promise.resolve([]),
+    ]);
+    cancelOrphanedBaseStream(streamResult);
+    await onUsage?.({
+      inputTokens: usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
+      toolCallCount: steps.reduce(
+        (count, step) => count + step.toolCalls.length,
+        0,
+      ),
+      stepCount: steps.length,
+    });
+
+    if (observations.length === 0 && !durableTools) {
       await collectRawExploreObservation({
         args,
         ctx,
@@ -222,6 +254,10 @@ export async function runExploreCodeSubagent({
       acceptedRef,
       observations,
     });
+    onFinalized?.({
+      usedFallback: acceptedRef.current === null,
+      observationCount: observations.length,
+    });
     return reportText;
   } catch (error) {
     logger.warn("explore_code sub-agent failed", error);
@@ -231,6 +267,10 @@ export async function runExploreCodeSubagent({
         intent,
         acceptedRef,
         observations,
+      });
+      onFinalized?.({
+        usedFallback: acceptedRef.current === null,
+        observationCount: observations.length,
       });
       return reportText;
     }
@@ -310,7 +350,7 @@ function renderFinalReport({
       resolved: accepted.resolved,
       outcome: accepted.outcome,
       warnings,
-    }).text;
+    });
   }
   return buildDeterministicReport({
     query: args.query,
@@ -345,6 +385,7 @@ function createReadOnlyToolBudget(): ReadOnlyToolBudget {
 function buildExploreCodeSubagentTools({
   args,
   ctx,
+  durableTools,
   observations,
   candidateRegistry,
   readOnlyToolBudget,
@@ -353,12 +394,24 @@ function buildExploreCodeSubagentTools({
 }: {
   args: ExploreCodeArgs;
   ctx: AgentContext;
+  durableTools?: ToolSet;
   observations: SubagentObservation[];
   candidateRegistry: CandidateRegistry;
   readOnlyToolBudget: ReadOnlyToolBudget;
   onProgress?: (progressText: string) => void;
   onSubmitReport: (selection: ExploreSelection) => string;
 }): ToolSet {
+  if (durableTools) {
+    return buildDurableExploreCodeSubagentTools({
+      tools: durableTools,
+      observations,
+      candidateRegistry,
+      readOnlyToolBudget,
+      onProgress,
+      onSubmitReport,
+    });
+  }
+
   const childCtx: AgentContext = {
     ...ctx,
     onXmlStream: () => {},
@@ -411,13 +464,243 @@ function buildExploreCodeSubagentTools({
     }),
     submit_report: {
       description:
-        "Submit the final code exploration report. Reference observed candidate IDs only; give each flow step an open role label and a fact tied to the query. Do not write quotes or choose an action — those are produced for you.",
+        "Submit the final code exploration report. Summarize the grounded answer, reference observed candidate IDs only, and give each flow step an open role label and a fact tied to the query. Do not write quotes or choose an action — those are produced for you.",
       inputSchema: submitReportSchema,
       execute: async (selection: ExploreSelection) => {
         return onSubmitReport(selection);
       },
     },
   };
+}
+
+function buildDurableExploreCodeSubagentTools({
+  tools,
+  observations,
+  candidateRegistry,
+  readOnlyToolBudget,
+  onProgress,
+  onSubmitReport,
+}: {
+  tools: ToolSet;
+  observations: SubagentObservation[];
+  candidateRegistry: CandidateRegistry;
+  readOnlyToolBudget: ReadOnlyToolBudget;
+  onProgress?: (progressText: string) => void;
+  onSubmitReport: (selection: ExploreSelection) => string;
+}): ToolSet {
+  const wrapped: ToolSet = {};
+  const addTool = (
+    toolName: string,
+    candidatesFromResult: (
+      args: unknown,
+      result: string,
+    ) => ExplorerCandidate[],
+    compactBroadCall?: (args: unknown) => string | null,
+  ) => {
+    const tool = tools[toolName];
+    if (!tool) return;
+    wrapped[toolName] = wrapDurableSubagentTool({
+      toolName,
+      tool,
+      observations,
+      candidateRegistry,
+      readOnlyToolBudget,
+      onProgress,
+      candidatesFromResult,
+      compactBroadCall,
+    });
+  };
+
+  addTool(
+    "list_files",
+    (args, result) => candidatesFromListFilesResult(result, args),
+    compactBroadListFilesCall,
+  );
+  addTool("grep", (args, result) => candidatesFromGrepResult(result, args));
+  addTool("read_file", (args, result) =>
+    candidatesFromReadFileResult(result, args),
+  );
+  addTool("code_search", (args, result) =>
+    candidatesFromListFilesResult(result, args),
+  );
+  addTool("explore_code", (_args, result) =>
+    candidatesFromFormattedExploreCodeResult(result),
+  );
+  wrapped.submit_report = {
+    description:
+      "Submit the final code exploration report. Summarize the grounded answer, reference observed candidate IDs only, and give each flow step an open role label and a fact tied to the query. Do not write quotes or choose an action — those are produced for you.",
+    inputSchema: submitReportSchema,
+    execute: async (selection: ExploreSelection) => onSubmitReport(selection),
+  };
+  return wrapped;
+}
+
+function wrapDurableSubagentTool({
+  toolName,
+  tool,
+  observations,
+  candidateRegistry,
+  readOnlyToolBudget,
+  onProgress,
+  candidatesFromResult,
+  compactBroadCall,
+}: {
+  toolName: string;
+  tool: ToolSet[string];
+  observations: SubagentObservation[];
+  candidateRegistry: CandidateRegistry;
+  readOnlyToolBudget: ReadOnlyToolBudget;
+  onProgress?: (progressText: string) => void;
+  candidatesFromResult: (args: unknown, result: string) => ExplorerCandidate[];
+  compactBroadCall?: (args: unknown) => string | null;
+}) {
+  return {
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    execute: async (toolArgs: unknown, executionOptions?: unknown) => {
+      const budgetMessage = readOnlyToolBudget.reserve(toolName);
+      if (budgetMessage) {
+        pushObservation(
+          observations,
+          { toolName, args: toolArgs, result: budgetMessage, candidates: [] },
+          onProgress,
+        );
+        return budgetMessage;
+      }
+      const compactResult = compactBroadCall?.(toolArgs);
+      if (compactResult) {
+        pushObservation(
+          observations,
+          { toolName, args: toolArgs, result: compactResult, candidates: [] },
+          onProgress,
+        );
+        return compactResult;
+      }
+      try {
+        if (!tool.execute) throw new Error(`${toolName} is not executable`);
+        const rawResult = await tool.execute(
+          toolArgs,
+          executionOptions as never,
+        );
+        const resultText = toolResultText(rawResult);
+        const registeredCandidates = candidateRegistry.register(
+          candidatesFromResult(toolArgs, resultText),
+        );
+        const annotatedResult = formatObservationResult(
+          annotateObservationResult(resultText, registeredCandidates),
+          observations,
+        );
+        pushObservation(
+          observations,
+          {
+            toolName,
+            args: toolArgs,
+            result: annotatedResult,
+            candidates: registeredCandidates,
+          },
+          onProgress,
+        );
+        return { type: "text" as const, value: annotatedResult };
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        const errorResult = formatToolError(toolName, error);
+        pushObservation(
+          observations,
+          { toolName, args: toolArgs, result: errorResult, candidates: [] },
+          onProgress,
+        );
+        return { type: "text" as const, value: errorResult };
+      }
+    },
+  };
+}
+
+function toolResultText(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (
+    result &&
+    typeof result === "object" &&
+    "type" in result &&
+    result.type === "text" &&
+    "value" in result &&
+    typeof result.value === "string"
+  ) {
+    return result.value;
+  }
+  return JSON.stringify(result, null, 2);
+}
+
+function candidatesFromFormattedExploreCodeResult(
+  result: string,
+): ExplorerCandidate[] {
+  const lines = result.split("\n");
+  const queryTerms = getQueryTerms(
+    /^## Code exploration:\s*(.*)$/m.exec(result)?.[1] ?? "",
+  );
+  const candidates: ExplorerCandidate[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const heading = /^####\s+(.+?)(?:\s+-\s+(.*))?$/.exec(lines[index]);
+    if (!heading) continue;
+    const path = heading[1];
+    const symbols = parseFormattedSymbols(heading[2]);
+    let foundWindow = false;
+
+    for (index += 1; index < lines.length; index += 1) {
+      if (lines[index].startsWith("#### ")) {
+        index -= 1;
+        break;
+      }
+      const range = /^Lines\s+(\d+)-(\d+):$/.exec(lines[index]);
+      if (!range || lines[index + 1] !== "```ts") continue;
+      const sourceLines: string[] = [];
+      index += 2;
+      while (index < lines.length && lines[index] !== "```") {
+        sourceLines.push(lines[index]);
+        index += 1;
+      }
+      foundWindow = true;
+      candidates.push(
+        buildCandidate({
+          path,
+          range: { start: Number(range[1]), end: Number(range[2]) },
+          symbols,
+          source: "compiler",
+          provenance: ["compiler-backed source window"],
+          observedText: sourceLines.join("\n"),
+          queryTerms,
+        }),
+      );
+    }
+
+    if (!foundWindow) {
+      candidates.push(
+        buildCandidate({
+          path,
+          range: null,
+          symbols,
+          source: "compiler",
+          provenance: ["compiler-backed exploration result"],
+          queryTerms,
+        }),
+      );
+    }
+  }
+
+  return candidates;
+}
+
+function parseFormattedSymbols(
+  summary: string | undefined,
+): Array<{ name: string; kind: string; line: number }> {
+  if (!summary) return [];
+  return [...summary.matchAll(/(?:^|,\s*)(.+?)\s+\(([^:()]+):(\d+)\)/g)].map(
+    (match) => ({
+      name: match[1],
+      kind: match[2],
+      line: Number(match[3]),
+    }),
+  );
 }
 
 function buildObservedExploreCodeTool({
@@ -638,18 +921,20 @@ function prepareExploreCodeSubagentStep({
   observations,
   acceptedRef,
   stepCount,
+  exploreCodeAvailable = true,
 }: {
   messages: ModelMessage[];
   observations: SubagentObservation[];
   acceptedRef: { current: AcceptedReport | null };
   stepCount: number;
+  exploreCodeAvailable?: boolean;
 }) {
   let forcedStep: ReturnType<
     typeof forceExploreCodeStep | typeof forceSubmitReportStep
   > | null = null;
 
   // First step must use the compiler-backed explorer.
-  if (observations.length === 0) {
+  if (observations.length === 0 && exploreCodeAvailable) {
     forcedStep = forceExploreCodeStep();
   } else if (
     // Last allowed step with nothing accepted yet: force a report so we get

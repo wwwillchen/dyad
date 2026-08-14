@@ -8,7 +8,10 @@ import type {
 } from "@/distributed_machines/remote_protocol";
 import { ipc } from "@/ipc/types";
 import { createSequentialIdSource } from "@/state_machines/testing";
-import { ChatStreamRemoteManager } from "./remote_manager";
+import {
+  ChatStreamRemoteManager,
+  projectPausedByStepLimit,
+} from "./remote_manager";
 import type { ChatStreamRemoteConnection } from "./remote_manager";
 import { unavailableChatStreamSnapshot } from "./transport";
 
@@ -20,6 +23,17 @@ vi.mock("@/lib/toast", () => ({
 describe("ChatStreamRemoteManager", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("distinguishes step-limit pauses from automatic review barriers", () => {
+    expect(projectPausedByStepLimit({ pausePromptQueue: true })).toBe(true);
+    expect(
+      projectPausedByStepLimit({
+        pausePromptQueue: true,
+        reviewBarrierRequested: true,
+      }),
+    ).toBe(false);
+    expect(projectPausedByStepLimit({})).toBeUndefined();
   });
 
   it("refreshes a retained subscription after its bootstrap fails", async () => {

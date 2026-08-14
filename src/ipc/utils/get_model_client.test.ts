@@ -154,6 +154,38 @@ describe("getModelClient", () => {
     ]);
   });
 
+  test("routes Auto Sidekick through the regular Agent Auto models", async () => {
+    const { modelClient } = await getModelClient(
+      {
+        provider: "auto",
+        name: "auto-sidekick",
+      },
+      {
+        enableDyadPro: true,
+        selectedChatMode: "local-agent",
+        providerSettings: {
+          auto: {
+            apiKey: {
+              value: "dyad-pro-key",
+            },
+          },
+        },
+      } as unknown as UserSettings,
+    );
+
+    const fallbackModels = (
+      modelClient.model as unknown as {
+        settings: { models: Array<{ modelId: string }> };
+      }
+    ).settings.models;
+
+    expect(fallbackModels.map((model) => model.modelId)).toEqual([
+      "gpt-5.5",
+      "anthropic/claude-sonnet-4-20250514",
+      "gemini/gemini-3.5-flash",
+    ]);
+  });
+
   test("adds OpenRouter free as a regular auto fallback only outside Dyad Pro", async () => {
     const { modelClient, isEngineEnabled } = await getModelClient(
       {

@@ -9,8 +9,8 @@ import {
 import { extractCodebase } from "../../../../../../utils/codebase";
 import { engineFetch } from "./engine_fetch";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
-import { readSettings } from "@/main/settings";
 import { isCodeExplorerReady } from "@/ipc/processors/code_explorer";
+import { readSettings } from "@/main/settings";
 import {
   filterDyadInternalFiles,
   resolveTargetAppPath,
@@ -106,13 +106,19 @@ export const codeSearchTool: ToolDefinition<CodeSearchArgs> = {
   defaultConsent: "always",
   usesEngineEndpoint: true,
 
-  // Requires Dyad Pro engine API. When the compiler-backed `explore_code` tool
-  // is available for the current app, it supersedes semantic code search for
-  // discovery, so we hide `code_search` to keep a single discovery tool. This
-  // mirrors the prompt gating in chat_stream_handlers (`codeExplorerAvailable`).
-  isEnabled: (ctx) =>
-    ctx.isDyadPro &&
-    !(readSettings().enableCodeExplorer && isCodeExplorerReady(ctx.appPath)),
+  // Route root discovery through the Explorer sub-agent whenever it is
+  // available. Inside Explorer, retain code_search as a fallback unless the
+  // compiler-backed exploration surface is ready.
+  isEnabled: (ctx) => {
+    if (!ctx.isDyadPro) return false;
+    if (!ctx.subagentThreadId && ctx.canUseExplorerSubagent) return false;
+
+    const exploreCodeAvailable =
+      ctx.subagentPersona === "explorer" &&
+      readSettings().enableCodeExplorer === true &&
+      isCodeExplorerReady(ctx.appPath);
+    return !exploreCodeAvailable;
+  },
 
   getConsentPreview: (args) =>
     args.app_name

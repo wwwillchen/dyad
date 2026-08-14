@@ -40,21 +40,52 @@ describe("local_agent_prompt", () => {
       codeExplorerAvailable: true,
     });
     expect(prompt).toMatchSnapshot();
+    expect(prompt).toContain('Use `spawn_agent` with persona="explorer"');
     expect(prompt).toContain(
-      "Use `explore_code` when the relevant files are not reasonably clear from the available context",
+      "when the relevant files are not reasonably clear",
+    );
+    expect(prompt).toContain("Treat the Explorer report as a starting map");
+    expect(prompt).toContain(
+      "Explorer spawning waits until its report is ready",
     );
     expect(prompt).toContain(
-      "already known or reasonably clear from the conversation",
+      "Do not spawn duplicate Explorers for the same investigation",
     );
     expect(prompt).toContain(
-      "Treat the report as a starting map: build on its findings",
+      "Validate an Explorer report's exact edit targets",
     );
-    expect(prompt).toContain(
-      "Continue with targeted `grep`, `list_files`, or `read_file` calls whenever needed",
-    );
-    expect(prompt).not.toContain("use `explore_code` first");
-    expect(prompt).not.toContain("do not warm up");
     expect(prompt).not.toContain("Use `grep` and `code_search`");
+    expect(prompt).not.toContain(
+      "`list_files`, `code_search`, and `read_file`",
+    );
+  });
+
+  it("uses direct search guidance when Explorer is unavailable", () => {
+    const prompt = constructLocalAgentPrompt(undefined, undefined, {
+      codeExplorerAvailable: false,
+    });
+
+    expect(prompt).not.toContain('spawn_agent` with persona="explorer"');
+    expect(prompt).toContain("Use `grep` and `code_search`");
+  });
+
+  it("includes Implementer delegation guidance only when available", () => {
+    const disabled = constructLocalAgentPrompt(undefined);
+    const enabled = constructLocalAgentPrompt(undefined, undefined, {
+      implementerAvailable: true,
+    });
+
+    expect(disabled).not.toContain("**Implementer delegation:**");
+    expect(enabled).toContain("**Implementer delegation:**");
+    expect(enabled).toContain(
+      'delegate straightforward, low-risk, well-scoped editing tasks to `spawn_agent` with `persona="implementer"`',
+    );
+    expect(enabled).toContain(
+      "The root Agent remains responsible for the result",
+    );
+    expect(enabled).toContain(
+      "An Implementer's completion status alone is not sufficient verification",
+    );
   });
 
   it("agent mode system prompt (vite framework includes Nitro nudge)", () => {

@@ -15,6 +15,7 @@ import { sendTelemetryEvent } from "@/ipc/utils/telemetry";
 import { DYAD_MEDIA_DIR_NAME } from "@/ipc/utils/media_path_utils";
 import { readSettings } from "@/main/settings";
 import type { UserSettings } from "@/lib/schemas";
+import { withMutationToolAdmission } from "../subagents/mutation_lease";
 import { writeFileTool } from "./write_file";
 import {
   AgentContext,
@@ -334,6 +335,10 @@ export const executeSandboxScriptTool: ToolDefinition<ExecuteSandboxScriptArgs> 
     inputSchema: executeSandboxScriptSchema,
     defaultConsent: "always",
     modifiesState: (ctx) => ctx.sandboxWriteFileHostEnabled === true,
+    // The sandbox delegates mutations to capability functions. Each capability
+    // owns admission so a script can mix read-only work with writes and MCP
+    // calls without trying to re-enter the non-reentrant app mutation lock.
+    requiresMutationLease: false,
 
     isEnabled: () =>
       isSandboxSupportedPlatform() &&
@@ -481,21 +486,23 @@ function buildWriteFileCapability(ctx: AgentContext) {
     });
     await requireToolConsentOrThrow(writeFileTool, args, ctx);
 
-    trackFileEditTool(ctx, writeFileTool.name, args);
-    const result = await writeFileTool.execute(args, ctx);
-    // Honor the tool's mutation predicate exactly like the main
-    // tool_definitions.ts path, so mutation tracking stays consistent if
-    // write_file ever gains a shouldTrackMutation predicate.
-    trackAppMutation(
-      ctx,
-      writeFileTool.name,
-      shouldTrackToolMutation(writeFileTool, args, result, ctx),
-    );
-    const xml = writeFileTool.buildXml?.(args, true);
-    if (xml) {
-      ctx.onXmlComplete(xml);
-    }
-    return result;
+    return withMutationToolAdmission(ctx, async () => {
+      trackFileEditTool(ctx, writeFileTool.name, args);
+      const result = await writeFileTool.execute(args, ctx);
+      // Honor the tool's mutation predicate exactly like the main
+      // tool_definitions.ts path, so mutation tracking stays consistent if
+      // write_file ever gains a shouldTrackMutation predicate.
+      trackAppMutation(
+        ctx,
+        writeFileTool.name,
+        shouldTrackToolMutation(writeFileTool, args, result, ctx),
+      );
+      const xml = writeFileTool.buildXml?.(args, true);
+      if (xml) {
+        ctx.onXmlComplete(xml);
+      }
+      return result;
+    });
   };
 }
 

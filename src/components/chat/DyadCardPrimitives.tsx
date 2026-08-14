@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState } from "react";
 import {
   AlertTriangle,
   ChevronRight,
@@ -24,6 +24,10 @@ export type DyadAccentColor =
   | "sky"
   | "indigo"
   | "slate";
+
+export const DyadCardPresentationContext = createContext<
+  "standalone" | "embedded"
+>("standalone");
 
 const ACCENT_BORDER: Record<DyadAccentColor, string> = {
   blue: "border-l-blue-500",
@@ -112,6 +116,7 @@ export function DyadCard({
   className = "",
   ...props
 }: DyadCardProps) {
+  const presentation = useContext(DyadCardPresentationContext);
   const isPending = state === "pending";
   const isAborted = state === "aborted";
 
@@ -120,8 +125,10 @@ export function DyadCard({
     ? `border-l-[3px] ${isAborted ? "border-l-red-500" : ACCENT_BORDER[accentColor]}`
     : "";
 
+  const effectiveVariant =
+    presentation === "embedded" && variant === "default" ? "ghost" : variant;
   const variantClasses =
-    variant === "ghost"
+    effectiveVariant === "ghost"
       ? "hover:bg-(--background-lightest) rounded-lg"
       : `bg-(--background-lightest) hover:bg-(--background-lighter) rounded-xl border border-border/60 ${leftBorder}`;
 

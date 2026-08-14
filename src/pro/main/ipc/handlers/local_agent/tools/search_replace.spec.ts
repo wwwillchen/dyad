@@ -68,6 +68,10 @@ describe("searchReplaceTool", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockContext.supabaseProjectId = null;
+    mockContext.allowDeploySideEffects = undefined;
+    mockContext.pendingFunctionDeploys = [];
+    mockContext.onDeferredFunctionDeploy = undefined;
     vi.mocked(assertMutationPathAllowed).mockImplementation(
       async ({ relativePath }) => relativePath.replace(/^self\//, ""),
     );
@@ -180,6 +184,41 @@ describe("searchReplaceTool", () => {
         appPath: "/test/app",
         relativePath: "self/test.ts",
       });
+    });
+
+    it("deduplicates deferred function deploys through the root callback", async () => {
+      const onDeferredFunctionDeploy = vi.fn((functionName: string) => {
+        if (!mockContext.pendingFunctionDeploys.includes(functionName)) {
+          mockContext.pendingFunctionDeploys.push(functionName);
+        }
+      });
+      mockContext.supabaseProjectId = "project-id";
+      mockContext.allowDeploySideEffects = false;
+      mockContext.onDeferredFunctionDeploy = onDeferredFunctionDeploy;
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.promises.readFile)
+        .mockResolvedValueOnce("const value = 1;\n")
+        .mockResolvedValueOnce("const value = 2;\n");
+
+      await searchReplaceTool.execute(
+        {
+          file_path: "supabase/functions/hello/index.ts",
+          old_string: "const value = 1;",
+          new_string: "const value = 2;",
+        },
+        mockContext,
+      );
+      await searchReplaceTool.execute(
+        {
+          file_path: "supabase/functions/hello/index.ts",
+          old_string: "const value = 2;",
+          new_string: "const value = 3;",
+        },
+        mockContext,
+      );
+
+      expect(onDeferredFunctionDeploy).toHaveBeenCalledTimes(2);
+      expect(mockContext.pendingFunctionDeploys).toEqual(["hello"]);
     });
 
     it("escapes marker-like lines inside content to avoid parser splitting", async () => {

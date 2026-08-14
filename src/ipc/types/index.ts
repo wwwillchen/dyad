@@ -201,12 +201,18 @@ export type {
 export type {
   AgentTool,
   AgentTodo,
+  SubagentPersona,
+  SubagentStatus,
+  SubagentThreadSummary,
+  SubagentMessage,
+  SubagentActivity,
   AgentTodosUpdatePayload,
   AgentProblemsUpdatePayload,
   SetAgentToolConsentParams,
   Problem,
   ProblemReport,
 } from "./agent";
+export { isSubagentAcceptingMessages, isSubagentActive } from "./agent";
 
 // GitHub types
 export type {
