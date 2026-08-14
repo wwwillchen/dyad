@@ -378,7 +378,7 @@ export const MODEL_OPTIONS: Record<string, ModelOption[]> = {
       description: "Uses the most cost-effective models available",
       maxOutputTokens: 32_000,
       contextWindow: 256_000,
-      temperature: 0,
+      temperature: 1,
       tag: "Budget",
       tagColor: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
     },
