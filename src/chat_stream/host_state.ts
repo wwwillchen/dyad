@@ -14,6 +14,7 @@ export interface ChatStreamHostState {
     readonly intent: SerializableChatTurnIntent;
     readonly invocationRef: ChatStreamInvocationRef;
     readonly targetAppId: number | null;
+    readonly pauseQueueOnCancel?: boolean;
   } | null;
   readonly error: string | null;
   readonly queueRevision: number;
@@ -98,6 +99,7 @@ export type ChatStreamHostCommand =
       readonly intentId: string;
       readonly response?: ChatResponseEnd;
       readonly error?: string;
+      readonly pausePromptQueue?: boolean;
     }
   | {
       readonly type: "run-review-barrier";

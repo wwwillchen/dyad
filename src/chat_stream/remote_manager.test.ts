@@ -478,6 +478,17 @@ describe("ChatStreamRemoteManager", () => {
     ref.send({ type: "cancel" });
 
     await vi.waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          encodedEvent: expect.objectContaining({
+            type: "CANCEL",
+            pauseQueue: true,
+          }),
+        }),
+      ),
+    );
+
+    await vi.waitFor(() =>
       expect(consoleError).toHaveBeenCalledWith(
         "[chat-stream] Failed to cancel the chat",
         expect.any(Error),

@@ -164,6 +164,32 @@ test.describe("queued messages", () => {
     await expect(messagesList.getByText("tc=second")).not.toBeVisible();
   });
 
+  test("stops and parks an unpaused queue without an error toast", async ({
+    po,
+  }) => {
+    await po.sendPrompt("tc=1 [sleep=long]", {
+      skipWaitForCompletion: true,
+    });
+    await expect(chatInput).toBeVisible();
+
+    await queueMessage(po.page, chatInput, "queued before stop");
+    const queueHeader = po.page.getByTestId("queue-header");
+    await expect(queueHeader).toContainText("1 Queued");
+    await expect(queueHeader).not.toContainText("Paused");
+    await po.toastNotifications.dismissAllToasts();
+
+    await po.page.getByRole("button", { name: /cancel generation/i }).click();
+
+    await expect(queueHeader).toContainText("Paused", {
+      timeout: Timeout.MEDIUM,
+    });
+    await expect(queueHeader).toContainText("1 Queued");
+    await expect(
+      po.page.getByRole("button", { name: /cancel generation/i }),
+    ).not.toBeVisible({ timeout: Timeout.MEDIUM });
+    await po.toastNotifications.expectNoToast();
+  });
+
   test("fires queued message while on another page", async ({ po }) => {
     // Send a message with a medium sleep to simulate a slow response
     await po.sendPrompt("tc=1 [sleep=medium]", {

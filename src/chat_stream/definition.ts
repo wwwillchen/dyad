@@ -387,6 +387,7 @@ function createCommandRunner(
           const queue = markIntentTerminal(
             db,
             active.intent,
+            command.pausePromptQueue === true ||
             command.response?.pausePromptQueue === true ||
               active.intent.owner?.kind === "review-remediation" ||
               context.getSnapshot().reviewBarrier.phase ===

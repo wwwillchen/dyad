@@ -120,6 +120,7 @@ export const ChatStreamIntentEventSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("CANCEL"),
       invocationRef: ChatStreamInvocationRefSchema,
+      pauseQueue: z.boolean().optional(),
     })
     .strict(),
   z

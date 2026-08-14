@@ -349,7 +349,7 @@ export class ChatStreamRemoteManager {
         if (!invocationRef) return;
         this.dispatchCompatibilityCommand(
           chatId,
-          { type: "CANCEL", invocationRef },
+          { type: "CANCEL", invocationRef, pauseQueue: true },
           "cancel the chat",
         );
         return;

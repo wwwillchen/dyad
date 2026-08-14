@@ -134,6 +134,7 @@ export function transitionChatStreamHost(
               intent: event.intent,
               invocationRef,
               targetAppId: event.intent.appId ?? null,
+              pauseQueueOnCancel: false,
             },
             error: null,
           },
@@ -158,7 +159,14 @@ export function transitionChatStreamHost(
       }
       return {
         kind: "applied",
-        state: { ...state, phase: "cancelling" },
+        state: {
+          ...state,
+          phase: "cancelling",
+          active: {
+            ...state.active,
+            pauseQueueOnCancel: event.pauseQueue === true,
+          },
+        },
         commands: [
           { type: "cancel-active", invocationRef: event.invocationRef },
         ],
@@ -341,7 +349,14 @@ export function transitionChatStreamHost(
           },
         },
         commands: [
-          { type: "finalize", intentId: event.intentId, error: event.error },
+          {
+            type: "finalize",
+            intentId: event.intentId,
+            error: event.error,
+            ...(state.active.pauseQueueOnCancel
+              ? { pausePromptQueue: true }
+              : {}),
+          },
         ],
       };
     case "STREAM_ENDED":
@@ -352,33 +367,39 @@ export function transitionChatStreamHost(
       ) {
         return ignore(state, "stale-invocation");
       }
-      return {
-        kind: "applied",
-        state: {
-          ...state,
-          phase: "finalizing",
-          lastCompletion: {
-            intentId: event.intentId,
-            invocationRef: event.invocationRef,
-            outcome: event.response.wasCancelled ? "cancelled" : "completed",
-            chatSummary: event.response.chatSummary,
-            pausePromptQueue: event.response.pausePromptQueue,
-            reviewBarrierRequested: event.response.reviewBarrierRequested,
-            updatedFiles: event.response.updatedFiles,
-            extraFiles: event.response.extraFiles,
-            extraFilesError: event.response.extraFilesError,
-            warningMessages: event.response.warningMessages,
-            targetAppId: event.targetAppId,
+      {
+        const pausePromptQueue =
+          event.response.pausePromptQueue === true ||
+          state.active.pauseQueueOnCancel;
+        return {
+          kind: "applied",
+          state: {
+            ...state,
+            phase: "finalizing",
+            lastCompletion: {
+              intentId: event.intentId,
+              invocationRef: event.invocationRef,
+              outcome: event.response.wasCancelled ? "cancelled" : "completed",
+              chatSummary: event.response.chatSummary,
+              pausePromptQueue,
+              reviewBarrierRequested: event.response.reviewBarrierRequested,
+              updatedFiles: event.response.updatedFiles,
+              extraFiles: event.response.extraFiles,
+              extraFilesError: event.response.extraFilesError,
+              warningMessages: event.response.warningMessages,
+              targetAppId: event.targetAppId,
+            },
           },
-        },
-        commands: [
-          {
-            type: "finalize",
-            intentId: event.intentId,
-            response: event.response,
-          },
-        ],
-      };
+          commands: [
+            {
+              type: "finalize",
+              intentId: event.intentId,
+              response: event.response,
+              ...(pausePromptQueue ? { pausePromptQueue: true } : {}),
+            },
+          ],
+        };
+      }
     case "STREAM_ERRORED":
       if (
         !state.active ||
@@ -403,7 +424,14 @@ export function transitionChatStreamHost(
           },
         },
         commands: [
-          { type: "finalize", intentId: event.intentId, error: event.error },
+          {
+            type: "finalize",
+            intentId: event.intentId,
+            error: event.error,
+            ...(state.active.pauseQueueOnCancel
+              ? { pausePromptQueue: true }
+              : {}),
+          },
         ],
       };
     case "QUEUE_MUTATED":

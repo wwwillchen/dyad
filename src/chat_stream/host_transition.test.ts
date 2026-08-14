@@ -67,6 +67,60 @@ describe("transitionChatStreamHost", () => {
     ]);
   });
 
+  it("cancels and parks the queue through one authoritative intent", () => {
+    const activeIntent = intent("active");
+    const submitted = transitionChatStreamHost(initialChatStreamHostState(), {
+      type: "SUBMIT",
+      intent: activeIntent,
+    });
+    expect(submitted.kind).toBe("applied");
+    if (submitted.kind !== "applied") return;
+
+    const cancelling = transitionChatStreamHost(submitted.state, {
+      type: "CANCEL",
+      invocationRef: activeIntent.invocationRef!,
+      pauseQueue: true,
+    });
+    expect(cancelling.kind).toBe("applied");
+    if (cancelling.kind !== "applied") return;
+    expect(cancelling.state.active?.pauseQueueOnCancel).toBe(true);
+    expect(cancelling.commands).toEqual([
+      {
+        type: "cancel-active",
+        invocationRef: activeIntent.invocationRef!,
+      },
+    ]);
+
+    const ended = transitionChatStreamHost(cancelling.state, {
+      type: "STREAM_ENDED",
+      intentId: activeIntent.intentId,
+      invocationRef: activeIntent.invocationRef!,
+      response: {
+        chatId: 7,
+        invocationRef: activeIntent.invocationRef!,
+        updatedFiles: false,
+        wasCancelled: true,
+      },
+      targetAppId: 3,
+    });
+    expect(ended.kind).toBe("applied");
+    if (ended.kind !== "applied") return;
+    expect(ended.state.lastCompletion?.pausePromptQueue).toBe(true);
+    expect(ended.commands).toEqual([
+      {
+        type: "finalize",
+        intentId: activeIntent.intentId,
+        response: {
+          chatId: 7,
+          invocationRef: activeIntent.invocationRef!,
+          updatedFiles: false,
+          wasCancelled: true,
+        },
+        pausePromptQueue: true,
+      },
+    ]);
+  });
+
   it("does not leave a replayed accepted turn stuck in admitting", () => {
     const admitted = transitionChatStreamHost(initialChatStreamHostState(), {
       type: "SUBMIT",
