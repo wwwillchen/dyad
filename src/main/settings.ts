@@ -388,6 +388,12 @@ export function writeSettings(settings: Partial<UserSettings>): void {
         newSettings.vercelAccessToken.value,
       );
     }
+    if (newSettings.coolify?.accessToken) {
+      newSettings.coolify = {
+        ...newSettings.coolify,
+        accessToken: encrypt(newSettings.coolify.accessToken.value),
+      };
+    }
     if (newSettings.supabase) {
       // Encrypt legacy tokens (kept for backwards compat)
       if (newSettings.supabase.accessToken) {
@@ -639,6 +645,25 @@ function readExistingSettingsFile(
       combinedSettings.vercelAccessToken = resolved;
     } else {
       delete combinedSettings.vercelAccessToken;
+    }
+  }
+  if (combinedSettings.coolify?.accessToken) {
+    const resolved = resolveStoredSecret(
+      combinedSettings.coolify.accessToken,
+      "Coolify access token",
+      ["coolify", "accessToken"],
+      ctx,
+    );
+    if (resolved) {
+      combinedSettings.coolify = {
+        ...combinedSettings.coolify,
+        accessToken: resolved,
+      };
+    } else {
+      // The address is not a secret and survives a token that will not
+      // decrypt, so the user is not asked to retype what Dyad still knows.
+      const { accessToken: _dropped, ...rest } = combinedSettings.coolify;
+      combinedSettings.coolify = rest;
     }
   }
   for (const provider in combinedSettings.providerSettings) {

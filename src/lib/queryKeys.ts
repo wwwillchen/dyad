@@ -320,6 +320,33 @@ export const queryKeys = {
   },
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // Coolify Deployments
+  // ─────────────────────────────────────────────────────────────────────────────
+  coolify: {
+    all: ["coolify"] as const,
+    status: ({ appId }: { appId: number }) =>
+      ["coolify", "status", appId] as const,
+    /**
+     * Keyed by instance and token: servers and projects belong to both, and
+     * two tokens on one instance can see different teams.
+     *
+     * The token comes from the status query, which lags the write, so in
+     * principle a list fetched with one token can land under another's key.
+     * Changing a token requires signing out first, which disables these
+     * queries, so nothing reaches that state through the form today.
+     */
+    discovery: (instanceUrl: string | null, tokenId: string | null) =>
+      [
+        "coolify",
+        "discovery",
+        instanceUrl ?? "none",
+        tokenId ?? "none",
+      ] as const,
+    /** Every instance's list, for invalidating after a token change. */
+    discoveryAll: ["coolify", "discovery"] as const,
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // App Upgrades
   // ─────────────────────────────────────────────────────────────────────────────
   appUpgrades: {
@@ -511,5 +538,6 @@ export type AppQueryKey =
   | QueryKeyOf<(typeof queryKeys.github)[keyof typeof queryKeys.github]>
   | QueryKeyOf<(typeof queryKeys.migration)[keyof typeof queryKeys.migration]>
   | QueryKeyOf<(typeof queryKeys.neon)[keyof typeof queryKeys.neon]>
+  | QueryKeyOf<(typeof queryKeys.coolify)[keyof typeof queryKeys.coolify]>
   | QueryKeyOf<(typeof queryKeys.appEnvVars)[keyof typeof queryKeys.appEnvVars]>
   | QueryKeyOf<(typeof queryKeys.media)[keyof typeof queryKeys.media]>;

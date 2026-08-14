@@ -76,6 +76,7 @@ import {
   settleAllSubagentsForReset,
   settleSubagentsForChatDeletion,
 } from "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager";
+import { deployKeyDirPath } from "@/ipc/utils/coolify_deploy_key";
 
 /**
  * Read screenshot entries for a single app directory, filtered by filename
@@ -163,6 +164,7 @@ import {
   type ImageGenerationDeletionFence,
 } from "../services/image_generation_actor_service";
 import { imageGenerationService } from "../services/image_generation_service";
+import { coolifyDeployRegistry } from "@/coolify_deploy/controller";
 import { githubOpsService } from "../services/github_ops_service";
 import { versionPreviewActorService } from "../services/version_preview_actor_service";
 import { appDeletionQueue } from "../services/app_deletion_queue";
@@ -590,6 +592,7 @@ async function deleteAppByIdExclusive(
 ): Promise<typeof apps.$inferSelect | null> {
   let versionPreviewDeletionStarted = false;
   let githubDeletionStarted = false;
+  let coolifyDeletionStarted = false;
   let releaseStreamAdmissionBlock: (() => void) | undefined;
   let imageGenerationDeletion: ImageGenerationDeletionFence | undefined;
   let releaseChatCreation: (() => void) | undefined;
@@ -605,10 +608,15 @@ async function deleteAppByIdExclusive(
     releaseStreamAdmissionBlock = blockNewStreamsForApp(appId);
     githubOpsService.beginAppDeletion(appId);
     githubDeletionStarted = true;
+    coolifyDeployRegistry.beginAppDeletion(appId);
+    coolifyDeletionStarted = true;
     imageGenerationDeletion =
       imageGenerationActorService.beginAppDeletion(appId);
     releaseChatCreation = beginAppChatDeletion(appId);
 
+    // Below the fences, not among them: draining a running deploy waits, and
+    // every fence above has to be held before anything is allowed to wait.
+    await coolifyDeployRegistry.dispose(appId);
     await versionPreviewActorService.prepareAppDeletion(appId);
     await imageGenerationActorService.prepareAppDeletion(
       imageGenerationDeletion,
@@ -770,6 +778,7 @@ async function deleteAppByIdExclusive(
     } finally {
       try {
         if (githubDeletionStarted) githubOpsService.endAppDeletion(appId);
+        if (coolifyDeletionStarted) coolifyDeployRegistry.endAppDeletion(appId);
       } finally {
         try {
           if (versionPreviewDeletionStarted) {
@@ -1894,6 +1903,8 @@ export function registerAppHandlers() {
       logger.log("all GitHub operation actors disposed.");
       await imageGenerationActorService.disposeAllApps();
       logger.log("all image generation actors disposed.");
+      await coolifyDeployRegistry.disposeAll();
+      logger.log("all Coolify deployment machines disposed.");
       await versionPreviewActorService.disposeAllApps();
       logger.log("all version preview actors disposed.");
       // Determine the paths of all apps in the database so that we can delete them.
@@ -1930,6 +1941,22 @@ export function registerAppHandlers() {
       }
       await clearLegacyWindowSessionPersistence(userDataPath);
       logger.log("Window session persistence deleted.");
+      // The private halves of the Coolify deploy keys. Nothing else deletes
+      // them: they are keyed by repository, not by app, so they outlive both
+      // the app that generated them and the settings holding the token.
+      //
+      // Best-effort. Past the commit above, a throw runs neither branch of the
+      // finally, so the app-run fence stays held until a restart — too much to
+      // pay for a key file the filesystem happened not to release.
+      try {
+        await fsPromises.rm(deployKeyDirPath(), {
+          recursive: true,
+          force: true,
+        });
+        logger.log("Coolify deploy keys deleted.");
+      } catch (error) {
+        logger.warn("Could not delete the Coolify deploy keys:", error);
+      }
       // Reset base directory cache to default, because settings are gone anyway
       invalidateDyadAppsBaseDirectoryCache();
       logger.log("settings deleted.");

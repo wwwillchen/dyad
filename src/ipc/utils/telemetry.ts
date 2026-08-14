@@ -6,6 +6,10 @@ import {
 } from "@/errors/dyad_error";
 import { isGenericFetchFailedError } from "@/lib/posthogTelemetry";
 import { TelemetryEventPayload } from "@/ipc/types";
+import {
+  COOLIFY_REQUEST_ERROR_NAME,
+  COOLIFY_TRANSPORT_ERROR_NAME,
+} from "@/shared/coolify_error_names";
 
 const logger = log.scope("telemetry");
 const FILTERED_EXCEPTION_MESSAGES = new Set([
@@ -61,15 +65,58 @@ export function sendTelemetryException(
     return;
   }
 
+  // For a server the user runs, the message is the one field built from
+  // arbitrary strings: the machine's address, its certificate, whatever it
+  // chose to say back. Decided per channel rather than per message, so a throw
+  // site added later cannot opt back in by accident.
+  const selfHosted = isSelfHostedChannel(context);
+
   sendTelemetryEvent("$exception", {
     exception_name: err.name,
-    exception_message: err.message,
-    exception_stack_trace: err.stack,
+    ...(selfHosted ? {} : { exception_message: err.message }),
+    exception_stack_trace: selfHosted ? framesOnly(err) : err.stack,
     ...context,
   });
 }
 
+/** Channels that talk to a server the user runs, rather than to Dyad's own. */
+function isSelfHostedChannel(context?: Record<string, unknown>): boolean {
+  return (
+    typeof context?.ipc_channel === "string" &&
+    context.ipc_channel.startsWith("coolify:")
+  );
+}
+
+/**
+ * The stack without its header, which repeats the message verbatim.
+ *
+ * Dropping `exception_message` alone leaves the message in the trace, since a
+ * stack starts "Name: message". The frames are what identify the throw site,
+ * so they are all that is kept.
+ */
+function framesOnly(err: Error): string | undefined {
+  if (!err.stack) return undefined;
+  const frames = err.stack.split("\n").filter((line) => /^\s+at /.test(line));
+  return [err.name, ...frames].join("\n");
+}
+
 export function shouldFilterTelemetryException(error: unknown): boolean {
+  // Ahead of the kind check, which returns for every DyadError: this one is a
+  // DyadError too. A non-2xx from a self-hosted Coolify is that instance
+  // rejecting a request rather than a fault here, and its message carries
+  // whatever that machine chose to say — which can name a host, a path or a
+  // connection string. The user still sees it; nothing reports it.
+  if (error instanceof Error && error.name === COOLIFY_REQUEST_ERROR_NAME) {
+    return true;
+  }
+
+  // Same reasoning one layer down: a request that never reached the instance
+  // fails with the host in its message — "getaddrinfo ENOTFOUND <their box>" —
+  // and its kind is External, which is not otherwise filtered.
+  if (error instanceof Error && error.name === COOLIFY_TRANSPORT_ERROR_NAME) {
+    return true;
+  }
+
   if (error instanceof DyadError) {
     return isDyadErrorKindFilteredFromTelemetry(error.kind);
   }

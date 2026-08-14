@@ -13,6 +13,7 @@ import {
   ViteConfigBackup,
 } from "@/ipc/utils/vite_config_patcher";
 import { detectFrameworkType } from "@/ipc/utils/framework_utils";
+import { NITRO_START_COMMAND } from "@/lib/framework_constants";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 const logger = log.scope("nitro_setup");
@@ -40,12 +41,75 @@ async function writeNitroConfigIfMissing(
   return { filePath, wasCreated: true };
 }
 
+/**
+ * The indentation a JSON file already uses, read off its first indented line.
+ * Falls back to two spaces, which is what package managers write.
+ */
+function detectIndent(contents: string): string | number {
+  const match = contents.match(/\n([ \t]+)"/);
+  if (!match?.[1]) return 2;
+  return match[1].startsWith("\t") ? "\t" : match[1].length;
+}
+
+/**
+ * Gives the app a `start` script, because it has just become one that needs
+ * starting.
+ *
+ * A Vite app is served as static files; adding Nitro turns it into a server
+ * whose entry point is inside the build output. Nothing else in the app says
+ * so, and a build pack still reads `vite.config.ts` and sees a static site.
+ * Naming the entry point here is the app describing itself, which travels
+ * with it anywhere it is deployed.
+ *
+ * Never overwrites an existing script: one that is already there describes
+ * this app better than a default can.
+ */
+async function addStartScriptIfMissing(
+  appPath: string,
+): Promise<{ wasAdded: boolean; backup: string | null }> {
+  const filePath = path.join(appPath, "package.json");
+  let contents: string;
+  try {
+    contents = await fs.readFile(filePath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    return { wasAdded: false, backup: null };
+  }
+
+  // Not guarded: installPackages has already read this manifest by now, so a
+  // file that does not parse has failed the conversion before reaching here.
+  const packageJson: { scripts?: Record<string, string> } =
+    JSON.parse(contents);
+  if (typeof packageJson.scripts?.start === "string") {
+    return { wasAdded: false, backup: null };
+  }
+  packageJson.scripts = {
+    ...packageJson.scripts,
+    start: NITRO_START_COMMAND,
+  };
+  // Written back in the file's own style. Assuming two spaces would reformat
+  // a manifest committed with tabs or four, turning a one-line addition into
+  // a whole-file diff that churns every later merge.
+  const serialized =
+    JSON.stringify(packageJson, null, detectIndent(contents)) +
+    (contents.endsWith("\n") ? "\n" : "");
+  // A CRLF manifest rewritten with bare newlines is a whole-file diff, which
+  // is the thing preserving the indentation was meant to avoid.
+  await fs.writeFile(
+    filePath,
+    contents.includes("\r\n") ? serialized.replace(/\n/g, "\r\n") : serialized,
+    "utf8",
+  );
+  return { wasAdded: true, backup: contents };
+}
+
 export interface EnsureNitroResult {
   /** Non-fatal warnings produced during package install. */
   warningMessages: string[];
   /**
    * Best-effort rollback of everything this call materialized (AI_RULES patch,
-   * nitro.config.ts, server/, vite.config.ts changes). Safe to call even if
+   * nitro.config.ts, server/, vite.config.ts changes, the added `start`
+   * script). Safe to call even if
    * the call was a no-op — it only undoes what *this* invocation added.
    * Does not uninstall the `nitro` package.
    */
@@ -58,6 +122,7 @@ export interface EnsureNitroResult {
  *   - `server/routes/api/.gitkeep` to materialize the routes directory
  *   - Nitro plugin wired into `vite.config.ts`
  *   - `nitro` and `jiti` packages installed
+ *   - a `start` script naming the entry point Nitro builds
  *   - "Nitro Server Layer" section appended to `AI_RULES.md`
  *
  * Idempotent: skips file/section creation if already present. Rolls back its
@@ -73,6 +138,10 @@ export async function ensureNitroOnViteApp(
     null;
   let serverDirCreated = false;
   let viteConfigBackup: ViteConfigBackup | null = null;
+  let startScript: { wasAdded: boolean; backup: string | null } = {
+    wasAdded: false,
+    backup: null,
+  };
   const serverDirPath = path.join(appPath, "server");
 
   const rollback = async () => {
@@ -88,6 +157,13 @@ export async function ensureNitroOnViteApp(
       }
       if (viteConfigBackup) {
         await restoreViteConfig(viteConfigBackup);
+      }
+      if (startScript.wasAdded && startScript.backup !== null) {
+        await fs.writeFile(
+          path.join(appPath, "package.json"),
+          startScript.backup,
+          "utf8",
+        );
       }
     } catch (rollbackError) {
       logger.error(
@@ -121,6 +197,11 @@ export async function ensureNitroOnViteApp(
       packages: NITRO_DEPENDENCIES,
       appPath,
     });
+    // After the install, because the backup taken here is what a rollback
+    // restores: taken earlier it would also revert the dependencies the
+    // install just wrote, leaving package.json without nitro while
+    // node_modules still has it.
+    startScript = await addStartScriptIfMissing(appPath);
 
     return {
       warningMessages: result.warningMessages,

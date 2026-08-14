@@ -684,3 +684,69 @@ export function handleGitPush(req: Request, res: Response, next?: Function) {
       }),
   );
 }
+
+/**
+ * Deploy keys, per repository.
+ *
+ * A re-POST of the same key answers 422 "already in use", which is the branch
+ * the deploy pipeline takes when it re-deploys an app it has already set up.
+ */
+const deployKeysByRepo = new Map<
+  string,
+  Array<{ id: number; title: string; key: string; read_only: boolean }>
+>();
+let nextDeployKeyId = 1;
+
+/** Material only: GitHub returns a key without its trailing comment. */
+function keyMaterial(key: string): string {
+  return key.trim().split(/\s+/).slice(0, 2).join(" ");
+}
+
+export function handleListDeployKeys(req: Request, res: Response) {
+  const { owner, repo } = req.params;
+  if (!req.headers.authorization?.includes(mockAccessToken)) {
+    return res.status(401).json({ message: "Bad credentials" });
+  }
+  const known = mockRepos.some((r) => r.full_name === `${owner}/${repo}`);
+  if (!known) {
+    // As every other repository endpoint does. Without this a test against a
+    // deleted or inaccessible repository reads as a successful registration.
+    return res.status(404).json({ message: "Not Found" });
+  }
+  return res.json(deployKeysByRepo.get(`${owner}/${repo}`) ?? []);
+}
+
+export function handleCreateDeployKey(req: Request, res: Response) {
+  const { owner, repo } = req.params;
+  if (!req.headers.authorization?.includes(mockAccessToken)) {
+    return res.status(401).json({ message: "Bad credentials" });
+  }
+  const known = mockRepos.some((r) => r.full_name === `${owner}/${repo}`);
+  if (!known) {
+    // As every other repository endpoint does. Without this a test against a
+    // deleted or inaccessible repository reads as a successful registration.
+    return res.status(404).json({ message: "Not Found" });
+  }
+  const fullName = `${owner}/${repo}`;
+  const material = keyMaterial(String(req.body?.key ?? ""));
+  const existing = deployKeysByRepo.get(fullName) ?? [];
+  if (existing.some((k) => keyMaterial(k.key) === material)) {
+    return res.status(422).json({
+      message: "Validation Failed",
+      errors: [{ message: "key is already in use" }],
+    });
+  }
+  const created = {
+    id: nextDeployKeyId++,
+    title: String(req.body?.title ?? ""),
+    key: String(req.body?.key ?? ""),
+    read_only: req.body?.read_only !== false,
+  };
+  deployKeysByRepo.set(fullName, [...existing, created]);
+  return res.status(201).json(created);
+}
+
+export function handleClearDeployKeys(_req: Request, res: Response) {
+  deployKeysByRepo.clear();
+  return res.json({ ok: true });
+}
