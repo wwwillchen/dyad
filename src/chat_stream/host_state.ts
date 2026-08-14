@@ -76,6 +76,7 @@ export type ChatStreamHostCommand =
       readonly type: "cancel-active";
       readonly invocationRef: ChatStreamInvocationRef;
     }
+  | { readonly type: "park-queue" }
   | {
       readonly type: "mutate-queue";
       readonly mutation:

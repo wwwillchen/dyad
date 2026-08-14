@@ -436,9 +436,9 @@ export function ChatInput({ chatId }: { chatId?: number }) {
   }, []);
 
   // Auto-clear pause state when queue becomes empty (Users expect that deleting
-  // all queued messages returns them to normal send mode). Keep the Stop latch
-  // until cancellation settles so a late submission admitted by the stream
-  // machine cannot land in an unpaused queue.
+  // all queued messages returns them to normal send mode). Keep the
+  // authoritative Stop policy until cancellation settles so a late submission
+  // admitted by the stream machine cannot land in an unpaused queue.
 
   useEffect(() => {
     if (

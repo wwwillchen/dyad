@@ -14,6 +14,7 @@ import {
   markIntentAccepted,
   markIntentTerminal,
   mutateChatQueue,
+  parkChatQueue,
   persistAcceptedChatTurn,
   persistQueuedIntent,
   restoreClaimedQueueHead,
@@ -90,6 +91,20 @@ describe("chat stream persistence", () => {
 
     expect(database.select().from(chatTurnIntents).all()).toEqual([]);
     expect(database.select().from(chatQueueEntries).all()).toEqual([]);
+  });
+
+  it("parks the queue idempotently without a renderer revision", async () => {
+    persistQueuedIntent(database, intent("turn-1"));
+
+    await expect(parkChatQueue(database, chatId)).resolves.toMatchObject({
+      queueRevision: 2,
+      queuePaused: true,
+      queue: [{ intentId: "turn-1" }],
+    });
+    await expect(parkChatQueue(database, chatId)).resolves.toMatchObject({
+      queueRevision: 2,
+      queuePaused: true,
+    });
   });
 
   it("bounds the aggregate queue projection before transport", () => {

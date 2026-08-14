@@ -183,10 +183,13 @@ test.describe("queued messages", () => {
     await expect(queueHeader).toContainText("Paused", {
       timeout: Timeout.MEDIUM,
     });
-    await expect(queueHeader).toContainText("1 Queued");
     await expect(
       po.page.getByRole("button", { name: /cancel generation/i }),
     ).not.toBeVisible({ timeout: Timeout.MEDIUM });
+    await expect(queueHeader).toContainText("1 Queued");
+    await expect(
+      queueHeader.getByText("queued before stop", { exact: true }),
+    ).toBeVisible();
     await po.toastNotifications.expectNoToast();
   });
 

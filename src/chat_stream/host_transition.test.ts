@@ -84,7 +84,9 @@ describe("transitionChatStreamHost", () => {
     expect(cancelling.kind).toBe("applied");
     if (cancelling.kind !== "applied") return;
     expect(cancelling.state.active?.pauseQueueOnCancel).toBe(true);
+    expect(cancelling.state.queuePaused).toBe(true);
     expect(cancelling.commands).toEqual([
+      { type: "park-queue" },
       {
         type: "cancel-active",
         invocationRef: activeIntent.invocationRef!,
@@ -119,6 +121,80 @@ describe("transitionChatStreamHost", () => {
         pausePromptQueue: true,
       },
     ]);
+  });
+
+  it("parks a late Stop while finalization is already in progress", () => {
+    const activeIntent = intent("active");
+    const submitted = transitionChatStreamHost(initialChatStreamHostState(), {
+      type: "SUBMIT",
+      intent: activeIntent,
+    });
+    expect(submitted.kind).toBe("applied");
+    if (submitted.kind !== "applied") return;
+    const finalizing = transitionChatStreamHost(submitted.state, {
+      type: "STREAM_ENDED",
+      intentId: activeIntent.intentId,
+      invocationRef: activeIntent.invocationRef!,
+      response: {
+        chatId: 7,
+        invocationRef: activeIntent.invocationRef!,
+        updatedFiles: false,
+      },
+      targetAppId: 3,
+    });
+    expect(finalizing.kind).toBe("applied");
+    if (finalizing.kind !== "applied") return;
+    expect(finalizing.state.lastCompletion?.pausePromptQueue).toBeUndefined();
+
+    const stopped = transitionChatStreamHost(finalizing.state, {
+      type: "CANCEL",
+      invocationRef: activeIntent.invocationRef!,
+      pauseQueue: true,
+    });
+    expect(stopped.kind).toBe("applied");
+    if (stopped.kind !== "applied") return;
+    expect(stopped.state).toMatchObject({
+      phase: "finalizing",
+      queuePaused: true,
+      active: { pauseQueueOnCancel: true },
+    });
+    expect(stopped.commands).toEqual([{ type: "park-queue" }]);
+  });
+
+  it("retries queue parking when cancellation fails", () => {
+    const activeIntent = intent("active");
+    const submitted = transitionChatStreamHost(initialChatStreamHostState(), {
+      type: "SUBMIT",
+      intent: activeIntent,
+    });
+    expect(submitted.kind).toBe("applied");
+    if (submitted.kind !== "applied") return;
+    const cancelling = transitionChatStreamHost(submitted.state, {
+      type: "CANCEL",
+      invocationRef: activeIntent.invocationRef!,
+      pauseQueue: true,
+    });
+    expect(cancelling.kind).toBe("applied");
+    if (cancelling.kind !== "applied") return;
+
+    const failed = transitionChatStreamHost(cancelling.state, {
+      type: "LIFECYCLE_COMMAND_FAILED",
+      command: "cancel-active",
+      intentId: activeIntent.intentId,
+      invocationRef: activeIntent.invocationRef!,
+      error: "cancel failed",
+      queueRevision: 4,
+      paused: false,
+      entries: [],
+    });
+    expect(failed.kind).toBe("applied");
+    if (failed.kind !== "applied") return;
+    expect(failed.state).toMatchObject({
+      phase: "errored",
+      queuePaused: true,
+      active: null,
+    });
+    expect(failed.commands).toEqual([{ type: "park-queue" }]);
   });
 
   it("does not leave a replayed accepted turn stuck in admitting", () => {

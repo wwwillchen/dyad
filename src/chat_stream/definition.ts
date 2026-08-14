@@ -36,6 +36,7 @@ import {
   isSessionQueuedIntent,
   markIntentTerminal,
   mutateChatQueue,
+  parkChatQueue,
   claimQueueHead,
   persistQueuedIntent,
   persistSessionQueuedIntent,
@@ -346,6 +347,27 @@ function createCommandRunner(
             command: "cancel-active",
             intentId: active.intent.intentId,
             invocationRef: command.invocationRef,
+            error: error instanceof Error ? error.message : String(error),
+            queueRevision: queue.queueRevision,
+            paused: queue.queuePaused,
+            entries: queue.queue,
+          });
+        }
+        return;
+      }
+      case "park-queue": {
+        try {
+          const queue = await parkChatQueue(db, context.key.chatId);
+          emit({
+            type: "QUEUE_PARKED",
+            queueRevision: queue.queueRevision,
+            paused: true,
+            entries: queue.queue,
+          });
+        } catch (error) {
+          const queue = loadAuthoritativeQueue();
+          emit({
+            type: "QUEUE_PARK_FAILED",
             error: error instanceof Error ? error.message : String(error),
             queueRevision: queue.queueRevision,
             paused: queue.queuePaused,

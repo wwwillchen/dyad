@@ -148,29 +148,48 @@ export function transitionChatStreamHost(
       };
     }
     case "CANCEL":
-      if (
-        !state.active ||
-        (state.phase !== "admitting" && state.phase !== "streaming")
-      ) {
+      if (!state.active) {
         return ignore(state, "not-cancellable");
       }
       if (!sameInvocationRef(state.active.invocationRef, event.invocationRef)) {
         return ignore(state, "stale-invocation");
       }
-      return {
-        kind: "applied",
-        state: {
-          ...state,
-          phase: "cancelling",
-          active: {
-            ...state.active,
-            pauseQueueOnCancel: event.pauseQueue === true,
+      if (
+        state.phase !== "admitting" &&
+        state.phase !== "streaming" &&
+        !event.pauseQueue
+      ) {
+        return ignore(state, "not-cancellable");
+      }
+      {
+        const shouldCancelActive =
+          state.phase === "admitting" || state.phase === "streaming";
+        const shouldParkQueue = event.pauseQueue === true;
+        return {
+          kind: "applied",
+          state: {
+            ...state,
+            phase: shouldCancelActive ? "cancelling" : state.phase,
+            queuePaused: shouldParkQueue || state.queuePaused,
+            active: {
+              ...state.active,
+              pauseQueueOnCancel:
+                shouldParkQueue || state.active.pauseQueueOnCancel,
+            },
           },
-        },
-        commands: [
-          { type: "cancel-active", invocationRef: event.invocationRef },
-        ],
-      };
+          commands: [
+            ...(shouldParkQueue ? [{ type: "park-queue" as const }] : []),
+            ...(shouldCancelActive
+              ? [
+                  {
+                    type: "cancel-active" as const,
+                    invocationRef: event.invocationRef,
+                  },
+                ]
+              : []),
+          ],
+        };
+      }
     case "REPORT_ERROR":
       return {
         kind: "applied",
@@ -381,7 +400,7 @@ export function transitionChatStreamHost(
               invocationRef: event.invocationRef,
               outcome: event.response.wasCancelled ? "cancelled" : "completed",
               chatSummary: event.response.chatSummary,
-              pausePromptQueue,
+              ...(pausePromptQueue ? { pausePromptQueue: true } : {}),
               reviewBarrierRequested: event.response.reviewBarrierRequested,
               updatedFiles: event.response.updatedFiles,
               extraFiles: event.response.extraFiles,
@@ -691,6 +710,29 @@ export function transitionChatStreamHost(
         },
         commands: [],
       };
+    case "QUEUE_PARKED":
+      return {
+        kind: "applied",
+        state: {
+          ...state,
+          queueRevision: event.queueRevision,
+          queuePaused: true,
+          queue: event.entries,
+        },
+        commands: [],
+      };
+    case "QUEUE_PARK_FAILED":
+      return {
+        kind: "applied",
+        state: {
+          ...state,
+          error: event.error,
+          queueRevision: event.queueRevision,
+          queuePaused: event.paused,
+          queue: event.entries,
+        },
+        commands: [],
+      };
     case "LIFECYCLE_COMMAND_FAILED":
       if (
         !state.active ||
@@ -707,7 +749,7 @@ export function transitionChatStreamHost(
           active: null,
           error: event.error,
           queueRevision: event.queueRevision,
-          queuePaused: event.paused,
+          queuePaused: state.active.pauseQueueOnCancel || event.paused,
           queue: event.entries,
           lastCompletion: {
             intentId: event.intentId,
@@ -717,7 +759,9 @@ export function transitionChatStreamHost(
             targetAppId: state.active.targetAppId,
           },
         },
-        commands: [],
+        commands: state.active.pauseQueueOnCancel
+          ? [{ type: "park-queue" }]
+          : [],
       };
   }
 }

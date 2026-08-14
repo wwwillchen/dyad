@@ -912,6 +912,20 @@ export async function mutateChatQueue(
   });
 }
 
+export async function parkChatQueue(
+  database: ChatDatabase,
+  chatId: number,
+): Promise<ReturnType<typeof loadChatQueue>> {
+  return withChatQueueLock(chatId, async () => {
+    const aggregate = queueFor(chatId);
+    if (!aggregate.paused) {
+      aggregate.paused = true;
+      aggregate.revision += 1;
+    }
+    return loadChatQueue(database, chatId);
+  });
+}
+
 export function markIntentTerminal(
   database: ChatDatabase,
   intent: Pick<SerializableChatTurnIntent, "chatId" | "intentId" | "owner">,

@@ -239,7 +239,7 @@ describe("useStreamChat lifecycle intents", () => {
     };
   });
 
-  it("cancels only while the remote capability permits it", () => {
+  it("keeps Stop dispatchable through cancellation settlement", () => {
     const { Wrapper } = makeWrapper();
     const { result, rerender } = renderHook(() => useStreamChat(), {
       wrapper: Wrapper,
@@ -258,7 +258,8 @@ describe("useStreamChat lifecycle intents", () => {
     };
     rerender();
     act(() => result.current.cancelStream());
-    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(mocks.send).toHaveBeenCalledTimes(2);
+    expect(mocks.send).toHaveBeenLastCalledWith({ type: "cancel" });
   });
 
   it("routes external errors through the main actor", () => {
