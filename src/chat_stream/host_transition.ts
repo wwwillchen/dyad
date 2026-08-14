@@ -236,6 +236,7 @@ export function transitionChatStreamHost(
             ...state,
             stopPolicyVersion: state.stopPolicyVersion + 1,
             lastStopId: event.stopId ?? null,
+            queuePaused: true,
             queuePauseReason: "stop" as const,
             pendingQueuePauseMutationId: null,
           }

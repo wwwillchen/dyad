@@ -132,7 +132,10 @@ Background and before/after examples of why this pattern exists:
   may already include an intervening Stop. When admission or
   persistence completes asynchronously, gate follow-up dispatch on the current
   main-owned cutoff as well as the completion payload; a stale unpaused result
-  must not override a newer Stop latch.
+  must not override a newer Stop latch. Establish every in-memory guard used by
+  later transitions in the policy-starting transition itself (for example,
+  set both the Stop reason/version and `queuePaused` before asynchronously
+  persisting the pause); metadata alone does not close the command-yield race.
   Bounded dedup caches may evict settled history, never unresolved receipts;
   reject excess in-flight work through a separate bounded admission limit.
   Scope renderer retries to the stable window-session identity, not an

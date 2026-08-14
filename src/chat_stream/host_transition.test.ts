@@ -317,7 +317,7 @@ describe("transitionChatStreamHost", () => {
     if (cancelling.kind !== "applied") return;
     expect(cancelling.state.active?.pauseQueueOnCancel).toBe(true);
     expect(cancelling.state.stopPolicyVersion).toBe(1);
-    expect(cancelling.state.queuePaused).toBe(false);
+    expect(cancelling.state.queuePaused).toBe(true);
     expect(cancelling.commands).toEqual([
       { type: "park-queue" },
       {
@@ -607,7 +607,7 @@ describe("transitionChatStreamHost", () => {
     if (stopped.kind !== "applied") return;
     expect(stopped.state).toMatchObject({
       phase: "finalizing",
-      queuePaused: false,
+      queuePaused: true,
       active: { pauseQueueOnCancel: true },
     });
     expect(stopped.commands).toEqual([{ type: "park-queue" }]);
@@ -963,8 +963,55 @@ describe("transitionChatStreamHost", () => {
     expect(stopped.kind).toBe("applied");
     if (stopped.kind !== "applied") return;
     expect(stopped.state.active).toBe(state.active);
-    expect(stopped.state.queuePaused).toBe(false);
+    expect(stopped.state.queuePaused).toBe(true);
     expect(stopped.commands).toEqual([{ type: "park-queue" }]);
+  });
+
+  it("latches Stop before asynchronous queue parking completes", () => {
+    const queued = {
+      itemId: "already-queued",
+      intentId: "already-queued",
+      prompt: "Run first",
+      persistence: "durable" as const,
+      editable: true,
+      removable: true,
+    };
+    const state = initialChatStreamHostState({
+      queueRevision: 3,
+      queuePaused: false,
+      queue: [queued],
+    });
+
+    const stopped = transitionChatStreamHost(state, {
+      type: "CANCEL",
+      invocationRef: intent("already-finished").invocationRef!,
+      pauseQueue: true,
+      observedStopPolicyVersion: 0,
+    });
+    expect(stopped.kind).toBe("applied");
+    if (stopped.kind !== "applied") return;
+    expect(stopped.state).toMatchObject({
+      queuePaused: true,
+      queuePauseReason: "stop",
+      stopPolicyVersion: 1,
+    });
+
+    const submitted = transitionChatStreamHost(stopped.state, {
+      type: "SUBMIT",
+      intent: intent("submitted-before-park"),
+      observedStopPolicyVersion: 1,
+    });
+    expect(submitted.kind).toBe("applied");
+    if (submitted.kind !== "applied") return;
+    expect(submitted.state.active).toBeNull();
+    expect(submitted.commands).toEqual([
+      {
+        type: "persist-queued",
+        intent: intent("submitted-before-park"),
+        observedStopPolicyVersion: 1,
+        resumeQueue: true,
+      },
+    ]);
   });
 
   it("ignores stale queue parking results", () => {
