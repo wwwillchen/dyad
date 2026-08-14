@@ -707,17 +707,24 @@ export const chatStreamDefinition = {
         }
         event.intent.originWindowSessionId = sender.windowSessionId;
       }
-      if (
-        event.type === "CANCEL" &&
-        event.pauseQueue !== true &&
-        (!currentState?.active ||
-          currentState.active.invocationRef.operationId !==
-            event.invocationRef.operationId)
-      ) {
-        throw new DyadError(
-          "Cancellation does not target the active chat stream",
-          DyadErrorKind.Auth,
-        );
+      if (event.type === "CANCEL") {
+        if (event.invocationRef.entityKey !== key.chatId) {
+          throw new DyadError(
+            "Cancellation does not belong to the routed chat",
+            DyadErrorKind.Auth,
+          );
+        }
+        if (
+          event.pauseQueue !== true &&
+          (!currentState?.active ||
+            currentState.active.invocationRef.operationId !==
+              event.invocationRef.operationId)
+        ) {
+          throw new DyadError(
+            "Cancellation does not target the active chat stream",
+            DyadErrorKind.Auth,
+          );
+        }
       }
     },
   },

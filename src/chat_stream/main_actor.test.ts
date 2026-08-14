@@ -949,6 +949,27 @@ describe("main-hosted chat stream actor", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("rejects a queue-parking cancellation routed from another chat", async () => {
+    await expect(
+      chatStreamDefinition.remote.authorizeDispatch({
+        sender: {
+          webContentsId: 1,
+          windowSessionId: "renderer-window",
+        },
+        key: chatStreamKey(7),
+        event: {
+          type: "CANCEL",
+          invocationRef: {
+            ...turn("other-chat").invocationRef!,
+            entityKey: 8,
+          },
+          pauseQueue: true,
+        },
+        currentState: initialChatStreamHostState(),
+      }),
+    ).rejects.toMatchObject({ kind: "auth" });
+  });
+
   it("rejects subscriptions and dispatches while chat deletion is fenced", async () => {
     const releaseDeletion = beginChatActorDeletion(7);
     try {
