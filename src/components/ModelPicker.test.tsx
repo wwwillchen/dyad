@@ -332,8 +332,16 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   }: {
     children: React.ReactNode;
   }) => <button {...props}>{children}</button>,
-  DropdownMenuContent: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
+  DropdownMenuContent: ({
+    children,
+    className,
+  }: {
+    children: React.ReactNode;
+    className?: string;
+  }) => (
+    <div className={className} data-testid="model-picker-dropdown">
+      {children}
+    </div>
   ),
   DropdownMenuItem: ({ children, ...props }: { children: React.ReactNode }) => (
     <button {...props}>{children}</button>
@@ -486,22 +494,29 @@ describe("ModelPicker", () => {
     render(<ModelPicker />);
 
     expect(screen.getByTestId("model-picker").textContent).toContain(
-      "Auto Sidekick (Medium)",
+      "Auto Sidekick",
+    );
+    expect(screen.getByTestId("model-picker").textContent).not.toContain(
+      "Medium",
     );
     expect(screen.getByTestId("model-picker").textContent).not.toContain(
       "auto-sidekick",
     );
   });
 
-  it("shows effort in the trigger and selects catalog-defined effort from a model submenu", async () => {
+  it("omits effort from the trigger and selects catalog-defined effort from a model submenu", async () => {
     mocks.renderSubContent = true;
     render(<ModelPicker />);
 
-    expect(screen.getByTestId("model-picker").textContent).toContain(
-      "Auto (Medium)",
+    expect(screen.getByTestId("model-picker").textContent).toContain("Auto");
+    expect(screen.getByTestId("model-picker").textContent).not.toContain(
+      "Medium",
     );
     expect(screen.getByTestId("model-picker").className).toContain(
       "max-w-[220px]",
+    );
+    expect(screen.getByTestId("model-picker-dropdown").className).toContain(
+      "w-[320px]",
     );
     const gpt5Row = screen.getAllByText("GPT 5")[0].closest("button")!;
     expect(
@@ -641,7 +656,9 @@ describe("ModelPicker", () => {
       screen.getByText("Claude Sonnet 4.5").closest("button")?.dataset.locked,
     ).toBeUndefined();
     expect(
-      screen.getByText("Auto").closest("button")?.dataset.locked,
+      document.querySelector<HTMLElement>(
+        '[data-model-provider="auto"][data-model-name="auto"]',
+      )?.dataset.locked,
     ).toBeUndefined();
   });
 
@@ -799,12 +816,11 @@ describe("ModelPicker", () => {
 
     render(<ModelPicker />);
 
-    expect(screen.getByText("Auto").closest("button")?.textContent).toContain(
-      "Data sharing",
+    const autoRow = document.querySelector<HTMLElement>(
+      '[data-model-provider="auto"][data-model-name="auto"]',
     );
-    expect(
-      screen.getByText("Auto").closest("button")?.getAttribute("aria-label"),
-    ).toContain("Data sharing");
+    expect(autoRow?.textContent).toContain("Data sharing");
+    expect(autoRow?.getAttribute("aria-label")).toContain("Data sharing");
   });
 
   it("shows data sharing disclosure on Auto for non-Pro users with OPENROUTER_API_KEY", () => {
@@ -814,9 +830,11 @@ describe("ModelPicker", () => {
 
     render(<ModelPicker />);
 
-    expect(screen.getByText("Auto").closest("button")?.textContent).toContain(
-      "Data sharing",
-    );
+    expect(
+      document.querySelector<HTMLElement>(
+        '[data-model-provider="auto"][data-model-name="auto"]',
+      )?.textContent,
+    ).toContain("Data sharing");
   });
 
   it("does not show data sharing disclosure on Auto without an OpenRouter key", () => {
@@ -826,7 +844,9 @@ describe("ModelPicker", () => {
     render(<ModelPicker />);
 
     expect(
-      screen.getByText("Auto").closest("button")?.textContent,
+      document.querySelector<HTMLElement>(
+        '[data-model-provider="auto"][data-model-name="auto"]',
+      )?.textContent,
     ).not.toContain("Data sharing");
   });
 
@@ -878,7 +898,9 @@ describe("ModelPicker", () => {
     expect(
       screen.getByText("Upgrade from Dyad Pro trial to unlock more models."),
     ).toBeTruthy();
-    const autoRow = screen.getByText("Auto").closest("button")!;
+    const autoRow = document.querySelector<HTMLElement>(
+      '[data-model-provider="auto"][data-model-name="auto"]',
+    )!;
     expect(
       autoRow.querySelector("[data-effort-chevron]")?.previousElementSibling
         ?.textContent,
