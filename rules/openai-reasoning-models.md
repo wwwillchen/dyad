@@ -13,3 +13,7 @@ OpenAI's Responses API requires reasoning items to always be followed by an outp
 - Only reasoning was generated in a turn
 
 The fix in `src/ipc/utils/ai_messages_utils.ts` filters orphaned reasoning parts within `cleanMessage()` before sending conversation history back to OpenAI.
+
+## Dyad Engine model aliases
+
+When a Dyad Engine alias is backed by an OpenAI reasoning model, create it with `provider.responses(...)` and pass `providerId: "openai"`. Passing the alias provider (for example, `"auto"`) prevents `getExtraProviderOptionsForEngine()` from adding reasoning effort, summaries, encrypted reasoning content, and `store: false`.
