@@ -530,7 +530,9 @@
 
     // Electron's native reload accelerators target the whole Dyad renderer.
     // Keep reload shortcuts scoped to the preview even while it owns focus.
-    if (key === "r" && hasCtrlOrMeta) {
+    const hasUnexpectedReloadModifier =
+      e.altKey || (isMac ? e.ctrlKey : e.metaKey);
+    if (key === "r" && hasCtrlOrMeta && !hasUnexpectedReloadModifier) {
       e.preventDefault();
       window.parent.postMessage(
         {
@@ -590,6 +592,16 @@
 
   /* ---------- message bridge -------------------------------------------- */
   window.addEventListener("message", (e) => {
+    // The shim can also run inside iframes nested in the app preview. Bubble a
+    // child's shortcut request one frame at a time until the top preview frame
+    // can deliver it to Dyad with the source identity the parent expects.
+    if (
+      e.source !== window.parent &&
+      e.data?.type === "dyad-preview-reload-shortcut"
+    ) {
+      window.parent.postMessage(e.data, "*");
+      return;
+    }
     if (e.source !== window.parent) return;
     if (e.data.type === "dyad-pro-mode") {
       isProMode = e.data.enabled;

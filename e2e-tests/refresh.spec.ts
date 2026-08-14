@@ -29,10 +29,26 @@ testSkipIfWindows(
     ]);
 
     await po.page.evaluate(() => {
-      (
-        window as typeof window & { reloadShortcutMarker?: string }
-      ).reloadShortcutMarker = "outer-renderer-still-alive";
+      const testWindow = window as typeof window & {
+        reloadShortcutMarker?: string;
+        previewSelectorReadyCount?: number;
+      };
+      testWindow.reloadShortcutMarker = "outer-renderer-still-alive";
+      testWindow.previewSelectorReadyCount = 0;
+      window.addEventListener("message", (event) => {
+        if (event.data?.type === "dyad-component-selector-initialized") {
+          testWindow.previewSelectorReadyCount =
+            (testWindow.previewSelectorReadyCount ?? 0) + 1;
+        }
+      });
     });
+
+    const getSelectorReadyCount = () =>
+      po.page.evaluate(
+        () =>
+          (window as typeof window & { previewSelectorReadyCount?: number })
+            .previewSelectorReadyCount ?? 0,
+      );
 
     const modifier = process.platform === "darwin" ? "Meta" : "Control";
     const shortcuts = [`${modifier}+r`, `${modifier}+Shift+r`];
@@ -52,8 +68,23 @@ testSkipIfWindows(
       timeout: Timeout.MEDIUM,
     });
 
+    const initialFrame = po.previewPanel
+      .getPreviewIframeElement()
+      .contentFrame();
+    await initialFrame.locator("body").evaluate((body) => {
+      body.dataset.reloadShortcutMarker = "not-reloaded";
+      body.tabIndex = -1;
+      body.focus();
+    });
+    await po.page.keyboard.press(`${modifier}+Alt+r`);
+    await expect(initialFrame.locator("body")).toHaveAttribute(
+      "data-reload-shortcut-marker",
+      "not-reloaded",
+    );
+
     for (const [index, shortcut] of shortcuts.entries()) {
       const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
+      const selectorReadyCount = await getSelectorReadyCount();
       await frame.locator("body").evaluate((body) => {
         body.dataset.reloadShortcutMarker = "before-reload";
         body.tabIndex = -1;
@@ -73,6 +104,9 @@ testSkipIfWindows(
         "before-reload",
         { timeout: Timeout.LONG },
       );
+      await expect
+        .poll(getSelectorReadyCount)
+        .toBeGreaterThan(selectorReadyCount);
       await expect
         .poll(() =>
           po.page.evaluate(
@@ -100,6 +134,7 @@ testSkipIfWindows(
 
     for (const shortcut of shortcuts) {
       const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
+      const selectorReadyCount = await getSelectorReadyCount();
       await frame.locator("body").evaluate((body) => {
         body.dataset.reloadShortcutMarker = "before-reload";
       });
@@ -112,7 +147,35 @@ testSkipIfWindows(
         "before-reload",
         { timeout: Timeout.LONG },
       );
+      await expect
+        .poll(getSelectorReadyCount)
+        .toBeGreaterThan(selectorReadyCount);
     }
+
+    const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
+    const selectorReadyCount = await getSelectorReadyCount();
+    await frame.locator("body").evaluate((body) => {
+      const nestedFrame = document.createElement("iframe");
+      nestedFrame.dataset.testid = "nested-preview-frame";
+      nestedFrame.src = window.location.href;
+      body.appendChild(nestedFrame);
+    });
+    const nestedFrame = frame
+      .locator('iframe[data-testid="nested-preview-frame"]')
+      .contentFrame();
+    await expect(nestedFrame.locator("body")).toBeVisible({
+      timeout: Timeout.LONG,
+    });
+    await nestedFrame.locator("body").evaluate((body) => {
+      body.tabIndex = -1;
+      body.focus();
+    });
+
+    await po.page.keyboard.press(`${modifier}+r`);
+
+    await expect
+      .poll(getSelectorReadyCount)
+      .toBeGreaterThan(selectorReadyCount);
   },
 );
 
