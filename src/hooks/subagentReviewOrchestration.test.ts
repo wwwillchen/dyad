@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   runAutoReviewBarrier: vi.fn(),
   skipReviewAutoFix: vi.fn(),
   dispatchQueueEvent: vi.fn(),
+  queue: [{ itemId: "queued-1" }] as Array<{ itemId: string }>,
   streamFinishedCallback: undefined as
     | ((event: {
         chatId: number;
@@ -23,7 +24,7 @@ vi.mock("@/chat_stream/ChatStreamProvider", () => ({
       getSnapshot: () => ({
         phase: "idle",
         queuePaused: true,
-        queue: [{ itemId: "queued-1" }],
+        queue: mocks.queue,
         lastCompletion: { pausePromptQueue: true },
       }),
       send: vi.fn(),
@@ -75,6 +76,7 @@ import {
 describe("sub-agent review orchestration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.queue = [{ itemId: "queued-1" }];
     mocks.streamFinishedCallback = undefined;
     mocks.dispatchQueueEvent.mockResolvedValue(undefined);
   });
@@ -109,6 +111,22 @@ describe("sub-agent review orchestration", () => {
     await Promise.resolve();
     expect(mocks.runAutoReviewBarrier).not.toHaveBeenCalled();
     expect(mocks.dispatchQueueEvent).not.toHaveBeenCalled();
+  });
+
+  it("leaves an unqueued review barrier in the main actor", async () => {
+    mocks.queue = [];
+    renderHook(() => useBackgroundAutoReview());
+
+    mocks.streamFinishedCallback?.({
+      chatId: 7,
+      outcome: "completed",
+      updatedFiles: true,
+      reviewBarrierRequested: true,
+      wasCancelled: false,
+    });
+
+    await Promise.resolve();
+    expect(mocks.runAutoReviewBarrier).not.toHaveBeenCalled();
   });
 
   it("leaves queued turns to the queue review barrier", () => {

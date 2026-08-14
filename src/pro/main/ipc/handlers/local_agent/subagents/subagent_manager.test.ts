@@ -6,6 +6,7 @@ import {
   buildRemediationPrompt,
   buildReboundReviewState,
   buildBoundedModelHistory,
+  buildExplorerFollowupAssignment,
   emitSubagentUpdate,
   isAcceptableImplementerJoinStatus,
   isReusableReviewStatus,
@@ -180,6 +181,27 @@ describe("sub-agent manager status policy", () => {
       { role: "assistant", content: "Option two uses callbacks." },
       { role: "user", content: "Address queued messages in order" },
     ]);
+  });
+
+  it("projects durable Explorer history and queued root messages into follow-ups", () => {
+    expect(
+      buildExplorerFollowupAssignment({
+        originalAssignment: "Trace authentication",
+        currentAssignment: "Continue by addressing queued messages in order.",
+        priorReport: "Authentication starts in src/auth.ts.",
+        rootMessages: ["Also inspect token refresh."],
+      }),
+    ).toContain(
+      "Previous Explorer report:\nAuthentication starts in src/auth.ts.",
+    );
+    expect(
+      buildExplorerFollowupAssignment({
+        originalAssignment: "Trace authentication",
+        currentAssignment: "Continue by addressing queued messages in order.",
+        priorReport: "Authentication starts in src/auth.ts.",
+        rootMessages: ["Also inspect token refresh."],
+      }),
+    ).toContain("Queued root messages:\n- Also inspect token refresh.");
   });
 
   it("strips non-persisted reasoning item IDs before a post-tool step", () => {

@@ -1755,7 +1755,8 @@ ${componentSnippet}
         // spawn_agent replaces the old explore_code tool.
         const codeExplorerAvailable =
           isDyadProEnabled(settings) &&
-          settings.enableExplorerSubagent !== false;
+          settings.enableExplorerSubagent !== false &&
+          settings.agentToolConsents?.["spawn_agent"] !== "never";
         // Mirrors explore_chat_history's toolset inclusion (Pro, and not
         // consent-"never") so the prompt never points the model at a tool
         // that isn't in the toolset. Consent is read from settings directly

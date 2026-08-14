@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ToolSet } from "ai";
+import type { SubagentThreadSummary } from "@/ipc/types";
 
 import { buildAgentToolSet } from "../tool_definitions";
 import {
@@ -191,11 +192,17 @@ export const spawnAgentTool: ToolDefinition<
     ctx.onXmlComplete(
       `<dyad-subagent chat-id="${escapeXmlAttr(String(ctx.chatId))}" thread-id="${escapeXmlAttr(threadId)}" persona="${escapeXmlAttr(args.persona)}" task-name="${escapeXmlAttr(args.task_name)}"></dyad-subagent>`,
     );
-    const [subagent] = await waitForSubagents(
-      ctx.chatId,
-      [threadId],
-      ctx.abortSignal,
-    );
+    let subagent: SubagentThreadSummary;
+    try {
+      [subagent] = await waitForSubagents(
+        ctx.chatId,
+        [threadId],
+        ctx.abortSignal,
+      );
+    } catch (error) {
+      await cancelSubagent(ctx.chatId, threadId).catch(() => {});
+      throw error;
+    }
     if (args.persona === "explorer") {
       ctx.deliveredExplorerThreadIds ??= [];
       if (!ctx.deliveredExplorerThreadIds.includes(threadId)) {

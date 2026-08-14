@@ -264,6 +264,8 @@ describe("buildReviewTarget", () => {
 
     expect(review.files.sort()).toEqual(["new.ts", "tracked.ts"]);
     expect(review.diff).toContain("+created");
+    expect(review.diff).toContain("@@ -0,0 +1,1 @@\n+created");
+    expect(review.diff).not.toContain("@@ -0,0 +1,2 @@\n+created\n+");
     expect(review.diff).not.toContain("secret");
   });
 

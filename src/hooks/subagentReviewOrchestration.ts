@@ -169,10 +169,9 @@ export function useBackgroundAutoReview(): void {
 
     if (suppressAutoReview) return;
 
-    // Queued review barriers are main-owned by the chat-stream actor. The
-    // renderer observes their progress but must not start, settle, or release
-    // the authoritative FIFO lifecycle.
-    if (event.reviewBarrierRequested && snapshot.queue.length > 0) {
+    // Review barriers are main-owned by the chat-stream actor. The renderer
+    // observes their progress but must not start, settle, or release them.
+    if (event.reviewBarrierRequested) {
       return;
     }
 

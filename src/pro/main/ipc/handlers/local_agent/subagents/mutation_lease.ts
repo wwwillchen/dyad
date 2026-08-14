@@ -56,11 +56,26 @@ export function acquireMutationLease(params: {
   scope: string[];
 }): boolean {
   if (finalizingApps.has(params.appId)) return false;
+  const normalizedScope = params.scope.map(normalizeMutationScope);
+  if (
+    normalizedScope.some(
+      (scope) =>
+        scope === "" ||
+        scope === ".." ||
+        scope.startsWith("../") ||
+        path.posix.isAbsolute(scope),
+    )
+  ) {
+    throw new DyadError(
+      "Implementer scope must contain explicit relative paths within the app.",
+      DyadErrorKind.Validation,
+    );
+  }
   const current = leases.get(params.appId);
   if (current && current.threadId !== params.threadId) return false;
   leases.set(params.appId, {
     threadId: params.threadId,
-    scope: params.scope.map(normalizeMutationScope),
+    scope: normalizedScope,
   });
   return true;
 }
@@ -119,9 +134,7 @@ export function assertImplementerPathAllowed(
     scope.length === 0 ||
     !scope.some(
       (allowed) =>
-        allowed === "" ||
-        normalizedPath === allowed ||
-        normalizedPath.startsWith(`${allowed}/`),
+        normalizedPath === allowed || normalizedPath.startsWith(`${allowed}/`),
     )
   ) {
     throw new DyadError(

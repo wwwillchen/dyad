@@ -143,6 +143,34 @@ describe("spawn_agent schema", () => {
     );
   });
 
+  it("cancels a spawned child when the blocking wait fails", async () => {
+    const waitError = new Error("Timed out waiting for sub-agents to finish.");
+    subagentManagerMocks.waitForSubagents.mockRejectedValueOnce(waitError);
+    const ctx = {
+      chatId: 7,
+      abortSignal: new AbortController().signal,
+      onXmlComplete: vi.fn(),
+      spawnedSubagentThreadIds: [],
+    } as unknown as AgentContext;
+
+    await expect(
+      spawnAgentTool.execute(
+        {
+          persona: "explorer",
+          task_name: "Trace auth",
+          assignment: "Explain the authentication flow",
+          scope: ["src/auth"],
+        },
+        ctx,
+      ),
+    ).rejects.toBe(waitError);
+
+    expect(subagentManagerMocks.cancelSubagent).toHaveBeenCalledWith(
+      7,
+      "explorer-1",
+    );
+  });
+
   it("hides advanced tools by default and when explicitly disabled", () => {
     for (const canUseAdvancedSubagentTools of [undefined, false]) {
       const ctx = {

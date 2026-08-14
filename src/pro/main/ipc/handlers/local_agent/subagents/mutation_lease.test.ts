@@ -104,8 +104,8 @@ describe("sub-agent mutation lease", () => {
     expect(ctx.subagentPathScope).toEqual(["src/components"]);
   });
 
-  it.each(["", ".", "./", "/"])(
-    "treats %j as an app-root Implementer scope",
+  it.each(["", ".", "./", "/", "..", "../src"])(
+    "rejects %j as an app-root or escaping Implementer scope",
     (rootScope) => {
       const ctx = {
         subagentPersona: "implementer",
@@ -114,7 +114,14 @@ describe("sub-agent mutation lease", () => {
 
       expect(() =>
         assertImplementerPathAllowed(ctx, "src/components/Card.tsx"),
-      ).not.toThrow();
+      ).toThrow(/assigned paths/);
+      expect(() =>
+        acquireMutationLease({
+          appId: 7,
+          threadId: "implementer-1",
+          scope: [rootScope],
+        }),
+      ).toThrow(/explicit relative paths/);
     },
   );
 

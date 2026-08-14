@@ -200,7 +200,12 @@ export async function buildReviewTarget(params: {
       }
 
       const text = buffer.toString("utf8");
-      const textLines = text.split("\n");
+      const textWithoutTrailingNewline = text.endsWith("\n")
+        ? text.slice(0, -1)
+        : text;
+      const textLines = textWithoutTrailingNewline
+        ? textWithoutTrailingNewline.split("\n")
+        : [];
       const syntheticDiff = `diff --git a/${file} b/${file}\nnew file mode 100644\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${textLines.length} @@\n${textLines.map((line) => `+${line}`).join("\n")}`;
       addDiff(file, syntheticDiff);
     }

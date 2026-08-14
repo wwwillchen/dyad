@@ -1282,6 +1282,7 @@ async function runThread(
   let shouldContinue = false;
   abortControllers.set(threadId, controller);
   const entitlementWatcher = watchEntitlement(threadId, controller);
+  const claimedExplorerMessageIds = new Set<number>();
   try {
     assertPersonaEnabled(
       thread.persona,
@@ -1300,11 +1301,33 @@ async function runThread(
     if (!(await updateStatus(threadId, "running"))) return;
     const tools = buildTools(controller.signal);
     let usedExplorerFallback = false;
+    let explorerAssignment = assignment;
+    if (thread.persona === "explorer") {
+      const messages = await db.query.agentMessages.findMany({
+        where: eq(agentMessages.threadId, threadId),
+        orderBy: [asc(agentMessages.sequence)],
+      });
+      const pendingRootMessages = messages.filter(
+        (message) => message.role === "root" && !message.consumed,
+      );
+      for (const message of pendingRootMessages) {
+        claimedExplorerMessageIds.add(message.id);
+      }
+      explorerAssignment = buildExplorerFollowupAssignment({
+        originalAssignment: thread.assignment,
+        currentAssignment: assignment,
+        priorReport: messages
+          .slice()
+          .reverse()
+          .find((message) => message.role === "assistant")?.content,
+        rootMessages: pendingRootMessages.map((message) => message.content),
+      });
+    }
     const result =
       thread.persona === "explorer"
         ? {
             text: await runExploreCodeSubagent({
-              args: { query: assignment, intent: "explain" },
+              args: { query: explorerAssignment, intent: "explain" },
               ctx: {
                 ...rootCtx,
                 subagentThreadId: threadId,
@@ -1330,6 +1353,12 @@ async function runThread(
     const durableResult = boundDurableReport(result.text).trim();
     if (!durableResult) {
       throw new Error("Sub-agent finished without a report.");
+    }
+    if (claimedExplorerMessageIds.size > 0) {
+      await db
+        .update(agentMessages)
+        .set({ consumed: true })
+        .where(inArray(agentMessages.id, [...claimedExplorerMessageIds]));
     }
     await appendAssistantMessage(threadId, durableResult);
     if (thread.persona === "implementer") {
@@ -1361,6 +1390,26 @@ async function runThread(
     cancelledThreadIds.delete(threadId);
     if (shouldContinue) await schedulePendingFollowup(threadId);
   }
+}
+
+export function buildExplorerFollowupAssignment(params: {
+  originalAssignment: string;
+  currentAssignment: string;
+  priorReport?: string;
+  rootMessages: string[];
+}): string {
+  if (params.rootMessages.length === 0) return params.currentAssignment;
+  const sections = [
+    `Original assignment: ${params.originalAssignment}`,
+    params.priorReport
+      ? `Previous Explorer report:\n${params.priorReport}`
+      : "",
+    `Queued root messages:\n${params.rootMessages
+      .map((message) => `- ${message}`)
+      .join("\n")}`,
+    params.currentAssignment,
+  ].filter(Boolean);
+  return sections.join("\n\n").slice(0, MAX_MODEL_HISTORY_CHARS);
 }
 
 async function runReview(
