@@ -208,6 +208,80 @@ describe("getModelClient", () => {
     expect(modelClient.builtinProviderId).toBe("auto");
   });
 
+  test("routes the Value model through the Responses API in local agent mode", async () => {
+    let capturedUrl: string | undefined;
+    let capturedBody: Record<string, unknown> | undefined;
+    setModelClientFetchForTesting(
+      vi.fn(async (url, init) => {
+        capturedUrl = url.toString();
+        capturedBody = JSON.parse(init?.body as string);
+        return new Response(
+          JSON.stringify({
+            id: "resp-test",
+            created_at: 1_700_000_000,
+            model: "dyad/value",
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                id: "msg-test",
+                content: [
+                  {
+                    type: "output_text",
+                    text: "ok",
+                    annotations: [],
+                  },
+                ],
+              },
+            ],
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+
+    const { modelClient } = await getModelClient(
+      {
+        provider: "auto",
+        name: "value",
+      },
+      {
+        enableDyadPro: true,
+        selectedChatMode: "local-agent",
+        providerSettings: {
+          auto: {
+            apiKey: {
+              value: "dyad-pro-key",
+            },
+          },
+        },
+      } as unknown as UserSettings,
+    );
+
+    await generateText({
+      model: modelClient.model,
+      prompt: "hi",
+      maxRetries: 0,
+    });
+
+    expect(capturedUrl).toMatch(/\/v1\/responses$/);
+    expect(capturedBody).toMatchObject({
+      reasoning: {
+        summary: "detailed",
+        effort: "medium",
+      },
+      include: ["reasoning.encrypted_content"],
+      store: false,
+    });
+    expect((modelClient.model as { modelId: string }).modelId).toBe(
+      "dyad/value",
+    );
+  });
+
   test("sends OpenRouter app attribution headers", async () => {
     let capturedHeaders: Headers | undefined;
     setModelClientFetchForTesting(

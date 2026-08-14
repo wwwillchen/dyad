@@ -365,10 +365,13 @@ async function getProModelClient({
   }
   if (
     settings.selectedChatMode === "local-agent" &&
-    model.provider === "openai"
+    (model.provider === "openai" ||
+      (model.provider === "auto" && model.name === "value"))
   ) {
     return {
-      model: provider.responses(modelId, { providerId: model.provider }),
+      model: provider.responses(modelId, {
+        providerId: "openai",
+      }),
       builtinProviderId: model.provider,
     };
   }
