@@ -51,7 +51,7 @@ interface PendingSubmission {
   request: StreamRequest;
   invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>;
   dispatch: Promise<boolean>;
-  observedStopPolicyVersion: number;
+  observedStopPolicyVersion: number | undefined;
   acceptanceDelivered: boolean;
   releaseSubscription: () => void;
 }
@@ -351,6 +351,7 @@ export class ChatStreamRemoteManager {
         const invocationRef = snapshot.invocationRef;
         if (!invocationRef) return;
         const stopId = this.ids.next("chat-stop");
+        const observedStopPolicyVersion = snapshot.stopPolicyVersion;
         const optimistic = [...this.pendingSubmissions.entries()].find(
           ([, pending]) =>
             !pending.acceptanceDelivered &&
@@ -382,6 +383,7 @@ export class ChatStreamRemoteManager {
                       invocationRef,
                       pauseQueue: true,
                       stopId,
+                      observedStopPolicyVersion,
                     },
                     "cancel the chat",
                   );
@@ -399,7 +401,13 @@ export class ChatStreamRemoteManager {
         }
         this.dispatchCompatibilityCommand(
           chatId,
-          { type: "CANCEL", invocationRef, pauseQueue: true, stopId },
+          {
+            type: "CANCEL",
+            invocationRef,
+            pauseQueue: true,
+            stopId,
+            observedStopPolicyVersion,
+          },
           "cancel the chat",
         );
         return;
@@ -451,11 +459,15 @@ export class ChatStreamRemoteManager {
       entityKey: request.chatId,
       operationId: this.ids.next("chat-stream"),
     } as const;
+    const actorView = actor.getView();
     const pending: PendingSubmission = {
       request,
       invocationRef,
       dispatch: Promise.resolve(false),
-      observedStopPolicyVersion: actor.getSnapshot().stopPolicyVersion,
+      observedStopPolicyVersion:
+        actorView.snapshot.kind === "available"
+          ? actorView.state.stopPolicyVersion
+          : undefined,
       acceptanceDelivered: false,
       releaseSubscription: release,
     };
@@ -491,6 +503,14 @@ export class ChatStreamRemoteManager {
       if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
       await this.subscriptions.get(request.chatId)?.bootstrap;
       if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
+      const pendingAfterBootstrap = this.pendingSubmissions.get(intentId);
+      if (
+        pendingAfterBootstrap &&
+        pendingAfterBootstrap.observedStopPolicyVersion === undefined
+      ) {
+        pendingAfterBootstrap.observedStopPolicyVersion =
+          actor.getSnapshot().stopPolicyVersion;
+      }
       const attachments =
         request.attachments && request.attachments.length > 0
           ? await convertFileAttachmentsToChatAttachments(request.attachments)

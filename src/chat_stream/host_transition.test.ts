@@ -342,6 +342,28 @@ describe("transitionChatStreamHost", () => {
     });
   });
 
+  it("ignores an older Stop that arrives after a newer cutoff", () => {
+    const resumed = {
+      ...initialChatStreamHostState(),
+      stopPolicyVersion: 2,
+      lastStopId: "newer-stop",
+    };
+
+    const stale = transitionChatStreamHost(resumed, {
+      type: "CANCEL",
+      invocationRef: intent("old").invocationRef!,
+      pauseQueue: true,
+      stopId: "older-stop",
+      observedStopPolicyVersion: 1,
+    });
+
+    expect(stale).toEqual({
+      kind: "ignored",
+      state: resumed,
+      reason: "not-cancellable",
+    });
+  });
+
   it("parks a late Stop while finalization is already in progress", () => {
     const activeIntent = intent("active");
     const submitted = transitionChatStreamHost(initialChatStreamHostState(), {

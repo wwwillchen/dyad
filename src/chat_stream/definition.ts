@@ -743,6 +743,16 @@ export const chatStreamDefinition = {
           );
         }
         if (
+          event.observedStopPolicyVersion !== undefined &&
+          currentState &&
+          event.observedStopPolicyVersion > currentState.stopPolicyVersion
+        ) {
+          throw new DyadError(
+            "Chat cancellation observed an unknown Stop policy version",
+            DyadErrorKind.Auth,
+          );
+        }
+        if (
           event.pauseQueue !== true &&
           (!currentState?.active ||
             currentState.active.invocationRef.operationId !==

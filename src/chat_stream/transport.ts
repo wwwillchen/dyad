@@ -123,6 +123,7 @@ export const ChatStreamIntentEventSchema = z.discriminatedUnion("type", [
       invocationRef: ChatStreamInvocationRefSchema,
       pauseQueue: z.boolean().optional(),
       stopId: z.string().min(1).max(MAX_CHAT_WIRE_ID_CHARS).optional(),
+      observedStopPolicyVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z

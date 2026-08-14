@@ -174,6 +174,69 @@ describe("ChatStreamRemoteManager", () => {
     manager.dispose();
   });
 
+  it("captures the Stop policy from bootstrap instead of the unavailable placeholder", async () => {
+    let resolveBootstrap!: (snapshot: MachineSnapshotEnvelope) => void;
+    let subscribedAddress!: MachineAddress;
+    const dispatch = vi.fn(async (envelope: MachineDispatchEnvelope) => ({
+      kind: "applied" as const,
+      actorInstanceId: "actor",
+      revision: 5,
+      transactionSequence: 1,
+      messageId: envelope.messageId,
+    }));
+    const connection: ChatStreamRemoteConnection = {
+      getStatus: () => "connected",
+      onStatusChange: () => () => undefined,
+      onSnapshot: () => () => undefined,
+      onDisposed: () => () => undefined,
+      subscribe: (address) => {
+        subscribedAddress = address;
+        return new Promise((resolve) => {
+          resolveBootstrap = resolve;
+        });
+      },
+      unsubscribe: () => Promise.resolve(),
+      dispatch,
+    };
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      connection,
+    );
+    const actor = manager.ensure(7);
+
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "send after an earlier Stop" },
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+
+    resolveBootstrap({
+      ...subscribedAddress,
+      actorInstanceId: "actor",
+      revision: 4,
+      encodedState: {
+        ...unavailableChatStreamSnapshot(7),
+        revision: 4,
+        queuePaused: true,
+        queuePauseReason: "stop",
+        stopPolicyVersion: 3,
+      },
+    });
+
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        encodedEvent: expect.objectContaining({
+          type: "SUBMIT",
+          observedStopPolicyVersion: 3,
+        }),
+      }),
+    );
+
+    manager.dispose();
+  });
+
   it("handles a pending completion in the first bootstrap snapshot", async () => {
     let resolveBootstrap!: (snapshot: MachineSnapshotEnvelope) => void;
     const dispatch = vi.fn(

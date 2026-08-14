@@ -185,6 +185,8 @@ export function transitionChatStreamHost(
     case "CANCEL": {
       const isNewStop =
         event.pauseQueue === true &&
+        (event.observedStopPolicyVersion === undefined ||
+          event.observedStopPolicyVersion >= state.stopPolicyVersion) &&
         (event.stopId === undefined || event.stopId !== state.lastStopId);
       const stoppedState = isNewStop
         ? {

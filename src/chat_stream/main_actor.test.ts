@@ -746,15 +746,22 @@ describe("main-hosted chat stream actor", () => {
 
     actor.send({
       type: "submit",
-      request: {
-        chatId: 7,
-        prompt: "cancel before serialization",
-        attachments: [{ file: {} as File, type: "chat-context" }],
-      },
+      request: { chatId: 7, prompt: "active before Stop" },
     });
+    await vi.waitFor(() =>
+      expect(
+        [...execution.observers.values()].some(
+          (observer) => observer.intent.prompt === "active before Stop",
+        ),
+      ).toBe(true),
+    );
     actor.send({
       type: "submit",
-      request: { chatId: 7, prompt: "keep this queued" },
+      request: {
+        chatId: 7,
+        prompt: "keep this queued",
+        attachments: [{ file: {} as File, type: "chat-context" }],
+      },
     });
     actor.send({ type: "cancel" });
 
@@ -765,7 +772,11 @@ describe("main-hosted chat stream actor", () => {
         expect.objectContaining({ prompt: "keep this queued" }),
       ]),
     );
-    expect(execution.observers.size).toBe(0);
+    expect(
+      [...execution.observers.values()].map(
+        (observer) => observer.intent.prompt,
+      ),
+    ).not.toContain("keep this queued");
     expect(actor.getSnapshot()).toMatchObject({
       phase: "idle",
       queuePaused: true,
@@ -782,8 +793,13 @@ describe("main-hosted chat stream actor", () => {
         [...execution.observers.values()].map(
           (observer) => observer.intent.prompt,
         ),
-      ).toEqual(["keep this queued"]),
+      ).toContain("keep this queued"),
     );
+    expect(
+      [...execution.observers.values()].map(
+        (observer) => observer.intent.prompt,
+      ),
+    ).not.toContain("send after Stop");
     expect(persisted.paused).toBe(false);
     expect(persisted.entries).toEqual([
       expect.objectContaining({ prompt: "send after Stop" }),
