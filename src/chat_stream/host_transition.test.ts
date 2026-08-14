@@ -364,6 +364,43 @@ describe("transitionChatStreamHost", () => {
     });
   });
 
+  it("keeps Stop authoritative over a late manual-pause acknowledgement", () => {
+    const activeIntent = intent("active");
+    const active = {
+      ...initialChatStreamHostState(),
+      phase: "streaming" as const,
+      active: {
+        intent: activeIntent,
+        invocationRef: activeIntent.invocationRef!,
+        targetAppId: 3,
+        pauseQueueOnCancel: false,
+      },
+      pendingQueueMutationId: "manual-pause",
+      pendingQueuePauseMutationId: "manual-pause",
+    };
+    const stopped = transitionChatStreamHost(active, {
+      type: "CANCEL",
+      invocationRef: activeIntent.invocationRef!,
+      pauseQueue: true,
+      stopId: "stop-1",
+      observedStopPolicyVersion: 0,
+    });
+    expect(stopped.kind).toBe("applied");
+    if (stopped.kind !== "applied") return;
+    expect(stopped.state.pendingQueuePauseMutationId).toBeNull();
+
+    const latePause = transitionChatStreamHost(stopped.state, {
+      type: "QUEUE_MUTATED",
+      mutationId: "manual-pause",
+      queueRevision: 1,
+      paused: true,
+      entries: [],
+    });
+    expect(latePause.kind).toBe("applied");
+    if (latePause.kind !== "applied") return;
+    expect(latePause.state.queuePauseReason).toBe("stop");
+  });
+
   it("parks a late Stop while finalization is already in progress", () => {
     const activeIntent = intent("active");
     const submitted = transitionChatStreamHost(initialChatStreamHostState(), {

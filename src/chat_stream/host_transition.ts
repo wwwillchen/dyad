@@ -193,6 +193,8 @@ export function transitionChatStreamHost(
             ...state,
             stopPolicyVersion: state.stopPolicyVersion + 1,
             lastStopId: event.stopId ?? null,
+            queuePauseReason: "stop" as const,
+            pendingQueuePauseMutationId: null,
           }
         : state;
       if (!state.active) {
@@ -639,14 +641,17 @@ export function transitionChatStreamHost(
             : state.active;
         const queuePauseReason = !event.paused
           ? null
-          : event.mutationId === state.pendingQueuePauseMutationId
-            ? ("manual" as const)
-            : event.mutationId === undefined &&
-                state.lastCompletion?.pausePromptQueue === true
-              ? ("step-limit" as const)
-              : state.active?.pauseQueueOnCancel
-                ? ("stop" as const)
-                : state.queuePauseReason;
+          : state.queuePauseReason === "stop" ||
+              state.active?.pauseQueueOnCancel
+            ? ("stop" as const)
+            : event.mutationId === state.pendingQueuePauseMutationId
+              ? ("manual" as const)
+              : event.mutationId === undefined &&
+                  state.lastCompletion?.pausePromptQueue === true
+                ? ("step-limit" as const)
+                : state.active?.pauseQueueOnCancel
+                  ? ("stop" as const)
+                  : state.queuePauseReason;
         return {
           kind: "applied",
           state: {
