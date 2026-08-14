@@ -72,6 +72,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   enableAutoReview: false,
   enableReviewButton: false,
   enableImplementerSubagent: false,
+  enableAdvancedSubagents: false,
   autoFixReviewIssues: false,
   autoApproveNonSchemaSql: true,
   autoExpandPreviewPanel: true,

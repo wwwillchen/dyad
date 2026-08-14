@@ -103,6 +103,7 @@ function buildTestSettings(
     enableContextCompaction?: boolean;
     enableAutoReview?: boolean;
     enableImplementerSubagent?: boolean;
+    enableAdvancedSubagents?: boolean;
   } = {},
 ) {
   const baseSettings = {
@@ -113,6 +114,7 @@ function buildTestSettings(
     enableContextCompaction: overrides.enableContextCompaction ?? true,
     enableAutoReview: overrides.enableAutoReview ?? false,
     enableImplementerSubagent: overrides.enableImplementerSubagent ?? false,
+    enableAdvancedSubagents: overrides.enableAdvancedSubagents ?? false,
   };
 
   if (overrides.enableDyadPro && overrides.hasApiKey !== false) {
@@ -978,6 +980,36 @@ describe("handleLocalAgentStream", () => {
       );
 
       expect(canUseImplementerSubagent).toBe(true);
+    });
+
+    it("propagates the advanced sub-agent setting to root tool context", async () => {
+      const { event } = createFakeEvent();
+      mockSettings = buildTestSettings({
+        enableDyadPro: true,
+        enableAdvancedSubagents: true,
+      });
+      mockChatData = buildTestChat();
+      let canUseAdvancedSubagentTools = false;
+      vi.mocked(buildAgentToolSet).mockImplementationOnce((ctx) => {
+        canUseAdvancedSubagentTools = ctx.canUseAdvancedSubagentTools === true;
+        return {};
+      });
+      mockStreamResult = createFakeStream([
+        { type: "text-delta", text: "Managed sub-agents" },
+      ]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      expect(canUseAdvancedSubagentTools).toBe(true);
     });
 
     it("pauses the prompt queue when a real mutation requires auto-review", async () => {

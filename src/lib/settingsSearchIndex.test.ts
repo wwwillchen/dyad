@@ -131,4 +131,29 @@ describe("SETTINGS_SEARCH_INDEX", () => {
       sectionLabel: "Experiments",
     });
   });
+
+  it("includes the advanced sub-agents experiment", () => {
+    expect(
+      SETTINGS_SEARCH_INDEX.find(
+        (item) => item.id === SETTING_IDS.enableAdvancedSubagents,
+      ),
+    ).toEqual({
+      id: SETTING_IDS.enableAdvancedSubagents,
+      label: "Advanced sub-agents",
+      description: "Let Agent manage and message existing sub-agent threads",
+      keywords: [
+        "sub-agent",
+        "advanced",
+        "agent",
+        "list",
+        "wait",
+        "cancel",
+        "message",
+        "follow-up",
+        "pro",
+      ],
+      sectionId: SECTION_IDS.experiments,
+      sectionLabel: "Experiments",
+    });
+  });
 });

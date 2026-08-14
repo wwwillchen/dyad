@@ -433,6 +433,7 @@ const BaseUserSettingsFields = {
   enableAutoReview: z.boolean().optional(),
   enableReviewButton: z.boolean().optional(),
   enableImplementerSubagent: z.boolean().optional(),
+  enableAdvancedSubagents: z.boolean().optional(),
   autoFixReviewIssues: z.boolean().optional(),
   enableAutoUpdate: z.boolean(),
   releaseChannel: ReleaseChannelSchema,

@@ -97,6 +97,7 @@ export function buildSubagentContext(
     },
     canUseExplorerSubagent: false,
     canUseImplementerSubagent: false,
+    canUseAdvancedSubagentTools: false,
     referencedApps: new Map(ctx.referencedApps),
     todos: [],
     fileEditTracker: ctx.fileEditTracker,
@@ -155,6 +156,9 @@ export const spawnAgentTool: ToolDefinition<
   },
   defaultConsent: "always",
   modifiesState: true,
+  // Explorer only reads the app, so Ask and Plan may create its durable
+  // orchestration record when the turn-scoped schema excludes Implementer.
+  allowInReadOnlyModes: (ctx) => ctx.canUseImplementerSubagent !== true,
   subagentOnly: true,
   requiresMutationLease: false,
   requiresBlueprintApproval: false,
@@ -212,6 +216,12 @@ export const spawnAgentTool: ToolDefinition<
 
 const threadIdsSchema = z.object({ thread_ids: z.array(z.string()).min(1) });
 
+function canUseAdvancedSubagentTools(ctx: AgentContext): boolean {
+  return Boolean(
+    ctx.isDyadPro && ctx.canUseAdvancedSubagentTools && !ctx.subagentThreadId,
+  );
+}
+
 export const listAgentsTool: ToolDefinition<{}> = {
   name: "list_agents",
   description:
@@ -219,7 +229,7 @@ export const listAgentsTool: ToolDefinition<{}> = {
   inputSchema: z.object({}),
   defaultConsent: "always",
   subagentOnly: true,
-  isEnabled: (ctx) => Boolean(ctx.isDyadPro && !ctx.subagentThreadId),
+  isEnabled: canUseAdvancedSubagentTools,
   execute: async (_args, ctx) =>
     JSON.stringify(await listSubagents(ctx.chatId)),
 };
@@ -231,7 +241,7 @@ export const waitAgentsTool: ToolDefinition<z.infer<typeof threadIdsSchema>> = {
   inputSchema: threadIdsSchema,
   defaultConsent: "always",
   subagentOnly: true,
-  isEnabled: (ctx) => Boolean(ctx.isDyadPro && !ctx.subagentThreadId),
+  isEnabled: canUseAdvancedSubagentTools,
   execute: async (args, ctx) =>
     JSON.stringify(
       await waitForSubagents(ctx.chatId, args.thread_ids, ctx.abortSignal),
@@ -247,7 +257,7 @@ export const cancelAgentTool: ToolDefinition<{ thread_id: string }> = {
   subagentOnly: true,
   requiresMutationLease: false,
   requiresBlueprintApproval: false,
-  isEnabled: (ctx) => Boolean(ctx.isDyadPro && !ctx.subagentThreadId),
+  isEnabled: canUseAdvancedSubagentTools,
   execute: async (args, ctx) => {
     await cancelSubagent(ctx.chatId, args.thread_id);
     return "Cancellation requested.";
@@ -268,7 +278,7 @@ export const sendMessageTool: ToolDefinition<z.infer<typeof messageSchema>> = {
   subagentOnly: true,
   requiresMutationLease: false,
   requiresBlueprintApproval: false,
-  isEnabled: (ctx) => Boolean(ctx.isDyadPro && !ctx.subagentThreadId),
+  isEnabled: canUseAdvancedSubagentTools,
   execute: async (args, ctx) => {
     await sendSubagentMessage(ctx.chatId, args.thread_id, args.message);
     return "Message queued durably.";

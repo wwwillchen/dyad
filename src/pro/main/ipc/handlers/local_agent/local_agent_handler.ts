@@ -815,6 +815,8 @@ export async function handleLocalAgentStream(
         isImplementerSubagentEnabled(settings) &&
         !readOnly &&
         !planModeOnly,
+      canUseAdvancedSubagentTools:
+        isDyadProEnabled(settings) && settings.enableAdvancedSubagents === true,
       freeModelMode: effectiveFreeModelMode,
       onXmlStream: (accumulatedXml: string) => {
         // Stream the in-progress tool XML as a sidecar preview overlay.

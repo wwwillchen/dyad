@@ -34,6 +34,7 @@ describe("local-agent default request (integration)", () => {
       settings: {
         isTestMode: true,
         enableDyadPro: true,
+        enableImplementerSubagent: true,
         providerSettings: { auto: { apiKey: { value: "testdyadkey" } } },
         // Compiler exploration is disabled, but the root still delegates
         // discovery to the Explorer sub-agent rather than exposing code_search.
@@ -90,13 +91,11 @@ describe("local-agent default request (integration)", () => {
     expect(toolNames).toEqual([
       "add_dependency",
       "add_integration",
-      "cancel_agent",
       "copy_file",
       "delete_file",
       "enable_nitro",
       "execute_sandbox_script",
       "explore_chat_history",
-      "followup_task",
       "generate_image",
       "git_diff",
       "git_log",
@@ -105,7 +104,6 @@ describe("local-agent default request (integration)", () => {
       "git_show_file",
       "git_status",
       "grep",
-      "list_agents",
       "list_files",
       "planning_questionnaire",
       "read_chat",
@@ -117,16 +115,19 @@ describe("local-agent default request (integration)", () => {
       "restart_app",
       "run_type_checks",
       "search_replace",
-      "send_message",
       "set_chat_summary",
       "spawn_agent",
       "update_todos",
-      "wait_agents",
       "web_crawl",
       "web_fetch",
       "web_search",
       "write_file",
     ]);
+    const spawnAgent = tools.find(
+      (tool) => (tool.function?.name ?? tool.name) === "spawn_agent",
+    );
+    expect(JSON.stringify(spawnAgent)).toContain('"explorer"');
+    expect(JSON.stringify(spawnAgent)).toContain('"implementer"');
     // Tool descriptions are masked by the harness, keeping the payload
     // snapshot-stable.
     for (const t of tools) {

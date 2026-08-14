@@ -136,6 +136,8 @@ export interface AgentContext {
   canUseExplorerSubagent?: boolean;
   /** True when settings or the selected Auto Sidekick model enables it. */
   canUseImplementerSubagent?: boolean;
+  /** Whether root turns may manage and message existing child threads. */
+  canUseAdvancedSubagentTools?: boolean;
   /**
    * If true, this turn is using a Dyad Free model. Some Pro-enabled
    * conveniences, such as MCP auto-approval, should stay disabled.
@@ -353,6 +355,11 @@ export interface ToolDefinition<T = any> {
    * conditionally exposed by the current turn context.
    */
   readonly modifiesState?: boolean | ((ctx: AgentContext) => boolean);
+  /**
+   * Allows a state-modifying orchestration tool in Ask and Plan when its
+   * turn-scoped capabilities cannot mutate the app or external state.
+   */
+  readonly allowInReadOnlyModes?: boolean | ((ctx: AgentContext) => boolean);
   /** Sub-agent capability; hidden and runtime-rejected for non-Pro users. */
   readonly subagentOnly?: boolean;
   /**

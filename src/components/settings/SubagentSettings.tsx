@@ -123,6 +123,16 @@ export function SubagentSettings() {
         }
         experimental
       />
+      <SettingRow
+        id={SETTING_IDS.enableAdvancedSubagents}
+        label="Advanced sub-agents"
+        description="Let Agent list, wait for, cancel, and message existing sub-agent threads."
+        checked={!!settings.enableAdvancedSubagents}
+        onCheckedChange={(checked) =>
+          updateSettings({ enableAdvancedSubagents: checked })
+        }
+        experimental
+      />
       <div id={SETTING_IDS.autoFixReviewIssues} className="space-y-1">
         <AutoFixReviewIssuesSwitch />
         <p className="text-sm text-muted-foreground">

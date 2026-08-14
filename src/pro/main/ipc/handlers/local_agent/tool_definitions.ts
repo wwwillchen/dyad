@@ -460,6 +460,16 @@ function toolModifiesState(
   return tool.modifiesState === true;
 }
 
+function toolAllowedInReadOnlyModes(
+  tool: (typeof TOOL_DEFINITIONS)[number],
+  ctx: AgentContext,
+): boolean {
+  if (typeof tool.allowInReadOnlyModes === "function") {
+    return tool.allowInReadOnlyModes(ctx);
+  }
+  return tool.allowInReadOnlyModes === true;
+}
+
 /**
  * Whether a tool belongs in this turn's tool set. Single source of truth for
  * inclusion, so a caller that needs the answer before the set is built (e.g. a
@@ -478,6 +488,7 @@ export function shouldIncludeTool(
   if (
     options.planModeOnly &&
     toolModifiesState(tool, ctx) &&
+    !toolAllowedInReadOnlyModes(tool, ctx) &&
     !PLANNING_SPECIFIC_TOOLS.has(tool.name)
   ) {
     return false;
@@ -515,7 +526,11 @@ export function shouldIncludeTool(
     return false;
   }
   // In read-only mode, skip tools that modify state.
-  if (options.readOnly && toolModifiesState(tool, ctx)) {
+  if (
+    options.readOnly &&
+    toolModifiesState(tool, ctx) &&
+    !toolAllowedInReadOnlyModes(tool, ctx)
+  ) {
     return false;
   }
   if (tool.isEnabled) {

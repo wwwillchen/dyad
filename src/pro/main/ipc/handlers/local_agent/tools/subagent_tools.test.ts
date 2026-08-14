@@ -25,6 +25,14 @@ import {
 import type { AgentContext } from "./types";
 import { trackAppMutation } from "./tool_invocation";
 
+const advancedSubagentTools = [
+  listAgentsTool,
+  waitAgentsTool,
+  cancelAgentTool,
+  sendMessageTool,
+  followupTaskTool,
+];
+
 describe("spawn_agent schema", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -105,6 +113,7 @@ describe("spawn_agent schema", () => {
       onXmlComplete,
       spawnedSubagentThreadIds: [],
       deliveredExplorerThreadIds: [],
+      canUseAdvancedSubagentTools: false,
     } as unknown as AgentContext;
 
     const result = await spawnAgentTool.execute(
@@ -132,6 +141,54 @@ describe("spawn_agent schema", () => {
     expect(onXmlComplete).toHaveBeenCalledWith(
       expect.stringContaining('thread-id="explorer-1"'),
     );
+  });
+
+  it("hides advanced tools by default and when explicitly disabled", () => {
+    for (const canUseAdvancedSubagentTools of [undefined, false]) {
+      const ctx = {
+        isDyadPro: true,
+        canUseAdvancedSubagentTools,
+      } as AgentContext;
+
+      expect(
+        advancedSubagentTools.every((tool) => tool.isEnabled?.(ctx) === false),
+      ).toBe(true);
+    }
+  });
+
+  it("exposes advanced tools to enabled root turns", () => {
+    const ctx = {
+      isDyadPro: true,
+      canUseAdvancedSubagentTools: true,
+    } as AgentContext;
+
+    expect(
+      advancedSubagentTools.every((tool) => tool.isEnabled?.(ctx) === true),
+    ).toBe(true);
+  });
+
+  it("keeps advanced tools hidden from child agents when enabled for root", () => {
+    const root = {
+      isDyadPro: true,
+      canUseAdvancedSubagentTools: true,
+      sharedServerModulePaths: [],
+      pendingFunctionDeploys: [],
+      referencedApps: new Map(),
+      fileEditTracker: { attemptsByFile: new Map() },
+    } as unknown as AgentContext;
+    const child = buildSubagentContext({
+      ctx: root,
+      threadId: "explorer-1",
+      persona: "explorer",
+      taskName: "Trace auth flow",
+      scope: ["src/auth"],
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(child.canUseAdvancedSubagentTools).toBe(false);
+    expect(
+      advancedSubagentTools.every((tool) => tool.isEnabled?.(child) === false),
+    ).toBe(true);
   });
 
   it("blocks Implementer spawning until its report is returned", async () => {
@@ -226,8 +283,22 @@ describe("spawn_agent schema", () => {
     ).toBe(false);
   });
 
-  it("classifies durable orchestration writes as state modifying", () => {
+  it("allows Explorer-only spawning without misclassifying orchestration writes", () => {
     expect(spawnAgentTool.modifiesState).toBe(true);
+    expect(typeof spawnAgentTool.allowInReadOnlyModes).toBe("function");
+    const allowInReadOnlyModes = spawnAgentTool.allowInReadOnlyModes as (
+      ctx: AgentContext,
+    ) => boolean;
+    expect(
+      allowInReadOnlyModes({
+        canUseImplementerSubagent: true,
+      } as AgentContext),
+    ).toBe(false);
+    expect(
+      allowInReadOnlyModes({
+        canUseImplementerSubagent: false,
+      } as AgentContext),
+    ).toBe(true);
     expect(cancelAgentTool.modifiesState).toBe(true);
     expect(sendMessageTool.modifiesState).toBe(true);
     expect(followupTaskTool.modifiesState).toBe(true);
