@@ -202,6 +202,7 @@ export const ChatStreamHostEventSchema = z.discriminatedUnion("type", [
       queueRevision: expectedQueueRevision,
       queuePaused: z.boolean(),
       resumeQueue: z.boolean(),
+      observedStopPolicyVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z
@@ -245,6 +246,8 @@ export const ChatStreamHostEventSchema = z.discriminatedUnion("type", [
       queueRevision: expectedQueueRevision,
       paused: z.boolean(),
       entries: z.array(ChatQueueEntrySchema),
+      resumeQueue: z.boolean().optional(),
+      observedStopPolicyVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z

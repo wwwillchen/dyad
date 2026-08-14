@@ -548,6 +548,10 @@ timers or nondeterministic UUIDs; retrofitting existing machines is optional.
 - Model hydration explicitly when persisted state gates machine behavior.
   Persist through an adapter-owned, debounced command using a versioned zod
   schema; do not let components write snapshots independently.
+- Persist semantic discriminators that affect post-restart transitions, not
+  only coarse flags derived from them. For legacy rows, choose an explicit
+  conservative fallback (for example, a paused queue without a reason hydrates
+  as manually paused) and test both legacy and fully persisted recovery paths.
 - When a side effect can make recovery state externally observable (for
   example, detaching Git HEAD), force and await persistence of the exact
   committed checkpoint before starting it. Observer error isolation must not

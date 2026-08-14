@@ -13,6 +13,7 @@ export type ChatStreamHostIgnoreReason =
 export function initialChatStreamHostState(input?: {
   queueRevision: number;
   queuePaused: boolean;
+  queuePauseReason?: ChatStreamHostState["queuePauseReason"];
   queue: ChatStreamHostState["queue"];
 }): ChatStreamHostState {
   return {
@@ -21,7 +22,9 @@ export function initialChatStreamHostState(input?: {
     error: null,
     queueRevision: input?.queueRevision ?? 0,
     queuePaused: input?.queuePaused ?? false,
-    queuePauseReason: input?.queuePaused ? "manual" : null,
+    queuePauseReason: input?.queuePaused
+      ? (input.queuePauseReason ?? "manual")
+      : null,
     queue: input?.queue ?? [],
     stopPolicyVersion: 0,
     lastStopId: null,
@@ -176,6 +179,11 @@ export function transitionChatStreamHost(
           {
             type: "persist-queued",
             intent: event.intent,
+            ...(event.observedStopPolicyVersion === undefined
+              ? {}
+              : {
+                  observedStopPolicyVersion: event.observedStopPolicyVersion,
+                }),
             resumeQueue:
               observesLatestStop &&
               state.queuePaused &&
@@ -312,8 +320,11 @@ export function transitionChatStreamHost(
       const stopOwnsQueue =
         state.queuePauseReason === "stop" ||
         state.active?.pauseQueueOnCancel === true;
+      const resumesCurrentStop =
+        event.resumeQueue &&
+        event.observedStopPolicyVersion === state.stopPolicyVersion;
       const queuePaused =
-        event.queuePaused || (stopOwnsQueue && !event.resumeQueue);
+        event.queuePaused || (stopOwnsQueue && !resumesCurrentStop);
       return {
         kind: "applied",
         state: {
@@ -643,6 +654,16 @@ export function transitionChatStreamHost(
         const resumeStopLatch =
           event.mutationId === state.pendingQueueResumeMutationId &&
           !event.paused;
+        const queuedAdmissionResumesCurrentStop =
+          event.resumeQueue === true &&
+          event.observedStopPolicyVersion === state.stopPolicyVersion;
+        const resumesCurrentStop =
+          resumeStopLatch || queuedAdmissionResumesCurrentStop;
+        const stopOwnsQueue =
+          state.queuePauseReason === "stop" ||
+          state.active?.pauseQueueOnCancel === true;
+        const queuePaused =
+          event.paused || (stopOwnsQueue && !resumesCurrentStop);
         const active =
           resumeStopLatch && state.active
             ? {
@@ -651,10 +672,9 @@ export function transitionChatStreamHost(
                 queueResumedAfterCancel: true,
               }
             : state.active;
-        const queuePauseReason = !event.paused
+        const queuePauseReason = !queuePaused
           ? null
-          : state.queuePauseReason === "stop" ||
-              state.active?.pauseQueueOnCancel
+          : stopOwnsQueue && !resumesCurrentStop
             ? ("stop" as const)
             : event.mutationId === state.pendingQueuePauseMutationId
               ? ("manual" as const)
@@ -667,7 +687,7 @@ export function transitionChatStreamHost(
           state: {
             ...state,
             queueRevision: event.queueRevision,
-            queuePaused: event.paused,
+            queuePaused,
             queuePauseReason,
             queue: event.entries,
             pendingQueueMutationId,
@@ -703,7 +723,7 @@ export function transitionChatStreamHost(
             reviewCommands.length > 0
               ? reviewCommands
               : pendingQueueMutationId === null &&
-                  !event.paused &&
+                  !queuePaused &&
                   !active?.pauseQueueOnCancel &&
                   event.entries.length > 0 &&
                   (state.phase === "idle" || state.phase === "finalizing")

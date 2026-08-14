@@ -112,6 +112,7 @@ describe("transitionChatStreamHost", () => {
         type: "persist-queued",
         intent: intent("late"),
         resumeQueue: true,
+        observedStopPolicyVersion: 0,
       },
     ]);
 
@@ -129,6 +130,7 @@ describe("transitionChatStreamHost", () => {
       queueRevision: 5,
       queuePaused: false,
       resumeQueue: true,
+      observedStopPolicyVersion: 0,
     });
     expect(queued.kind).toBe("applied");
     if (queued.kind !== "applied") return;
@@ -161,6 +163,7 @@ describe("transitionChatStreamHost", () => {
         type: "persist-queued",
         intent: intent("late"),
         resumeQueue: false,
+        observedStopPolicyVersion: 0,
       },
     ]);
   });
@@ -187,8 +190,88 @@ describe("transitionChatStreamHost", () => {
         type: "persist-queued",
         intent: intent("after-stop"),
         resumeQueue: true,
+        observedStopPolicyVersion: 2,
       },
     ]);
+  });
+
+  it("does not let an older queued admission clear a newer Stop", () => {
+    const parked = {
+      ...initialChatStreamHostState(),
+      queuePaused: true,
+      queuePauseReason: "stop" as const,
+      stopPolicyVersion: 1,
+      lastStopId: "stop-1",
+    };
+    const submitted = transitionChatStreamHost(parked, {
+      type: "SUBMIT",
+      intent: intent("after-stop-1"),
+      observedStopPolicyVersion: 1,
+    });
+    expect(submitted.kind).toBe("applied");
+    if (submitted.kind !== "applied") return;
+
+    const stoppedAgain = transitionChatStreamHost(submitted.state, {
+      type: "CANCEL",
+      invocationRef: intent("stale").invocationRef!,
+      pauseQueue: true,
+      stopId: "stop-2",
+      observedStopPolicyVersion: 1,
+    });
+    expect(stoppedAgain.kind).toBe("applied");
+    if (stoppedAgain.kind !== "applied") return;
+
+    const queued = transitionChatStreamHost(stoppedAgain.state, {
+      type: "ADMISSION_QUEUED",
+      intentId: "after-stop-1",
+      entry: {
+        itemId: "after-stop-1",
+        intentId: "after-stop-1",
+        prompt: "Build it",
+        persistence: "durable",
+        editable: true,
+        removable: true,
+      },
+      queueRevision: 1,
+      queuePaused: false,
+      resumeQueue: true,
+      observedStopPolicyVersion: 1,
+    });
+
+    expect(queued.kind).toBe("applied");
+    if (queued.kind !== "applied") return;
+    expect(queued.state).toMatchObject({
+      stopPolicyVersion: 2,
+      queuePaused: true,
+      queuePauseReason: "stop",
+    });
+    expect(queued.commands).toEqual([]);
+
+    const replayed = transitionChatStreamHost(stoppedAgain.state, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 1,
+      paused: false,
+      entries: [
+        {
+          itemId: "after-stop-1",
+          intentId: "after-stop-1",
+          prompt: "Build it",
+          persistence: "durable",
+          editable: true,
+          removable: true,
+        },
+      ],
+      resumeQueue: true,
+      observedStopPolicyVersion: 1,
+    });
+    expect(replayed.kind).toBe("applied");
+    if (replayed.kind !== "applied") return;
+    expect(replayed.state).toMatchObject({
+      stopPolicyVersion: 2,
+      queuePaused: true,
+      queuePauseReason: "stop",
+    });
+    expect(replayed.commands).toEqual([]);
   });
 
   it("does not resume a Stop-parked queue without an observed policy version", () => {

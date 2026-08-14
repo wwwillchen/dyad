@@ -330,6 +330,13 @@
       "when": 1786682405029,
       "tag": "0046_amusing_malice",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1786692204598,
+      "tag": "0047_vengeful_tyger_tiger",
+      "breakpoints": true
     }
   ]
 }

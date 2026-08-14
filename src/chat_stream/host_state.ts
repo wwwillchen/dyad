@@ -78,6 +78,7 @@ export type ChatStreamHostCommand =
       readonly type: "persist-queued";
       readonly intent: SerializableChatTurnIntent;
       readonly resumeQueue: boolean;
+      readonly observedStopPolicyVersion?: number;
     }
   | {
       readonly type: "cancel-active";

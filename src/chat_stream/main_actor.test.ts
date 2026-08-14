@@ -57,6 +57,7 @@ vi.mock("@/lib/chatAttachmentConversion", () => ({
 const persisted = vi.hoisted(() => ({
   revision: 0,
   paused: false,
+  pauseReason: null as "stop" | "manual" | "step-limit" | null,
   entries: [] as ChatQueueEntry[],
   intents: new Map<string, SerializableChatTurnIntent>(),
 }));
@@ -133,11 +134,13 @@ vi.mock("./persistence", () => ({
   loadChatQueue: vi.fn(() => ({
     queueRevision: persisted.revision,
     queuePaused: persisted.paused,
+    queuePauseReason: persisted.pauseReason,
     queue: [...persisted.entries],
   })),
   hydrateChatStreamPersistence: vi.fn(() => ({
     queueRevision: persisted.revision,
     queuePaused: persisted.paused,
+    queuePauseReason: persisted.pauseReason,
     queue: [...persisted.entries],
   })),
   stageActiveIntent: vi.fn(
@@ -183,6 +186,7 @@ vi.mock("./persistence", () => ({
         if (options?.resumeQueue) {
           if (persisted.paused) persisted.revision += 1;
           persisted.paused = false;
+          persisted.pauseReason = null;
           queue = {
             queueRevision: persisted.revision,
             queuePaused: persisted.paused,
@@ -207,7 +211,10 @@ vi.mock("./persistence", () => ({
       persisted.intents.set(intent.intentId, intent);
       persisted.entries.push(entry);
       persisted.revision += 1;
-      if (options?.resumeQueue) persisted.paused = false;
+      if (options?.resumeQueue) {
+        persisted.paused = false;
+        persisted.pauseReason = null;
+      }
       return {
         kind: "queued" as const,
         entry,
@@ -223,6 +230,7 @@ vi.mock("./persistence", () => ({
       command: { mutation: { type: string } },
     ) => {
       persisted.paused = command.mutation.type === "pause";
+      persisted.pauseReason = persisted.paused ? "manual" : null;
       persisted.revision += 1;
       return {
         queueRevision: persisted.revision,
@@ -233,6 +241,7 @@ vi.mock("./persistence", () => ({
   ),
   parkChatQueue: vi.fn(async () => {
     persisted.paused = true;
+    persisted.pauseReason = "stop";
     persisted.revision += 1;
     return {
       queueRevision: persisted.revision,
@@ -324,6 +333,7 @@ describe("main-hosted chat stream actor", () => {
     review.skipReviewAutoFix.mockResolvedValue(undefined);
     persisted.revision = 0;
     persisted.paused = false;
+    persisted.pauseReason = null;
     persisted.entries = [];
     persisted.intents.clear();
   });
@@ -376,6 +386,67 @@ describe("main-hosted chat stream actor", () => {
       queue: [{ intentId: "queued" }],
     });
     expect(execution.observers.has("queued")).toBe(false);
+
+    release();
+    client.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("resumes a recovered Stop-parked queue FIFO on the next send", async () => {
+    const queued = turn("queued-before-restart");
+    persisted.paused = true;
+    persisted.pauseReason = "stop";
+    persisted.revision = 2;
+    persisted.intents.set(queued.intentId, queued);
+    persisted.entries = [
+      {
+        itemId: queued.intentId,
+        intentId: queued.intentId,
+        prompt: queued.prompt,
+        persistence: "durable",
+        editable: true,
+        removable: true,
+      },
+    ];
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const client = new RemoteMachineClient(
+      duplex.connect(),
+      createSequentialIdSource(),
+    );
+    client.start();
+    const actor = client.actor(chatStreamClientDefinition, chatStreamKey(7));
+    const release = actor.subscribe(() => undefined);
+    await actor.resync();
+
+    await actor.dispatch({
+      type: "SUBMIT",
+      intent: turn("sent-after-restart"),
+      observedStopPolicyVersion: 0,
+    });
+    await flush();
+
+    expect(actor.getSnapshot()).toMatchObject({
+      phase: "streaming",
+      queuePaused: false,
+      queue: [{ intentId: "sent-after-restart" }],
+    });
+    expect(execution.observers.has("queued-before-restart")).toBe(true);
+    expect(execution.observers.has("sent-after-restart")).toBe(false);
 
     release();
     client.dispose();

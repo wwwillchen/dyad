@@ -185,6 +185,13 @@ function createCommandRunner(
                 queueRevision: result.queue.queueRevision,
                 paused: result.queue.queuePaused,
                 entries: result.queue.queue,
+                resumeQueue: command.resumeQueue,
+                ...(command.observedStopPolicyVersion === undefined
+                  ? {}
+                  : {
+                      observedStopPolicyVersion:
+                        command.observedStopPolicyVersion,
+                    }),
               });
             }
           } else {
@@ -195,6 +202,12 @@ function createCommandRunner(
               queueRevision: result.queueRevision,
               queuePaused: result.queuePaused,
               resumeQueue: command.resumeQueue,
+              ...(command.observedStopPolicyVersion === undefined
+                ? {}
+                : {
+                    observedStopPolicyVersion:
+                      command.observedStopPolicyVersion,
+                  }),
             });
           }
         } catch (error) {
@@ -423,18 +436,23 @@ function createCommandRunner(
           throw new Error("Finalization does not match the active chat intent");
         }
         try {
+          const pauseForStepLimit = command.response?.pausePromptQueue === true;
+          const pauseForReview =
+            active.intent.owner?.kind === "review-remediation" ||
+            context.getSnapshot().reviewBarrier.phase ===
+              "awaiting-continuation";
+          const pauseForStop =
+            active.queueResumedAfterCancel !== true &&
+            (active.pauseQueueOnCancel === true ||
+              command.pausePromptQueue === true) &&
+            !pauseForStepLimit;
           const queue = markIntentTerminal(
             db,
             active.intent,
-            command.response?.pausePromptQueue === true ||
-              active.intent.owner?.kind === "review-remediation" ||
-              context.getSnapshot().reviewBarrier.phase ===
-                "awaiting-continuation" ||
-              (active.queueResumedAfterCancel !== true &&
-                (active.pauseQueueOnCancel === true ||
-                  command.pausePromptQueue === true)),
+            pauseForStepLimit || pauseForReview || pauseForStop,
             command.error !== undefined ||
               command.response?.wasCancelled === true,
+            pauseForStepLimit ? "step-limit" : pauseForStop ? "stop" : "manual",
           );
           publishChatInvalidations(context.key.chatId, active.targetAppId);
           emit({

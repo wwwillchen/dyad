@@ -105,6 +105,7 @@ describe("chat stream persistence", () => {
     await expect(parkChatQueue(database, chatId)).resolves.toMatchObject({
       queueRevision: 2,
       queuePaused: true,
+      queuePauseReason: "stop",
       queue: [{ intentId: "turn-1" }],
     });
     await expect(parkChatQueue(database, chatId)).resolves.toMatchObject({
@@ -117,7 +118,7 @@ describe("chat stream persistence", () => {
         .from(chatQueueStates)
         .where(eq(chatQueueStates.chatId, chatId))
         .get(),
-    ).toMatchObject({ revision: 2, paused: true });
+    ).toMatchObject({ revision: 2, paused: true, pauseReason: "stop" });
   });
 
   it("atomically appends and resumes an explicitly sent queued intent", async () => {
@@ -396,7 +397,21 @@ describe("chat stream persistence", () => {
     expect(hydrated).toEqual({
       queueRevision: 2,
       queuePaused: true,
+      queuePauseReason: "manual",
       queue: [expect.objectContaining({ intentId: "turn-1" })],
+    });
+  });
+
+  it("restores a Stop-parked durable queue with its pause reason", async () => {
+    persistQueuedIntent(database, intent("turn-1"));
+    await parkChatQueue(database, chatId);
+    disposeSessionChatQueue(chatId);
+
+    expect(hydrateChatStreamPersistence(database, chatId)).toMatchObject({
+      queueRevision: 2,
+      queuePaused: true,
+      queuePauseReason: "stop",
+      queue: [{ intentId: "turn-1" }],
     });
   });
 

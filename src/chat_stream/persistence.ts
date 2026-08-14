@@ -41,6 +41,7 @@ interface IntentRecord {
 interface QueueAggregate {
   revision: number;
   paused: boolean;
+  pauseReason: "stop" | "manual" | "step-limit" | null;
   intentIds: string[];
 }
 
@@ -50,7 +51,7 @@ const queues = new Map<number, QueueAggregate>();
 function queueFor(chatId: number): QueueAggregate {
   let queue = queues.get(chatId);
   if (!queue) {
-    queue = { revision: 0, paused: false, intentIds: [] };
+    queue = { revision: 0, paused: false, pauseReason: null, intentIds: [] };
     queues.set(chatId, queue);
   }
   return queue;
@@ -152,12 +153,14 @@ export function loadChatQueue(
 ): {
   queueRevision: number;
   queuePaused: boolean;
+  queuePauseReason: QueueAggregate["pauseReason"];
   queue: ChatQueueEntry[];
 } {
   const aggregate = queueFor(chatId);
   return {
     queueRevision: aggregate.revision,
     queuePaused: aggregate.paused,
+    queuePauseReason: aggregate.pauseReason,
     queue: aggregate.intentIds.flatMap((intentId) => {
       const record = liveRecordFor(intentId);
       return record ? [toQueueEntry(record.intent)] : [];
@@ -250,6 +253,9 @@ export function hydrateChatStreamPersistence(
     });
     let revision = persistedState?.revision ?? 0;
     let paused = persistedState?.paused ?? false;
+    let pauseReason: QueueAggregate["pauseReason"] = paused
+      ? (persistedState?.pauseReason ?? "manual")
+      : null;
     // A process restart may happen long after admission or while the head was
     // claimed. Restore every durable queue paused so no work runs invisibly.
     if (
@@ -258,11 +264,18 @@ export function hydrateChatStreamPersistence(
     ) {
       revision += 1;
       paused = true;
+      pauseReason ??= "manual";
       tx.insert(chatQueueStates)
-        .values({ chatId, revision, paused, updatedAt: new Date() })
+        .values({
+          chatId,
+          revision,
+          paused,
+          pauseReason,
+          updatedAt: new Date(),
+        })
         .onConflictDoUpdate({
           target: chatQueueStates.chatId,
-          set: { revision, paused, updatedAt: new Date() },
+          set: { revision, paused, pauseReason, updatedAt: new Date() },
         })
         .run();
       for (const entry of persistedEntries) {
@@ -273,7 +286,7 @@ export function hydrateChatStreamPersistence(
           .run();
       }
     }
-    queues.set(chatId, { revision, paused, intentIds });
+    queues.set(chatId, { revision, paused, pauseReason, intentIds });
   });
   return loadChatQueue(database, chatId);
 }
@@ -366,6 +379,7 @@ function resumeReplayedQueue(
         .set({
           revision: nextRevision,
           paused: false,
+          pauseReason: null,
           updatedAt: new Date(),
         })
         .where(eq(chatQueueStates.chatId, existing.chatId))
@@ -373,6 +387,7 @@ function resumeReplayedQueue(
     }
     aggregate.revision = nextRevision;
     aggregate.paused = false;
+    aggregate.pauseReason = null;
   }
   return loadChatQueue(database, existing.chatId);
 }
@@ -429,6 +444,7 @@ function persistIntentInQueue(
           chatId: intent.chatId,
           revision: aggregate.revision,
           paused: aggregate.paused,
+          pauseReason: aggregate.pauseReason,
           updatedAt: new Date(),
         })
         .onConflictDoNothing({ target: chatQueueStates.chatId })
@@ -464,7 +480,7 @@ function persistIntentInQueue(
       tx.update(chatQueueStates)
         .set({
           revision: nextRevision,
-          ...(resumeQueue ? { paused: false } : {}),
+          ...(resumeQueue ? { paused: false, pauseReason: null } : {}),
           updatedAt: new Date(),
         })
         .where(eq(chatQueueStates.chatId, intent.chatId))
@@ -481,7 +497,10 @@ function persistIntentInQueue(
   });
   aggregate.intentIds.push(intent.intentId);
   aggregate.revision = nextRevision;
-  if (resumeQueue) aggregate.paused = false;
+  if (resumeQueue) {
+    aggregate.paused = false;
+    aggregate.pauseReason = null;
+  }
   return {
     kind: "queued",
     entry: toQueueEntry(intent),
@@ -670,6 +689,7 @@ function persistDurableQueueMutation(
       .set({
         revision: aggregate.revision,
         paused: aggregate.paused,
+        pauseReason: aggregate.pauseReason,
         updatedAt: new Date(),
       })
       .where(eq(chatQueueStates.chatId, chatId))
@@ -806,6 +826,7 @@ export async function mutateChatQueue(
 
     const originalIntentIds = [...aggregate.intentIds];
     const originalPaused = aggregate.paused;
+    const originalPauseReason = aggregate.pauseReason;
     const originalRevision = aggregate.revision;
     const originalRecords = new Map(
       selected.map(({ record }) => [
@@ -821,9 +842,11 @@ export async function mutateChatQueue(
     switch (mutation.type) {
       case "pause":
         aggregate.paused = true;
+        aggregate.pauseReason = "manual";
         break;
       case "resume":
         aggregate.paused = false;
+        aggregate.pauseReason = null;
         break;
       case "edit": {
         const selectedRecord = selected[0]?.record;
@@ -904,6 +927,7 @@ export async function mutateChatQueue(
     } catch (error) {
       aggregate.intentIds = originalIntentIds;
       aggregate.paused = originalPaused;
+      aggregate.pauseReason = originalPauseReason;
       aggregate.revision = originalRevision;
       for (const [record, original] of originalRecords) {
         record.intent = original.intent;
@@ -968,18 +992,20 @@ export async function parkChatQueue(
 ): Promise<ReturnType<typeof loadChatQueue>> {
   return withChatQueueLock(chatId, async () => {
     const aggregate = queueFor(chatId);
-    if (!aggregate.paused) {
+    if (!aggregate.paused || aggregate.pauseReason !== "stop") {
       const nextRevision = aggregate.revision + 1;
       database
         .update(chatQueueStates)
         .set({
           revision: nextRevision,
           paused: true,
+          pauseReason: "stop",
           updatedAt: new Date(),
         })
         .where(eq(chatQueueStates.chatId, chatId))
         .run();
       aggregate.paused = true;
+      aggregate.pauseReason = "stop";
       aggregate.revision = nextRevision;
     }
     return loadChatQueue(database, chatId);
@@ -991,6 +1017,7 @@ export function markIntentTerminal(
   intent: Pick<SerializableChatTurnIntent, "chatId" | "intentId" | "owner">,
   pauseQueue: boolean,
   rejectBeforeAcceptance = false,
+  pauseReason: QueueAggregate["pauseReason"] = "manual",
 ): ReturnType<typeof loadChatQueue> {
   const record = recordFor(intent.intentId);
   if (!record) {
@@ -1003,6 +1030,7 @@ export function markIntentTerminal(
   const originalAggregate = {
     revision: aggregate.revision,
     paused: aggregate.paused,
+    pauseReason: aggregate.pauseReason,
     intentIds: [...aggregate.intentIds],
   };
   const originalRecord = {
@@ -1020,8 +1048,13 @@ export function markIntentTerminal(
     record.acceptance = "rejected";
   }
   record.recovery = "terminal";
-  if (pauseQueue && !aggregate.paused) {
+  if (
+    pauseQueue &&
+    (!aggregate.paused ||
+      (pauseReason === "stop" && aggregate.pauseReason !== "stop"))
+  ) {
     aggregate.paused = true;
+    aggregate.pauseReason = pauseReason;
     changed = true;
   }
   if (changed) aggregate.revision += 1;
@@ -1044,6 +1077,7 @@ export function markIntentTerminal(
           .set({
             revision: aggregate.revision,
             paused: aggregate.paused,
+            pauseReason: aggregate.pauseReason,
             updatedAt: new Date(),
           })
           .where(eq(chatQueueStates.chatId, record.chatId))
@@ -1052,6 +1086,7 @@ export function markIntentTerminal(
     } catch (error) {
       aggregate.revision = originalAggregate.revision;
       aggregate.paused = originalAggregate.paused;
+      aggregate.pauseReason = originalAggregate.pauseReason;
       aggregate.intentIds = originalAggregate.intentIds;
       record.intent = originalRecord.intent;
       record.acceptance = originalRecord.acceptance;
