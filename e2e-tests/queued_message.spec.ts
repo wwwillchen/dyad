@@ -205,7 +205,7 @@ test.describe("queued messages", () => {
       po.page
         .locator('[data-testid="messages-list"]')
         .getByText("tc=2 [sleep=medium]", { exact: true }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: Timeout.MEDIUM });
     await po.toastNotifications.expectNoToast();
   });
 

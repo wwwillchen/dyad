@@ -177,6 +177,14 @@ function createCommandRunner(
               acceptance: result.acceptance,
               acceptedMessageId: result.acceptedMessageId,
             });
+            if (result.queue) {
+              emit({
+                type: "QUEUE_MUTATED",
+                queueRevision: result.queue.queueRevision,
+                paused: result.queue.queuePaused,
+                entries: result.queue.queue,
+              });
+            }
           } else {
             emit({
               type: "ADMISSION_QUEUED",
@@ -561,10 +569,11 @@ function createCommandRunner(
               });
               return;
             }
-            const phaseBeforeDispatch = context.getSnapshot().phase;
+            const snapshotBeforeDispatch = context.getSnapshot();
             if (
-              phaseBeforeDispatch !== "idle" &&
-              phaseBeforeDispatch !== "errored"
+              snapshotBeforeDispatch.queuePaused ||
+              (snapshotBeforeDispatch.phase !== "idle" &&
+                snapshotBeforeDispatch.phase !== "errored")
             ) {
               const queue = await retryQueueDispatchPersistence(() =>
                 restoreClaimedQueueHead(

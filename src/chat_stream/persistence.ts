@@ -350,7 +350,32 @@ export type PersistAdmissionResult =
       kind: "replayed";
       acceptance: "queued" | "message-accepted" | "rejected";
       acceptedMessageId?: number;
+      queue?: ReturnType<typeof loadChatQueue>;
     };
+
+function resumeReplayedQueue(
+  database: ChatDatabase,
+  existing: IntentRecord,
+): ReturnType<typeof loadChatQueue> {
+  const aggregate = queueFor(existing.chatId);
+  if (aggregate.paused) {
+    const nextRevision = aggregate.revision + 1;
+    if (existing.durable) {
+      database
+        .update(chatQueueStates)
+        .set({
+          revision: nextRevision,
+          paused: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(chatQueueStates.chatId, existing.chatId))
+        .run();
+    }
+    aggregate.revision = nextRevision;
+    aggregate.paused = false;
+  }
+  return loadChatQueue(database, existing.chatId);
+}
 
 function persistIntentInQueue(
   database: ChatDatabase,
@@ -381,7 +406,12 @@ function persistIntentInQueue(
   }
   if (existing) {
     assertMatchingIntent(existing, intent);
-    return replay(existing);
+    return {
+      ...replay(existing),
+      ...(resumeQueue && existing.acceptance === "queued"
+        ? { queue: resumeReplayedQueue(database, existing) }
+        : {}),
+    };
   }
   const aggregate = queueFor(intent.chatId);
   assertQueueSnapshotWithinLimit([

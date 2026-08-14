@@ -145,6 +145,36 @@ describe("chat stream persistence", () => {
     ).toMatchObject({ revision: 3, paused: false });
   });
 
+  it("resumes the authoritative queue when a queued send is replayed", async () => {
+    const queuedIntent = intent("queued");
+    persistQueuedIntent(database, queuedIntent);
+    await parkChatQueue(database, chatId);
+
+    expect(
+      persistQueuedIntent(database, queuedIntent, { resumeQueue: true }),
+    ).toMatchObject({
+      kind: "replayed",
+      acceptance: "queued",
+      queue: {
+        queueRevision: 3,
+        queuePaused: false,
+        queue: [{ intentId: "queued" }],
+      },
+    });
+    expect(loadChatQueue(database, chatId)).toMatchObject({
+      queueRevision: 3,
+      queuePaused: false,
+      queue: [{ intentId: "queued" }],
+    });
+    expect(
+      database
+        .select()
+        .from(chatQueueStates)
+        .where(eq(chatQueueStates.chatId, chatId))
+        .get(),
+    ).toMatchObject({ revision: 3, paused: false });
+  });
+
   it("bounds the aggregate queue projection before transport", () => {
     expect(() =>
       assertQueueSnapshotWithinLimit(
