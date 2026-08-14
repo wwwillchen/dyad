@@ -58,6 +58,10 @@ await po.navigation.goToChatTab();
 
 Key sub-components: `po.appManagement`, `po.navigation`, `po.chatActions`, `po.previewPanel`, `po.codeEditor`, `po.githubConnector`, `po.toastNotifications`, `po.settings`, `po.securityReview`, `po.modelPicker`.
 
+Playwright's `FrameLocator` does not expose `evaluate()`. To run code in a
+preview frame, select an element first (for example,
+`frame.locator("body").evaluate(...)`) and evaluate through that locator.
+
 When an E2E assertion needs main-owned state after a legacy read IPC channel is
 deleted, read the authoritative remote-machine snapshot through
 `distributed-machine:subscribe` and immediately balance it with

@@ -532,7 +532,6 @@
     // Keep reload shortcuts scoped to the preview even while it owns focus.
     if (key === "r" && hasCtrlOrMeta) {
       e.preventDefault();
-      e.stopPropagation();
       window.parent.postMessage(
         {
           type: "dyad-preview-reload-shortcut",

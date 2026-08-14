@@ -4,21 +4,29 @@ import { expect } from "@playwright/test";
 testSkipIfWindows(
   "reload shortcuts stay scoped to the focused preview",
   async ({ electronApp, po }) => {
-    await po.setUp({ autoApprove: true });
-    await po.sendPrompt("hi");
+    await po.setUpDyadPro();
+    await po.sendPrompt("tc=basic");
     await po.previewPanel.expectPreviewIframeIsVisible();
 
-    const reloadRoles = await electronApp.evaluate(({ Menu }) => {
+    const reloadItems = await electronApp.evaluate(({ Menu }) => {
       const viewMenu = Menu.getApplicationMenu()?.items.find(
         (item) => item.label === "View",
       );
       return (
         viewMenu?.submenu?.items
-          .map((item) => item.role)
-          .filter((role) => role === "reload" || role === "forceReload") ?? []
+          .filter((item) =>
+            ["Reload Dyad", "Force Reload Dyad"].includes(item.label),
+          )
+          .map((item) => ({
+            label: item.label,
+            accelerator: item.accelerator ?? null,
+          })) ?? []
       );
     });
-    expect(reloadRoles).toEqual([]);
+    expect(reloadItems).toEqual([
+      { label: "Reload Dyad", accelerator: null },
+      { label: "Force Reload Dyad", accelerator: null },
+    ]);
 
     await po.page.evaluate(() => {
       (
@@ -27,11 +35,34 @@ testSkipIfWindows(
     });
 
     const modifier = process.platform === "darwin" ? "Meta" : "Control";
-    for (const shortcut of [`${modifier}+r`, `${modifier}+Shift+r`]) {
+    const shortcuts = [`${modifier}+r`, `${modifier}+Shift+r`];
+
+    await po.previewPanel.clickPreviewPickElement();
+    await po.previewPanel
+      .getPreviewIframeElement()
+      .contentFrame()
+      .getByRole("heading", { name: "Welcome to Your Blank App" })
+      .click();
+    const marginButton = po.page.getByRole("button", { name: "Margin" });
+    await expect(marginButton).toBeVisible({ timeout: Timeout.MEDIUM });
+    await marginButton.click();
+    await po.page.getByLabel("Horizontal").fill("20");
+    await po.page.keyboard.press("Escape");
+    await expect(po.page.getByText(/\d+ component[s]? modified/)).toBeVisible({
+      timeout: Timeout.MEDIUM,
+    });
+
+    for (const [index, shortcut] of shortcuts.entries()) {
       const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
       await frame.locator("body").evaluate((body) => {
         body.dataset.reloadShortcutMarker = "before-reload";
         body.tabIndex = -1;
+        sessionStorage.removeItem("dyad-app-key-handler");
+        document.addEventListener(
+          "keydown",
+          () => sessionStorage.setItem("dyad-app-key-handler", "observed"),
+          { once: true },
+        );
         body.focus();
       });
 
@@ -51,6 +82,36 @@ testSkipIfWindows(
           ),
         )
         .toBe("outer-renderer-still-alive");
+      await expect
+        .poll(() =>
+          frame
+            .locator("body")
+            .evaluate(() => sessionStorage.getItem("dyad-app-key-handler")),
+        )
+        .toBe("observed");
+
+      if (index === 0) {
+        await expect(marginButton).not.toBeVisible();
+        await expect(
+          po.page.getByText(/\d+ component[s]? modified/),
+        ).not.toBeVisible();
+      }
+    }
+
+    for (const shortcut of shortcuts) {
+      const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
+      await frame.locator("body").evaluate((body) => {
+        body.dataset.reloadShortcutMarker = "before-reload";
+      });
+      await po.page.locator("body").focus();
+
+      await po.page.keyboard.press(shortcut);
+
+      await expect(frame.locator("body")).not.toHaveAttribute(
+        "data-reload-shortcut-marker",
+        "before-reload",
+        { timeout: Timeout.LONG },
+      );
     }
   },
 );
