@@ -65,10 +65,7 @@ export class ModelPicker {
   private async selectVisibleModel(modelItem: Locator, model: string) {
     await modelItem.click();
     await expect(this.page.getByTestId("model-picker")).toHaveText(
-      new RegExp(
-        `^(?:Model:\\s*)?${this.escapeRegExp(model)}\\s+\\([^)]+\\)$`,
-        "i",
-      ),
+      new RegExp(`^(?:Model:\\s*)?${this.escapeRegExp(model)}$`, "i"),
     );
   }
 

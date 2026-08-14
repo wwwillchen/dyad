@@ -37,8 +37,8 @@ testWithRemoteCatalog(
       .locator("[data-effort-chevron]")
       .click();
     await po.page.getByText("Xhigh", { exact: true }).click();
-    await expect(po.page.getByTestId("model-picker")).toContainText(
-      "GPT 5.2 Remote Only (Xhigh)",
+    await expect(po.page.getByTestId("model-picker")).toHaveText(
+      "GPT 5.2 Remote Only",
     );
     await po.sendPrompt("[dump] tc=basic");
     await po.snapshotServerDump("request", {
