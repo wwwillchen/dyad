@@ -47,6 +47,7 @@ export const SETTING_IDS = {
   enableMultiWindow: "setting-enable-multi-window",
   enableExplorerSubagent: "setting-enable-explorer-subagent",
   enableAutoReview: "setting-enable-auto-review",
+  enableReviewButton: "setting-enable-review-button",
   enableImplementerSubagent: "setting-enable-implementer-subagent",
   autoFixReviewIssues: "setting-auto-fix-review-issues",
   enableSelectAppFromHomeChatInput:
@@ -544,6 +545,14 @@ export const SETTINGS_SEARCH_INDEX: SearchableSettingItem[] = [
     label: "Automatically review changes",
     description: "Run Reviewer after completed turns that change code",
     keywords: ["sub-agent", "review", "automatic", "agent", "pro"],
+    sectionId: SECTION_IDS.experiments,
+    sectionLabel: "Experiments",
+  },
+  {
+    id: SETTING_IDS.enableReviewButton,
+    label: "Show Review changes button",
+    description: "Show a manual Reviewer action on the latest Agent response",
+    keywords: ["sub-agent", "review", "manual", "button", "agent", "pro"],
     sectionId: SECTION_IDS.experiments,
     sectionLabel: "Experiments",
   },

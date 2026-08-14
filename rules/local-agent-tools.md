@@ -84,6 +84,7 @@ Agent tool definitions live in `src/pro/main/ipc/handlers/local_agent/tools/`. E
 
 ## Stream retries
 
+- When diagnosing `Sub-agent finished without a report`, inspect both `agent_activities` and `agent_messages`: a completed tool activity only proves the tool ran, while zero child messages means the model returned no durable report. The current tables do not persist per-step `finishReason` or provider warnings, so do not attribute an empty post-tool continuation to a specific provider cause without additional telemetry.
 - Call `cancelOrphanedBaseStream(result)` only after code has accessed and is
   consuming `result.fullStream`; calling it before awaiting `result.text`/
   `steps` cancels the primary stream and can leave durable sub-agents stuck in

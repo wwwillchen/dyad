@@ -106,15 +106,18 @@ export const codeSearchTool: ToolDefinition<CodeSearchArgs> = {
   defaultConsent: "always",
   usesEngineEndpoint: true,
 
-  // Root turns retain targeted semantic discovery even when Explorer is
-  // disabled. Inside Explorer, compiler exploration supersedes code_search so
-  // the child still receives a single semantic discovery surface.
+  // Route root discovery through the Explorer sub-agent whenever it is
+  // available. Inside Explorer, retain code_search as a fallback unless the
+  // compiler-backed exploration surface is ready.
   isEnabled: (ctx) => {
-    const compilerExplorerAvailable =
+    if (!ctx.isDyadPro) return false;
+    if (!ctx.subagentThreadId && ctx.canUseExplorerSubagent) return false;
+
+    const exploreCodeAvailable =
       ctx.subagentPersona === "explorer" &&
       readSettings().enableCodeExplorer === true &&
       isCodeExplorerReady(ctx.appPath);
-    return ctx.isDyadPro && !compilerExplorerAvailable;
+    return !exploreCodeAvailable;
   },
 
   getConsentPreview: (args) =>

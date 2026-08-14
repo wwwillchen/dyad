@@ -40,11 +40,14 @@ describe("local_agent_prompt", () => {
       codeExplorerAvailable: true,
     });
     expect(prompt).toMatchSnapshot();
-    expect(prompt).toContain('use `spawn_agent` with persona="explorer"');
+    expect(prompt).toContain('Use `spawn_agent` with persona="explorer"');
     expect(prompt).toContain(
-      "Continue non-conflicting root work while Explorer runs",
+      "when the relevant files are not reasonably clear",
     );
-    expect(prompt).toContain("use `wait_agents` or `list_agents`");
+    expect(prompt).toContain("Treat the Explorer report as a starting map");
+    expect(prompt).toContain(
+      "Explorer spawning waits until its report is ready",
+    );
     expect(prompt).toContain(
       "Do not spawn duplicate Explorers for the same investigation",
     );
@@ -52,6 +55,9 @@ describe("local_agent_prompt", () => {
       "Validate an Explorer report's exact edit targets",
     );
     expect(prompt).not.toContain("Use `grep` and `code_search`");
+    expect(prompt).not.toContain(
+      "`list_files`, `code_search`, and `read_file`",
+    );
   });
 
   it("uses direct search guidance when Explorer is unavailable", () => {
@@ -61,6 +67,25 @@ describe("local_agent_prompt", () => {
 
     expect(prompt).not.toContain('spawn_agent` with persona="explorer"');
     expect(prompt).toContain("Use `grep` and `code_search`");
+  });
+
+  it("includes Implementer delegation guidance only when available", () => {
+    const disabled = constructLocalAgentPrompt(undefined);
+    const enabled = constructLocalAgentPrompt(undefined, undefined, {
+      implementerAvailable: true,
+    });
+
+    expect(disabled).not.toContain("**Implementer delegation:**");
+    expect(enabled).toContain("**Implementer delegation:**");
+    expect(enabled).toContain(
+      'delegate straightforward, low-risk, well-scoped editing tasks to `spawn_agent` with `persona="implementer"`',
+    );
+    expect(enabled).toContain(
+      "The root Agent remains responsible for the result",
+    );
+    expect(enabled).toContain(
+      "An Implementer's completion status alone is not sufficient verification",
+    );
   });
 
   it("agent mode system prompt (vite framework includes Nitro nudge)", () => {

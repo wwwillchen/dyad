@@ -156,6 +156,43 @@ describe("local-agent Git tool definitions", () => {
     expect(ctx.requireConsent).not.toHaveBeenCalled();
   });
 
+  it("captures durable presentation updates by tool call identity", async () => {
+    const onToolActivity = vi.fn(async () => {});
+    const ctx = {
+      appPath: "/tmp/test-app",
+      chatId: 1,
+      fileEditTracker: {},
+      onToolActivity,
+      onXmlComplete: vi.fn(),
+      onXmlStream: vi.fn(),
+      requireConsent: vi.fn(async () => true),
+    } as unknown as AgentContext;
+    const toolSet = buildAgentToolSet(ctx);
+
+    await toolSet.git_status.execute?.({}, {
+      toolCallId: "call-status",
+    } as never);
+
+    expect(onToolActivity).toHaveBeenNthCalledWith(1, {
+      toolCallId: "call-status",
+      toolName: "git_status",
+      status: "pending",
+      presentationXml: '<dyad-git operation="status">',
+      inputJson: {},
+    });
+    expect(onToolActivity).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        toolCallId: "call-status",
+        toolName: "git_status",
+        status: "completed",
+        presentationXml: expect.stringContaining('branch="main"'),
+        inputJson: {},
+        outputText: expect.stringContaining('"branch": "main"'),
+      }),
+    );
+    expect(ctx.onXmlComplete).not.toHaveBeenCalled();
+  });
+
   it("records a successful mutation and skips reserved Supabase deployment", async () => {
     const appPath = await fs.promises.mkdtemp(
       path.join(os.tmpdir(), "git-tool-"),

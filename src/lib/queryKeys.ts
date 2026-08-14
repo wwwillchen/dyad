@@ -20,6 +20,8 @@ export const queryKeys = {
     byChat: ({ chatId }: { chatId: number }) => ["subagents", chatId] as const,
     messages: ({ chatId, threadId }: { chatId: number; threadId: string }) =>
       ["subagents", chatId, "messages", threadId] as const,
+    activities: ({ chatId, threadId }: { chatId: number; threadId: string }) =>
+      ["subagents", chatId, "activities", threadId] as const,
   },
 
   // ─────────────────────────────────────────────────────────────────────────────

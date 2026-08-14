@@ -205,6 +205,7 @@ export type {
   SubagentStatus,
   SubagentThreadSummary,
   SubagentMessage,
+  SubagentActivity,
   AgentTodosUpdatePayload,
   AgentProblemsUpdatePayload,
   SetAgentToolConsentParams,

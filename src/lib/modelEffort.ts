@@ -1,5 +1,6 @@
 import type { LanguageModel } from "@/ipc/types/language-model";
 import type { LargeLanguageModel, ModelSelection } from "@/lib/schemas";
+import { getAutoSidekickRuntimeModel } from "@/lib/autoSidekick";
 
 export const FALLBACK_EFFORT_SETTINGS = {
   defaultEffortLevel: "medium",
@@ -7,10 +8,11 @@ export const FALLBACK_EFFORT_SETTINGS = {
 } as const;
 
 export function getModelPreferenceKey(model: LargeLanguageModel): string {
+  const preferenceModel = getAutoSidekickRuntimeModel(model);
   return JSON.stringify([
-    model.provider,
-    model.name,
-    model.customModelId ?? null,
+    preferenceModel.provider,
+    preferenceModel.name,
+    preferenceModel.customModelId ?? null,
   ]);
 }
 

@@ -431,6 +431,7 @@ const BaseUserSettingsFields = {
   enableMultiWindow: z.boolean().optional(),
   enableExplorerSubagent: z.boolean().optional(),
   enableAutoReview: z.boolean().optional(),
+  enableReviewButton: z.boolean().optional(),
   enableImplementerSubagent: z.boolean().optional(),
   autoFixReviewIssues: z.boolean().optional(),
   enableAutoUpdate: z.boolean(),

@@ -411,6 +411,9 @@ const ChatMessage = ({
                 messageId={message.id}
                 rootIsStreaming={isLastMessage && isStreaming}
                 showReviewAction={isLastMessage}
+                hideInlineThreads={assistantTextContent.includes(
+                  "<dyad-subagent",
+                )}
               />
             )}
           </div>

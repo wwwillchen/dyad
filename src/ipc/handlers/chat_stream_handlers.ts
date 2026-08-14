@@ -135,6 +135,7 @@ import {
   isTurboEditsV2Enabled,
 } from "@/lib/schemas";
 import { isFreeProModel } from "@/lib/freeProModel";
+import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
 import {
   assertChatModeCompatibleWithModel,
   normalizeStoredChatMode,
@@ -1762,6 +1763,10 @@ ${componentSnippet}
         const historyExplorerAvailable =
           isDyadProEnabled(settings) &&
           settings.agentToolConsents?.["explore_chat_history"] !== "never";
+        const implementerAvailable =
+          selectedChatMode === "local-agent" &&
+          isDyadProEnabled(settings) &&
+          isImplementerSubagentEnabled(settings);
         const restartAppToolAvailable =
           settings.agentToolConsents?.["restart_app"] !== "never";
         const rebuildAppToolAvailable =
@@ -1781,6 +1786,7 @@ ${componentSnippet}
             settings.enableAppBlueprint && updatedChat.app.needsAppBlueprint,
           codeExplorerAvailable,
           historyExplorerAvailable,
+          implementerAvailable,
           testingEnabled: !!updatedChat.app?.testingEnabled,
           restartAppToolAvailable,
           rebuildAppToolAvailable,

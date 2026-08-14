@@ -37,11 +37,13 @@ export function SubagentTeamCard({
   messageId,
   rootIsStreaming = false,
   showReviewAction = true,
+  hideInlineThreads = false,
 }: {
   chatId: number;
   messageId: number;
   rootIsStreaming?: boolean;
   showReviewAction?: boolean;
+  hideInlineThreads?: boolean;
 }) {
   const { settings } = useSettings();
   const { streamMessage } = useStreamChat();
@@ -56,6 +58,7 @@ export function SubagentTeamCard({
   );
   const [now, setNow] = useState(Date.now());
   const isPro = settings ? isDyadProEnabled(settings) : false;
+  const showReviewButton = showReviewAction && !!settings?.enableReviewButton;
   const query = useQuery({
     queryKey,
     queryFn: () => ipc.agent.listSubagents({ chatId }),
@@ -63,8 +66,13 @@ export function SubagentTeamCard({
   });
   const threads = query.data ?? [];
   const visibleThreads = useMemo(
-    () => threads.filter((thread) => thread.sourceMessageId === messageId),
-    [messageId, threads],
+    () =>
+      threads.filter(
+        (thread) =>
+          thread.sourceMessageId === messageId &&
+          (!hideInlineThreads || thread.invocationSource !== "model"),
+      ),
+    [hideInlineThreads, messageId, threads],
   );
   const invalidateThreads = () =>
     queryClient.invalidateQueries({ queryKey: queryKeys.subagents.all });
@@ -230,7 +238,7 @@ export function SubagentTeamCard({
   );
   if (!isPro) return null;
   if (query.isPending) {
-    if (!showReviewAction) return null;
+    if (!showReviewButton) return null;
     return (
       <div className="mt-3 flex items-center gap-2 rounded-lg border bg-muted/20 p-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" /> Loading agent team
@@ -238,7 +246,7 @@ export function SubagentTeamCard({
     );
   }
   if (query.isError) {
-    if (!showReviewAction) return null;
+    if (!showReviewButton) return null;
     return (
       <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-destructive/40 bg-muted/20 p-2 text-sm">
         <span className="text-destructive">Could not load agent team.</span>
@@ -256,7 +264,7 @@ export function SubagentTeamCard({
   const report =
     typeof review?.result?.report === "string" ? review.result.report : null;
   if (rootIsStreaming && visibleThreads.length === 0) return null;
-  if (!showReviewAction && visibleThreads.length === 0) return null;
+  if (!showReviewButton && visibleThreads.length === 0) return null;
 
   return (
     <div className="mt-3 rounded-lg border bg-muted/20 text-sm">
@@ -278,7 +286,7 @@ export function SubagentTeamCard({
             </span>
           </button>
         )}
-        {showReviewAction && (
+        {showReviewButton && (
           <Button
             size="sm"
             variant="outline"

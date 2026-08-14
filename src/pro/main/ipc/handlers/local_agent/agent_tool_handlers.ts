@@ -19,6 +19,7 @@ import {
   buildFixFindingsPrompt,
   cancelSubagent,
   followupSubagent,
+  getSubagentActivities,
   getSubagentMessages,
   listSubagents,
   runAutoReviewBarrier,
@@ -61,6 +62,13 @@ export function registerAgentToolHandlers() {
     async (event, { chatId, threadId }) => {
       setSubagentEventTarget(event.sender);
       return getSubagentMessages(chatId, threadId);
+    },
+  );
+  handle(
+    agentContracts.getSubagentActivities,
+    async (event, { chatId, threadId }) => {
+      setSubagentEventTarget(event.sender);
+      return getSubagentActivities(chatId, threadId);
     },
   );
   handle(

@@ -121,6 +121,8 @@ export interface AgentContext {
   spawnedSubagentThreadIds?: string[];
   /** Implementer children that must finish before root deploy/commit. */
   spawnedImplementerThreadIds?: string[];
+  /** Explorer reports already returned directly to the root as tool results. */
+  deliveredExplorerThreadIds?: string[];
   /**
    * Whether file tools may deploy server functions immediately. Implementer
    * children disable this so deployment stays owned by the root turn.
@@ -132,6 +134,7 @@ export interface AgentContext {
   onDeferredFunctionDeploy?: (functionName: string) => void;
   /** Turn-scoped schema gates for root orchestration tools. */
   canUseExplorerSubagent?: boolean;
+  /** True when settings or the selected Auto Sidekick model enables it. */
   canUseImplementerSubagent?: boolean;
   /**
    * If true, this turn is using a Dyad Free model. Some Pro-enabled
@@ -148,6 +151,20 @@ export interface AgentContext {
    * Call this once when the tool's XML output is complete.
    */
   onXmlComplete: (finalXml: string) => void;
+  /**
+   * Optional durable presentation sink used by sub-agents. The generic tool
+   * wrapper calls it with the AI SDK call identity so parallel child tools
+   * cannot overwrite one another's UI activity.
+   */
+  onToolActivity?: (activity: {
+    toolCallId: string;
+    toolName: string;
+    status: "pending" | "completed" | "error" | "aborted";
+    presentationXml: string;
+    inputJson?: Record<string, unknown>;
+    outputText?: string;
+    error?: string;
+  }) => Promise<void>;
   /**
    * Re-read this turn's assistant message from the DB and adopt it as the
    * in-progress response. Only for a tool that blocks while something outside

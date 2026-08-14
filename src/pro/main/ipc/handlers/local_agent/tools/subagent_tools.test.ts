@@ -1,9 +1,21 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const subagentManagerMocks = vi.hoisted(() => ({
+  cancelSubagent: vi.fn(async () => {}),
+  followupSubagent: vi.fn(async () => "explorer" as const),
+  listSubagents: vi.fn(async () => []),
+  sendSubagentMessage: vi.fn(async () => {}),
+  spawnModelSubagent: vi.fn(async () => "explorer-1"),
+  updateSubagentActivity: vi.fn(async () => {}),
+  waitForSubagents: vi.fn(async () => [] as any[]),
+}));
+
+vi.mock("../subagents/subagent_manager", () => subagentManagerMocks);
 
 import {
   buildSubagentContext,
   cancelAgentTool,
-  compilerExploreTool,
+  exploreCodeTool,
   followupTaskTool,
   listAgentsTool,
   sendMessageTool,
@@ -14,6 +26,11 @@ import type { AgentContext } from "./types";
 import { trackAppMutation } from "./tool_invocation";
 
 describe("spawn_agent schema", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    subagentManagerMocks.spawnModelSubagent.mockResolvedValue("explorer-1");
+  });
+
   it("binds child consent and tools to the child abort signal", async () => {
     const requireConsent = vi.fn(async () => true);
     const rootSignal = new AbortController().signal;
@@ -69,6 +86,97 @@ describe("spawn_agent schema", () => {
     expect(child.mutationCount).toBe(1);
     expect(root.mutationCount).toBe(1);
     expect(root.workspaceMutated).toBe(true);
+  });
+
+  it("blocks Explorer spawning until its report is returned", async () => {
+    subagentManagerMocks.waitForSubagents.mockResolvedValueOnce([
+      {
+        id: "explorer-1",
+        status: "completed",
+        result: { report: "## explore_code report\nSummary:\nGrounded result" },
+        error: null,
+      },
+    ]);
+    const abortSignal = new AbortController().signal;
+    const onXmlComplete = vi.fn();
+    const ctx = {
+      chatId: 7,
+      abortSignal,
+      onXmlComplete,
+      spawnedSubagentThreadIds: [],
+      deliveredExplorerThreadIds: [],
+    } as unknown as AgentContext;
+
+    const result = await spawnAgentTool.execute(
+      {
+        persona: "explorer",
+        task_name: "Trace auth",
+        assignment: "Explain the authentication flow",
+        scope: ["src/auth"],
+      },
+      ctx,
+    );
+
+    expect(subagentManagerMocks.waitForSubagents).toHaveBeenCalledWith(
+      7,
+      ["explorer-1"],
+      abortSignal,
+    );
+    expect(JSON.parse(result)).toEqual({
+      threadId: "explorer-1",
+      status: "completed",
+      report: "## explore_code report\nSummary:\nGrounded result",
+      error: null,
+    });
+    expect(ctx.deliveredExplorerThreadIds).toEqual(["explorer-1"]);
+    expect(onXmlComplete).toHaveBeenCalledWith(
+      expect.stringContaining('thread-id="explorer-1"'),
+    );
+  });
+
+  it("blocks Implementer spawning until its report is returned", async () => {
+    subagentManagerMocks.spawnModelSubagent.mockResolvedValueOnce(
+      "implementer-1",
+    );
+    subagentManagerMocks.waitForSubagents.mockResolvedValueOnce([
+      {
+        id: "implementer-1",
+        status: "completed",
+        result: { report: "Changed src/auth.ts and verified its types." },
+        error: null,
+      },
+    ]);
+    const abortSignal = new AbortController().signal;
+    const ctx = {
+      chatId: 7,
+      abortSignal,
+      onXmlComplete: vi.fn(),
+      spawnedSubagentThreadIds: [],
+      spawnedImplementerThreadIds: [],
+    } as unknown as AgentContext;
+
+    const result = await spawnAgentTool.execute(
+      {
+        persona: "implementer",
+        task_name: "Update auth",
+        assignment: "Make the bounded authentication edit",
+        scope: ["src/auth.ts"],
+      },
+      ctx,
+    );
+
+    expect(subagentManagerMocks.waitForSubagents).toHaveBeenCalledWith(
+      7,
+      ["implementer-1"],
+      abortSignal,
+    );
+    expect(JSON.parse(result)).toEqual({
+      threadId: "implementer-1",
+      status: "completed",
+      report: "Changed src/auth.ts and verified its types.",
+      error: null,
+    });
+    expect(ctx.spawnedImplementerThreadIds).toEqual(["implementer-1"]);
   });
 
   it("keeps schema introspection safe when no spawn persona is enabled", () => {
@@ -134,7 +242,7 @@ describe("spawn_agent schema", () => {
         cancelAgentTool,
         sendMessageTool,
         followupTaskTool,
-        compilerExploreTool,
+        exploreCodeTool,
       ].every((tool) => tool.subagentOnly),
     ).toBe(true);
     expect(spawnAgentTool.requiresMutationLease).toBe(false);
@@ -151,14 +259,14 @@ describe("spawn_agent schema", () => {
 
   it("exposes bounded compiler exploration arguments", () => {
     expect(
-      compilerExploreTool.inputSchema.safeParse({
+      exploreCodeTool.inputSchema.safeParse({
         query: "trace the request flow",
         max_files: 8,
         max_depth: 3,
       }).success,
     ).toBe(true);
     expect(
-      compilerExploreTool.inputSchema.safeParse({
+      exploreCodeTool.inputSchema.safeParse({
         query: "trace the request flow",
         max_files: 9,
       }).success,

@@ -8,10 +8,16 @@ import {
   listSubagents,
   sendSubagentMessage,
   spawnModelSubagent,
+  updateSubagentActivity,
   waitForSubagents,
 } from "../subagents/subagent_manager";
 import { normalizeMutationScope } from "../subagents/mutation_lease";
-import type { AgentContext, ToolDefinition } from "./types";
+import {
+  escapeXmlAttr,
+  escapeXmlContent,
+  type AgentContext,
+  type ToolDefinition,
+} from "./types";
 import {
   formatRawExploreCodeResult,
   normalizeExploreCodeArgsForApp,
@@ -96,6 +102,12 @@ export function buildSubagentContext(
     fileEditTracker: ctx.fileEditTracker,
     onXmlStream: () => {},
     onXmlComplete: () => {},
+    onToolActivity: (activity) =>
+      updateSubagentActivity({
+        chatId: ctx.chatId,
+        threadId,
+        ...activity,
+      }),
   };
 }
 
@@ -103,7 +115,7 @@ function buildSubagentToolSet(params: SubagentToolContextParams): ToolSet {
   const { ctx, persona } = params;
   const allowlist =
     persona === "explorer"
-      ? ["read_file", "list_files", "grep", "code_search", "compiler_explore"]
+      ? ["read_file", "list_files", "grep", "code_search", "explore_code"]
       : ["read_file", "list_files", "grep", "write_file", "search_replace"];
   const childCtx = buildSubagentContext(params);
   const allTools = buildAgentToolSet(childCtx, {
@@ -120,7 +132,7 @@ export const spawnAgentTool: ToolDefinition<
 > = {
   name: "spawn_agent",
   description:
-    "Start an asynchronous depth-one Explorer or enabled Implementer sub-agent. Reviewer is user/application controlled and is never available here.",
+    "Run a blocking depth-one Explorer or enabled Implementer sub-agent. The sub-agent returns its report before the tool call completes. Reviewer is user/application controlled and is never available here.",
   inputSchema: spawnFallbackSchema,
   getInputSchema: (ctx) => {
     const personas = [
@@ -172,7 +184,29 @@ export const spawnAgentTool: ToolDefinition<
       ctx.spawnedImplementerThreadIds ??= [];
       ctx.spawnedImplementerThreadIds.push(threadId);
     }
-    return `Started ${args.persona} sub-agent ${threadId}. Use list_agents or wait_agents to inspect it.`;
+    ctx.onXmlComplete(
+      `<dyad-subagent chat-id="${escapeXmlAttr(String(ctx.chatId))}" thread-id="${escapeXmlAttr(threadId)}" persona="${escapeXmlAttr(args.persona)}" task-name="${escapeXmlAttr(args.task_name)}"></dyad-subagent>`,
+    );
+    const [subagent] = await waitForSubagents(
+      ctx.chatId,
+      [threadId],
+      ctx.abortSignal,
+    );
+    if (args.persona === "explorer") {
+      ctx.deliveredExplorerThreadIds ??= [];
+      if (!ctx.deliveredExplorerThreadIds.includes(threadId)) {
+        ctx.deliveredExplorerThreadIds.push(threadId);
+      }
+    }
+    return JSON.stringify({
+      threadId: subagent.id,
+      status: subagent.status,
+      report:
+        typeof subagent.result?.report === "string"
+          ? subagent.result.report
+          : null,
+      error: subagent.error,
+    });
   },
 };
 
@@ -278,12 +312,12 @@ export const followupTaskTool: ToolDefinition<z.infer<typeof messageSchema>> = {
   },
 };
 
-export const compilerExploreTool: ToolDefinition<
+export const exploreCodeTool: ToolDefinition<
   z.infer<typeof rawExploreCodeSchema>
 > = {
-  name: "compiler_explore",
+  name: "explore_code",
   description:
-    "Explore the configured TypeScript project using compiler-backed symbol and dependency analysis.",
+    "Explore the configured TypeScript project using compiler-backed symbol and dependency analysis. Returns relevant symbols and line-numbered source windows grouped by file.",
   inputSchema: rawExploreCodeSchema,
   defaultConsent: "always",
   subagentOnly: true,
@@ -293,6 +327,10 @@ export const compilerExploreTool: ToolDefinition<
       [...ctx.referencedApps.values()].some(
         (appPath) => getExploreCodeAvailabilityForAppPath(ctx, appPath).enabled,
       )),
+  buildXml: (args, isComplete) => {
+    if (!args.query || isComplete) return undefined;
+    return `<dyad-explore-code${buildExploreCodeAttributes(args)}>Exploring...`;
+  },
   execute: async (args, ctx) => {
     const appPath = resolveTargetAppPath(ctx, args.app_name);
     const availability = getExploreCodeAvailabilityForAppPath(ctx, appPath);
@@ -301,8 +339,45 @@ export const compilerExploreTool: ToolDefinition<
       args,
       fallbackTsconfigPath: availability.tsconfigPath,
     });
-    return formatRawExploreCodeResult(
-      await runRawExploreCode({ appPath, args: effectiveArgs }),
+    const result = await runRawExploreCode({ appPath, args: effectiveArgs });
+    const resultText = formatRawExploreCodeResult(result);
+    const attributes = buildExploreCodeAttributes(effectiveArgs, {
+      files: result.files.length,
+      symbols: result.totalSymbols,
+      indexMs: result.indexMs,
+      searchMs: result.searchMs,
+      truncated: result.truncated,
+    });
+    ctx.onXmlComplete(
+      `<dyad-explore-code${attributes}>\n${escapeXmlContent(resultText)}\n</dyad-explore-code>`,
     );
+    return resultText;
   },
 };
+
+function buildExploreCodeAttributes(
+  args: Partial<z.infer<typeof rawExploreCodeSchema>>,
+  result?: {
+    files: number;
+    symbols: number;
+    indexMs: number;
+    searchMs: number;
+    truncated: boolean;
+  },
+): string {
+  const attributes: string[] = [];
+  if (args.query) attributes.push(`query="${escapeXmlAttr(args.query)}"`);
+  if (args.app_name)
+    attributes.push(`app_name="${escapeXmlAttr(args.app_name)}"`);
+  if (args.tsconfig_path) {
+    attributes.push(`tsconfig_path="${escapeXmlAttr(args.tsconfig_path)}"`);
+  }
+  if (result) {
+    attributes.push(`files="${result.files}"`);
+    attributes.push(`symbols="${result.symbols}"`);
+    attributes.push(`index_ms="${result.indexMs}"`);
+    attributes.push(`search_ms="${result.searchMs}"`);
+    if (result.truncated) attributes.push('truncated="true"');
+  }
+  return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
+}

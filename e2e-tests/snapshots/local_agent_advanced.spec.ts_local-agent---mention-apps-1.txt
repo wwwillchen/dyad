@@ -556,7 +556,7 @@
       },
       {
         "name": "spawn_agent",
-        "description": "Start an asynchronous depth-one Explorer or enabled Implementer sub-agent. Reviewer is user/application controlled and is never available here.",
+        "description": "Run a blocking depth-one Explorer or enabled Implementer sub-agent. The sub-agent returns its report before the tool call completes. Reviewer is user/application controlled and is never available here.",
         "input_schema": {
           "$schema": "http://json-schema.org/draft-07/schema#",
           "type": "object",

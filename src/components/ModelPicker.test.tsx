@@ -417,6 +417,7 @@ describe("ModelPicker", () => {
     mocks.settings.enableDyadPro = true;
     mocks.settings.providerSettings.auto.apiKey.value = "dyad-pro-key";
     mocks.settings.providerSettings.openrouter.apiKey.value = "";
+    mocks.settings.selectedModel = { name: "auto", provider: "auto" };
     mocks.settings.selectedChatMode = "build";
     mocks.settings.defaultChatMode = "build";
     mocks.isTrial = false;
@@ -435,6 +436,10 @@ describe("ModelPicker", () => {
   it("shows Pro users a flat primary cloud model list with provider grouping under More models", () => {
     render(<ModelPicker />);
 
+    expect(screen.getByText("Auto Sidekick")).toBeTruthy();
+    expect(
+      screen.getByText("Auto Sidekick").closest("button")?.textContent,
+    ).toContain("New");
     expect(screen.getByText("GPT 5")).toBeTruthy();
     expect(screen.queryByText("OpenAI")).toBeNull();
     expect(screen.queryByText("GLM 4.7")).toBeNull();
@@ -454,6 +459,38 @@ describe("ModelPicker", () => {
     expect(screen.queryByText("xAI")).toBeNull();
     expect(screen.getByText("More models")).toBeTruthy();
     expect(screen.queryByText("Other AI providers")).toBeNull();
+  });
+
+  it("selects Auto Sidekick and moves Build mode to Agent", async () => {
+    render(<ModelPicker />);
+
+    fireEvent.click(screen.getByText("Auto Sidekick").closest("button")!);
+
+    await waitFor(() => {
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        selectedModel: {
+          name: "auto-sidekick",
+          provider: "auto",
+        },
+        selectedChatMode: "local-agent",
+      });
+    });
+  });
+
+  it("shows the Auto Sidekick display name in the selected-model trigger", () => {
+    mocks.settings.selectedModel = {
+      name: "auto-sidekick",
+      provider: "auto",
+    };
+
+    render(<ModelPicker />);
+
+    expect(screen.getByTestId("model-picker").textContent).toContain(
+      "Auto Sidekick (Medium)",
+    );
+    expect(screen.getByTestId("model-picker").textContent).not.toContain(
+      "auto-sidekick",
+    );
   });
 
   it("shows effort in the trigger and selects catalog-defined effort from a model submenu", async () => {
@@ -574,6 +611,7 @@ describe("ModelPicker", () => {
 
     render(<ModelPicker />);
 
+    expect(screen.queryByText("Auto Sidekick")).toBeNull();
     expect(screen.getByText("GPT 5")).toBeTruthy();
     expect(screen.queryByText("OpenAI")).toBeNull();
     expect(screen.getByText("More models")).toBeTruthy();

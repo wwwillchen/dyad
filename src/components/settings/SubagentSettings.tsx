@@ -104,6 +104,16 @@ export function SubagentSettings() {
         }
       />
       <SettingRow
+        id={SETTING_IDS.enableReviewButton}
+        label="Show Review changes button"
+        description="Show the experimental manual Reviewer action on the latest Agent response."
+        checked={!!settings.enableReviewButton}
+        onCheckedChange={(checked) =>
+          updateSettings({ enableReviewButton: checked })
+        }
+        experimental
+      />
+      <SettingRow
         id={SETTING_IDS.enableImplementerSubagent}
         label="Allow Implementer sub-agent"
         description="Allow one delegated writer to edit files within an explicit scope. Existing approvals still apply."

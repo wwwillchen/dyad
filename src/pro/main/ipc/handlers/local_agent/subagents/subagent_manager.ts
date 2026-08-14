@@ -5,7 +5,13 @@ import type { WebContents } from "electron";
 import log from "electron-log";
 
 import { db } from "@/db";
-import { agentMessages, agentThreads, chats, messages } from "@/db/schema";
+import {
+  agentActivities,
+  agentMessages,
+  agentThreads,
+  chats,
+  messages,
+} from "@/db/schema";
 import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 import { getAiHeaders, getProviderOptions } from "@/ipc/utils/provider_options";
@@ -17,6 +23,7 @@ import {
   readAppResource,
 } from "@/ipc/services/app_operation_coordinator";
 import type {
+  SubagentActivity,
   SubagentMessage,
   SubagentPersona,
   SubagentThreadSummary,
@@ -26,6 +33,7 @@ import { isDyadProEnabled } from "@/lib/schemas";
 import { readSettings } from "@/main/settings";
 import { getDyadAppPath } from "@/paths/paths";
 import type { AgentContext } from "../tools/types";
+import { runExploreCodeSubagent } from "../tools/explore_code_subagent";
 import { buildReviewTarget, type ReviewTarget } from "./review_target";
 import {
   acquireMutationLease,
@@ -55,6 +63,8 @@ const MODELS = {
   implementer: { provider: "openai", name: "gpt-5.6-luna", effort: "high" },
 } as const;
 const MAX_DURABLE_REPORT_CHARS = 100_000;
+const MAX_ACTIVITY_XML_CHARS = 200_000;
+const MAX_ACTIVITY_OUTPUT_CHARS = 200_000;
 const MAX_MODEL_HISTORY_CHARS = 100_000;
 const AUTO_REVIEW_BARRIER_MAX_WAIT_MS = 10 * 60 * 1000;
 const ROOT_FINALIZATION_MAX_WAIT_MS = 10 * 60 * 1000;
@@ -223,6 +233,97 @@ export async function getSubagentMessages(chatId: number, threadId: string) {
   );
 }
 
+export async function getSubagentActivities(
+  chatId: number,
+  threadId: string,
+): Promise<SubagentActivity[]> {
+  assertPro();
+  await getOwnedThread(chatId, threadId);
+  const rows = await db.query.agentActivities.findMany({
+    where: eq(agentActivities.threadId, threadId),
+    orderBy: [asc(agentActivities.sequence)],
+  });
+  return rows.map((row) => ({
+    id: row.id,
+    threadId: row.threadId,
+    sequence: row.sequence,
+    toolCallId: row.toolCallId,
+    toolName: row.toolName,
+    status: row.status,
+    presentationXml: row.presentationXml,
+    inputJson: row.inputJson,
+    outputText: row.outputText,
+    error: row.error,
+    startedAt: row.startedAt,
+    completedAt: row.completedAt,
+  }));
+}
+
+export async function updateSubagentActivity(params: {
+  chatId: number;
+  threadId: string;
+  toolCallId: string;
+  toolName: string;
+  status: "pending" | "completed" | "error" | "aborted";
+  presentationXml: string;
+  inputJson?: Record<string, unknown>;
+  outputText?: string;
+  error?: string;
+}): Promise<void> {
+  await withLock(`subagent-activity:${params.threadId}`, async () => {
+    const existing = await db.query.agentActivities.findFirst({
+      where: and(
+        eq(agentActivities.threadId, params.threadId),
+        eq(agentActivities.toolCallId, params.toolCallId),
+      ),
+    });
+    if (
+      existing &&
+      existing.status !== "pending" &&
+      params.status === "pending"
+    ) {
+      return;
+    }
+    const presentationXml = params.presentationXml.slice(
+      0,
+      MAX_ACTIVITY_XML_CHARS,
+    );
+    const completedAt = params.status === "pending" ? null : new Date();
+    const outputText = params.outputText?.slice(0, MAX_ACTIVITY_OUTPUT_CHARS);
+    if (existing) {
+      await db
+        .update(agentActivities)
+        .set({
+          status: params.status,
+          presentationXml,
+          inputJson: params.inputJson ?? existing.inputJson,
+          outputText: outputText ?? existing.outputText,
+          error: params.error ?? null,
+          completedAt,
+        })
+        .where(eq(agentActivities.id, existing.id));
+    } else {
+      const latest = await db.query.agentActivities.findFirst({
+        where: eq(agentActivities.threadId, params.threadId),
+        orderBy: [desc(agentActivities.sequence)],
+      });
+      await db.insert(agentActivities).values({
+        threadId: params.threadId,
+        sequence: (latest?.sequence ?? 0) + 1,
+        toolCallId: params.toolCallId,
+        toolName: params.toolName,
+        status: params.status,
+        presentationXml,
+        inputJson: params.inputJson ?? null,
+        outputText: outputText ?? null,
+        error: params.error ?? null,
+        completedAt,
+      });
+    }
+  });
+  emit(params.chatId, params.threadId);
+}
+
 export async function spawnModelSubagent(params: {
   ctx: AgentContext;
   persona: "explorer" | "implementer";
@@ -238,7 +339,10 @@ export async function spawnModelSubagent(params: {
   }) => ToolSet;
 }): Promise<string> {
   assertPro(params.persona);
-  assertPersonaEnabled(params.persona);
+  assertPersonaEnabled(
+    params.persona,
+    params.ctx.canUseImplementerSubagent === true,
+  );
   if (params.persona === "implementer" && params.scope.length === 0) {
     throw new DyadError(
       "Implementer requires an explicit path scope.",
@@ -289,6 +393,7 @@ export async function spawnModelSubagent(params: {
                 thread.id,
                 params.ctx.appId,
                 assignment,
+                params.ctx,
                 (abortSignal) =>
                   params.buildTools({
                     threadId: thread.id,
@@ -917,7 +1022,10 @@ async function followupSubagentAdmitted(
   },
 ): Promise<SubagentPersona> {
   const thread = await getOwnedThread(chatId, threadId);
-  assertPersonaEnabled(thread.persona);
+  assertPersonaEnabled(
+    thread.persona,
+    currentTurn?.ctx.canUseImplementerSubagent === true,
+  );
   if (thread.persona === "implementer" && !currentTurn) {
     throw new DyadError(
       "Implementer follow-ups must run through an active root Agent turn so their changes are verified, deployed, and committed.",
@@ -948,6 +1056,7 @@ async function followupSubagentAdmitted(
             thread.id,
             currentTurn.ctx.appId,
             nextAssignment,
+            currentTurn.ctx,
             (abortSignal) =>
               currentTurn.buildTools({
                 threadId: thread.id,
@@ -1156,6 +1265,7 @@ async function runThread(
   threadId: string,
   appId: number,
   assignment: string,
+  rootCtx: AgentContext,
   buildTools: (abortSignal: AbortSignal) => ToolSet,
   scope: string[],
 ): Promise<void> {
@@ -1166,7 +1276,10 @@ async function runThread(
   abortControllers.set(threadId, controller);
   const entitlementWatcher = watchEntitlement(threadId, controller);
   try {
-    assertPersonaEnabled(thread.persona);
+    assertPersonaEnabled(
+      thread.persona,
+      rootCtx.canUseImplementerSubagent === true,
+    );
     if (
       thread.persona === "implementer" &&
       !acquireMutationLease({ appId, threadId, scope })
@@ -1179,26 +1292,51 @@ async function runThread(
     if (controller.signal.aborted || cancelledThreadIds.has(threadId)) return;
     if (!(await updateStatus(threadId, "running"))) return;
     const tools = buildTools(controller.signal);
-    const result = await runModel({
-      threadId,
-      appId,
-      persona: thread.persona,
-      assignment,
-      tools,
-      abortSignal: controller.signal,
-    });
-    const durableResult = boundDurableReport(result.text);
+    let usedExplorerFallback = false;
+    const result =
+      thread.persona === "explorer"
+        ? {
+            text: await runExploreCodeSubagent({
+              args: { query: assignment, intent: "explain" },
+              ctx: {
+                ...rootCtx,
+                subagentThreadId: threadId,
+                subagentPersona: "explorer",
+                abortSignal: controller.signal,
+              },
+              tools,
+              onUsage: (usage) => recordModelUsage(threadId, usage),
+              onFinalized: ({ usedFallback }) => {
+                usedExplorerFallback = usedFallback;
+              },
+            }),
+            hitStepLimit: false,
+          }
+        : await runModel({
+            threadId,
+            appId,
+            persona: thread.persona,
+            assignment,
+            tools,
+            abortSignal: controller.signal,
+          });
+    const durableResult = boundDurableReport(result.text).trim();
+    if (!durableResult) {
+      throw new Error("Sub-agent finished without a report.");
+    }
     await appendAssistantMessage(threadId, durableResult);
     if (thread.persona === "implementer") {
       releaseMutationLease(appId, threadId);
     }
     await finishThread(
       threadId,
-      result.hitStepLimit ? "partial" : "completed",
+      result.hitStepLimit || usedExplorerFallback ? "partial" : "completed",
       { report: durableResult },
       result.hitStepLimit
         ? `Sub-agent stopped after ${SUBAGENT_MAX_STEPS} model steps.`
-        : null,
+        : usedExplorerFallback
+          ? "Explorer returned a deterministic report from observed evidence."
+          : null,
     );
     shouldContinue = true;
   } catch (error) {
@@ -1355,29 +1493,45 @@ async function runModel(params: {
     result.totalUsage,
     result.steps,
   ]);
-  const thread = await getThread(params.threadId);
   if (claimedRootMessageIds.size > 0) {
     await db
       .update(agentMessages)
       .set({ consumed: true })
       .where(inArray(agentMessages.id, [...claimedRootMessageIds]));
   }
-  await db
-    .update(agentThreads)
-    .set({
-      inputTokens: thread.inputTokens + (usage.inputTokens ?? 0),
-      outputTokens: thread.outputTokens + (usage.outputTokens ?? 0),
-      toolCallCount:
-        thread.toolCallCount +
-        steps.reduce((count, step) => count + step.toolCalls.length, 0),
-      updatedAt: new Date(),
-    })
-    .where(eq(agentThreads.id, params.threadId));
-  emit(thread.chatId, params.threadId);
+  await recordModelUsage(params.threadId, {
+    inputTokens: usage.inputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    toolCallCount: steps.reduce(
+      (count, step) => count + step.toolCalls.length,
+      0,
+    ),
+  });
   return {
     text,
     hitStepLimit: steps.length >= SUBAGENT_MAX_STEPS,
   };
+}
+
+async function recordModelUsage(
+  threadId: string,
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    toolCallCount: number;
+  },
+): Promise<void> {
+  const thread = await getThread(threadId);
+  await db
+    .update(agentThreads)
+    .set({
+      inputTokens: thread.inputTokens + usage.inputTokens,
+      outputTokens: thread.outputTokens + usage.outputTokens,
+      toolCallCount: thread.toolCallCount + usage.toolCallCount,
+      updatedAt: new Date(),
+    })
+    .where(eq(agentThreads.id, threadId));
+  emit(thread.chatId, threadId);
 }
 
 function personaModelSettings(persona: SubagentPersona) {
@@ -1754,7 +1908,10 @@ async function markReviewOutdated(
   await applyThreadLifecycle(thread, { type: "MARK_REVIEW_OUTDATED", error });
 }
 
-function assertPersonaEnabled(persona: SubagentPersona): void {
+function assertPersonaEnabled(
+  persona: SubagentPersona,
+  implementerEnabledForTurn = false,
+): void {
   const settings = readSettings();
   if (persona === "explorer" && !settings.enableExplorerSubagent) {
     throw new DyadError(
@@ -1762,7 +1919,11 @@ function assertPersonaEnabled(persona: SubagentPersona): void {
       DyadErrorKind.Precondition,
     );
   }
-  if (persona === "implementer" && !settings.enableImplementerSubagent) {
+  if (
+    persona === "implementer" &&
+    !settings.enableImplementerSubagent &&
+    !implementerEnabledForTurn
+  ) {
     throw new DyadError(
       "Implementer is disabled in Settings.",
       DyadErrorKind.Precondition,

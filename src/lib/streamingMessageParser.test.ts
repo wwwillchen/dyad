@@ -65,6 +65,28 @@ describe("streamingMessageParser", () => {
     ]);
   });
 
+  it("parses an inline sub-agent mount point", () => {
+    const content =
+      '<dyad-subagent chat-id="7" thread-id="explorer-1" persona="explorer" task-name="Trace auth"></dyad-subagent>';
+    const { blocks } = parseFullMessage(content);
+
+    expect(blocksToShape(blocks)).toEqual([
+      {
+        kind: "custom-tag",
+        tag: "dyad-subagent",
+        attributes: {
+          "chat-id": "7",
+          "thread-id": "explorer-1",
+          persona: "explorer",
+          "task-name": "Trace auth",
+        },
+        content: "",
+        complete: true,
+        inProgress: false,
+      },
+    ]);
+  });
+
   it("handles xml-escaped attribute and content values", () => {
     const content =
       '<dyad-write path="a.ts" description="A &amp; B">if (a &lt; b) {}</dyad-write>';

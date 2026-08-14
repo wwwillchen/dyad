@@ -266,15 +266,21 @@ export const chatQueueEntries = sqliteTable("chat_queue_entries", {
 export const agentThreads = sqliteTable(
   "agent_threads",
   {
+  // Stable UUID for the sub-agent thread.
   id: text("id").primaryKey(),
+  // Chat that owns and displays this thread.
   chatId: integer("chat_id")
     .notNull()
     .references(() => chats.id, { onDelete: "cascade" }),
+  // Specialized role assigned to the sub-agent.
   persona: text("persona", {
     enum: ["explorer", "reviewer", "implementer"],
   }).notNull(),
+  // Short user-visible name for the task.
   taskName: text("task_name").notNull(),
+  // Full assignment originally given to the sub-agent.
   assignment: text("assignment").notNull(),
+  // Current lifecycle state of the thread.
   status: text("status", {
     enum: [
       "queued",
@@ -293,38 +299,55 @@ export const agentThreads = sqliteTable(
   })
     .notNull()
     .default("queued"),
+  // Provider used to run the sub-agent model.
   provider: text("provider").notNull(),
+  // Provider model identifier used by the sub-agent.
   model: text("model").notNull(),
-  reasoningEffort: text("reasoning_effort", {
-    enum: ["low", "medium", "high"],
-  }).notNull(),
+  // Provider-specific reasoning effort value.
+  reasoningEffort: text("reasoning_effort").notNull(),
+  // Durable invocation context such as scope and source message.
   contextJson: text("context_json", { mode: "json" }).$type<Record<
     string,
     unknown
   > | null>(),
+  // Structured terminal result produced by the sub-agent.
   resultJson: text("result_json", { mode: "json" }).$type<Record<
     string,
     unknown
   > | null>(),
+  // Base commit used to construct a review target.
   reviewBaseCommit: text("review_base_commit"),
+  // Target commit used to construct a review target.
   reviewTargetCommit: text("review_target_commit"),
+  // Hash identifying the exact diff reviewed.
   reviewDiffHash: text("review_diff_hash"),
+  // User or system path that created this thread.
   invocationSource: text("invocation_source", {
     enum: ["model", "review_button", "auto_review", "followup"],
   }).notNull(),
+  // Action that initiated review remediation.
   remediationSource: text("remediation_source", {
     enum: ["fix_button", "auto_fix", "queued_message_override"],
   }),
+  // Scheduled time at which automatic fixes begin.
   autoFixAt: integer("auto_fix_at", { mode: "timestamp" }),
+  // User-visible terminal error, when the thread fails.
   error: text("error"),
+  // Cumulative model input tokens used by the thread.
   inputTokens: integer("input_tokens").notNull().default(0),
+  // Cumulative model output tokens used by the thread.
   outputTokens: integer("output_tokens").notNull().default(0),
+  // Cumulative number of child tool calls.
   toolCallCount: integer("tool_call_count").notNull().default(0),
+  // Time at which the thread was created.
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
+  // Time at which execution first started.
   startedAt: integer("started_at", { mode: "timestamp" }),
+  // Time at which execution reached a terminal state.
   completedAt: integer("completed_at", { mode: "timestamp" }),
+  // Time of the latest durable thread update.
     updatedAt: integer("updated_at", { mode: "timestamp" })
       .notNull()
       .default(sql`(unixepoch())`),

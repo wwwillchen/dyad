@@ -102,6 +102,7 @@ function buildTestSettings(
     selectedModel?: { name: string; provider: string };
     enableContextCompaction?: boolean;
     enableAutoReview?: boolean;
+    enableImplementerSubagent?: boolean;
   } = {},
 ) {
   const baseSettings = {
@@ -111,6 +112,7 @@ function buildTestSettings(
     },
     enableContextCompaction: overrides.enableContextCompaction ?? true,
     enableAutoReview: overrides.enableAutoReview ?? false,
+    enableImplementerSubagent: overrides.enableImplementerSubagent ?? false,
   };
 
   if (overrides.enableDyadPro && overrides.hasApiKey !== false) {
@@ -337,6 +339,7 @@ const mockSubagentManager = vi.hoisted(() => ({
   cancelSubagent: vi.fn(async () => {}),
   endRootFinalization: vi.fn(async () => {}),
   isAcceptableImplementerJoinStatus: vi.fn(() => true),
+  waitForSubagents: vi.fn(async () => []),
   waitForSubagentsAndBeginFinalization: vi.fn(async () => []),
 }));
 
@@ -944,6 +947,37 @@ describe("handleLocalAgentStream", () => {
       expect(
         getMessagesByChannel("chat:response:end")[0].args[0],
       ).toMatchObject({ updatedFiles: true });
+    });
+
+    it("enables Implementer for Auto Sidekick when the experiment is off", async () => {
+      const { event } = createFakeEvent();
+      mockSettings = buildTestSettings({
+        enableDyadPro: true,
+        enableImplementerSubagent: false,
+        selectedModel: { provider: "auto", name: "auto-sidekick" },
+      });
+      mockChatData = buildTestChat();
+      let canUseImplementerSubagent = false;
+      vi.mocked(buildAgentToolSet).mockImplementationOnce((ctx) => {
+        canUseImplementerSubagent = ctx.canUseImplementerSubagent === true;
+        return {};
+      });
+      mockStreamResult = createFakeStream([
+        { type: "text-delta", text: "Delegated implementation" },
+      ]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      expect(canUseImplementerSubagent).toBe(true);
     });
 
     it("pauses the prompt queue when a real mutation requires auto-review", async () => {
@@ -3231,6 +3265,81 @@ describe("handleLocalAgentStream", () => {
   });
 
   describe("Abort handling", () => {
+    it("runs a synthesis pass with completed Explorer reports before finalizing", async () => {
+      const { event } = createFakeEvent();
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat();
+      vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
+        if (!ctx.spawnedSubagentThreadIds?.includes("explorer-1")) {
+          ctx.spawnedSubagentThreadIds?.push("explorer-1");
+        }
+        return {};
+      });
+      (mockSubagentManager.waitForSubagents as any).mockResolvedValueOnce([
+        {
+          id: "explorer-1",
+          taskName: "Trace auth",
+          status: "completed",
+          result: { report: "Authentication starts in src/auth.ts:42." },
+          error: null,
+        } as any,
+      ]);
+      const streamOptions: Array<Record<string, any>> = [];
+      mockStreamTextImpl = (options) => {
+        streamOptions.push(options);
+        return createFakeStream([{ type: "text-delta", text: "Done" }]);
+      };
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "trace auth" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      expect(mockSubagentManager.waitForSubagents).toHaveBeenCalledWith(
+        1,
+        ["explorer-1"],
+        expect.any(AbortSignal),
+      );
+      expect(streamOptions).toHaveLength(2);
+      expect(JSON.stringify(streamOptions[1].messages)).toContain(
+        "Authentication starts in src/auth.ts:42.",
+      );
+    });
+
+    it("does not inject an Explorer report already returned by blocking spawn", async () => {
+      const { event } = createFakeEvent();
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat();
+      vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
+        ctx.spawnedSubagentThreadIds?.push("explorer-1");
+        ctx.deliveredExplorerThreadIds?.push("explorer-1");
+        return {};
+      });
+      mockStreamResult = createFakeStream([
+        { type: "text-delta", text: "Synthesized result" },
+      ]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "trace auth" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      expect(streamText).toHaveBeenCalledTimes(1);
+      expect(mockSubagentManager.waitForSubagents).not.toHaveBeenCalled();
+    });
+
     it("releases the root finalization fence when cancellation wins after the join", async () => {
       const { event } = createFakeEvent();
       mockSettings = buildTestSettings({ enableDyadPro: true });

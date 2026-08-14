@@ -24,11 +24,15 @@ const mocks = vi.hoisted(() => ({
   sendSubagentMessage: vi.fn(),
   startReview: vi.fn(),
   streamMessage: vi.fn(),
+  settings: {
+    autoFixReviewIssues: true,
+    enableReviewButton: true,
+  },
 }));
 
 vi.mock("@/hooks/useSettings", () => ({
   useSettings: () => ({
-    settings: { autoFixReviewIssues: true },
+    settings: mocks.settings,
     updateSettings: vi.fn(),
   }),
 }));
@@ -115,6 +119,8 @@ function makeWrapper() {
 describe("SubagentTeamCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.settings.autoFixReviewIssues = true;
+    mocks.settings.enableReviewButton = true;
     clearPendingReviewContinuation(7);
     mocks.onSubagentUpdate.mockReturnValue(vi.fn());
     mocks.startReview.mockResolvedValue(undefined);
@@ -157,6 +163,20 @@ describe("SubagentTeamCard", () => {
     );
 
     expect(screen.queryByText("Loading agent team")).toBeNull();
+  });
+
+  it("hides the manual review action when its experiment is disabled", async () => {
+    mocks.settings.enableReviewButton = false;
+    mocks.listSubagents.mockResolvedValue([]);
+
+    const { container } = render(
+      <SubagentTeamCard chatId={7} messageId={42} />,
+      { wrapper: makeWrapper() },
+    );
+
+    await waitFor(() => expect(mocks.listSubagents).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
+    expect(container.innerHTML).toBe("");
   });
 
   it("shows and fixes only the review for this assistant message", async () => {
@@ -217,6 +237,30 @@ describe("SubagentTeamCard", () => {
     expect(await screen.findByText("Review current-explorer")).toBeTruthy();
     expect(screen.queryByText("Review older-explorer")).toBeNull();
     expect(screen.queryByRole("button", { name: "Review changes" })).toBeNull();
+  });
+
+  it("hides model-spawned threads when the assistant message has inline cards", async () => {
+    mocks.listSubagents.mockResolvedValue([
+      {
+        ...makeReview("inline-explorer", 42, "inline exploration"),
+        persona: "explorer",
+        invocationSource: "model",
+      },
+      makeReview("manual-review", 42, "manual review"),
+    ]);
+
+    render(
+      <SubagentTeamCard
+        chatId={7}
+        messageId={42}
+        showReviewAction={false}
+        hideInlineThreads
+      />,
+      { wrapper: makeWrapper() },
+    );
+
+    expect(await screen.findByText("Review manual-review")).toBeTruthy();
+    expect(screen.queryByText("Review inline-explorer")).toBeNull();
   });
 
   it("starts a review for this exact assistant message", async () => {

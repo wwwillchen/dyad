@@ -30,9 +30,14 @@ import {
   resolveDefaultModelSelection,
 } from "@/ipc/utils/model_effort";
 import { extractMentionedAppsCodebasesFromPrompt } from "../utils/mention_apps";
-import { isLocalAgentBackedMode, isTurboEditsV2Enabled } from "@/lib/schemas";
+import {
+  isDyadProEnabled,
+  isLocalAgentBackedMode,
+  isTurboEditsV2Enabled,
+} from "@/lib/schemas";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { resolveChatModeForTurn } from "./chat_mode_resolution";
+import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
 
 const logger = log.scope("token_count_handlers");
 
@@ -97,6 +102,10 @@ export function registerTokenCountHandlers() {
         themePrompt,
         frameworkType,
         hasSupabaseProject: !!chat.app?.supabaseProjectId,
+        implementerAvailable:
+          selectedChatMode === "local-agent" &&
+          isDyadProEnabled(settings) &&
+          isImplementerSubagentEnabled(settings),
         testingEnabled: !!chat.app?.testingEnabled,
       });
       let supabaseContext = "";

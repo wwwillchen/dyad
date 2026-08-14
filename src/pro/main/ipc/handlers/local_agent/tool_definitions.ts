@@ -43,7 +43,7 @@ import { searchChatsTool } from "./tools/search_chats";
 import { readChatTool } from "./tools/read_chat";
 import {
   cancelAgentTool,
-  compilerExploreTool,
+  exploreCodeTool,
   followupTaskTool,
   listAgentsTool,
   sendMessageTool,
@@ -126,7 +126,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   exploreChatHistoryTool,
   searchChatsTool,
   readChatTool,
-  compilerExploreTool,
+  exploreCodeTool,
   spawnAgentTool,
   listAgentsTool,
   waitAgentsTool,
@@ -378,6 +378,10 @@ function convertToolResultForAiSdk(
   );
 }
 
+function serializeActivityOutput(result: ToolResult): string {
+  return typeof result === "string" ? result : JSON.stringify(result);
+}
+
 export interface BuildAgentToolSetOptions {
   /**
    * If true, exclude tools that modify state (files, database, etc.).
@@ -540,12 +544,55 @@ export function buildAgentToolSet(
     toolSet[tool.name] = {
       description: tool.description,
       inputSchema: tool.getInputSchema?.(ctx) ?? tool.inputSchema,
-      execute: async (args: any) => {
+      execute: async (
+        args: any,
+        executionOptions?: { toolCallId?: string },
+      ) => {
+        const toolCallId = executionOptions?.toolCallId;
+        let presentationXml = "";
+        const invocationCtx =
+          toolCallId && ctx.onToolActivity
+            ? {
+                ...ctx,
+                onXmlStream: (xml: string) => {
+                  presentationXml = xml;
+                  void ctx.onToolActivity?.({
+                    toolCallId,
+                    toolName: tool.name,
+                    status: "pending",
+                    presentationXml: xml,
+                  });
+                },
+                onXmlComplete: (xml: string) => {
+                  presentationXml = xml;
+                  void ctx.onToolActivity?.({
+                    toolCallId,
+                    toolName: tool.name,
+                    status: "pending",
+                    presentationXml: xml,
+                  });
+                },
+              }
+            : ctx;
         try {
           const mutationRequiresAdmission =
             toolModifiesState(tool, ctx) &&
             tool.requiresMutationLease !== false;
-          const processedArgs = await processArgPlaceholders(args, ctx);
+          const processedArgs = await processArgPlaceholders(
+            args,
+            invocationCtx,
+          );
+
+          if (toolCallId && invocationCtx.onToolActivity) {
+            presentationXml = tool.buildXml?.(processedArgs, false) ?? "";
+            await invocationCtx.onToolActivity({
+              toolCallId,
+              toolName: tool.name,
+              status: "pending",
+              presentationXml,
+              inputJson: processedArgs,
+            });
+          }
 
           // Reject tools that cannot pass the blueprint gate before asking
           // the user for consent. Consent may wait indefinitely, but this
@@ -559,7 +606,7 @@ export function buildAgentToolSet(
           ) {
             assertAppBlueprintApproved({
               toolName: tool.name,
-              chatId: ctx.chatId,
+              chatId: invocationCtx.chatId,
               enabled: options.enableAppBlueprint !== false,
             });
           }
@@ -567,9 +614,9 @@ export function buildAgentToolSet(
           // Consent can wait indefinitely for the user. Resolve it before
           // entering app-wide mutation admission so cancellation/finalization
           // and other actors are not parked behind a UI prompt.
-          await requireToolConsentOrThrow(tool, processedArgs, ctx);
+          await requireToolConsentOrThrow(tool, processedArgs, invocationCtx);
           const invoke = async () => {
-            if (ctx.abortSignal?.aborted) {
+            if (invocationCtx.abortSignal?.aborted) {
               throw new DyadError(
                 "This agent run was cancelled.",
                 DyadErrorKind.UserCancelled,
@@ -577,31 +624,57 @@ export function buildAgentToolSet(
             }
             // Track file edit tool usage before execution to capture all attempts
             // (including failures) for retry/fallback telemetry
-            trackFileEditTool(ctx, tool.name, processedArgs);
-            const result = await tool.execute(processedArgs, ctx);
+            trackFileEditTool(invocationCtx, tool.name, processedArgs);
+            const result = await tool.execute(processedArgs, invocationCtx);
 
             // Only completed mutations unblock run_tests. Failed tool calls are
             // still present in fileEditTracker for retry/fallback telemetry, but
             // must not masquerade as a code change.
             trackAppMutation(
-              ctx,
+              invocationCtx,
               tool.name,
-              shouldTrackToolMutation(tool, processedArgs, result, ctx),
+              shouldTrackToolMutation(
+                tool,
+                processedArgs,
+                result,
+                invocationCtx,
+              ),
             );
+
+            if (toolCallId && invocationCtx.onToolActivity) {
+              await invocationCtx.onToolActivity({
+                toolCallId,
+                toolName: tool.name,
+                status: "completed",
+                presentationXml,
+                inputJson: processedArgs,
+                outputText: serializeActivityOutput(result),
+              });
+            }
 
             return convertToolResultForAiSdk(result);
           };
 
           return mutationRequiresAdmission
-            ? await withMutationToolAdmission(ctx, invoke)
+            ? await withMutationToolAdmission(invocationCtx, invoke)
             : await invoke();
         } catch (error) {
           const errorMessage = getToolErrorSummary(error);
           const errorDetails = getToolErrorDisplayDetails(error);
 
-          ctx.onXmlComplete(
-            `<dyad-output type="error" message="Tool '${tool.name}' failed: ${escapeXmlAttr(errorMessage)}">${escapeXmlContent(errorDetails)}</dyad-output>`,
-          );
+          const errorXml = `<dyad-output type="error" message="Tool '${tool.name}' failed: ${escapeXmlAttr(errorMessage)}">${escapeXmlContent(errorDetails)}</dyad-output>`;
+          invocationCtx.onXmlComplete(errorXml);
+          if (toolCallId && invocationCtx.onToolActivity) {
+            await invocationCtx.onToolActivity({
+              toolCallId,
+              toolName: tool.name,
+              status: invocationCtx.abortSignal?.aborted ? "aborted" : "error",
+              presentationXml: errorXml,
+              inputJson:
+                typeof args === "object" && args !== null ? args : undefined,
+              error: errorDetails,
+            });
+          }
           throw error;
         }
       },

@@ -146,7 +146,7 @@ export const SubagentThreadSummarySchema = z.object({
   status: SubagentStatusSchema,
   provider: z.string(),
   model: z.string(),
-  reasoningEffort: z.enum(["low", "medium", "high"]),
+  reasoningEffort: z.string(),
   result: z.record(z.string(), z.unknown()).nullable(),
   reviewBaseCommit: z.string().nullable(),
   reviewTargetCommit: z.string().nullable(),
@@ -182,6 +182,22 @@ export const SubagentMessageSchema = z.object({
 });
 export type SubagentMessage = z.infer<typeof SubagentMessageSchema>;
 
+export const SubagentActivitySchema = z.object({
+  id: z.number(),
+  threadId: z.string(),
+  sequence: z.number(),
+  toolCallId: z.string(),
+  toolName: z.string(),
+  status: z.enum(["pending", "completed", "error", "aborted"]),
+  presentationXml: z.string(),
+  inputJson: z.record(z.string(), z.unknown()).nullable(),
+  outputText: z.string().nullable(),
+  error: z.string().nullable(),
+  startedAt: z.date(),
+  completedAt: z.date().nullable(),
+});
+export type SubagentActivity = z.infer<typeof SubagentActivitySchema>;
+
 // =============================================================================
 // Agent Contracts (Invoke/Response)
 // =============================================================================
@@ -208,6 +224,12 @@ export const agentContracts = {
     channel: "agent:get-subagent-messages",
     input: z.object({ chatId: z.number(), threadId: z.string() }),
     output: z.array(SubagentMessageSchema),
+  }),
+
+  getSubagentActivities: defineContract({
+    channel: "agent:get-subagent-activities",
+    input: z.object({ chatId: z.number(), threadId: z.string() }),
+    output: z.array(SubagentActivitySchema),
   }),
 
   sendSubagentMessage: defineContract({

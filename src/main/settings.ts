@@ -70,6 +70,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   enableMultiWindow: false,
   enableExplorerSubagent: true,
   enableAutoReview: false,
+  enableReviewButton: false,
   enableImplementerSubagent: false,
   autoFixReviewIssues: false,
   autoApproveNonSchemaSql: true,

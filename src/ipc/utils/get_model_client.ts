@@ -42,6 +42,7 @@ import { FREE_PRO_MODEL_NAME, isFreeProModel } from "@/lib/freeProModel";
 import { getOpenRouterAppAttributionHeaders } from "./openrouter_attribution";
 import { resolveModelSelection } from "./model_effort";
 import { getModelPreferenceKey } from "@/lib/modelEffort";
+import { getAutoSidekickRuntimeModel } from "@/lib/autoSidekick";
 
 // The test-only fetch seam lives in ./test_fetch_override (dependency-free,
 // so secondary factories can use it without import cycles). Re-exported here
@@ -73,7 +74,7 @@ export interface ModelClient {
 
 const logger = log.scope("getModelClient");
 export async function getModelClient(
-  model: LargeLanguageModel,
+  selectedModel: LargeLanguageModel,
   settings: UserSettings,
   modelSelectionOverride?: ModelSelection,
   // files?: File[],
@@ -82,13 +83,15 @@ export async function getModelClient(
   isEngineEnabled?: boolean;
   isSmartContextEnabled?: boolean;
 }> {
-  const modelSelection =
+  const selectedModelSelection =
     modelSelectionOverride ??
     (await resolveModelSelection({
-      model,
+      model: selectedModel,
       preferredEffortLevel:
-        settings.modelEffortPreferences?.[getModelPreferenceKey(model)],
+        settings.modelEffortPreferences?.[getModelPreferenceKey(selectedModel)],
     }));
+  const model = getAutoSidekickRuntimeModel(selectedModel);
+  const modelSelection = getAutoSidekickRuntimeModel(selectedModelSelection);
   const allProviders = await getLanguageModelProviders();
 
   const dyadApiKey = settings.enableDyadPro

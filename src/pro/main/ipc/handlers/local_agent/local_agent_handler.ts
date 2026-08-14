@@ -76,11 +76,17 @@ import {
   cancelSubagent,
   endRootFinalization,
   isAcceptableImplementerJoinStatus,
+  waitForSubagents,
   waitForSubagentsAndBeginFinalization,
 } from "./subagents/subagent_manager";
 import { withMutationToolAdmission } from "./subagents/mutation_lease";
+import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
 
-import type { ChatStreamParams, ChatResponseEnd } from "@/ipc/types";
+import type {
+  ChatStreamParams,
+  ChatResponseEnd,
+  SubagentThreadSummary,
+} from "@/ipc/types";
 import {
   AgentContext,
   parsePartialJson,
@@ -740,6 +746,8 @@ export async function handleLocalAgentStream(
   let persistedTodos: Todo[] = [];
   const spawnedSubagentThreadIds: string[] = [];
   const spawnedImplementerThreadIds: string[] = [];
+  const deliveredExplorerThreadIds: string[] = [];
+  const synthesizedExplorerThreadIds = new Set<string>();
   let rootFinalizationActive = false;
 
   try {
@@ -793,6 +801,7 @@ export async function handleLocalAgentStream(
       pendingFunctionDeploys: [],
       spawnedSubagentThreadIds,
       spawnedImplementerThreadIds,
+      deliveredExplorerThreadIds,
       todos: persistedTodos,
       dyadRequestId,
       fileEditTracker,
@@ -803,7 +812,7 @@ export async function handleLocalAgentStream(
         isDyadProEnabled(settings) && settings.enableExplorerSubagent !== false,
       canUseImplementerSubagent:
         isDyadProEnabled(settings) &&
-        settings.enableImplementerSubagent === true &&
+        isImplementerSubagentEnabled(settings) &&
         !readOnly &&
         !planModeOnly,
       freeModelMode: effectiveFreeModelMode,
@@ -1769,6 +1778,39 @@ export async function handleLocalAgentStream(
           lastStep.toolCalls.length === 0 ||
           stepOnlyCalledTool(lastStep, setChatSummaryTool.name));
 
+      const unsynthesizedThreadIds = spawnedSubagentThreadIds.filter(
+        (threadId) =>
+          !spawnedImplementerThreadIds.includes(threadId) &&
+          !deliveredExplorerThreadIds.includes(threadId) &&
+          !synthesizedExplorerThreadIds.has(threadId),
+      );
+      if (unsynthesizedThreadIds.length > 0) {
+        const explorers = await waitForSubagents(
+          ctx.chatId,
+          unsynthesizedThreadIds,
+          abortController.signal,
+        );
+        for (const explorer of explorers) {
+          synthesizedExplorerThreadIds.add(explorer.id);
+        }
+        currentMessageHistory = [
+          ...currentMessageHistory,
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: buildExplorerSynthesisMessage(explorers),
+              },
+            ],
+          },
+        ];
+        logger.info(
+          `Starting mandatory Explorer synthesis pass for chat ${req.chatId}`,
+        );
+        continue;
+      }
+
       if (
         !shouldRunTodoFollowUpPass({
           readOnly,
@@ -2383,6 +2425,25 @@ function stepOnlyCalledTool(
       (toolCall) => isRecord(toolCall) && toolCall.toolName === toolName,
     )
   );
+}
+
+function buildExplorerSynthesisMessage(
+  explorers: SubagentThreadSummary[],
+): string {
+  const maxReportChars = 100_000;
+  const reports = explorers.map((explorer) => {
+    const rawReport =
+      typeof explorer.result?.report === "string"
+        ? explorer.result.report
+        : "No report was produced.";
+    const report =
+      rawReport.length > maxReportChars
+        ? `${rawReport.slice(0, maxReportChars)}\n[Explorer report truncated]`
+        : rawReport;
+    const error = explorer.error ? `\nError: ${explorer.error}` : "";
+    return `### Explorer: ${explorer.taskName}\nStatus: ${explorer.status}${error}\n\n${report}`;
+  });
+  return `[System] The Explorer assignments spawned in this turn have finished. Use their grounded reports below to continue the task and produce the final response. Do not repeat their broad discovery work; validate only exact edit targets when necessary.\n\n${reports.join("\n\n")}`;
 }
 
 function shouldRunTodoFollowUpPass(params: {

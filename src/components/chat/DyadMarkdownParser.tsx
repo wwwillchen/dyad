@@ -67,6 +67,7 @@ import { DyadTestAssertionsCard } from "./DyadTestAssertionsCard";
 import { DyadReadGuide } from "./DyadReadGuide";
 import { DyadScript } from "./DyadScript";
 import { DyadGit } from "./DyadGit";
+import { DyadSubagent } from "./DyadSubagent";
 import { mapActionToButton } from "./ChatInput";
 import { SuggestedAction } from "@/lib/schemas";
 import { FixAllErrorsButton } from "./FixAllErrorsButton";
@@ -515,6 +516,21 @@ function renderCustomTag(
   const { tag, attributes, content, inProgress } = block;
 
   switch (tag) {
+    case "dyad-subagent": {
+      const subagentChatId = Number(attributes["chat-id"]);
+      if (!Number.isSafeInteger(subagentChatId)) return null;
+      return (
+        <DyadSubagent
+          chatId={subagentChatId}
+          threadId={attributes["thread-id"] || ""}
+          persona={attributes.persona || "agent"}
+          taskName={attributes["task-name"] || "Sub-agent task"}
+          renderActivity={(xml, activityId) => (
+            <DyadMarkdownParser content={xml} messageId={activityId} />
+          )}
+        />
+      );
+    }
     case "dyad-read":
       return (
         <DyadRead
@@ -622,7 +638,11 @@ function renderCustomTag(
           node={{
             properties: {
               query: attributes.query || "",
-              state: getState({ isStreaming, inProgress }),
+              state: getState({
+                isStreaming,
+                inProgress,
+                explicitState: attributes.state,
+              }),
               appName: attributes.app_name || "",
             },
           }}
@@ -675,7 +695,11 @@ function renderCustomTag(
             properties: {
               path: attributes.path || "",
               description: attributes.description || "",
-              state: getState({ isStreaming, inProgress }),
+              state: getState({
+                isStreaming,
+                inProgress,
+                explicitState: attributes.state,
+              }),
             },
           }}
         >
@@ -775,7 +799,11 @@ function renderCustomTag(
         <DyadGrep
           node={{
             properties: {
-              state: getState({ isStreaming, inProgress }),
+              state: getState({
+                isStreaming,
+                inProgress,
+                explicitState: attributes.state,
+              }),
               query: attributes.query || "",
               include: attributes.include || "",
               exclude: attributes.exclude || "",
@@ -813,7 +841,11 @@ function renderCustomTag(
         <DyadExploreCode
           node={{
             properties: {
-              state: getState({ isStreaming, inProgress }),
+              state: getState({
+                isStreaming,
+                inProgress,
+                explicitState: attributes.state,
+              }),
               query: attributes.query || "",
               appName: attributes.app_name || "",
               files: attributes.files || "",
@@ -866,7 +898,11 @@ function renderCustomTag(
             properties: {
               path: attributes.path || "",
               description: attributes.description || "",
-              state: getState({ isStreaming, inProgress }),
+              state: getState({
+                isStreaming,
+                inProgress,
+                explicitState: attributes.state,
+              }),
             },
           }}
         >
@@ -1007,7 +1043,11 @@ function renderCustomTag(
               recursive: attributes.recursive || "",
               include_ignored:
                 attributes.include_ignored || attributes.include_hidden || "",
-              state: getState({ isStreaming, inProgress }),
+              state: getState({
+                isStreaming,
+                inProgress,
+                explicitState: attributes.state,
+              }),
               appName: attributes.app_name || "",
             },
           }}
