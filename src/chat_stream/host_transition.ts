@@ -149,10 +149,22 @@ export function transitionChatStreamHost(
     }
     case "CANCEL":
       if (!state.active) {
-        return ignore(state, "not-cancellable");
+        return event.pauseQueue
+          ? {
+              kind: "applied",
+              state: { ...state, queuePaused: true },
+              commands: [{ type: "park-queue" }],
+            }
+          : ignore(state, "not-cancellable");
       }
       if (!sameInvocationRef(state.active.invocationRef, event.invocationRef)) {
-        return ignore(state, "stale-invocation");
+        return event.pauseQueue
+          ? {
+              kind: "applied",
+              state: { ...state, queuePaused: true },
+              commands: [{ type: "park-queue" }],
+            }
+          : ignore(state, "stale-invocation");
       }
       if (
         state.phase !== "admitting" &&
@@ -591,6 +603,7 @@ export function transitionChatStreamHost(
               ? reviewCommands
               : pendingQueueMutationId === null &&
                   !event.paused &&
+                  !state.active?.pauseQueueOnCancel &&
                   event.entries.length > 0 &&
                   (state.phase === "idle" || state.phase === "finalizing")
                 ? [{ type: "dispatch-next" }]
@@ -711,6 +724,9 @@ export function transitionChatStreamHost(
         commands: [],
       };
     case "QUEUE_PARKED":
+      if (event.queueRevision < state.queueRevision) {
+        return ignore(state, "invalid-host-event");
+      }
       return {
         kind: "applied",
         state: {
@@ -722,6 +738,9 @@ export function transitionChatStreamHost(
         commands: [],
       };
     case "QUEUE_PARK_FAILED":
+      if (event.queueRevision < state.queueRevision) {
+        return ignore(state, "invalid-host-event");
+      }
       return {
         kind: "applied",
         state: {

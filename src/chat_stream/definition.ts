@@ -56,6 +56,7 @@ import {
   type ChatStreamWireEvent,
   unavailableChatStreamSnapshot,
 } from "./transport";
+import { canCancelChatStreamPhase } from "./transition";
 
 async function requireExistingChat(chatId: number): Promise<number> {
   const chat = db
@@ -86,7 +87,7 @@ function projectSnapshot(
     queue: [...state.queue],
     capabilities: {
       canSubmit: true,
-      canCancel: state.phase === "admitting" || state.phase === "streaming",
+      canCancel: canCancelChatStreamPhase(state.phase),
       canPauseQueue: !state.queuePaused,
       canResumeQueue: state.queuePaused,
     },
@@ -409,8 +410,9 @@ function createCommandRunner(
           const queue = markIntentTerminal(
             db,
             active.intent,
+            active.pauseQueueOnCancel === true ||
             command.pausePromptQueue === true ||
-            command.response?.pausePromptQueue === true ||
+              command.response?.pausePromptQueue === true ||
               active.intent.owner?.kind === "review-remediation" ||
               context.getSnapshot().reviewBarrier.phase ===
                 "awaiting-continuation",
@@ -707,6 +709,7 @@ export const chatStreamDefinition = {
       }
       if (
         event.type === "CANCEL" &&
+        event.pauseQueue !== true &&
         (!currentState?.active ||
           currentState.active.invocationRef.operationId !==
             event.invocationRef.operationId)

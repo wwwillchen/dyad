@@ -250,7 +250,7 @@ describe("useStreamChat lifecycle intents", () => {
 
     mocks.streamState.current = {
       phase: "cancelling",
-      capabilities: { canCancel: false },
+      capabilities: { canCancel: true },
       error: null,
       queue: [],
       queuePaused: false,
@@ -260,6 +260,23 @@ describe("useStreamChat lifecycle intents", () => {
     act(() => result.current.cancelStream());
     expect(mocks.send).toHaveBeenCalledTimes(2);
     expect(mocks.send).toHaveBeenLastCalledWith({ type: "cancel" });
+  });
+
+  it("does not dispatch Stop for an optimistic admission", () => {
+    mocks.streamState.current = {
+      phase: "admitting",
+      capabilities: { canCancel: false },
+      error: null,
+      queue: [],
+      queuePaused: false,
+      queueRevision: 7,
+    };
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useStreamChat(), { wrapper: Wrapper });
+
+    act(() => result.current.cancelStream());
+
+    expect(mocks.send).not.toHaveBeenCalled();
   });
 
   it("routes external errors through the main actor", () => {

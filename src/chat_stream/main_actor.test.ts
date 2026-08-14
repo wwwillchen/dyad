@@ -17,6 +17,7 @@ import {
 } from "@/ipc/services/chat_actor_deletion_fence";
 import { computeChatTurnPayloadHash } from "@/ipc/utils/chat_turn_intent_hash";
 import { chatStreamDefinition } from "./definition";
+import { initialChatStreamHostState } from "./host_transition";
 import { ChatStreamRemoteManager } from "./remote_manager";
 import {
   chatStreamClientDefinition,
@@ -928,6 +929,24 @@ describe("main-hosted chat stream actor", () => {
     const { payloadHash, ...authorizedPayload } = event.intent;
     expect(authorizedPayload.originWindowSessionId).toBe("renderer-window");
     expect(computeChatTurnPayloadHash(authorizedPayload)).toBe(payloadHash);
+  });
+
+  it("allows a stale cancellation intent to park the queue", async () => {
+    await expect(
+      chatStreamDefinition.remote.authorizeDispatch({
+        sender: {
+          webContentsId: 1,
+          windowSessionId: "renderer-window",
+        },
+        key: chatStreamKey(7),
+        event: {
+          type: "CANCEL",
+          invocationRef: turn("stale").invocationRef!,
+          pauseQueue: true,
+        },
+        currentState: initialChatStreamHostState(),
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("rejects subscriptions and dispatches while chat deletion is fenced", async () => {

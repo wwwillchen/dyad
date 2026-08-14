@@ -4,6 +4,7 @@ import {
   transitionChatStreamHost,
 } from "./host_transition";
 import type { SerializableChatTurnIntent } from "./transport";
+import { canCancelChatStreamPhase } from "./transition";
 
 function intent(intentId: string): SerializableChatTurnIntent {
   return {
@@ -159,6 +160,89 @@ describe("transitionChatStreamHost", () => {
       active: { pauseQueueOnCancel: true },
     });
     expect(stopped.commands).toEqual([{ type: "park-queue" }]);
+
+    const finalized = transitionChatStreamHost(stopped.state, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 1,
+      paused: false,
+      entries: [
+        {
+          itemId: "queued",
+          intentId: "queued",
+          prompt: "Keep this parked",
+          persistence: "main-session",
+          editable: true,
+          removable: true,
+        },
+      ],
+    });
+    expect(finalized.kind).toBe("applied");
+    if (finalized.kind !== "applied") return;
+    expect(finalized.commands).toEqual([]);
+  });
+
+  it("parks a stale Stop without cancelling a newer invocation", () => {
+    const newerIntent = intent("newer");
+    const state = {
+      ...initialChatStreamHostState(),
+      phase: "streaming" as const,
+      active: {
+        intent: newerIntent,
+        invocationRef: newerIntent.invocationRef!,
+        targetAppId: 3,
+        pauseQueueOnCancel: false,
+      },
+    };
+
+    const stopped = transitionChatStreamHost(state, {
+      type: "CANCEL",
+      invocationRef: intent("stale").invocationRef!,
+      pauseQueue: true,
+    });
+
+    expect(stopped.kind).toBe("applied");
+    if (stopped.kind !== "applied") return;
+    expect(stopped.state.active).toBe(state.active);
+    expect(stopped.state.queuePaused).toBe(true);
+    expect(stopped.commands).toEqual([{ type: "park-queue" }]);
+  });
+
+  it("ignores stale queue parking results", () => {
+    const state = initialChatStreamHostState({
+      queueRevision: 5,
+      queuePaused: false,
+      queue: [],
+    });
+
+    expect(
+      transitionChatStreamHost(state, {
+        type: "QUEUE_PARKED",
+        queueRevision: 4,
+        paused: true,
+        entries: [],
+      }),
+    ).toEqual({ kind: "ignored", state, reason: "invalid-host-event" });
+    expect(
+      transitionChatStreamHost(state, {
+        type: "QUEUE_PARK_FAILED",
+        error: "stale failure",
+        queueRevision: 4,
+        paused: true,
+        entries: [],
+      }),
+    ).toEqual({ kind: "ignored", state, reason: "invalid-host-event" });
+  });
+
+  it("advertises Stop through lifecycle settlement", () => {
+    expect(
+      ["admitting", "streaming", "cancelling", "finalizing"].every((phase) =>
+        canCancelChatStreamPhase(
+          phase as Parameters<typeof canCancelChatStreamPhase>[0],
+        ),
+      ),
+    ).toBe(true);
+    expect(canCancelChatStreamPhase("idle")).toBe(false);
+    expect(canCancelChatStreamPhase("errored")).toBe(false);
   });
 
   it("retries queue parking when cancellation fails", () => {
