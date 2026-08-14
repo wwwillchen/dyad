@@ -500,6 +500,114 @@ describe("ChatStreamRemoteManager", () => {
     manager.dispose();
   });
 
+  it("resyncs before re-cancelling an optimistic submission dispatched in flight", async () => {
+    let resolveSubmit!: () => void;
+    let submittedInvocationRef:
+      | { kind: "chat-stream"; entityKey: number; operationId: string }
+      | undefined;
+    let submitResolved = false;
+    let revision = 1;
+    const dispatch = vi.fn((envelope: MachineDispatchEnvelope) => {
+      const event = envelope.encodedEvent as {
+        type: string;
+        intent?: {
+          invocationRef?: {
+            kind: "chat-stream";
+            entityKey: number;
+            operationId: string;
+          };
+        };
+      };
+      const receipt = () => ({
+        kind: "applied" as const,
+        actorInstanceId: "actor",
+        revision: ++revision,
+        transactionSequence: revision,
+        messageId: envelope.messageId,
+      });
+      if (event.type !== "SUBMIT") return Promise.resolve(receipt());
+      submittedInvocationRef = event.intent?.invocationRef;
+      return new Promise<ReturnType<typeof receipt>>((resolve) => {
+        resolveSubmit = () => {
+          submitResolved = true;
+          resolve(receipt());
+        };
+      });
+    });
+    const connection: ChatStreamRemoteConnection = {
+      getStatus: () => "connected",
+      onStatusChange: () => () => undefined,
+      onSnapshot: () => () => undefined,
+      onDisposed: () => () => undefined,
+      subscribe: async (address) => ({
+        ...address,
+        actorInstanceId: "actor",
+        revision,
+        encodedState:
+          submitResolved && submittedInvocationRef
+            ? {
+                ...unavailableChatStreamSnapshot(7),
+                revision,
+                phase: "streaming",
+                invocationRef: submittedInvocationRef,
+                capabilities: {
+                  canSubmit: true,
+                  canCancel: true,
+                  canPauseQueue: true,
+                  canResumeQueue: false,
+                },
+              }
+            : unavailableChatStreamSnapshot(7),
+      }),
+      unsubscribe: () => Promise.resolve(),
+      dispatch,
+    };
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      connection,
+    );
+    const actor = manager.ensure(7);
+    const release = actor.subscribe(() => undefined);
+    await vi.waitFor(() => expect(actor.getSnapshot().phase).toBe("idle"));
+
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "cancel while dispatching" },
+    });
+    await vi.waitFor(() =>
+      expect(
+        dispatch.mock.calls.some(
+          ([envelope]) =>
+            (envelope.encodedEvent as { type: string }).type === "SUBMIT",
+        ),
+      ).toBe(true),
+    );
+    actor.send({ type: "cancel" });
+    await vi.waitFor(() =>
+      expect(
+        dispatch.mock.calls.filter(
+          ([envelope]) =>
+            (envelope.encodedEvent as { type: string }).type === "CANCEL",
+        ),
+      ).toHaveLength(1),
+    );
+
+    resolveSubmit();
+
+    await vi.waitFor(() =>
+      expect(
+        dispatch.mock.calls.filter(
+          ([envelope]) =>
+            (envelope.encodedEvent as { type: string }).type === "CANCEL",
+        ),
+      ).toHaveLength(2),
+    );
+
+    release();
+    manager.dispose();
+  });
+
   it.each(["resolves", "rejects"] as const)(
     "ignores a completion refresh that %s after disposal",
     async (settlement) => {

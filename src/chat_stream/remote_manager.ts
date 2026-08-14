@@ -118,7 +118,7 @@ export class ChatStreamRemoteManager {
     (event: StreamFinishedEvent) => void
   >();
   private readonly pendingSubmissions = new Map<string, PendingSubmission>();
-  private readonly submissionTails = new Map<number, Promise<void>>();
+  private readonly submissionTails = new Map<number, Promise<boolean>>();
   private readonly snapshotListeners = new Map<number, Set<() => void>>();
   private readonly optimisticSnapshots = new Map<
     number,
@@ -361,21 +361,33 @@ export class ChatStreamRemoteManager {
             this.notifySnapshotListeners(chatId);
             pending?.request.onSettled?.({ success: false });
             if (submission) {
-              void submission.finally(() => {
-                if (this.disposed) return;
-                const current = this.actor(chatId).getSnapshot();
-                if (
-                  current.invocationRef?.operationId ===
-                    invocationRef.operationId &&
-                  current.capabilities.canCancel
-                ) {
-                  this.dispatchCompatibilityCommand(
-                    chatId,
-                    { type: "CANCEL", invocationRef, pauseQueue: true },
-                    "cancel the chat",
-                  );
-                }
-              });
+              void submission
+                .then(async (wasDispatched) => {
+                  if (!wasDispatched || this.disposed) return;
+                  const actor = this.actor(chatId);
+                  await actor.resync();
+                  if (this.disposed) return;
+                  const current = actor.getSnapshot();
+                  if (
+                    current.invocationRef?.operationId ===
+                      invocationRef.operationId &&
+                    current.capabilities.canCancel
+                  ) {
+                    this.dispatchCompatibilityCommand(
+                      chatId,
+                      { type: "CANCEL", invocationRef, pauseQueue: true },
+                      "cancel the chat",
+                    );
+                  }
+                })
+                .catch((error) => {
+                  if (!this.disposed) {
+                    this.reportCompatibilityDispatchFailure(
+                      "cancel the chat",
+                      error,
+                    );
+                  }
+                });
             }
           }
         }
@@ -441,8 +453,8 @@ export class ChatStreamRemoteManager {
     });
     this.notifySnapshotListeners(request.chatId);
     const previous = this.submissionTails.get(request.chatId);
-    const submission = (previous ?? Promise.resolve())
-      .catch(() => undefined)
+    const submission = (previous ?? Promise.resolve(false))
+      .catch(() => false)
       .then(() =>
         this.prepareAndDispatchSubmission(
           request,
@@ -464,11 +476,11 @@ export class ChatStreamRemoteManager {
     actor: ReturnType<ChatStreamRemoteManager["actor"]>,
     intentId: string,
     invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
-      if (this.disposed || !this.pendingSubmissions.has(intentId)) return;
+      if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
       await this.subscriptions.get(request.chatId)?.bootstrap;
-      if (this.disposed || !this.pendingSubmissions.has(intentId)) return;
+      if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
       const attachments =
         request.attachments && request.attachments.length > 0
           ? await convertFileAttachmentsToChatAttachments(request.attachments)
@@ -493,19 +505,21 @@ export class ChatStreamRemoteManager {
           serializeImmutableChatTurnPayload(withoutHash),
         ),
       };
-      if (this.disposed || !this.pendingSubmissions.has(intentId)) return;
+      if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
       const receipt = await actor.dispatch({ type: "SUBMIT", intent });
       if (receipt.kind === "rejected") {
         throw new Error(`Chat submission rejected: ${receipt.reason}`);
       }
+      return true;
     } catch (error) {
       const pending = this.takePendingSubmission(intentId);
-      if (!pending) return;
+      if (!pending) return false;
       this.notifySnapshotListeners(request.chatId);
       pending.request.onAcceptanceError?.(
         error instanceof Error ? error : new Error(String(error)),
       );
       pending.request.onSettled?.({ success: false });
+      return false;
     }
   }
 

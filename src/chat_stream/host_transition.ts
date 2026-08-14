@@ -783,7 +783,7 @@ export function transitionChatStreamHost(
           active: null,
           error: event.error,
           queueRevision: event.queueRevision,
-          queuePaused: state.active.pauseQueueOnCancel || event.paused,
+          queuePaused: event.paused,
           queue: event.entries,
           lastCompletion: {
             intentId: event.intentId,

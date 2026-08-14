@@ -376,7 +376,7 @@ describe("transitionChatStreamHost", () => {
     if (failed.kind !== "applied") return;
     expect(failed.state).toMatchObject({
       phase: "errored",
-      queuePaused: true,
+      queuePaused: false,
       active: null,
     });
     expect(failed.commands).toEqual([{ type: "park-queue" }]);
