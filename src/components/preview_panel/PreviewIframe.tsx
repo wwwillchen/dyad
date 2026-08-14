@@ -1046,13 +1046,7 @@ export const PreviewIframe = ({
 
   // Keep reload scoped to the preview while its panel is active, including
   // when focus is in the parent renderer rather than inside the iframe.
-  useShortcut(
-    "r",
-    { ctrl: !isMac, meta: isMac },
-    handleReload,
-    isPreviewOpen,
-    iframeRef,
-  );
+  useShortcut("r", { ctrl: !isMac, meta: isMac }, handleReload, isPreviewOpen);
 
   // Activate component selector using a shortcut
   useShortcut(

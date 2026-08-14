@@ -53,7 +53,20 @@ testSkipIfWindows(
     const modifier = process.platform === "darwin" ? "Meta" : "Control";
     const shortcuts = [`${modifier}+r`, `${modifier}+Shift+r`];
 
-    await po.previewPanel.clickPreviewPickElement();
+    const pickerShortcutFrame = po.previewPanel
+      .getPreviewIframeElement()
+      .contentFrame();
+    const pickerSelectorReadyCount = await getSelectorReadyCount();
+    await pickerShortcutFrame.locator("body").evaluate((body) => {
+      body.tabIndex = -1;
+      body.focus();
+    });
+    await po.page.keyboard.press(`${modifier}+Shift+c`);
+    await expect(po.previewPanel.getPreviewPickElementButton()).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(await getSelectorReadyCount()).toBe(pickerSelectorReadyCount);
     await po.previewPanel
       .getPreviewIframeElement()
       .contentFrame()
