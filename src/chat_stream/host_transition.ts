@@ -164,7 +164,7 @@ export function transitionChatStreamHost(
         return event.pauseQueue
           ? {
               kind: "applied",
-              state: { ...state, queuePaused: true },
+              state,
               commands: [{ type: "park-queue" }],
             }
           : ignore(state, "not-cancellable");
@@ -173,7 +173,7 @@ export function transitionChatStreamHost(
         return event.pauseQueue
           ? {
               kind: "applied",
-              state: { ...state, queuePaused: true },
+              state,
               commands: [{ type: "park-queue" }],
             }
           : ignore(state, "stale-invocation");
@@ -194,7 +194,6 @@ export function transitionChatStreamHost(
           state: {
             ...state,
             phase: shouldCancelActive ? "cancelling" : state.phase,
-            queuePaused: shouldParkQueue || state.queuePaused,
             active: {
               ...state.active,
               pauseQueueOnCancel:
@@ -415,8 +414,8 @@ export function transitionChatStreamHost(
       }
       {
         const pausePromptQueue =
-          !state.active.queueResumedAfterCancel &&
-          (event.response.pausePromptQueue === true ||
+          event.response.pausePromptQueue === true ||
+          (!state.active.queueResumedAfterCancel &&
             state.active.pauseQueueOnCancel);
         return {
           kind: "applied",

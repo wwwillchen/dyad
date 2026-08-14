@@ -594,12 +594,12 @@ describe("main-hosted chat stream actor", () => {
     await vi.waitFor(() => expect(persisted.paused).toBe(true));
     expect(onSettled).toHaveBeenCalledExactlyOnceWith({ success: false });
     expect(actor.getSnapshot().phase).toBe("idle");
+    manager.dispose();
     releaseAttachment();
     await flush();
     expect(execution.admissions).toEqual([]);
 
     release();
-    manager.dispose();
     await transport.dispose();
     await host.dispose();
   });

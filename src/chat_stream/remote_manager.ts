@@ -362,6 +362,7 @@ export class ChatStreamRemoteManager {
             pending?.request.onSettled?.({ success: false });
             if (submission) {
               void submission.finally(() => {
+                if (this.disposed) return;
                 const current = this.actor(chatId).getSnapshot();
                 if (
                   current.invocationRef?.operationId ===

@@ -85,7 +85,7 @@ describe("transitionChatStreamHost", () => {
     expect(cancelling.kind).toBe("applied");
     if (cancelling.kind !== "applied") return;
     expect(cancelling.state.active?.pauseQueueOnCancel).toBe(true);
-    expect(cancelling.state.queuePaused).toBe(true);
+    expect(cancelling.state.queuePaused).toBe(false);
     expect(cancelling.commands).toEqual([
       { type: "park-queue" },
       {
@@ -156,7 +156,7 @@ describe("transitionChatStreamHost", () => {
     if (stopped.kind !== "applied") return;
     expect(stopped.state).toMatchObject({
       phase: "finalizing",
-      queuePaused: true,
+      queuePaused: false,
       active: { pauseQueueOnCancel: true },
     });
     expect(stopped.commands).toEqual([{ type: "park-queue" }]);
@@ -215,7 +215,6 @@ describe("transitionChatStreamHost", () => {
       response: {
         chatId: 7,
         invocationRef: activeIntent.invocationRef!,
-        pausePromptQueue: true,
         updatedFiles: false,
         wasCancelled: true,
       },
@@ -231,10 +230,54 @@ describe("transitionChatStreamHost", () => {
         response: {
           chatId: 7,
           invocationRef: activeIntent.invocationRef!,
-          pausePromptQueue: true,
           updatedFiles: false,
           wasCancelled: true,
         },
+      },
+    ]);
+  });
+
+  it("preserves a genuine response pause after the Stop latch is resumed", () => {
+    const activeIntent = intent("step-limited");
+    const state = {
+      ...initialChatStreamHostState(),
+      phase: "cancelling" as const,
+      active: {
+        intent: activeIntent,
+        invocationRef: activeIntent.invocationRef!,
+        targetAppId: 3,
+        pauseQueueOnCancel: false,
+        queueResumedAfterCancel: true,
+      },
+    };
+
+    const ended = transitionChatStreamHost(state, {
+      type: "STREAM_ENDED",
+      intentId: activeIntent.intentId,
+      invocationRef: activeIntent.invocationRef!,
+      response: {
+        chatId: 7,
+        invocationRef: activeIntent.invocationRef!,
+        pausePromptQueue: true,
+        updatedFiles: false,
+      },
+      targetAppId: 3,
+    });
+
+    expect(ended.kind).toBe("applied");
+    if (ended.kind !== "applied") return;
+    expect(ended.state.lastCompletion?.pausePromptQueue).toBe(true);
+    expect(ended.commands).toEqual([
+      {
+        type: "finalize",
+        intentId: activeIntent.intentId,
+        response: {
+          chatId: 7,
+          invocationRef: activeIntent.invocationRef!,
+          pausePromptQueue: true,
+          updatedFiles: false,
+        },
+        pausePromptQueue: true,
       },
     ]);
   });
@@ -261,7 +304,7 @@ describe("transitionChatStreamHost", () => {
     expect(stopped.kind).toBe("applied");
     if (stopped.kind !== "applied") return;
     expect(stopped.state.active).toBe(state.active);
-    expect(stopped.state.queuePaused).toBe(true);
+    expect(stopped.state.queuePaused).toBe(false);
     expect(stopped.commands).toEqual([{ type: "park-queue" }]);
   });
 
