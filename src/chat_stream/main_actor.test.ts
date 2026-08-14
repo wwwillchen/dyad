@@ -21,6 +21,7 @@ import {
 import { computeChatTurnPayloadHash } from "@/ipc/utils/chat_turn_intent_hash";
 import { chatStreamDefinition } from "./definition";
 import { initialChatStreamHostState } from "./host_transition";
+import { markIntentTerminal } from "./persistence";
 import { ChatStreamRemoteManager } from "./remote_manager";
 import {
   chatStreamClientDefinition,
@@ -1582,6 +1583,60 @@ describe("main-hosted chat stream actor", () => {
     release();
     manager.dispose();
     await transport.dispose();
+    await host.dispose();
+  });
+
+  it("keeps Stop precedence when a cancelled turn requests review", async () => {
+    let resolveCancel!: (cancelled: boolean) => void;
+    vi.mocked(cancelActiveStreamsForChat).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCancel = resolve;
+        }),
+    );
+    vi.mocked(markIntentTerminal).mockClear();
+    const host = new ActorHost({
+      placement: "main",
+      clock: createFakeClock(),
+      ids: createSequentialIdSource(),
+    });
+    host.register(chatStreamDefinition);
+    const actor = host.ensure(chatStreamDefinition, chatStreamKey(7));
+    const activeIntent = turn("stopped-review");
+
+    actor.enqueue({ type: "SUBMIT", intent: activeIntent });
+    await vi.waitFor(() =>
+      expect(execution.observers.has(activeIntent.intentId)).toBe(true),
+    );
+    actor.enqueue({
+      type: "CANCEL",
+      invocationRef: activeIntent.invocationRef!,
+      pauseQueue: true,
+      observedStopPolicyVersion: 0,
+    });
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot().phase).toBe("cancelling"),
+    );
+
+    execution.observers.get(activeIntent.intentId)?.onEnd?.({
+      chatId: 7,
+      invocationRef: activeIntent.invocationRef!,
+      updatedFiles: true,
+      wasCancelled: true,
+      pausePromptQueue: true,
+      reviewBarrierRequested: true,
+    });
+
+    await vi.waitFor(() =>
+      expect(markIntentTerminal).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ intentId: activeIntent.intentId }),
+        true,
+        true,
+        "stop",
+      ),
+    );
+    resolveCancel(true);
     await host.dispose();
   });
 

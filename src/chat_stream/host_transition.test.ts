@@ -756,8 +756,39 @@ describe("transitionChatStreamHost", () => {
       queuePaused: true,
       queuePauseReason: "stop",
       active: { pauseQueueOnCancel: true },
+      lastQueueMutation: {
+        mutationId: "stale-resume",
+        outcome: "rejected",
+      },
     });
     expect(confirmed.commands).toEqual([]);
+  });
+
+  it("rejects a resume that already predates the current Stop", () => {
+    const state = {
+      ...initialChatStreamHostState({
+        queueRevision: 4,
+        queuePaused: true,
+        queuePauseReason: "stop",
+        queue: [],
+      }),
+      stopPolicyVersion: 2,
+    };
+
+    const resumed = transitionChatStreamHost(state, {
+      type: "RESUME_QUEUE",
+      expectedQueueRevision: 4,
+      mutationId: "stale-resume",
+      observedStopPolicyVersion: 1,
+    });
+
+    expect(resumed.kind).toBe("applied");
+    if (resumed.kind !== "applied") return;
+    expect(resumed.state.lastQueueMutation).toMatchObject({
+      mutationId: "stale-resume",
+      outcome: "rejected",
+    });
+    expect(resumed.commands).toEqual([]);
   });
 
   it("lets an idle explicit resume release the current Stop latch", () => {
@@ -896,7 +927,6 @@ describe("transitionChatStreamHost", () => {
           pausePromptQueue: true,
           updatedFiles: false,
         },
-        pausePromptQueue: true,
       },
     ]);
 

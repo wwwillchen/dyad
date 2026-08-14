@@ -70,6 +70,24 @@ function queueMutation(
   const resumesCurrentStop =
     event.type === "RESUME_QUEUE" &&
     event.observedStopPolicyVersion === state.stopPolicyVersion;
+  if (
+    event.type === "RESUME_QUEUE" &&
+    state.queuePauseReason === "stop" &&
+    !resumesCurrentStop
+  ) {
+    return {
+      kind: "applied",
+      state: {
+        ...state,
+        lastQueueMutation: {
+          mutationId: event.mutationId,
+          outcome: "rejected",
+          error: "A newer Stop changed the queue; try resuming again.",
+        },
+      },
+      commands: [],
+    };
+  }
   const mutation: Extract<
     ChatStreamHostCommand,
     { type: "mutate-queue" }
@@ -523,7 +541,6 @@ export function transitionChatStreamHost(
               type: "finalize",
               intentId: event.intentId,
               response: event.response,
-              ...(pausePromptQueue ? { pausePromptQueue: true } : {}),
             },
           ],
         };
@@ -674,6 +691,9 @@ export function transitionChatStreamHost(
           event.observedStopPolicyVersion === state.stopPolicyVersion;
         const resumesCurrentStop =
           resumeStopLatch || queuedAdmissionResumesCurrentStop;
+        const staleStopResume =
+          event.mutationId === state.pendingQueueResumeMutationId &&
+          event.observedStopPolicyVersion !== state.stopPolicyVersion;
         const stopOwnsQueue =
           state.queuePauseReason === "stop" ||
           state.active?.pauseQueueOnCancel === true;
@@ -720,7 +740,13 @@ export function transitionChatStreamHost(
               ? {
                   lastQueueMutation: {
                     mutationId: event.mutationId,
-                    outcome: "applied" as const,
+                    ...(staleStopResume
+                      ? {
+                          outcome: "rejected" as const,
+                          error:
+                            "A newer Stop changed the queue; try resuming again.",
+                        }
+                      : { outcome: "applied" as const }),
                   },
                 }
               : {}),

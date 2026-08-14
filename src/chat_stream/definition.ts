@@ -459,17 +459,14 @@ function createCommandRunner(
               "awaiting-continuation";
           const pauseForStop =
             active.queueResumedAfterCancel !== true &&
-            (active.pauseQueueOnCancel === true ||
-              command.pausePromptQueue === true) &&
-            !pauseForStepLimit &&
-            !pauseForReview;
+            active.pauseQueueOnCancel === true;
           const queue = markIntentTerminal(
             db,
             active.intent,
             pauseForStepLimit || pauseForReview || pauseForStop,
             command.error !== undefined ||
               command.response?.wasCancelled === true,
-            pauseForStepLimit ? "step-limit" : pauseForStop ? "stop" : "manual",
+            pauseForStop ? "stop" : pauseForStepLimit ? "step-limit" : "manual",
           );
           publishChatInvalidations(context.key.chatId, active.targetAppId);
           emit({

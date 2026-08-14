@@ -109,7 +109,6 @@ export type ChatStreamHostCommand =
       readonly intentId: string;
       readonly response?: ChatResponseEnd;
       readonly error?: string;
-      readonly pausePromptQueue?: boolean;
     }
   | {
       readonly type: "run-review-barrier";
