@@ -17,3 +17,5 @@ The fix in `src/ipc/utils/ai_messages_utils.ts` filters orphaned reasoning parts
 ## Dyad Engine model aliases
 
 When a Dyad Engine alias is backed by an OpenAI reasoning model, create it with `provider.responses(...)` and pass `providerId: "openai"`. Passing the alias provider (for example, `"auto"`) prevents `getExtraProviderOptionsForEngine()` from adding reasoning effort, summaries, encrypted reasoning content, and `store: false`.
+
+Every multi-step `streamText` loop must clean or sanitize the complete message array in `prepareStep`, including same-turn tool-call/results. With `store: false`, replaying an OpenAI/Azure reasoning `itemId` (`rs_...`) on the post-tool request fails with “Item with id ... not found”; use the shared `cleanMessage` / `sanitizeStepMessages` helpers rather than cleaning only persisted history.

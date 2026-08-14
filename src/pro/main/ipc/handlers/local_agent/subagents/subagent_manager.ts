@@ -32,6 +32,7 @@ import { isSubagentAcceptingMessages } from "@/ipc/types";
 import { isDyadProEnabled } from "@/lib/schemas";
 import { readSettings } from "@/main/settings";
 import { getDyadAppPath } from "@/paths/paths";
+import { sanitizeStepMessages } from "../prepare_step_utils";
 import type { AgentContext } from "../tools/types";
 import { runExploreCodeSubagent } from "../tools/explore_code_subagent";
 import { buildReviewTarget, type ReviewTarget } from "./review_target";
@@ -1437,6 +1438,7 @@ async function runModel(params: {
   const settings = personaModelSettings(params.persona);
   const modelInfo = await getModelClient(settings.selectedModel, settings);
   const history = await buildModelHistory(params.threadId, params.assignment);
+  let streamError: unknown;
   const result = streamText({
     output: fastTextOutput(),
     model: modelInfo.modelClient.model,
@@ -1469,21 +1471,18 @@ async function runModel(params: {
       const newlyClaimed = pending.filter(
         (message) => !claimedRootMessageIds.has(message.id),
       );
-      if (newlyClaimed.length === 0) return {};
       for (const message of newlyClaimed) {
         claimedRootMessageIds.add(message.id);
       }
       return {
-        messages: [
-          ...stepMessages,
-          ...newlyClaimed.map(
-            (message): ModelMessage => ({
-              role: "user",
-              content: `Root message: ${message.content}`,
-            }),
-          ),
-        ],
+        messages: prepareSubagentStepMessages(
+          stepMessages,
+          newlyClaimed.map((message) => message.content),
+        ),
       };
+    },
+    onError: ({ error }) => {
+      streamError ??= error;
     },
     stopWhen: stepCountIs(SUBAGENT_MAX_STEPS),
     abortSignal: params.abortSignal,
@@ -1493,6 +1492,7 @@ async function runModel(params: {
     result.totalUsage,
     result.steps,
   ]);
+  if (streamError) throw streamError;
   if (claimedRootMessageIds.size > 0) {
     await db
       .update(agentMessages)
@@ -1511,6 +1511,21 @@ async function runModel(params: {
     text,
     hitStepLimit: steps.length >= SUBAGENT_MAX_STEPS,
   };
+}
+
+export function prepareSubagentStepMessages(
+  stepMessages: ModelMessage[],
+  rootMessages: string[],
+): ModelMessage[] {
+  return sanitizeStepMessages([
+    ...stepMessages,
+    ...rootMessages.map(
+      (message): ModelMessage => ({
+        role: "user",
+        content: `Root message: ${message}`,
+      }),
+    ),
+  ]).messages;
 }
 
 async function recordModelUsage(

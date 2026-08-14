@@ -12,6 +12,7 @@ import {
   isSubagentJoinReady,
   isTerminalSubagentStatus,
   isWaitCompleteStatus,
+  prepareSubagentStepMessages,
   reviewFollowupAvailability,
   setSubagentEventTarget,
   SUBAGENT_NONTERMINAL_STATUSES,
@@ -179,6 +180,63 @@ describe("sub-agent manager status policy", () => {
       { role: "assistant", content: "Option two uses callbacks." },
       { role: "user", content: "Address queued messages in order" },
     ]);
+  });
+
+  it("strips non-persisted reasoning item IDs before a post-tool step", () => {
+    const messages = prepareSubagentStepMessages(
+      [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "reasoning",
+              text: "Inspect the requested file.",
+              providerOptions: {
+                openai: {
+                  itemId: "rs_not_persisted",
+                  reasoningEncryptedContent: "encrypted",
+                },
+              },
+            },
+            {
+              type: "tool-call",
+              toolCallId: "call-1",
+              toolName: "read_file",
+              input: { path: "src/App.tsx" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "read_file",
+              output: { type: "text", value: "file contents" },
+            },
+          ],
+        },
+      ],
+      ["Keep the change limited to src/App.tsx"],
+    );
+
+    expect(messages).toHaveLength(3);
+    expect(messages[2]).toEqual({
+      role: "user",
+      content: "Root message: Keep the change limited to src/App.tsx",
+    });
+    const assistant = messages[0];
+    expect(assistant.role).toBe("assistant");
+    if (assistant.role !== "assistant" || !Array.isArray(assistant.content)) {
+      throw new Error("Expected structured assistant content");
+    }
+    const reasoning = assistant.content.find(
+      (part) => part.type === "reasoning",
+    );
+    expect(reasoning?.providerOptions?.openai).toEqual({
+      reasoningEncryptedContent: "encrypted",
+    });
   });
 
   it("serializes validated findings without allowing delimiter injection", () => {
