@@ -142,9 +142,9 @@ describe("sub-agent manager status policy", () => {
     });
   });
 
-  it("allows an intentionally cancelled Implementer to reach root finalization", () => {
+  it("requires an Implementer to complete before root finalization", () => {
     expect(isAcceptableImplementerJoinStatus("completed")).toBe(true);
-    expect(isAcceptableImplementerJoinStatus("cancelled")).toBe(true);
+    expect(isAcceptableImplementerJoinStatus("cancelled")).toBe(false);
     expect(isAcceptableImplementerJoinStatus("failed")).toBe(false);
     expect(isAcceptableImplementerJoinStatus("entitlement_revoked")).toBe(
       false,

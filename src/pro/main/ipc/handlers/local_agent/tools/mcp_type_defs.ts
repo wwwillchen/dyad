@@ -195,13 +195,13 @@ export function buildMcpCapabilityMap(params: {
       );
 
       try {
+        params.ctx.mcpToolRan = true;
         const res = await withMutationToolAdmission(params.ctx, async () => {
           return mcpTool.execute(args, {
             toolCallId: `mcp-sandbox-${def.toolKey}`,
             messages: [],
           });
         });
-        params.ctx.mcpToolRan = true;
         // The SDK sometimes returns a plain string for text-only MCP
         // tools. Wrap it into the McpResult shape we advertise in the
         // declarations so scripts can rely on `.content` regardless.

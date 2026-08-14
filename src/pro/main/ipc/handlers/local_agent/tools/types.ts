@@ -58,6 +58,8 @@ export const APP_MUTATING_TOOL_NAMES = [
   "add_integration",
   "enable_nitro",
   "generate_image",
+  "git_restore_file",
+  "generate_test_assertions",
 ] as const;
 
 export interface AgentContext {

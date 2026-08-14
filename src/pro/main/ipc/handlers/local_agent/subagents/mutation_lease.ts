@@ -119,7 +119,9 @@ export function assertImplementerPathAllowed(
     scope.length === 0 ||
     !scope.some(
       (allowed) =>
-        normalizedPath === allowed || normalizedPath.startsWith(`${allowed}/`),
+        allowed === "" ||
+        normalizedPath === allowed ||
+        normalizedPath.startsWith(`${allowed}/`),
     )
   ) {
     throw new DyadError(
@@ -131,5 +133,6 @@ export function assertImplementerPathAllowed(
 
 export function normalizeMutationScope(value: string): string {
   const normalized = path.posix.normalize(value.replaceAll("\\", "/"));
-  return normalized.replace(/^\.\//, "").replace(/\/$/, "");
+  const relative = normalized.replace(/^\.\//, "").replace(/\/$/, "");
+  return relative === "." ? "" : relative;
 }

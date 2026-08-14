@@ -218,7 +218,6 @@ export async function runExploreCodeSubagent({
       abortSignal: ctx.abortSignal,
     });
     const fullStream = streamResult.fullStream;
-    cancelOrphanedBaseStream(streamResult);
 
     for await (const _part of fullStream) {
       // Drain the stream so tool calls execute.
@@ -228,6 +227,7 @@ export async function runExploreCodeSubagent({
       streamResult.totalUsage ?? Promise.resolve(undefined),
       streamResult.steps ?? Promise.resolve([]),
     ]);
+    cancelOrphanedBaseStream(streamResult);
     await onUsage?.({
       inputTokens: usage?.inputTokens ?? 0,
       outputTokens: usage?.outputTokens ?? 0,

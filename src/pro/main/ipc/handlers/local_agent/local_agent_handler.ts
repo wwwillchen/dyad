@@ -809,7 +809,9 @@ export async function handleLocalAgentStream(
       testRunAttempts: new Map(),
       isDyadPro: isDyadProEnabled(settings),
       canUseExplorerSubagent:
-        isDyadProEnabled(settings) && settings.enableExplorerSubagent !== false,
+        isDyadProEnabled(settings) &&
+        settings.enableExplorerSubagent !== false &&
+        settings.agentToolConsents?.spawn_agent !== "never",
       canUseImplementerSubagent:
         isDyadProEnabled(settings) &&
         isImplementerSubagentEnabled(settings) &&
@@ -2572,10 +2574,10 @@ async function getMcpTools(
               );
               callEmitted = true;
 
+              ctx.mcpToolRan = true;
               const res = await withMutationToolAdmission(ctx, async () => {
                 return mcpTool.execute(args, execCtx);
               });
-              ctx.mcpToolRan = true;
               const safeResult = sanitizeMcpToolResult(res);
 
               ctx.onXmlComplete(

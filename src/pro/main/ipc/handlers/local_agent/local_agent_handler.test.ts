@@ -104,6 +104,7 @@ function buildTestSettings(
     enableAutoReview?: boolean;
     enableImplementerSubagent?: boolean;
     enableAdvancedSubagents?: boolean;
+    agentToolConsents?: Record<string, "ask" | "always" | "never">;
   } = {},
 ) {
   const baseSettings = {
@@ -115,6 +116,7 @@ function buildTestSettings(
     enableAutoReview: overrides.enableAutoReview ?? false,
     enableImplementerSubagent: overrides.enableImplementerSubagent ?? false,
     enableAdvancedSubagents: overrides.enableAdvancedSubagents ?? false,
+    agentToolConsents: overrides.agentToolConsents,
   };
 
   if (overrides.enableDyadPro && overrides.hasApiKey !== false) {
@@ -1010,6 +1012,36 @@ describe("handleLocalAgentStream", () => {
       );
 
       expect(canUseAdvancedSubagentTools).toBe(true);
+    });
+
+    it("keeps root code search available when spawn_agent consent is Never", async () => {
+      const { event } = createFakeEvent();
+      mockSettings = buildTestSettings({
+        enableDyadPro: true,
+        agentToolConsents: { spawn_agent: "never" },
+      });
+      mockChatData = buildTestChat();
+      let canUseExplorerSubagent = true;
+      vi.mocked(buildAgentToolSet).mockImplementationOnce((ctx) => {
+        canUseExplorerSubagent = ctx.canUseExplorerSubagent === true;
+        return {};
+      });
+      mockStreamResult = createFakeStream([
+        { type: "text-delta", text: "Searched directly" },
+      ]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      expect(canUseExplorerSubagent).toBe(false);
     });
 
     it("pauses the prompt queue when a real mutation requires auto-review", async () => {

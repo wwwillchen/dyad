@@ -106,6 +106,23 @@ describe("generate_test_assertions", () => {
     };
   });
 
+  it("tracks only an approved assertion proposal as a workspace mutation", () => {
+    expect(
+      generateTestAssertionsTool.shouldTrackMutation?.(
+        VALID_ARGS,
+        "The user approved the plan. Dyad generated a spec.",
+        makeCtx(),
+      ),
+    ).toBe(true);
+    expect(
+      generateTestAssertionsTool.shouldTrackMutation?.(
+        VALID_ARGS,
+        "The user closed the review card without approving it.",
+        makeCtx(),
+      ),
+    ).toBe(false);
+  });
+
   it("emits a proposed card with the steps and assertions interleaved", async () => {
     const ctx = makeCtx();
     const result = await generateTestAssertionsTool.execute(VALID_ARGS, ctx);

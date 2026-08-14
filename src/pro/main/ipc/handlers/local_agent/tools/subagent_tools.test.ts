@@ -300,6 +300,9 @@ describe("spawn_agent schema", () => {
       } as AgentContext),
     ).toBe(true);
     expect(cancelAgentTool.modifiesState).toBe(true);
+    expect(waitAgentsTool.modifiesState).toBe(true);
+    expect(waitAgentsTool.requiresMutationLease).toBe(false);
+    expect(waitAgentsTool.requiresBlueprintApproval).toBe(false);
     expect(sendMessageTool.modifiesState).toBe(true);
     expect(followupTaskTool.modifiesState).toBe(true);
   });

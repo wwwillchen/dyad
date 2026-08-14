@@ -84,6 +84,7 @@ export async function buildReviewTarget(params: {
       "diff",
       "--no-ext-diff",
       "--no-textconv",
+      "--no-renames",
       "--name-only",
       "-z",
       immutableBase,
@@ -92,6 +93,7 @@ export async function buildReviewTarget(params: {
     ]).then(nulSeparated);
     for (const file of files) {
       const value = await boundedGitDiff(params.appPath, [
+        "--no-renames",
         immutableBase,
         immutableTarget,
         "--",
@@ -115,6 +117,7 @@ export async function buildReviewTarget(params: {
         "diff",
         "--no-ext-diff",
         "--no-textconv",
+        "--no-renames",
         "--name-only",
         "-z",
         comparisonBase,
@@ -130,6 +133,7 @@ export async function buildReviewTarget(params: {
 
     for (const file of trackedFiles) {
       const value = await boundedGitDiff(params.appPath, [
+        "--no-renames",
         comparisonBase,
         "--",
         file,

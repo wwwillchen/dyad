@@ -4,6 +4,7 @@
  */
 
 import { IpcMainInvokeEvent } from "electron";
+import log from "electron-log";
 import { readSettings, writeSettings } from "@/main/settings";
 import type { SqlConsentMetadata } from "@/shared/sqlConsentMetadata";
 import {
@@ -87,6 +88,20 @@ import { getNeonClientCode } from "@/neon_admin/neon_context";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { ExecuteAddDependencyError } from "@/ipc/processors/executeAddDependency";
 import { withMutationToolAdmission } from "./subagents/mutation_lease";
+
+const logger = log.scope("local_agent_tools");
+
+function recordStreamingToolActivity(
+  ctx: AgentContext,
+  activity: Parameters<NonNullable<AgentContext["onToolActivity"]>>[0],
+): void {
+  const update = ctx.onToolActivity?.(activity);
+  if (update) {
+    void update.catch((error) =>
+      logger.warn("Failed to record streaming sub-agent activity", error),
+    );
+  }
+}
 
 function getToolErrorDisplayDetails(error: unknown): string {
   if (error instanceof ExecuteAddDependencyError) {
@@ -571,7 +586,7 @@ export function buildAgentToolSet(
                 ...ctx,
                 onXmlStream: (xml: string) => {
                   presentationXml = xml;
-                  void ctx.onToolActivity?.({
+                  recordStreamingToolActivity(ctx, {
                     toolCallId,
                     toolName: tool.name,
                     status: "pending",
@@ -580,7 +595,7 @@ export function buildAgentToolSet(
                 },
                 onXmlComplete: (xml: string) => {
                   presentationXml = xml;
-                  void ctx.onToolActivity?.({
+                  recordStreamingToolActivity(ctx, {
                     toolCallId,
                     toolName: tool.name,
                     status: "pending",

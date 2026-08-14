@@ -28,7 +28,7 @@ import type {
   SubagentPersona,
   SubagentThreadSummary,
 } from "@/ipc/types";
-import { isSubagentAcceptingMessages } from "@/ipc/types";
+import { isSubagentAcceptingMessages, isSubagentActive } from "@/ipc/types";
 import { isDyadProEnabled } from "@/lib/schemas";
 import { readSettings } from "@/main/settings";
 import { getDyadAppPath } from "@/paths/paths";
@@ -69,10 +69,10 @@ const MAX_ACTIVITY_OUTPUT_CHARS = 200_000;
 const MAX_MODEL_HISTORY_CHARS = 100_000;
 const AUTO_REVIEW_BARRIER_MAX_WAIT_MS = 10 * 60 * 1000;
 const ROOT_FINALIZATION_MAX_WAIT_MS = 10 * 60 * 1000;
+const REVIEW_WRITER_MAX_WAIT_MS = 10 * 60 * 1000;
 const SUBAGENT_MAX_STEPS = 50;
 const logger = log.scope("subagent_manager");
 
-const ACTIVE = ["queued", "running", "waiting_for_writer"] as const;
 const abortControllers = new Map<string, AbortController>();
 const cancelledThreadIds = new Set<string>();
 const autoFixOwnerByThread = new Map<string, number>();
@@ -252,8 +252,6 @@ export async function getSubagentActivities(
     toolName: row.toolName,
     status: row.status,
     presentationXml: row.presentationXml,
-    inputJson: row.inputJson,
-    outputText: row.outputText,
     error: row.error,
     startedAt: row.startedAt,
     completedAt: row.completedAt,
@@ -787,7 +785,7 @@ export async function runAutoReviewBarrier(params: {
     }
     return { outcome: "released" };
   }
-  while (["queued", "running", "waiting_for_writer"].includes(summary.status)) {
+  while (isSubagentActive(summary.status)) {
     if (!(await waitForAutoReviewPoll(params))) {
       return { outcome: "waiting", threadId: summary.id };
     }
@@ -1083,7 +1081,7 @@ async function followupSubagentAdmitted(
   const selectedRun = run;
   const appendAndSchedule = async () => {
     const current = await getOwnedThread(chatId, threadId);
-    const isActive = ACTIVE.includes(current.status as (typeof ACTIVE)[number]);
+    const isActive = isSubagentActive(current.status);
     let reservedImplementer = false;
     if (current.persona === "implementer" && !isActive) {
       const scope = Array.isArray(current.contextJson?.scope)
@@ -1140,8 +1138,10 @@ export async function waitForSubagents(
   chatId: number,
   threadIds: string[],
   abortSignal?: AbortSignal,
+  timeoutMs = ROOT_FINALIZATION_MAX_WAIT_MS,
 ): Promise<SubagentThreadSummary[]> {
   assertPro();
+  const deadlineAt = Date.now() + timeoutMs;
   const uniqueIds = [...new Set(threadIds)];
   await Promise.all(uniqueIds.map((id) => getOwnedThread(chatId, id)));
   while (true) {
@@ -1149,6 +1149,12 @@ export async function waitForSubagents(
       throw new DyadError(
         "Waiting for sub-agents was cancelled.",
         DyadErrorKind.UserCancelled,
+      );
+    }
+    if (Date.now() >= deadlineAt) {
+      throw new DyadError(
+        "Timed out waiting for sub-agents to finish.",
+        DyadErrorKind.Conflict,
       );
     }
     const rows = await Promise.all(
@@ -1259,7 +1265,7 @@ export async function endRootFinalization(appId: number): Promise<void> {
 }
 
 export function isAcceptableImplementerJoinStatus(status: string): boolean {
-  return status === "completed" || status === "cancelled";
+  return status === "completed";
 }
 
 async function runThread(
@@ -1369,8 +1375,15 @@ async function runReview(
   let shouldContinue = false;
   abortControllers.set(threadId, controller);
   const entitlementWatcher = watchEntitlement(threadId, controller);
+  const writerDeadlineAt = Date.now() + REVIEW_WRITER_MAX_WAIT_MS;
   try {
     while (hasMutationLease(appId)) {
+      if (Date.now() >= writerDeadlineAt) {
+        throw new DyadError(
+          "Timed out waiting for the app writer before starting review.",
+          DyadErrorKind.Conflict,
+        );
+      }
       await setWaitingForWriter(threadId);
       await new Promise((resolve) => setTimeout(resolve, 250));
       if (controller.signal.aborted) return;
@@ -2027,6 +2040,7 @@ function toSummary(
         ? row.contextJson.sourceMessageId
         : null,
     invocationSource: row.invocationSource,
+    remediationSource: row.remediationSource,
     autoFixAt: row.autoFixAt,
     error: row.error,
     inputTokens: row.inputTokens,
@@ -2174,7 +2188,7 @@ async function startPendingFollowup(
     });
     if (!pending) return;
     const thread = await getThread(threadId);
-    if (ACTIVE.includes(thread.status as (typeof ACTIVE)[number])) return;
+    if (isSubagentActive(thread.status)) return;
     const queueFollowup = async (acquiredAppId: number | null) => {
       followupStarts.add(threadId);
       try {

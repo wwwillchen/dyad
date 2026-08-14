@@ -240,7 +240,10 @@ export const waitAgentsTool: ToolDefinition<z.infer<typeof threadIdsSchema>> = {
     "Wait until all specified sub-agents reach a terminal or idle state.",
   inputSchema: threadIdsSchema,
   defaultConsent: "always",
+  modifiesState: true,
   subagentOnly: true,
+  requiresMutationLease: false,
+  requiresBlueprintApproval: false,
   isEnabled: canUseAdvancedSubagentTools,
   execute: async (args, ctx) =>
     JSON.stringify(

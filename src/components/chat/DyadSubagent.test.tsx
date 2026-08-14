@@ -44,6 +44,7 @@ function makeThread(status: SubagentThreadSummary["status"]) {
     reviewDiffHash: null,
     sourceMessageId: 42,
     invocationSource: "model",
+    remediationSource: null,
     autoFixAt: null,
     error: null,
     inputTokens: 1,
@@ -66,8 +67,6 @@ function makeActivity(): SubagentActivity {
     status: "completed",
     presentationXml:
       '<dyad-grep query="auth" count="1">src/auth.ts:1: auth</dyad-grep>',
-    inputJson: { query: "auth" },
-    outputText: "src/auth.ts:1: auth",
     error: null,
     startedAt: new Date(),
     completedAt: new Date(),
@@ -142,4 +141,31 @@ describe("DyadSubagent", () => {
     );
     expect(await screen.findByText("Auth starts in auth.ts.")).toBeTruthy();
   });
+
+  it.each(["partial", "review_outdated", "cancelled"] as const)(
+    "renders %s as a warning instead of a failure",
+    async (status) => {
+      mocks.listSubagents.mockResolvedValue([makeThread(status)]);
+      mocks.getSubagentActivities.mockResolvedValue([]);
+
+      const { container } = render(
+        <DyadSubagent
+          chatId={7}
+          threadId="explorer-1"
+          persona="explorer"
+          taskName="Trace authentication"
+          renderActivity={() => null}
+        />,
+        { wrapper: makeWrapper() },
+      );
+
+      await screen.findByText(
+        status === "partial"
+          ? /Partial findings/
+          : new RegExp(status.replaceAll("_", " "), "i"),
+      );
+      expect(container.querySelector("svg.text-amber-600")).toBeTruthy();
+      expect(container.querySelector("svg.text-destructive")).toBeNull();
+    },
+  );
 });

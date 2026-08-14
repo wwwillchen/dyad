@@ -7,6 +7,7 @@ import {
   assertMutationLease,
   beginAppFinalization,
   endAppFinalization,
+  normalizeMutationScope,
   releaseMutationLease,
   withMutationAdmission,
   withMutationToolAdmission,
@@ -102,6 +103,20 @@ describe("sub-agent mutation lease", () => {
     ).not.toThrow();
     expect(ctx.subagentPathScope).toEqual(["src/components"]);
   });
+
+  it.each(["", ".", "./", "/"])(
+    "treats %j as an app-root Implementer scope",
+    (rootScope) => {
+      const ctx = {
+        subagentPersona: "implementer",
+        subagentPathScope: [normalizeMutationScope(rootScope)],
+      } as AgentContext;
+
+      expect(() =>
+        assertImplementerPathAllowed(ctx, "src/components/Card.tsx"),
+      ).not.toThrow();
+    },
+  );
 
   it("rejects Implementer mutations after its writer lease is gone", () => {
     expect(() =>

@@ -22,6 +22,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { useStreamChat } from "@/hooks/useStreamChat";
 import {
   ipc,
+  isSubagentActive,
   isSubagentAcceptingMessages,
   type SubagentThreadSummary,
 } from "@/ipc/types";
@@ -481,6 +482,8 @@ export function SubagentTeamCard({
                     disabled={
                       !messageDrafts[thread.id]?.trim() ||
                       thread.persona === "implementer" ||
+                      (thread.persona === "explorer" &&
+                        !settings?.enableAdvancedSubagents) ||
                       (sendMessageMutation.isPending &&
                         sendMessageMutation.variables?.threadId ===
                           thread.id) ||
@@ -490,7 +493,10 @@ export function SubagentTeamCard({
                     title={
                       thread.persona === "implementer"
                         ? "Start Implementer follow-ups from a root Agent turn so changes are verified and committed."
-                        : undefined
+                        : thread.persona === "explorer" &&
+                            !settings?.enableAdvancedSubagents
+                          ? "Enable Advanced sub-agents in Settings to resume Explorer threads."
+                          : undefined
                     }
                     onClick={() =>
                       followupMutation.mutate({
@@ -539,19 +545,22 @@ export function SubagentTeamCard({
                     <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs">
                       {report.slice(0, MAX_RENDERED_REPORT_CHARS)}
                     </pre>
-                    {findingCount > 0 && review.status === "completed" && (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          size="sm"
-                          disabled={fixReviewMutation.isPending}
-                          onClick={() => fixReviewMutation.mutate(thread)}
-                        >
-                          <Wrench className="mr-1 h-4 w-4" />
-                          Fix findings ({findingCount})
-                        </Button>
-                        <AutoFixReviewIssuesSwitch compact />
-                      </div>
-                    )}
+                    {showReviewAction &&
+                      findingCount > 0 &&
+                      review.status === "completed" &&
+                      !review.remediationSource && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            size="sm"
+                            disabled={fixReviewMutation.isPending}
+                            onClick={() => fixReviewMutation.mutate(thread)}
+                          >
+                            <Wrench className="mr-1 h-4 w-4" />
+                            Fix findings ({findingCount})
+                          </Button>
+                          <AutoFixReviewIssuesSwitch compact />
+                        </div>
+                      )}
                   </div>
                 )}
             </div>
@@ -575,5 +584,5 @@ function statusLabel(thread: SubagentThreadSummary): string {
 function isSubagentCancellable(
   status: SubagentThreadSummary["status"],
 ): boolean {
-  return ["queued", "running", "waiting_for_writer"].includes(status);
+  return isSubagentActive(status);
 }

@@ -67,6 +67,30 @@ describe("buildReviewTarget", () => {
     expect(review.targetCommit).toBe(target.trim());
   });
 
+  it("includes both sides of an immutable file rename", async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(path.join(repo, "before.ts"), "export const old = 1;\n");
+    await git(repo, "add", ".");
+    await git(repo, "commit", "-m", "base");
+    const base = (await git(repo, "rev-parse", "HEAD")).trim();
+    await fs.rename(path.join(repo, "before.ts"), path.join(repo, "after.ts"));
+    await git(repo, "add", "-A");
+    await git(repo, "commit", "-m", "rename");
+    const target = (await git(repo, "rev-parse", "HEAD")).trim();
+
+    const review = await buildReviewTarget({
+      appPath: repo,
+      baseCommit: base,
+      targetCommit: target,
+    });
+
+    expect(review.files.sort()).toEqual(["after.ts", "before.ts"]);
+    expect(review.diff).toContain("deleted file mode");
+    expect(review.diff).toContain("new file mode");
+    expect(review.diff).toContain("--- a/before.ts");
+    expect(review.diff).toContain("+++ b/after.ts");
+  });
+
   it("classifies an unreachable immutable review range as a precondition", async () => {
     const repo = await makeRepo();
 

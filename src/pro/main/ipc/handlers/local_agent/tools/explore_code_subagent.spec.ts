@@ -203,6 +203,45 @@ describe("runExploreCodeSubagent", () => {
     expect(report).not.toContain("```json");
   });
 
+  it("drains usage promises before cancelling the orphaned base stream", async () => {
+    let resolveUsage!: (value: {
+      inputTokens: number;
+      outputTokens: number;
+    }) => void;
+    let resolveSteps!: (value: Array<{ toolCalls: never[] }>) => void;
+    const totalUsage = new Promise<{
+      inputTokens: number;
+      outputTokens: number;
+    }>((resolve) => {
+      resolveUsage = resolve;
+    });
+    const steps = new Promise<Array<{ toolCalls: never[] }>>((resolve) => {
+      resolveSteps = resolve;
+    });
+    let streamDrained = false;
+    mocks.streamText.mockImplementationOnce(() => ({
+      fullStream: createToolStream(async () => {
+        streamDrained = true;
+      }),
+      textStream: createTextStream([]),
+      totalUsage,
+      steps,
+    }));
+
+    const run = runExploreCodeSubagent({
+      args: { query: "widget save flow", intent: "locate" },
+      ctx: createMockContext(),
+    });
+    await vi.waitFor(() => expect(streamDrained).toBe(true));
+    expect(mocks.cancelOrphanedBaseStream).not.toHaveBeenCalled();
+
+    resolveUsage({ inputTokens: 10, outputTokens: 5 });
+    resolveSteps([{ toolCalls: [] }]);
+    await run;
+
+    expect(mocks.cancelOrphanedBaseStream).toHaveBeenCalledOnce();
+  });
+
   it("preserves Code Explorer fallback warnings in the final report", async () => {
     mocks.runRawExploreCode.mockResolvedValue({
       ...buildRawExploreResult(),

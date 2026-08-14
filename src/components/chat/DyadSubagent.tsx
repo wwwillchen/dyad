@@ -6,12 +6,13 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleX,
+  TriangleAlert,
   Loader2,
   Square,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { ipc, type SubagentStatus } from "@/ipc/types";
+import { ipc, isSubagentActive, type SubagentStatus } from "@/ipc/types";
 import { queryKeys } from "@/lib/queryKeys";
 import { showError } from "@/lib/toast";
 import {
@@ -19,12 +20,6 @@ import {
   DyadCardHeader,
   DyadCardPresentationContext,
 } from "./DyadCardPrimitives";
-
-const ACTIVE_STATUSES: SubagentStatus[] = [
-  "queued",
-  "running",
-  "waiting_for_writer",
-];
 
 interface DyadSubagentProps {
   chatId: number;
@@ -58,7 +53,7 @@ export function DyadSubagent({
   });
   const thread = threadsQuery.data?.find((item) => item.id === threadId);
   const activities = activitiesQuery.data ?? [];
-  const isActive = thread ? ACTIVE_STATUSES.includes(thread.status) : false;
+  const isActive = thread ? isSubagentActive(thread.status) : false;
 
   useEffect(() => {
     return ipc.events.agent.onSubagentUpdate((event) => {
@@ -128,6 +123,11 @@ export function DyadSubagent({
           />
         ) : thread?.status === "completed" ? (
           <CheckCircle2 size={15} className="shrink-0 text-green-600" />
+        ) : thread && isSubagentWarningStatus(thread.status) ? (
+          <TriangleAlert
+            size={15}
+            className="shrink-0 text-amber-600 dark:text-amber-400"
+          />
         ) : thread ? (
           <CircleX size={15} className="shrink-0 text-destructive" />
         ) : null}
@@ -227,6 +227,10 @@ function getStatusText(
   if (status === "completed") return "Completed";
   if (status === "partial") return "Partial findings";
   return status.replaceAll("_", " ");
+}
+
+function isSubagentWarningStatus(status: SubagentStatus): boolean {
+  return ["partial", "review_outdated", "cancelled"].includes(status);
 }
 
 function formatToolName(toolName: string): string {

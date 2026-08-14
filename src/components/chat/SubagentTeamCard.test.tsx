@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   streamMessage: vi.fn(),
   settings: {
     autoFixReviewIssues: true,
+    enableAdvancedSubagents: true,
     enableReviewButton: true,
   },
 }));
@@ -90,6 +91,7 @@ function makeReview(
     reviewDiffHash: id,
     sourceMessageId,
     invocationSource: "review_button",
+    remediationSource: null,
     autoFixAt: null,
     error: null,
     inputTokens: 1,
@@ -120,6 +122,7 @@ describe("SubagentTeamCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.settings.autoFixReviewIssues = true;
+    mocks.settings.enableAdvancedSubagents = true;
     mocks.settings.enableReviewButton = true;
     clearPendingReviewContinuation(7);
     mocks.onSubagentUpdate.mockReturnValue(vi.fn());
@@ -562,6 +565,32 @@ describe("SubagentTeamCard", () => {
     },
   );
 
+  it("hides Fix findings on historical and already-claimed reviews", async () => {
+    mocks.listSubagents.mockResolvedValue([
+      {
+        ...makeReview("current-message", 42, "current report"),
+        remediationSource: "fix_button",
+      },
+    ]);
+
+    const { unmount } = render(<SubagentTeamCard chatId={7} messageId={42} />, {
+      wrapper: makeWrapper(),
+    });
+    expect(await screen.findByText("current report")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Fix findings/ })).toBeNull();
+
+    mocks.listSubagents.mockResolvedValue([
+      makeReview("historical-message", 41, "historical report"),
+    ]);
+    unmount();
+    render(
+      <SubagentTeamCard chatId={7} messageId={41} showReviewAction={false} />,
+      { wrapper: makeWrapper() },
+    );
+    expect(await screen.findByText("historical report")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Fix findings/ })).toBeNull();
+  });
+
   it("hides a stale auto-fix countdown outside the countdown status", async () => {
     mocks.listSubagents.mockResolvedValue([
       {
@@ -610,6 +639,34 @@ describe("SubagentTeamCard", () => {
         .getByRole("button", { name: "Follow up" })
         .hasAttribute("disabled"),
     ).toBe(false);
+  });
+
+  it("disables model-facing Explorer follow-ups when advanced sub-agents are off", async () => {
+    mocks.settings.enableAdvancedSubagents = false;
+    mocks.listSubagents.mockResolvedValue([
+      {
+        ...makeReview("explorer-thread", 42, "exploration report"),
+        persona: "explorer",
+        taskName: "Find auth flow",
+      },
+    ]);
+
+    render(<SubagentTeamCard chatId={7} messageId={42} />, {
+      wrapper: makeWrapper(),
+    });
+
+    fireEvent.change(
+      await screen.findByRole("textbox", {
+        name: "Message explorer Find auth flow",
+      }),
+      { target: { value: "Check callbacks" } },
+    );
+
+    const followUp = screen.getByRole("button", { name: "Follow up" });
+    expect(followUp.hasAttribute("disabled")).toBe(true);
+    expect(followUp.getAttribute("title")).toContain(
+      "Enable Advanced sub-agents",
+    );
   });
 
   it("surfaces durable message failures and keeps the draft", async () => {

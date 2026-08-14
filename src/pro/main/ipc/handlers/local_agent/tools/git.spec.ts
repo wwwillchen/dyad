@@ -137,6 +137,13 @@ describe("local-agent Git tool definitions", () => {
       shouldIncludeTool(gitRestoreFileTool, ctx, { planModeOnly: true }),
     ).toBe(false);
     expect(getDefaultConsent("git_restore_file")).toBe("always");
+    expect(
+      gitRestoreFileTool.shouldTrackMutation?.(
+        { revision: "HEAD", path: "file.txt" },
+        "restored",
+        ctx,
+      ),
+    ).toBe(true);
   });
 
   it("applies the app-blueprint gate before restoring", async () => {

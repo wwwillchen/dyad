@@ -266,6 +266,8 @@ export const generateTestAssertionsTool: ToolDefinition<GenerateTestAssertionsAr
     // Approving the card generates the spec file, so keep this out of read-only
     // and plan modes alongside the other file-changing tools.
     modifiesState: true,
+    shouldTrackMutation: (_args, result) =>
+      result.startsWith("The user approved the plan."),
     isEnabled: (ctx) => ctx.testingEnabled,
 
     getConsentPreview: (args) =>

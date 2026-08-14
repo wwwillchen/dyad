@@ -133,9 +133,19 @@ const _subagentStatusMutualAssignability: [
 ] = [true, true];
 void _subagentStatusMutualAssignability;
 
-export function isSubagentAcceptingMessages(status: SubagentStatus): boolean {
-  return ["queued", "running", "waiting_for_writer"].includes(status);
+export const SUBAGENT_ACTIVE_STATUSES = [
+  "queued",
+  "running",
+  "waiting_for_writer",
+] as const satisfies readonly SubagentStatus[];
+
+export function isSubagentActive(status: SubagentStatus): boolean {
+  return (SUBAGENT_ACTIVE_STATUSES as readonly SubagentStatus[]).includes(
+    status,
+  );
 }
+
+export const isSubagentAcceptingMessages = isSubagentActive;
 
 export const SubagentThreadSummarySchema = z.object({
   id: z.string(),
@@ -158,6 +168,9 @@ export const SubagentThreadSummarySchema = z.object({
     "auto_review",
     "followup",
   ]),
+  remediationSource: z
+    .enum(["fix_button", "auto_fix", "queued_message_override"])
+    .nullable(),
   autoFixAt: z.date().nullable(),
   error: z.string().nullable(),
   inputTokens: z.number(),
@@ -190,8 +203,6 @@ export const SubagentActivitySchema = z.object({
   toolName: z.string(),
   status: z.enum(["pending", "completed", "error", "aborted"]),
   presentationXml: z.string(),
-  inputJson: z.record(z.string(), z.unknown()).nullable(),
-  outputText: z.string().nullable(),
   error: z.string().nullable(),
   startedAt: z.date(),
   completedAt: z.date().nullable(),
