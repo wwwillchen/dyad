@@ -87,16 +87,19 @@ testSkipIfWindows(
     const initialFrame = po.previewPanel
       .getPreviewIframeElement()
       .contentFrame();
+    const initialSelectorReadyCount = await getSelectorReadyCount();
     await initialFrame.locator("body").evaluate((body) => {
       body.dataset.reloadShortcutMarker = "not-reloaded";
       body.tabIndex = -1;
       body.focus();
     });
     await po.page.keyboard.press(`${modifier}+Alt+r`);
+    await po.page.waitForTimeout(500);
     await expect(initialFrame.locator("body")).toHaveAttribute(
       "data-reload-shortcut-marker",
       "not-reloaded",
     );
+    expect(await getSelectorReadyCount()).toBe(initialSelectorReadyCount);
 
     for (const [index, shortcut] of shortcuts.entries()) {
       const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
@@ -162,6 +165,7 @@ testSkipIfWindows(
     });
     await po.page.getByTestId("preview-refresh-button").focus();
     await po.page.keyboard.press(`${modifier}+Alt+r`);
+    await po.page.waitForTimeout(500);
     await expect(rendererAltFrame.locator("body")).toHaveAttribute(
       "data-reload-shortcut-marker",
       "renderer-alt-not-reloaded",
