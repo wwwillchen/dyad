@@ -180,7 +180,6 @@ describe("local-agent ask mode (integration)", () => {
     const toolNames = tools.map((t) => t.function?.name ?? t.name).sort();
     // The exact read-only toolset the e2e request snapshot asserted.
     expect(toolNames).toEqual([
-      "code_search",
       "execute_sandbox_script",
       "explore_chat_history",
       "git_diff",

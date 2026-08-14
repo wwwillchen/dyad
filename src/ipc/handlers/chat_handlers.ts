@@ -32,7 +32,10 @@ import {
 import { waitForChatActorIdle } from "@/ipc/services/chat_actor_service";
 import { appOperationCoordinator } from "@/ipc/services/app_operation_coordinator";
 import { withChatQueueLock } from "@/chat_stream/queue_lock";
-import { settleSubagentsForChatDeletion } from "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager";
+import {
+  blockSubagentAdmissionsForChat,
+  settleSubagentsForChatDeletion,
+} from "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager";
 
 const logger = log.scope("chat_handlers");
 
@@ -269,25 +272,34 @@ export function registerChatHandlers() {
   });
 
   createTypedHandler(chatContracts.deleteChat, async (event, chatId) => {
-    await mutateChatAfterDrainingStreams({
-      chatId,
-      sender: event.sender,
-      beforeLock: async () => {
-        const releaseSubagents = await settleSubagentsForChatDeletion(chatId);
-        try {
-          await userInputRegistry.settleChat(chatId);
-          await settleChatActorsForDeletion(chatId);
-          return releaseSubagents;
-        } catch (error) {
-          releaseSubagents();
-          throw error;
-        }
-      },
-      mutation: async () => {
-        await db.delete(chats).where(eq(chats.id, chatId));
-        entityDisposalBus.publish({ kind: "chat", id: chatId });
-      },
-    });
+    // Sweep due follow-ups before closing chat admission. Starting both fences
+    // in this synchronous turn prevents either new sub-agents or a deletion
+    // race from changing the follow-up outcome from swept to rejected.
+    const userInputSettlement = userInputRegistry.settleChat(chatId);
+    const releaseSubagentAdmission = blockSubagentAdmissionsForChat(chatId);
+    try {
+      await mutateChatAfterDrainingStreams({
+        chatId,
+        sender: event.sender,
+        beforeLock: async () => {
+          await userInputSettlement;
+          const releaseSubagents = await settleSubagentsForChatDeletion(chatId);
+          try {
+            await settleChatActorsForDeletion(chatId);
+            return releaseSubagents;
+          } catch (error) {
+            releaseSubagents();
+            throw error;
+          }
+        },
+        mutation: async () => {
+          await db.delete(chats).where(eq(chats.id, chatId));
+          entityDisposalBus.publish({ kind: "chat", id: chatId });
+        },
+      });
+    } finally {
+      releaseSubagentAdmission();
+    }
   });
 
   createTypedHandler(chatContracts.updateChat, async (_, params) => {

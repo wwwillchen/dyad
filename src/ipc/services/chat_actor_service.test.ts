@@ -107,7 +107,10 @@ vi.mock("@/chat_stream/persistence", async (importOriginal) => ({
 }));
 vi.mock(
   "@/pro/main/ipc/handlers/local_agent/subagents/subagent_manager",
-  () => ({ settleSubagentsForChatDeletion: subagents.settle }),
+  () => ({
+    blockSubagentAdmissionsForChat: vi.fn(() => vi.fn()),
+    settleSubagentsForChatDeletion: subagents.settle,
+  }),
 );
 
 import {

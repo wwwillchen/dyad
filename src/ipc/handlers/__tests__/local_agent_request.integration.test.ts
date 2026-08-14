@@ -35,8 +35,8 @@ describe("local-agent default request (integration)", () => {
         isTestMode: true,
         enableDyadPro: true,
         providerSettings: { auto: { apiKey: { value: "testdyadkey" } } },
-        // Matches the e2e: with the code explorer off the request carries
-        // `code_search` (not `explore_code`), keeping the tool list stable.
+        // Compiler exploration is disabled, but the root still delegates
+        // discovery to the Explorer sub-agent rather than exposing code_search.
         enableCodeExplorer: false,
       },
     });
@@ -91,7 +91,6 @@ describe("local-agent default request (integration)", () => {
       "add_dependency",
       "add_integration",
       "cancel_agent",
-      "code_search",
       "copy_file",
       "delete_file",
       "enable_nitro",

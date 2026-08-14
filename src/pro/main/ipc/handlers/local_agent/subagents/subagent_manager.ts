@@ -91,7 +91,7 @@ const eventTargets = new Set<WebContents>();
 export function setSubagentEventTarget(target: WebContents): void {
   if (target.isDestroyed() || eventTargets.has(target)) return;
   eventTargets.add(target);
-  target.once("destroyed", () => eventTargets.delete(target));
+  target.once?.("destroyed", () => eventTargets.delete(target));
 }
 
 export async function recoverInterruptedSubagents(): Promise<void> {

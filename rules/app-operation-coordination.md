@@ -33,6 +33,13 @@ it is already owned and drained by a domain-specific actor fence. Deletion-only
 work uses the opaque deletion handle after `drain()`; ordinary handlers must
 never bypass admission.
 
+Chat deletion must start `userInputRegistry.settleChat(chatId)` before closing
+chat-actor admission. Otherwise an already-due follow-up can observe the fence
+and settle as rejected instead of swept. In that same synchronous turn, close
+sub-agent admission with `blockSubagentAdmissionsForChat(chatId)` before the
+first await, then hold both the sub-agent settlement release and admission
+release until the destructive mutation commits or aborts.
+
 For runtime start/restart, spawning the long-lived install/dev child is not the
 end of startup. Retain path, repository, and runtime-config admission until the
 preview is ready so install and self-heal work cannot race Git mutations. Any
