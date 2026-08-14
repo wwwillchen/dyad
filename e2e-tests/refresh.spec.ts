@@ -56,6 +56,9 @@ testSkipIfWindows(
     const pickerShortcutFrame = po.previewPanel
       .getPreviewIframeElement()
       .contentFrame();
+    await expect(po.previewPanel.getPreviewPickElementButton()).toBeEnabled({
+      timeout: Timeout.EXTRA_LONG,
+    });
     const pickerSelectorReadyCount = await getSelectorReadyCount();
     await pickerShortcutFrame.locator("body").evaluate((body) => {
       body.tabIndex = -1;
@@ -145,13 +148,33 @@ testSkipIfWindows(
       }
     }
 
+    const rendererAltFrame = po.previewPanel
+      .getPreviewIframeElement()
+      .contentFrame();
+    await expect(
+      rendererAltFrame.getByRole("heading", {
+        name: "Welcome to Your Blank App",
+      }),
+    ).toBeVisible({ timeout: Timeout.LONG });
+    const rendererAltSelectorReadyCount = await getSelectorReadyCount();
+    await rendererAltFrame.locator("body").evaluate((body) => {
+      body.dataset.reloadShortcutMarker = "renderer-alt-not-reloaded";
+    });
+    await po.page.getByTestId("preview-refresh-button").focus();
+    await po.page.keyboard.press(`${modifier}+Alt+r`);
+    await expect(rendererAltFrame.locator("body")).toHaveAttribute(
+      "data-reload-shortcut-marker",
+      "renderer-alt-not-reloaded",
+    );
+    expect(await getSelectorReadyCount()).toBe(rendererAltSelectorReadyCount);
+
     for (const shortcut of shortcuts) {
       const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
       const selectorReadyCount = await getSelectorReadyCount();
       await frame.locator("body").evaluate((body) => {
         body.dataset.reloadShortcutMarker = "before-reload";
       });
-      await po.page.locator("body").focus();
+      await po.page.getByTestId("preview-refresh-button").focus();
 
       await po.page.keyboard.press(shortcut);
 

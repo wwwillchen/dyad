@@ -5,9 +5,9 @@ import { DeepLinkProvider } from "../contexts/DeepLinkContext";
 import { Toaster } from "sonner";
 import { TitleBar } from "./TitleBar";
 import { useEffect, useMemo, type ReactNode } from "react";
-import { useRunApp, useAppOutputSubscription } from "@/hooks/useRunApp";
+import { useAppOutputSubscription } from "@/hooks/useRunApp";
 import { useAtomValue, useSetAtom } from "jotai";
-import { previewModeAtom, selectedAppIdAtom } from "@/atoms/appAtoms";
+import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { useSettings } from "@/hooks/useSettings";
 import { DEFAULT_ZOOM_LEVEL } from "@/lib/schemas";
 import { selectedComponentsPreviewAtom } from "@/atoms/previewAtoms";
@@ -92,7 +92,6 @@ function RootLayoutContent({ children }: { children: ReactNode }) {
   const appRunManager = useAppRunRemoteManager();
   const previewErrors = usePreviewErrorFacade();
   const screenshotManager = useScreenshotManager();
-  const { refreshAppIframe } = useRunApp();
   // Subscribe to app output events once at the root level to avoid duplicates
   useAppOutputSubscription();
   useEffect(
@@ -106,7 +105,6 @@ function RootLayoutContent({ children }: { children: ReactNode }) {
       }),
     [appRunManager, previewErrors],
   );
-  const previewMode = useAtomValue(previewModeAtom);
   const { settings } = useSettings();
   const setSelectedComponentsPreview = useSetAtom(
     selectedComponentsPreviewAtom,
@@ -182,27 +180,6 @@ function RootLayoutContent({ children }: { children: ReactNode }) {
       i18n.changeLanguage(language);
     }
   }, [settings?.language]);
-
-  // Global keyboard listener for refresh events
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      // Check for Ctrl+R (Windows/Linux) or Cmd+R (macOS)
-      if (event.key === "r" && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault(); // Prevent default browser refresh
-        if (previewMode === "preview") {
-          refreshAppIframe(); // Use our custom refresh function instead
-        }
-      }
-    };
-
-    // Add event listener to document
-    document.addEventListener("keydown", handleKeyDown);
-
-    // Cleanup function to remove event listener
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [refreshAppIframe, previewMode]);
 
   useEffect(() => {
     setSelectedComponentsPreview([]);

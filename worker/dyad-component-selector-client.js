@@ -532,7 +532,13 @@
     // Keep reload shortcuts scoped to the preview even while it owns focus.
     const hasUnexpectedReloadModifier =
       e.altKey || (isMac ? e.ctrlKey : e.metaKey);
-    if (key === "r" && hasCtrlOrMeta && !hasUnexpectedReloadModifier) {
+    if (key === "r" && hasCtrlOrMeta) {
+      if (hasUnexpectedReloadModifier) {
+        // Chromium still treats mixed primary-modifier chords as reloads. Let
+        // real AltGr input through, but suppress those other browser defaults.
+        if (!e.getModifierState("AltGraph")) e.preventDefault();
+        return;
+      }
       e.preventDefault();
       window.parent.postMessage(
         {

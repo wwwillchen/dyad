@@ -1045,8 +1045,27 @@ export const PreviewIframe = ({
   };
 
   // Keep reload scoped to the preview while its panel is active, including
-  // when focus is in the parent renderer rather than inside the iframe.
-  useShortcut("r", { ctrl: !isMac, meta: isMac }, handleReload, isPreviewOpen);
+  // when focus is in the parent renderer rather than inside the iframe. Match
+  // the native shortcut exactly so AltGr and mixed primary modifiers remain
+  // available to the focused control.
+  useEffect(() => {
+    if (!isPreviewOpen) return;
+    const handleReloadShortcut = (event: KeyboardEvent) => {
+      const hasPrimaryModifier = isMac ? event.metaKey : event.ctrlKey;
+      const hasUnexpectedModifier =
+        event.altKey || (isMac ? event.ctrlKey : event.metaKey);
+      if (event.key.toLowerCase() === "r" && hasPrimaryModifier) {
+        if (hasUnexpectedModifier) {
+          if (!event.getModifierState("AltGraph")) event.preventDefault();
+          return;
+        }
+        event.preventDefault();
+        handleReload();
+      }
+    };
+    window.addEventListener("keydown", handleReloadShortcut);
+    return () => window.removeEventListener("keydown", handleReloadShortcut);
+  }, [handleReload, isMac, isPreviewOpen]);
 
   // Activate component selector using a shortcut
   useShortcut(
