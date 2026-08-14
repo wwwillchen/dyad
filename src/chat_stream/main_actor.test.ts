@@ -1477,7 +1477,7 @@ describe("main-hosted chat stream actor", () => {
     await vi.waitFor(() =>
       expect(onSettled).toHaveBeenCalledExactlyOnceWith({
         success: false,
-        pausedByStepLimit: true,
+        pausedByStepLimit: undefined,
       }),
     );
     await flush();

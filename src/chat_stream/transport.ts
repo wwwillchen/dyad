@@ -327,6 +327,7 @@ export const ChatStreamRemoteSnapshotSchema = z
     error: z.string().nullable(),
     queueRevision: expectedQueueRevision,
     queuePaused: z.boolean(),
+    queuePauseReason: z.enum(["stop", "manual", "step-limit"]).nullable(),
     queue: z.array(ChatQueueEntrySchema),
     stopPolicyVersion: z.number().int().nonnegative(),
     capabilities: z
@@ -394,6 +395,7 @@ export function unavailableChatStreamSnapshot(
     error: null,
     queueRevision: 0,
     queuePaused: false,
+    queuePauseReason: null,
     queue: [],
     stopPolicyVersion: 0,
     capabilities: {

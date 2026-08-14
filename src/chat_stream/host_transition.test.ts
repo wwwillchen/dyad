@@ -95,6 +95,7 @@ describe("transitionChatStreamHost", () => {
           },
         ],
       }),
+      queuePauseReason: "stop" as const,
     };
 
     const submitted = transitionChatStreamHost(parked, {
@@ -141,6 +142,7 @@ describe("transitionChatStreamHost", () => {
     const parked = {
       ...initialChatStreamHostState(),
       queuePaused: true,
+      queuePauseReason: "stop" as const,
       stopPolicyVersion: 1,
     };
 
@@ -166,6 +168,7 @@ describe("transitionChatStreamHost", () => {
     const parked = {
       ...initialChatStreamHostState(),
       queuePaused: true,
+      queuePauseReason: "stop" as const,
       stopPolicyVersion: 2,
       lastStopId: "stop-2",
     };
@@ -229,7 +232,7 @@ describe("transitionChatStreamHost", () => {
     });
     expect(ended.kind).toBe("applied");
     if (ended.kind !== "applied") return;
-    expect(ended.state.lastCompletion?.pausePromptQueue).toBe(true);
+    expect(ended.state.lastCompletion?.pausePromptQueue).toBeUndefined();
     expect(ended.commands).toEqual([
       {
         type: "finalize",
@@ -240,9 +243,81 @@ describe("transitionChatStreamHost", () => {
           updatedFiles: false,
           wasCancelled: true,
         },
-        pausePromptQueue: true,
       },
     ]);
+
+    const finalized = transitionChatStreamHost(ended.state, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 1,
+      paused: true,
+      entries: [],
+    });
+    expect(finalized.kind).toBe("applied");
+    if (finalized.kind !== "applied") return;
+    expect(finalized.state.queuePauseReason).toBe("stop");
+  });
+
+  it.each(["manual", "step-limit"] as const)(
+    "starts a new turn immediately while a %s pause keeps older prompts parked",
+    (queuePauseReason) => {
+      const paused = {
+        ...initialChatStreamHostState({
+          queueRevision: 2,
+          queuePaused: true,
+          queue: [
+            {
+              itemId: "older",
+              intentId: "older",
+              prompt: "Older prompt",
+              persistence: "durable" as const,
+              editable: true,
+              removable: true,
+            },
+          ],
+        }),
+        queuePauseReason,
+      };
+
+      const submitted = transitionChatStreamHost(paused, {
+        type: "SUBMIT",
+        intent: intent("new"),
+      });
+
+      expect(submitted.kind).toBe("applied");
+      if (submitted.kind !== "applied") return;
+      expect(submitted.state).toMatchObject({
+        phase: "admitting",
+        queuePaused: true,
+        queuePauseReason,
+        queue: [expect.objectContaining({ intentId: "older" })],
+      });
+      expect(submitted.commands).toEqual([
+        { type: "admit-and-start", intent: intent("new") },
+      ]);
+    },
+  );
+
+  it("drains a queued admission that lands after the queue was unpaused", () => {
+    const idle = initialChatStreamHostState();
+    const queued = transitionChatStreamHost(idle, {
+      type: "ADMISSION_QUEUED",
+      intentId: "late",
+      entry: {
+        itemId: "late",
+        intentId: "late",
+        prompt: "Late prompt",
+        persistence: "durable",
+        editable: true,
+        removable: true,
+      },
+      queueRevision: 1,
+      queuePaused: false,
+      resumeQueue: false,
+    });
+
+    expect(queued.kind).toBe("applied");
+    if (queued.kind !== "applied") return;
+    expect(queued.commands).toEqual([{ type: "dispatch-next" }]);
   });
 
   it("does not advance or reapply an already-observed Stop cutoff", () => {
@@ -482,6 +557,16 @@ describe("transitionChatStreamHost", () => {
         pausePromptQueue: true,
       },
     ]);
+
+    const finalized = transitionChatStreamHost(ended.state, {
+      type: "QUEUE_MUTATED",
+      queueRevision: 1,
+      paused: true,
+      entries: [],
+    });
+    expect(finalized.kind).toBe("applied");
+    if (finalized.kind !== "applied") return;
+    expect(finalized.state.queuePauseReason).toBe("step-limit");
   });
 
   it("parks a stale Stop without cancelling a newer invocation", () => {
@@ -816,6 +901,32 @@ describe("transitionChatStreamHost", () => {
       state,
       reason: "queue-revision-conflict",
     });
+  });
+
+  it("records an explicit queue pause separately from Stop and step limit", () => {
+    const state = initialChatStreamHostState({
+      queueRevision: 4,
+      queuePaused: false,
+      queue: [],
+    });
+    const requested = transitionChatStreamHost(state, {
+      type: "PAUSE_QUEUE",
+      expectedQueueRevision: 4,
+      mutationId: "pause-1",
+    });
+    expect(requested.kind).toBe("applied");
+    if (requested.kind !== "applied") return;
+
+    const confirmed = transitionChatStreamHost(requested.state, {
+      type: "QUEUE_MUTATED",
+      mutationId: "pause-1",
+      queueRevision: 5,
+      paused: true,
+      entries: [],
+    });
+    expect(confirmed.kind).toBe("applied");
+    if (confirmed.kind !== "applied") return;
+    expect(confirmed.state.queuePauseReason).toBe("manual");
   });
 
   it("does not clear or dispatch across an uncorrelated queue refresh", () => {

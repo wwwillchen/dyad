@@ -84,6 +84,7 @@ function projectSnapshot(
     error: state.error,
     queueRevision: state.queueRevision,
     queuePaused: state.queuePaused,
+    queuePauseReason: state.queuePauseReason,
     queue: [...state.queue],
     stopPolicyVersion: state.stopPolicyVersion,
     capabilities: {

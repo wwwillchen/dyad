@@ -21,12 +21,14 @@ export function initialChatStreamHostState(input?: {
     error: null,
     queueRevision: input?.queueRevision ?? 0,
     queuePaused: input?.queuePaused ?? false,
+    queuePauseReason: input?.queuePaused ? "manual" : null,
     queue: input?.queue ?? [],
     stopPolicyVersion: 0,
     lastStopId: null,
     lastAcceptance: null,
     lastCompletion: null,
     pendingQueueMutationId: null,
+    pendingQueuePauseMutationId: null,
     pendingQueueResumeMutationId: null,
     lastQueueMutation: null,
     reviewBarrier: {
@@ -92,6 +94,8 @@ function queueMutation(
     state: {
       ...state,
       pendingQueueMutationId: event.mutationId,
+      pendingQueuePauseMutationId:
+        event.type === "PAUSE_QUEUE" ? event.mutationId : null,
       pendingQueueResumeMutationId:
         event.type === "RESUME_QUEUE" && state.active?.pauseQueueOnCancel
           ? event.mutationId
@@ -121,9 +125,13 @@ export function transitionChatStreamHost(
       const predatesLatestStop =
         event.observedStopPolicyVersion !== undefined &&
         event.observedStopPolicyVersion < state.stopPolicyVersion;
+      const replaysQueuedIntent = state.queue.some(
+        (entry) => entry.intentId === event.intent.intentId,
+      );
       if (
         (state.phase === "idle" || state.phase === "errored") &&
-        !state.queuePaused &&
+        (!state.queuePaused ||
+          (state.queuePauseReason !== "stop" && !replaysQueuedIntent)) &&
         !predatesLatestStop
       ) {
         const invocationRef = event.intent.invocationRef;
@@ -168,7 +176,8 @@ export function transitionChatStreamHost(
             resumeQueue:
               !predatesLatestStop &&
               state.queuePaused &&
-              (state.phase === "idle" || state.phase === "errored"),
+              (state.phase === "idle" || state.phase === "errored") &&
+              (state.queuePauseReason === "stop" || replaysQueuedIntent),
           },
         ],
       };
@@ -299,6 +308,7 @@ export function transitionChatStreamHost(
           ...state,
           queueRevision: event.queueRevision,
           queuePaused: event.queuePaused,
+          queuePauseReason: event.queuePaused ? state.queuePauseReason : null,
           queue: [...state.queue, event.entry],
           lastAcceptance: {
             intentId: event.intentId,
@@ -306,7 +316,6 @@ export function transitionChatStreamHost(
           },
         },
         commands:
-          event.resumeQueue &&
           !event.queuePaused &&
           (state.phase === "idle" || state.phase === "errored")
             ? [{ type: "dispatch-next" }]
@@ -436,9 +445,6 @@ export function transitionChatStreamHost(
             type: "finalize",
             intentId: event.intentId,
             error: event.error,
-            ...(state.active.pauseQueueOnCancel
-              ? { pausePromptQueue: true }
-              : {}),
           },
         ],
       };
@@ -451,10 +457,7 @@ export function transitionChatStreamHost(
         return ignore(state, "stale-invocation");
       }
       {
-        const pausePromptQueue =
-          event.response.pausePromptQueue === true ||
-          (!state.active.queueResumedAfterCancel &&
-            state.active.pauseQueueOnCancel);
+        const pausePromptQueue = event.response.pausePromptQueue === true;
         return {
           kind: "applied",
           state: {
@@ -512,9 +515,6 @@ export function transitionChatStreamHost(
             type: "finalize",
             intentId: event.intentId,
             error: event.error,
-            ...(state.active.pauseQueueOnCancel
-              ? { pausePromptQueue: true }
-              : {}),
           },
         ],
       };
@@ -635,15 +635,30 @@ export function transitionChatStreamHost(
                 queueResumedAfterCancel: true,
               }
             : state.active;
+        const queuePauseReason = !event.paused
+          ? null
+          : event.mutationId === state.pendingQueuePauseMutationId
+            ? ("manual" as const)
+            : event.mutationId === undefined &&
+                state.lastCompletion?.pausePromptQueue === true
+              ? ("step-limit" as const)
+              : state.active?.pauseQueueOnCancel
+                ? ("stop" as const)
+                : state.queuePauseReason;
         return {
           kind: "applied",
           state: {
             ...state,
             queueRevision: event.queueRevision,
             queuePaused: event.paused,
+            queuePauseReason,
             queue: event.entries,
             pendingQueueMutationId,
             reviewBarrier,
+            pendingQueuePauseMutationId:
+              event.mutationId === state.pendingQueuePauseMutationId
+                ? null
+                : state.pendingQueuePauseMutationId,
             pendingQueueResumeMutationId:
               event.mutationId === state.pendingQueueResumeMutationId
                 ? null
@@ -782,8 +797,13 @@ export function transitionChatStreamHost(
           ...state,
           queueRevision: event.queueRevision,
           queuePaused: event.paused,
+          queuePauseReason: event.paused ? state.queuePauseReason : null,
           queue: event.entries,
           pendingQueueMutationId: null,
+          pendingQueuePauseMutationId:
+            event.mutationId === state.pendingQueuePauseMutationId
+              ? null
+              : state.pendingQueuePauseMutationId,
           pendingQueueResumeMutationId:
             event.mutationId === state.pendingQueueResumeMutationId
               ? null
@@ -806,6 +826,7 @@ export function transitionChatStreamHost(
           ...state,
           queueRevision: event.queueRevision,
           queuePaused: true,
+          queuePauseReason: "stop",
           queue: event.entries,
         },
         commands: [],
@@ -821,6 +842,7 @@ export function transitionChatStreamHost(
           error: event.error,
           queueRevision: event.queueRevision,
           queuePaused: event.paused,
+          queuePauseReason: event.paused ? state.queuePauseReason : null,
           queue: event.entries,
         },
         commands: [],
@@ -842,6 +864,7 @@ export function transitionChatStreamHost(
           error: event.error,
           queueRevision: event.queueRevision,
           queuePaused: event.paused,
+          queuePauseReason: event.paused ? state.queuePauseReason : null,
           queue: event.entries,
           lastCompletion: {
             intentId: event.intentId,

@@ -20,6 +20,7 @@ export interface ChatStreamHostState {
   readonly error: string | null;
   readonly queueRevision: number;
   readonly queuePaused: boolean;
+  readonly queuePauseReason: "stop" | "manual" | "step-limit" | null;
   readonly queue: readonly ChatQueueEntry[];
   readonly stopPolicyVersion: number;
   readonly lastStopId: string | null;
@@ -48,6 +49,7 @@ export interface ChatStreamHostState {
     readonly error?: string;
   } | null;
   readonly pendingQueueMutationId: string | null;
+  readonly pendingQueuePauseMutationId: string | null;
   readonly pendingQueueResumeMutationId: string | null;
   readonly lastQueueMutation: {
     readonly mutationId: string;
