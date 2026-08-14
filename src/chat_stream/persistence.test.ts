@@ -146,7 +146,7 @@ describe("chat stream persistence", () => {
     ).toMatchObject({ revision: 3, paused: false });
   });
 
-  it("does not durably clear an idle Stop pause for a queue resume", async () => {
+  it("does not durably clear a Stop pause for a guarded review release", async () => {
     persistQueuedIntent(database, intent("queued"));
     const parked = await parkChatQueue(database, chatId);
 

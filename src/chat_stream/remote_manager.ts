@@ -35,6 +35,7 @@ type JotaiStore = ReturnType<typeof createStore>;
 
 export type ChatStreamRemoteConnection = RemoteMachineClientConnection & {
   start?: () => () => void;
+  observeChatSubmissionStopPolicy?: (chatId: number) => Promise<number>;
 };
 
 export interface StreamFinishedEvent {
@@ -51,7 +52,9 @@ interface PendingSubmission {
   request: StreamRequest;
   invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>;
   dispatch: Promise<boolean>;
-  observedStopPolicyVersion: number | undefined;
+  observedStopPolicyVersion: Promise<
+    { kind: "observed"; value: number } | { kind: "failed"; error: unknown }
+  >;
   acceptanceDelivered: boolean;
   releaseSubscription: () => void;
 }
@@ -354,14 +357,6 @@ export class ChatStreamRemoteManager {
         if (!invocationRef) return;
         const stopId = this.ids.next("chat-stop");
         const observedStopPolicyVersion = snapshot.stopPolicyVersion;
-        for (const pending of this.pendingSubmissions.values()) {
-          if (
-            pending.request.chatId === chatId &&
-            pending.observedStopPolicyVersion === undefined
-          ) {
-            pending.observedStopPolicyVersion = observedStopPolicyVersion;
-          }
-        }
         const optimistic = [...this.pendingSubmissions.entries()].find(
           ([, pending]) =>
             !pending.acceptanceDelivered &&
@@ -470,14 +465,23 @@ export class ChatStreamRemoteManager {
       operationId: this.ids.next("chat-stream"),
     } as const;
     const actorView = actor.getView();
+    const stopPolicyObservation =
+      actorView.snapshot.kind === "available"
+        ? Promise.resolve(actorView.state.stopPolicyVersion)
+        : this.connection.observeChatSubmissionStopPolicy
+          ? this.connection.observeChatSubmissionStopPolicy(request.chatId)
+          : this.subscriptions
+              .get(request.chatId)!
+              .bootstrap.then(() => actor.getSnapshot().stopPolicyVersion);
+    const observedStopPolicyVersion = stopPolicyObservation.then(
+      (value) => ({ kind: "observed" as const, value }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
     const pending: PendingSubmission = {
       request,
       invocationRef,
       dispatch: Promise.resolve(false),
-      observedStopPolicyVersion:
-        actorView.snapshot.kind === "available"
-          ? actorView.state.stopPolicyVersion
-          : undefined,
+      observedStopPolicyVersion,
       acceptanceDelivered: false,
       releaseSubscription: release,
     };
@@ -511,16 +515,15 @@ export class ChatStreamRemoteManager {
   ): Promise<boolean> {
     try {
       if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
-      await this.subscriptions.get(request.chatId)?.bootstrap;
-      if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
-      const pendingAfterBootstrap = this.pendingSubmissions.get(intentId);
-      if (
-        pendingAfterBootstrap &&
-        pendingAfterBootstrap.observedStopPolicyVersion === undefined
-      ) {
-        pendingAfterBootstrap.observedStopPolicyVersion =
-          actor.getSnapshot().stopPolicyVersion;
+      const [stopPolicyObservation] = await Promise.all([
+        this.pendingSubmissions.get(intentId)!.observedStopPolicyVersion,
+        this.subscriptions.get(request.chatId)?.bootstrap,
+      ]);
+      if (stopPolicyObservation.kind === "failed") {
+        throw stopPolicyObservation.error;
       }
+      const observedStopPolicyVersion = stopPolicyObservation.value;
+      if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
       const attachments =
         request.attachments && request.attachments.length > 0
           ? await convertFileAttachmentsToChatAttachments(request.attachments)
@@ -546,12 +549,10 @@ export class ChatStreamRemoteManager {
         ),
       };
       if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
-      const pending = this.pendingSubmissions.get(intentId);
-      if (!pending) return false;
       const receipt = await actor.dispatch({
         type: "SUBMIT",
         intent,
-        observedStopPolicyVersion: pending.observedStopPolicyVersion,
+        observedStopPolicyVersion,
       });
       if (receipt.kind === "rejected") {
         throw new Error(`Chat submission rejected: ${receipt.reason}`);

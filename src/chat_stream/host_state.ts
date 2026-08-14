@@ -120,6 +120,7 @@ export type ChatStreamHostCommand =
       readonly type: "submit-review-remediation";
       readonly threadId: string;
       readonly prompt: string;
+      readonly observedStopPolicyVersion: number;
     }
   | {
       readonly type: "fail-review-remediation";

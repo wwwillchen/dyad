@@ -62,6 +62,7 @@ const cleanup = vi.hoisted(() => ({
   deleteWhere: vi.fn(async () => undefined),
   publish: vi.fn(),
   findChats: vi.fn(async () => [] as Array<{ id: number }>),
+  findChat: vi.fn(() => ({ id: 7 }) as { id: number } | undefined),
 }));
 
 const persistence = vi.hoisted(() => ({
@@ -85,6 +86,11 @@ vi.mock("@/user_input/main", () => ({
 }));
 vi.mock("@/db", () => ({
   db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({ get: cleanup.findChat }),
+      }),
+    }),
     delete: () => ({ where: cleanup.deleteWhere }),
     query: {
       chats: {
@@ -119,6 +125,7 @@ import {
   beginAppChatActorMutation,
   deleteOwnedChatAfterSettlingActors,
   dispatchChatIntentAndWait,
+  observeChatSubmissionStopPolicy,
   waitForAppChatActorsIdle,
   waitForChatActorIdle,
 } from "./chat_actor_service";
@@ -144,9 +151,16 @@ describe("waitForChatActorIdle", () => {
     cleanup.publish.mockClear();
     cleanup.findChats.mockClear();
     cleanup.findChats.mockResolvedValue([]);
+    cleanup.findChat.mockReset();
+    cleanup.findChat.mockReturnValue({ id: 7 });
     persistence.getIntentAcceptance.mockReset();
     persistence.getIntentAcceptance.mockReturnValue(undefined);
     subagents.settle.mockClear();
+  });
+
+  it("observes a submission cutoff from the main-owned chat actor", () => {
+    expect(observeChatSubmissionStopPolicy(7)).toBe(3);
+    expect(host.localRef).toHaveBeenCalledOnce();
   });
 
   it("treats an absent actor as already idle without creating it", async () => {

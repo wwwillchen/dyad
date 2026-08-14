@@ -193,6 +193,28 @@ describe("main-hosted chat stream terminal projection", () => {
       commands: [{ type: "resume-after-review" }],
     });
 
+    const remediation = transitionChatStreamHost(
+      { ...state, stopPolicyVersion: 4 },
+      {
+        type: "REVIEW_BARRIER_RESULT",
+        outcome: "fix_required",
+        threadId: "review-1",
+        prompt: "Fix the verified issue",
+      },
+    );
+    expect(remediation).toMatchObject({
+      kind: "applied",
+      state: { reviewBarrier: { phase: "remediating" } },
+      commands: [
+        {
+          type: "submit-review-remediation",
+          threadId: "review-1",
+          prompt: "Fix the verified issue",
+          observedStopPolicyVersion: 4,
+        },
+      ],
+    });
+
     const verificationFailed = transitionChatStreamHost(
       {
         ...state,

@@ -137,7 +137,7 @@ function createCommandRunner(
       try {
         const queue = await mutateChatQueue(db, context.key.chatId, {
           type: "mutate-queue",
-          mutation: { type: "resume" },
+          mutation: { type: "resume", preserveStopPause: true },
           expectedQueueRevision: snapshot.queueRevision,
           mutationId: randomUUID(),
         });
@@ -552,6 +552,7 @@ function createCommandRunner(
               ...withoutHash,
               payloadHash: computeChatTurnPayloadHash(withoutHash),
             },
+            observedStopPolicyVersion: command.observedStopPolicyVersion,
           });
         } catch (error) {
           emit({

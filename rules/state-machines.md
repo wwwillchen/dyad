@@ -126,7 +126,10 @@ Background and before/after examples of why this pattern exists:
   Cross-window cancellation cutoffs must likewise be main-owned and versioned;
   have every submission source, including main-owned follow-ups and internal
   redispatch, echo the authoritative version it observed so delayed pre-cancel
-  work cannot masquerade as an explicit post-cancel resume. When admission or
+  work cannot masquerade as an explicit post-cancel resume. If a renderer has
+  not bootstrapped its actor snapshot, observe or reserve that version in main
+  when submission begins; never fill it from a later bootstrap snapshot, which
+  may already include an intervening Stop. When admission or
   persistence completes asynchronously, gate follow-up dispatch on the current
   main-owned cutoff as well as the completion payload; a stale unpaused result
   must not override a newer Stop latch.

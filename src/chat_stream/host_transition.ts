@@ -67,6 +67,9 @@ function queueMutation(
   if (state.pendingQueueMutationId !== null) {
     return ignore(state, "queue-revision-conflict");
   }
+  const resumesCurrentStop =
+    event.type === "RESUME_QUEUE" &&
+    event.observedStopPolicyVersion === state.stopPolicyVersion;
   const mutation: Extract<
     ChatStreamHostCommand,
     { type: "mutate-queue" }
@@ -77,8 +80,7 @@ function queueMutation(
         ? {
             type: "resume",
             preserveStopPause:
-              state.queuePauseReason === "stop" &&
-              state.active?.pauseQueueOnCancel !== true,
+              state.queuePauseReason === "stop" && !resumesCurrentStop,
           }
         : event.type === "EDIT_QUEUE_ENTRY"
           ? {
@@ -105,7 +107,10 @@ function queueMutation(
       pendingQueuePauseMutationId:
         event.type === "PAUSE_QUEUE" ? event.mutationId : null,
       pendingQueueResumeMutationId:
-        event.type === "RESUME_QUEUE" && state.active?.pauseQueueOnCancel
+        event.type === "RESUME_QUEUE" &&
+        resumesCurrentStop &&
+        (state.queuePauseReason === "stop" ||
+          state.active?.pauseQueueOnCancel === true)
           ? event.mutationId
           : null,
     },
@@ -797,6 +802,7 @@ export function transitionChatStreamHost(
               type: "submit-review-remediation",
               threadId: event.threadId,
               prompt: event.prompt,
+              observedStopPolicyVersion: state.stopPolicyVersion,
             },
           ],
         };
@@ -891,18 +897,27 @@ export function transitionChatStreamHost(
       if (event.queueRevision < state.queueRevision) {
         return ignore(state, "invalid-host-event");
       }
-      return {
-        kind: "applied",
-        state: {
-          ...state,
-          error: event.error,
-          queueRevision: event.queueRevision,
-          queuePaused: event.paused,
-          queuePauseReason: event.paused ? state.queuePauseReason : null,
-          queue: event.entries,
-        },
-        commands: [],
-      };
+      {
+        const stopOwnsQueue =
+          state.queuePauseReason === "stop" ||
+          state.active?.pauseQueueOnCancel === true;
+        return {
+          kind: "applied",
+          state: {
+            ...state,
+            error: event.error,
+            queueRevision: event.queueRevision,
+            queuePaused: stopOwnsQueue || event.paused,
+            queuePauseReason: stopOwnsQueue
+              ? "stop"
+              : event.paused
+                ? state.queuePauseReason
+                : null,
+            queue: event.entries,
+          },
+          commands: [],
+        };
+      }
     case "LIFECYCLE_COMMAND_FAILED":
       if (
         !state.active ||

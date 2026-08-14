@@ -760,6 +760,60 @@ describe("transitionChatStreamHost", () => {
     expect(confirmed.commands).toEqual([]);
   });
 
+  it("lets an idle explicit resume release the current Stop latch", () => {
+    const queuedEntry = {
+      itemId: "queued",
+      intentId: "queued",
+      prompt: "Run me",
+      persistence: "durable" as const,
+      editable: true,
+      removable: true,
+    };
+    const state = {
+      ...initialChatStreamHostState({
+        queueRevision: 4,
+        queuePaused: true,
+        queuePauseReason: "stop",
+        queue: [queuedEntry],
+      }),
+      stopPolicyVersion: 2,
+    };
+    const requested = transitionChatStreamHost(state, {
+      type: "RESUME_QUEUE",
+      expectedQueueRevision: 4,
+      mutationId: "idle-resume",
+      observedStopPolicyVersion: 2,
+    });
+    expect(requested.kind).toBe("applied");
+    if (requested.kind !== "applied") return;
+    expect(requested.commands).toEqual([
+      {
+        type: "mutate-queue",
+        mutation: { type: "resume", preserveStopPause: false },
+        expectedQueueRevision: 4,
+        mutationId: "idle-resume",
+        observedStopPolicyVersion: 2,
+      },
+    ]);
+
+    const confirmed = transitionChatStreamHost(requested.state, {
+      type: "QUEUE_MUTATED",
+      mutationId: "idle-resume",
+      queueRevision: 5,
+      paused: false,
+      entries: [queuedEntry],
+      observedStopPolicyVersion: 2,
+    });
+    expect(confirmed.kind).toBe("applied");
+    if (confirmed.kind !== "applied") return;
+    expect(confirmed.state).toMatchObject({
+      queuePaused: false,
+      queuePauseReason: null,
+      pendingQueueResumeMutationId: null,
+    });
+    expect(confirmed.commands).toEqual([{ type: "dispatch-next" }]);
+  });
+
   it("retains the Stop latch when an explicit queue resume is rejected", () => {
     const activeIntent = intent("active");
     const state = {
@@ -907,6 +961,52 @@ describe("transitionChatStreamHost", () => {
         entries: [],
       }),
     ).toEqual({ kind: "ignored", state, reason: "invalid-host-event" });
+  });
+
+  it("keeps Stop fail-closed when queue parking fails", () => {
+    const stopped = {
+      ...initialChatStreamHostState({
+        queueRevision: 2,
+        queuePaused: false,
+        queue: [],
+      }),
+      stopPolicyVersion: 1,
+      queuePauseReason: "stop" as const,
+    };
+    const failed = transitionChatStreamHost(stopped, {
+      type: "QUEUE_PARK_FAILED",
+      error: "database unavailable",
+      queueRevision: 2,
+      paused: false,
+      entries: [],
+    });
+    expect(failed.kind).toBe("applied");
+    if (failed.kind !== "applied") return;
+    expect(failed.state).toMatchObject({
+      queuePaused: true,
+      queuePauseReason: "stop",
+    });
+
+    const delayed = transitionChatStreamHost(failed.state, {
+      type: "ADMISSION_QUEUED",
+      intentId: "delayed",
+      entry: {
+        itemId: "delayed",
+        intentId: "delayed",
+        prompt: "Stay parked",
+        persistence: "durable",
+        editable: true,
+        removable: true,
+      },
+      queueRevision: 3,
+      queuePaused: false,
+      resumeQueue: false,
+      observedStopPolicyVersion: 0,
+    });
+    expect(delayed.kind).toBe("applied");
+    if (delayed.kind !== "applied") return;
+    expect(delayed.state.queuePaused).toBe(true);
+    expect(delayed.commands).toEqual([]);
   });
 
   it("advertises Stop through lifecycle settlement", () => {

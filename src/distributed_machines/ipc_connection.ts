@@ -57,6 +57,10 @@ export class IpcRemoteMachineConnection implements RemoteMachineClientConnection
     return ipc.distributedMachine.dispatch(envelope);
   }
 
+  observeChatSubmissionStopPolicy(chatId: number): Promise<number> {
+    return ipc.chat.observeSubmissionStopPolicy(chatId);
+  }
+
   start(): () => void {
     this.setStatus("connected");
     const unsubscribe = ipc.events.distributedMachine.onProtocolMismatch(() => {

@@ -237,7 +237,7 @@ describe("ChatStreamRemoteManager", () => {
     manager.dispose();
   });
 
-  it("stamps queued submissions before a Stop can overtake bootstrap", async () => {
+  it("reserves queued submissions before a cross-window Stop overtakes bootstrap", async () => {
     let resolveBootstrap!: (snapshot: MachineSnapshotEnvelope) => void;
     let subscribedAddress!: MachineAddress;
     const dispatch = vi.fn(async (envelope: MachineDispatchEnvelope) => ({
@@ -260,6 +260,7 @@ describe("ChatStreamRemoteManager", () => {
       },
       unsubscribe: () => Promise.resolve(),
       dispatch,
+      observeChatSubmissionStopPolicy: vi.fn(async () => 0),
     };
     const manager = new ChatStreamRemoteManager(
       createStore(),
