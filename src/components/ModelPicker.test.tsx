@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   posthogCapture: vi.fn(),
   openExternalUrl: vi.fn(),
+  preventBaseUIHandler: vi.fn(),
   selectedMode: "build",
   isTrial: false,
   renderSubContent: false,
@@ -347,11 +348,43 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuSubTrigger: ({
     children,
     hideChevron: _hideChevron,
+    onMouseDown,
+    onClick,
     ...props
   }: {
     children: React.ReactNode;
     hideChevron?: boolean;
-  }) => <button {...props}>{children}</button>,
+    onMouseDown?: (
+      event: React.MouseEvent<HTMLButtonElement> & {
+        preventBaseUIHandler: () => void;
+      },
+    ) => void;
+    onClick?: (
+      event: React.MouseEvent<HTMLButtonElement> & {
+        preventBaseUIHandler: () => void;
+      },
+    ) => void;
+  }) => (
+    <button
+      {...props}
+      onMouseDown={(event) =>
+        onMouseDown?.(
+          Object.assign(event, {
+            preventBaseUIHandler: mocks.preventBaseUIHandler,
+          }),
+        )
+      }
+      onClick={(event) =>
+        onClick?.(
+          Object.assign(event, {
+            preventBaseUIHandler: mocks.preventBaseUIHandler,
+          }),
+        )
+      }
+    >
+      {children}
+    </button>
+  ),
   DropdownMenuSubContent: ({ children }: { children: React.ReactNode }) =>
     mocks.renderSubContent ? <div>{children}</div> : null,
 }));
@@ -372,6 +405,7 @@ describe("ModelPicker", () => {
     mocks.navigate.mockReset();
     mocks.posthogCapture.mockReset();
     mocks.openExternalUrl.mockReset();
+    mocks.preventBaseUIHandler.mockReset();
     mocks.selectedMode = "build";
     mocks.renderSubContent = false;
     mocks.settingsLoading = false;
@@ -449,6 +483,17 @@ describe("ModelPicker", () => {
         },
       });
     });
+  });
+
+  it("only opens the effort submenu from its chevron", () => {
+    render(<ModelPicker />);
+
+    const gpt5Row = screen.getByText("GPT 5").closest("button")!;
+    fireEvent.mouseDown(gpt5Row);
+    expect(mocks.preventBaseUIHandler).toHaveBeenCalledTimes(1);
+
+    fireEvent.mouseDown(gpt5Row.querySelector("[data-effort-chevron]")!);
+    expect(mocks.preventBaseUIHandler).toHaveBeenCalledTimes(1);
   });
 
   it("disables selection while an existing chat is still loading", () => {

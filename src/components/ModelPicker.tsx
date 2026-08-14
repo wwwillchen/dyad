@@ -101,6 +101,9 @@ const PRICE_TIERS: Tier[] = [
 const isFreeOpenRouterModelName = (apiName: string) =>
   apiName.endsWith(":free") || apiName.endsWith("/free");
 
+const isEffortChevronTarget = (target: EventTarget) =>
+  (target as HTMLElement).closest("[data-effort-chevron]") !== null;
+
 function tierFor(dollarSigns: number | undefined): Tier {
   const ds = dollarSigns ?? Number.NEGATIVE_INFINITY;
   return (
@@ -692,8 +695,14 @@ export function ModelPicker() {
         aria-label={`${unlockedAriaLabel}.`}
         disabled={isFreeProRow && freeModelQuota.isQuotaExceeded}
         hideChevron
+        onMouseDown={(event) => {
+          if (!isEffortChevronTarget(event.target)) {
+            event.preventBaseUIHandler();
+          }
+        }}
         onClick={(event) => {
-          if (!(event.target as HTMLElement).closest("[data-effort-chevron]")) {
+          if (!isEffortChevronTarget(event.target)) {
+            event.preventBaseUIHandler();
             handleCloudModelSelect(providerId, model);
           }
         }}
@@ -829,10 +838,14 @@ export function ModelPicker() {
             isSelected &&
               "bg-primary/8 before:absolute before:inset-y-1.5 before:left-0 before:w-[3px] before:rounded-r-full before:bg-primary",
           )}
+          onMouseDown={(event) => {
+            if (!isEffortChevronTarget(event.target)) {
+              event.preventBaseUIHandler();
+            }
+          }}
           onClick={(event) => {
-            if (
-              !(event.target as HTMLElement).closest("[data-effort-chevron]")
-            ) {
+            if (!isEffortChevronTarget(event.target)) {
+              event.preventBaseUIHandler();
               selectLocalModel();
             }
           }}
@@ -939,12 +952,14 @@ export function ModelPicker() {
                   hideChevron
                   aria-label={`Auto. Trial. Selected. Effort: ${formatEffortLevel(trialAutoEffort)}. Press Enter to select; press Right Arrow to configure effort.`}
                   className="relative py-2 bg-primary/8 before:absolute before:inset-y-1.5 before:left-0 before:w-[3px] before:rounded-r-full before:bg-primary"
+                  onMouseDown={(event) => {
+                    if (!isEffortChevronTarget(event.target)) {
+                      event.preventBaseUIHandler();
+                    }
+                  }}
                   onClick={(event) => {
-                    if (
-                      !(event.target as HTMLElement).closest(
-                        "[data-effort-chevron]",
-                      )
-                    ) {
+                    if (!isEffortChevronTarget(event.target)) {
+                      event.preventBaseUIHandler();
                       void onModelSelect({
                         model: { name: "auto", provider: "auto" },
                         catalogModel: autoModels.find(

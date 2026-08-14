@@ -70,6 +70,13 @@ focusable or exposed as a separate control to assistive technology. Because an
 explicit name replaces descendant text, include meaningful visible state such
 as quota, selection, and disclosure badges in that name.
 
+## Submenu trigger event cancellation
+
+With `openOnHover={false}`, Base UI opens a submenu on `mousedown`, before a
+consumer `onClick` runs. When only part of a submenu trigger should open the
+submenu, cancel Base UI's handler with `event.preventBaseUIHandler()` from both
+`onMouseDown` and `onClick` for the trigger's primary action.
+
 ## Accordion (Base UI vs Radix/shadcn)
 
 The `Accordion` component in `src/components/ui/accordion.tsx` wraps `@base-ui/react/accordion`, **not** Radix or shadcn. The APIs differ:
