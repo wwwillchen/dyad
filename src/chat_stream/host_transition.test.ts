@@ -181,6 +181,64 @@ describe("transitionChatStreamHost", () => {
     expect(finalized.commands).toEqual([]);
   });
 
+  it("lets an explicit queue resume supersede the Stop latch", () => {
+    const activeIntent = intent("active");
+    const submitted = transitionChatStreamHost(initialChatStreamHostState(), {
+      type: "SUBMIT",
+      intent: activeIntent,
+    });
+    expect(submitted.kind).toBe("applied");
+    if (submitted.kind !== "applied") return;
+    const stopped = transitionChatStreamHost(submitted.state, {
+      type: "CANCEL",
+      invocationRef: activeIntent.invocationRef!,
+      pauseQueue: true,
+    });
+    expect(stopped.kind).toBe("applied");
+    if (stopped.kind !== "applied") return;
+    const resumed = transitionChatStreamHost(stopped.state, {
+      type: "RESUME_QUEUE",
+      expectedQueueRevision: stopped.state.queueRevision,
+      mutationId: "resume-after-stop",
+    });
+    expect(resumed.kind).toBe("applied");
+    if (resumed.kind !== "applied") return;
+    expect(resumed.state.active).toMatchObject({
+      pauseQueueOnCancel: false,
+      queueResumedAfterCancel: true,
+    });
+
+    const ended = transitionChatStreamHost(resumed.state, {
+      type: "STREAM_ENDED",
+      intentId: activeIntent.intentId,
+      invocationRef: activeIntent.invocationRef!,
+      response: {
+        chatId: 7,
+        invocationRef: activeIntent.invocationRef!,
+        pausePromptQueue: true,
+        updatedFiles: false,
+        wasCancelled: true,
+      },
+      targetAppId: 3,
+    });
+    expect(ended.kind).toBe("applied");
+    if (ended.kind !== "applied") return;
+    expect(ended.state.lastCompletion?.pausePromptQueue).toBeUndefined();
+    expect(ended.commands).toEqual([
+      {
+        type: "finalize",
+        intentId: activeIntent.intentId,
+        response: {
+          chatId: 7,
+          invocationRef: activeIntent.invocationRef!,
+          pausePromptQueue: true,
+          updatedFiles: false,
+          wasCancelled: true,
+        },
+      },
+    ]);
+  });
+
   it("parks a stale Stop without cancelling a newer invocation", () => {
     const newerIntent = intent("newer");
     const state = {

@@ -197,6 +197,15 @@ vi.mock("./persistence", () => ({
       };
     },
   ),
+  parkChatQueue: vi.fn(async () => {
+    persisted.paused = true;
+    persisted.revision += 1;
+    return {
+      queueRevision: persisted.revision,
+      queuePaused: persisted.paused,
+      queue: [...persisted.entries],
+    };
+  }),
   markIntentTerminal: vi.fn(() => ({
     queueRevision: persisted.revision,
     queuePaused: persisted.paused,
@@ -524,6 +533,70 @@ describe("main-hosted chat stream actor", () => {
       phase: "admitting",
       capabilities: { canCancel: false },
     });
+
+    release();
+    manager.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("stops a renderer-only optimistic admission and parks the queue", async () => {
+    let releaseAttachment!: () => void;
+    const attachmentGate = new Promise<void>((resolve) => {
+      releaseAttachment = resolve;
+    });
+    execution.convertAttachments.mockImplementationOnce(async () => {
+      await attachmentGate;
+      return [];
+    });
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      duplex.connect(),
+    );
+    const onSettled = vi.fn();
+    manager.start();
+    const actor = manager.ensure(7);
+    const release = actor.subscribe(() => undefined);
+    await flush();
+
+    actor.send({
+      type: "submit",
+      request: {
+        chatId: 7,
+        prompt: "cancel before serialization",
+        attachments: [{ file: {} as File, type: "chat-context" }],
+        onSettled,
+      },
+    });
+    expect(actor.getSnapshot()).toMatchObject({
+      phase: "admitting",
+      capabilities: { canCancel: false },
+    });
+
+    actor.send({ type: "cancel" });
+
+    await vi.waitFor(() => expect(persisted.paused).toBe(true));
+    expect(onSettled).toHaveBeenCalledExactlyOnceWith({ success: false });
+    expect(actor.getSnapshot().phase).toBe("idle");
+    releaseAttachment();
+    await flush();
+    expect(execution.admissions).toEqual([]);
 
     release();
     manager.dispose();

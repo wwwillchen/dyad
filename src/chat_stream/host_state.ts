@@ -15,6 +15,7 @@ export interface ChatStreamHostState {
     readonly invocationRef: ChatStreamInvocationRef;
     readonly targetAppId: number | null;
     readonly pauseQueueOnCancel?: boolean;
+    readonly queueResumedAfterCancel?: boolean;
   } | null;
   readonly error: string | null;
   readonly queueRevision: number;

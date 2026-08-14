@@ -123,11 +123,7 @@ export function useStreamChat({
   );
 
   const cancelStream = useCallback(() => {
-    if (
-      chatId === undefined ||
-      !streamState ||
-      !streamState.capabilities.canCancel
-    ) {
+    if (chatId === undefined || !streamState || !isStreamActive(streamState)) {
       return;
     }
     chatStreamManager.ensure(chatId).send({ type: "cancel" });

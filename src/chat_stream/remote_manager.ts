@@ -345,8 +345,39 @@ export class ChatStreamRemoteManager {
         this.submit(event.request);
         return;
       case "cancel": {
-        const invocationRef = this.getSnapshot(chatId).invocationRef;
+        const snapshot = this.getSnapshot(chatId);
+        const invocationRef = snapshot.invocationRef;
         if (!invocationRef) return;
+        if (!snapshot.capabilities.canCancel) {
+          const optimistic = [...this.pendingSubmissions.entries()].find(
+            ([, pending]) =>
+              pending.request.chatId === chatId &&
+              pending.invocationRef.operationId === invocationRef.operationId,
+          );
+          if (optimistic) {
+            const [intentId] = optimistic;
+            const submission = this.submissionTails.get(chatId);
+            const pending = this.takePendingSubmission(intentId);
+            this.notifySnapshotListeners(chatId);
+            pending?.request.onSettled?.({ success: false });
+            if (submission) {
+              void submission.finally(() => {
+                const current = this.actor(chatId).getSnapshot();
+                if (
+                  current.invocationRef?.operationId ===
+                    invocationRef.operationId &&
+                  current.capabilities.canCancel
+                ) {
+                  this.dispatchCompatibilityCommand(
+                    chatId,
+                    { type: "CANCEL", invocationRef, pauseQueue: true },
+                    "cancel the chat",
+                  );
+                }
+              });
+            }
+          }
+        }
         this.dispatchCompatibilityCommand(
           chatId,
           { type: "CANCEL", invocationRef, pauseQueue: true },

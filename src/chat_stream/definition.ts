@@ -410,12 +410,13 @@ function createCommandRunner(
           const queue = markIntentTerminal(
             db,
             active.intent,
-            active.pauseQueueOnCancel === true ||
-            command.pausePromptQueue === true ||
-              command.response?.pausePromptQueue === true ||
+            command.response?.pausePromptQueue === true ||
               active.intent.owner?.kind === "review-remediation" ||
               context.getSnapshot().reviewBarrier.phase ===
-                "awaiting-continuation",
+                "awaiting-continuation" ||
+              (active.queueResumedAfterCancel !== true &&
+                (active.pauseQueueOnCancel === true ||
+                  command.pausePromptQueue === true)),
             command.error !== undefined ||
               command.response?.wasCancelled === true,
           );

@@ -86,7 +86,19 @@ function queueMutation(
               : { type: "clear" };
   return {
     kind: "applied",
-    state: { ...state, pendingQueueMutationId: event.mutationId },
+    state: {
+      ...state,
+      pendingQueueMutationId: event.mutationId,
+      ...(event.type === "RESUME_QUEUE" && state.active?.pauseQueueOnCancel
+        ? {
+            active: {
+              ...state.active,
+              pauseQueueOnCancel: false,
+              queueResumedAfterCancel: true,
+            },
+          }
+        : {}),
+    },
     commands: [
       {
         type: "mutate-queue",
@@ -187,6 +199,9 @@ export function transitionChatStreamHost(
               ...state.active,
               pauseQueueOnCancel:
                 shouldParkQueue || state.active.pauseQueueOnCancel,
+              queueResumedAfterCancel: shouldParkQueue
+                ? false
+                : state.active.queueResumedAfterCancel,
             },
           },
           commands: [
@@ -400,8 +415,9 @@ export function transitionChatStreamHost(
       }
       {
         const pausePromptQueue =
-          event.response.pausePromptQueue === true ||
-          state.active.pauseQueueOnCancel;
+          !state.active.queueResumedAfterCancel &&
+          (event.response.pausePromptQueue === true ||
+            state.active.pauseQueueOnCancel);
         return {
           kind: "applied",
           state: {

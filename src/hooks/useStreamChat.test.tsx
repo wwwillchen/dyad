@@ -262,7 +262,7 @@ describe("useStreamChat lifecycle intents", () => {
     expect(mocks.send).toHaveBeenLastCalledWith({ type: "cancel" });
   });
 
-  it("does not dispatch Stop for an optimistic admission", () => {
+  it("dispatches Stop for an optimistic admission", () => {
     mocks.streamState.current = {
       phase: "admitting",
       capabilities: { canCancel: false },
@@ -276,7 +276,7 @@ describe("useStreamChat lifecycle intents", () => {
 
     act(() => result.current.cancelStream());
 
-    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.send).toHaveBeenCalledExactlyOnceWith({ type: "cancel" });
   });
 
   it("routes external errors through the main actor", () => {
