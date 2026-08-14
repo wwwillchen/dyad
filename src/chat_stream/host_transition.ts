@@ -25,6 +25,7 @@ export function initialChatStreamHostState(input?: {
     lastAcceptance: null,
     lastCompletion: null,
     pendingQueueMutationId: null,
+    pendingQueueResumeMutationId: null,
     lastQueueMutation: null,
     reviewBarrier: {
       phase: "idle",
@@ -89,15 +90,10 @@ function queueMutation(
     state: {
       ...state,
       pendingQueueMutationId: event.mutationId,
-      ...(event.type === "RESUME_QUEUE" && state.active?.pauseQueueOnCancel
-        ? {
-            active: {
-              ...state.active,
-              pauseQueueOnCancel: false,
-              queueResumedAfterCancel: true,
-            },
-          }
-        : {}),
+      pendingQueueResumeMutationId:
+        event.type === "RESUME_QUEUE" && state.active?.pauseQueueOnCancel
+          ? event.mutationId
+          : null,
     },
     commands: [
       {
@@ -122,7 +118,8 @@ export function transitionChatStreamHost(
     case "SUBMIT": {
       if (
         (state.phase === "idle" || state.phase === "errored") &&
-        !state.queuePaused
+        !state.queuePaused &&
+        event.queueOnly !== true
       ) {
         const invocationRef = event.intent.invocationRef;
         if (!invocationRef) {
@@ -159,7 +156,16 @@ export function transitionChatStreamHost(
       return {
         kind: "applied",
         state,
-        commands: [{ type: "persist-queued", intent: event.intent }],
+        commands: [
+          {
+            type: "persist-queued",
+            intent: event.intent,
+            resumeQueue:
+              event.queueOnly !== true &&
+              state.queuePaused &&
+              (state.phase === "idle" || state.phase === "errored"),
+          },
+        ],
       };
     }
     case "CANCEL":
@@ -192,20 +198,27 @@ export function transitionChatStreamHost(
         const shouldCancelActive =
           state.phase === "admitting" || state.phase === "streaming";
         const shouldParkQueue = event.pauseQueue === true;
+        const shouldUpdateStopPolicy =
+          shouldParkQueue &&
+          (!state.active.pauseQueueOnCancel ||
+            state.active.queueResumedAfterCancel === true);
         return {
           kind: "applied",
-          state: {
-            ...state,
-            phase: shouldCancelActive ? "cancelling" : state.phase,
-            active: {
-              ...state.active,
-              pauseQueueOnCancel:
-                shouldParkQueue || state.active.pauseQueueOnCancel,
-              queueResumedAfterCancel: shouldParkQueue
-                ? false
-                : state.active.queueResumedAfterCancel,
-            },
-          },
+          state:
+            shouldCancelActive || shouldUpdateStopPolicy
+              ? {
+                  ...state,
+                  phase: shouldCancelActive ? "cancelling" : state.phase,
+                  active: {
+                    ...state.active,
+                    pauseQueueOnCancel:
+                      shouldParkQueue || state.active.pauseQueueOnCancel,
+                    queueResumedAfterCancel: shouldParkQueue
+                      ? false
+                      : state.active.queueResumedAfterCancel,
+                  },
+                }
+              : state,
           commands: [
             ...(shouldParkQueue ? [{ type: "park-queue" as const }] : []),
             ...(shouldCancelActive
@@ -269,13 +282,19 @@ export function transitionChatStreamHost(
         state: {
           ...state,
           queueRevision: event.queueRevision,
+          queuePaused: event.queuePaused,
           queue: [...state.queue, event.entry],
           lastAcceptance: {
             intentId: event.intentId,
             acceptance: "queued",
           },
         },
-        commands: [],
+        commands:
+          event.resumeQueue &&
+          !event.queuePaused &&
+          (state.phase === "idle" || state.phase === "errored")
+            ? [{ type: "dispatch-next" }]
+            : [],
       };
     case "ADMISSION_REPLAYED":
       if (
@@ -587,8 +606,19 @@ export function transitionChatStreamHost(
                         ? "queued-override"
                         : "user-setting",
                   },
-                ]
+              ]
               : [];
+        const resumeStopLatch =
+          event.mutationId === state.pendingQueueResumeMutationId &&
+          !event.paused;
+        const active =
+          resumeStopLatch && state.active
+            ? {
+                ...state.active,
+                pauseQueueOnCancel: false,
+                queueResumedAfterCancel: true,
+              }
+            : state.active;
         return {
           kind: "applied",
           state: {
@@ -598,6 +628,11 @@ export function transitionChatStreamHost(
             queue: event.entries,
             pendingQueueMutationId,
             reviewBarrier,
+            pendingQueueResumeMutationId:
+              event.mutationId === state.pendingQueueResumeMutationId
+                ? null
+                : state.pendingQueueResumeMutationId,
+            active,
             ...(event.mutationId
               ? {
                   lastQueueMutation: {
@@ -621,7 +656,7 @@ export function transitionChatStreamHost(
               ? reviewCommands
               : pendingQueueMutationId === null &&
                   !event.paused &&
-                  !state.active?.pauseQueueOnCancel &&
+                  !active?.pauseQueueOnCancel &&
                   event.entries.length > 0 &&
                   (state.phase === "idle" || state.phase === "finalizing")
                 ? [{ type: "dispatch-next" }]
@@ -733,6 +768,10 @@ export function transitionChatStreamHost(
           queuePaused: event.paused,
           queue: event.entries,
           pendingQueueMutationId: null,
+          pendingQueueResumeMutationId:
+            event.mutationId === state.pendingQueueResumeMutationId
+              ? null
+              : state.pendingQueueResumeMutationId,
           lastQueueMutation: {
             mutationId: event.mutationId,
             outcome: "rejected",

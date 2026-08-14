@@ -46,6 +46,7 @@ export interface ChatStreamHostState {
     readonly error?: string;
   } | null;
   readonly pendingQueueMutationId: string | null;
+  readonly pendingQueueResumeMutationId: string | null;
   readonly lastQueueMutation: {
     readonly mutationId: string;
     readonly outcome: "applied" | "rejected";
@@ -72,6 +73,7 @@ export type ChatStreamHostCommand =
   | {
       readonly type: "persist-queued";
       readonly intent: SerializableChatTurnIntent;
+      readonly resumeQueue: boolean;
     }
   | {
       readonly type: "cancel-active";

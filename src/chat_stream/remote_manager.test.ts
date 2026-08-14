@@ -617,6 +617,16 @@ describe("ChatStreamRemoteManager", () => {
         ),
       ).toHaveLength(2),
     );
+    const cancelEvents = dispatch.mock.calls
+      .map(
+        ([envelope]) =>
+          envelope.encodedEvent as {
+            type: string;
+            invocationRef?: typeof submittedInvocationRef;
+          },
+      )
+      .filter((event) => event.type === "CANCEL");
+    expect(cancelEvents[1]?.invocationRef).toEqual(submittedInvocationRef);
 
     release();
     manager.dispose();

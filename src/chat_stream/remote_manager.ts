@@ -51,6 +51,7 @@ interface PendingSubmission {
   request: StreamRequest;
   invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>;
   dispatch: Promise<boolean>;
+  queueOnly: boolean;
   acceptanceDelivered: boolean;
   releaseSubscription: () => void;
 }
@@ -349,46 +350,48 @@ export class ChatStreamRemoteManager {
         const snapshot = this.getSnapshot(chatId);
         const invocationRef = snapshot.invocationRef;
         if (!invocationRef) return;
-        if (!snapshot.capabilities.canCancel) {
-          const optimistic = [...this.pendingSubmissions.entries()].find(
-            ([, pending]) =>
-              pending.request.chatId === chatId &&
-              pending.invocationRef.operationId === invocationRef.operationId,
-          );
-          if (optimistic) {
-            const [intentId] = optimistic;
-            const pending = this.takePendingSubmission(intentId);
-            this.notifySnapshotListeners(chatId);
-            pending?.request.onSettled?.({ success: false });
-            if (pending) {
-              void pending.dispatch
-                .then(async (wasDispatched) => {
-                  if (!wasDispatched || this.disposed) return;
-                  const actor = this.actor(chatId);
-                  await actor.resync();
-                  if (this.disposed) return;
-                  const current = actor.getSnapshot();
-                  if (
-                    current.invocationRef?.operationId ===
-                      invocationRef.operationId &&
-                    current.capabilities.canCancel
-                  ) {
-                    this.dispatchCompatibilityCommand(
-                      chatId,
-                      { type: "CANCEL", invocationRef, pauseQueue: true },
-                      "cancel the chat",
-                    );
-                  }
-                })
-                .catch((error) => {
-                  if (!this.disposed) {
-                    this.reportCompatibilityDispatchFailure(
-                      "cancel the chat",
-                      error,
-                    );
-                  }
-                });
-            }
+        for (const pending of this.pendingSubmissions.values()) {
+          if (pending.request.chatId === chatId) pending.queueOnly = true;
+        }
+        const optimistic = [...this.pendingSubmissions.entries()].find(
+          ([, pending]) =>
+            !pending.acceptanceDelivered &&
+            pending.request.chatId === chatId &&
+            pending.invocationRef.operationId === invocationRef.operationId,
+        );
+        if (optimistic) {
+          const [intentId] = optimistic;
+          const pending = this.takePendingSubmission(intentId);
+          this.notifySnapshotListeners(chatId);
+          pending?.request.onSettled?.({ success: false });
+          if (pending) {
+            void pending.dispatch
+              .then(async (wasDispatched) => {
+                if (!wasDispatched || this.disposed) return;
+                const actor = this.actor(chatId);
+                await actor.resync();
+                if (this.disposed) return;
+                const current = actor.getSnapshot();
+                if (
+                  current.invocationRef?.operationId ===
+                    invocationRef.operationId &&
+                  current.capabilities.canCancel
+                ) {
+                  this.dispatchCompatibilityCommand(
+                    chatId,
+                    { type: "CANCEL", invocationRef, pauseQueue: true },
+                    "cancel the chat",
+                  );
+                }
+              })
+              .catch((error) => {
+                if (!this.disposed) {
+                  this.reportCompatibilityDispatchFailure(
+                    "cancel the chat",
+                    error,
+                  );
+                }
+              });
           }
         }
         this.dispatchCompatibilityCommand(
@@ -449,6 +452,7 @@ export class ChatStreamRemoteManager {
       request,
       invocationRef,
       dispatch: Promise.resolve(false),
+      queueOnly: false,
       acceptanceDelivered: false,
       releaseSubscription: release,
     };
@@ -509,7 +513,13 @@ export class ChatStreamRemoteManager {
         ),
       };
       if (this.disposed || !this.pendingSubmissions.has(intentId)) return false;
-      const receipt = await actor.dispatch({ type: "SUBMIT", intent });
+      const pending = this.pendingSubmissions.get(intentId);
+      if (!pending) return false;
+      const receipt = await actor.dispatch({
+        type: "SUBMIT",
+        intent,
+        ...(pending.queueOnly ? { queueOnly: true } : {}),
+      });
       if (receipt.kind === "rejected") {
         throw new Error(`Chat submission rejected: ${receipt.reason}`);
       }

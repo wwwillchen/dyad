@@ -164,8 +164,12 @@ function createCommandRunner(
         try {
           const result =
             command.intent.owner?.kind === "user-input-follow-up"
-              ? persistSessionQueuedIntent(db, command.intent)
-              : persistQueuedIntent(db, command.intent);
+              ? persistSessionQueuedIntent(db, command.intent, {
+                  resumeQueue: command.resumeQueue,
+                })
+              : persistQueuedIntent(db, command.intent, {
+                  resumeQueue: command.resumeQueue,
+                });
           if (result.kind === "replayed") {
             emit({
               type: "ADMISSION_REPLAYED",
@@ -179,6 +183,8 @@ function createCommandRunner(
               intentId: command.intent.intentId,
               entry: result.entry,
               queueRevision: result.queueRevision,
+              queuePaused: result.queuePaused,
+              resumeQueue: command.resumeQueue,
             });
           }
         } catch (error) {

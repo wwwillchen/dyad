@@ -101,9 +101,9 @@ export function useStreamChat({
       }
 
       // The machine decides what happens next: idle/errored chats start a
-      // stream immediately; chats with an active stream get the submission
-      // queued (never dropped, even in the render lag window where the
-      // `isStreaming` projection hasn't caught up yet).
+      // stream immediately, an idle paused queue appends and resumes FIFO,
+      // and chats with an active stream queue the submission (never dropping
+      // it during the render lag before `isStreaming` catches up).
       chatStreamManager.ensure(chatId).send({
         type: "submit",
         request: {

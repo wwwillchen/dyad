@@ -10,7 +10,10 @@ import {
   createSequentialIdSource,
 } from "@/state_machines/testing";
 import { TwoWindowHarness } from "@/testing/two_window_harness";
-import type { ChatStreamExecutionObserver } from "@/ipc/handlers/chat_stream_handlers";
+import {
+  cancelActiveStreamsForChat,
+  type ChatStreamExecutionObserver,
+} from "@/ipc/handlers/chat_stream_handlers";
 import {
   beginChatActorDeletion,
   assertChatActorAdmissionOpen,
@@ -162,7 +165,11 @@ vi.mock("./persistence", () => ({
   disposeSessionChatQueue: vi.fn(),
   persistSessionQueuedIntent: vi.fn(),
   persistQueuedIntent: vi.fn(
-    (_database: unknown, intent: SerializableChatTurnIntent) => {
+    (
+      _database: unknown,
+      intent: SerializableChatTurnIntent,
+      options?: { resumeQueue?: boolean },
+    ) => {
       if (persisted.intents.has(intent.intentId)) {
         return {
           kind: "replayed" as const,
@@ -181,10 +188,12 @@ vi.mock("./persistence", () => ({
       persisted.intents.set(intent.intentId, intent);
       persisted.entries.push(entry);
       persisted.revision += 1;
+      if (options?.resumeQueue) persisted.paused = false;
       return {
         kind: "queued" as const,
         entry,
         queueRevision: persisted.revision,
+        queuePaused: persisted.paused,
       };
     },
   ),
@@ -610,7 +619,7 @@ describe("main-hosted chat stream actor", () => {
     await host.dispose();
   });
 
-  it("parks later optimistic submissions that predate Stop", async () => {
+  it("parks pre-Stop tails and resumes them FIFO on a later Send", async () => {
     let releaseAttachment!: () => void;
     const attachmentGate = new Promise<void>((resolve) => {
       releaseAttachment = resolve;
@@ -670,6 +679,28 @@ describe("main-hosted chat stream actor", () => {
       phase: "idle",
       queuePaused: true,
       queue: [expect.objectContaining({ prompt: "keep this queued" })],
+    });
+
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "send after Stop" },
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        [...execution.observers.values()].map(
+          (observer) => observer.intent.prompt,
+        ),
+      ).toEqual(["keep this queued"]),
+    );
+    expect(persisted.paused).toBe(false);
+    expect(persisted.entries).toEqual([
+      expect.objectContaining({ prompt: "send after Stop" }),
+    ]);
+    expect(actor.getSnapshot()).toMatchObject({
+      phase: "streaming",
+      queuePaused: false,
+      queue: [expect.objectContaining({ prompt: "send after Stop" })],
     });
 
     release();
@@ -1200,6 +1231,68 @@ describe("main-hosted chat stream actor", () => {
       }),
     );
 
+    manager.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
+  it("keeps a main-accepted submission pending across a second Stop", async () => {
+    let resolveFirstCancel!: (cancelled: boolean) => void;
+    vi.mocked(cancelActiveStreamsForChat).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirstCancel = resolve;
+        }),
+    );
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const manager = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      duplex.connect(),
+    );
+    const actor = manager.ensure(7);
+    const release = actor.subscribe(() => undefined);
+    const onSettled = vi.fn();
+
+    actor.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "stop twice", onSettled },
+    });
+    await vi.waitFor(() => expect(actor.getSnapshot().phase).toBe("streaming"));
+
+    actor.send({ type: "cancel" });
+    await vi.waitFor(() =>
+      expect(actor.getSnapshot().phase).toBe("cancelling"),
+    );
+    actor.send({ type: "cancel" });
+
+    await flush();
+    expect(onSettled).not.toHaveBeenCalled();
+    resolveFirstCancel(true);
+    await vi.waitFor(() =>
+      expect(onSettled).toHaveBeenCalledExactlyOnceWith({
+        success: false,
+        pausedByStepLimit: true,
+      }),
+    );
+    await flush();
+    expect(onSettled).toHaveBeenCalledTimes(1);
+
+    release();
     manager.dispose();
     await transport.dispose();
     await host.dispose();

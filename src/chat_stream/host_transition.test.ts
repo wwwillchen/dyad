@@ -42,7 +42,11 @@ describe("transitionChatStreamHost", () => {
     if (second.kind !== "applied") return;
     expect(second.state.active?.intent.intentId).toBe("first");
     expect(second.commands).toEqual([
-      { type: "persist-queued", intent: intent("second") },
+      {
+        type: "persist-queued",
+        intent: intent("second"),
+        resumeQueue: false,
+      },
     ]);
   });
 
@@ -67,14 +71,30 @@ describe("transitionChatStreamHost", () => {
     if (submitted.kind !== "applied") return;
     expect(submitted.state).toBe(cancelling);
     expect(submitted.commands).toEqual([
-      { type: "persist-queued", intent: intent("late") },
+      {
+        type: "persist-queued",
+        intent: intent("late"),
+        resumeQueue: false,
+      },
     ]);
   });
 
-  it("queues a submission that reaches an idle but parked actor", () => {
+  it("appends and resumes an explicit submission into an idle parked queue", () => {
     const parked = {
-      ...initialChatStreamHostState(),
-      queuePaused: true,
+      ...initialChatStreamHostState({
+        queueRevision: 4,
+        queuePaused: true,
+        queue: [
+          {
+            itemId: "first",
+            intentId: "first",
+            prompt: "First queued prompt",
+            persistence: "durable" as const,
+            editable: true,
+            removable: true,
+          },
+        ],
+      }),
     };
 
     const submitted = transitionChatStreamHost(parked, {
@@ -86,7 +106,58 @@ describe("transitionChatStreamHost", () => {
     if (submitted.kind !== "applied") return;
     expect(submitted.state).toBe(parked);
     expect(submitted.commands).toEqual([
-      { type: "persist-queued", intent: intent("late") },
+      {
+        type: "persist-queued",
+        intent: intent("late"),
+        resumeQueue: true,
+      },
+    ]);
+
+    const queued = transitionChatStreamHost(submitted.state, {
+      type: "ADMISSION_QUEUED",
+      intentId: "late",
+      entry: {
+        itemId: "late",
+        intentId: "late",
+        prompt: "Build it",
+        persistence: "durable",
+        editable: true,
+        removable: true,
+      },
+      queueRevision: 5,
+      queuePaused: false,
+      resumeQueue: true,
+    });
+    expect(queued.kind).toBe("applied");
+    if (queued.kind !== "applied") return;
+    expect(queued.state.queue.map((entry) => entry.intentId)).toEqual([
+      "first",
+      "late",
+    ]);
+    expect(queued.commands).toEqual([{ type: "dispatch-next" }]);
+  });
+
+  it("keeps a pre-Stop tail parked after the actor becomes idle", () => {
+    const parked = {
+      ...initialChatStreamHostState(),
+      queuePaused: true,
+    };
+
+    const submitted = transitionChatStreamHost(parked, {
+      type: "SUBMIT",
+      intent: intent("late"),
+      queueOnly: true,
+    });
+
+    expect(submitted.kind).toBe("applied");
+    if (submitted.kind !== "applied") return;
+    expect(submitted.state).toBe(parked);
+    expect(submitted.commands).toEqual([
+      {
+        type: "persist-queued",
+        intent: intent("late"),
+        resumeQueue: false,
+      },
     ]);
   });
 
@@ -225,12 +296,29 @@ describe("transitionChatStreamHost", () => {
     });
     expect(resumed.kind).toBe("applied");
     if (resumed.kind !== "applied") return;
+    expect(resumed.state.pendingQueueResumeMutationId).toBe(
+      "resume-after-stop",
+    );
     expect(resumed.state.active).toMatchObject({
+      pauseQueueOnCancel: true,
+    });
+
+    const confirmed = transitionChatStreamHost(resumed.state, {
+      type: "QUEUE_MUTATED",
+      mutationId: "resume-after-stop",
+      queueRevision: resumed.state.queueRevision + 1,
+      paused: false,
+      entries: [],
+    });
+    expect(confirmed.kind).toBe("applied");
+    if (confirmed.kind !== "applied") return;
+    expect(confirmed.state.pendingQueueResumeMutationId).toBeNull();
+    expect(confirmed.state.active).toMatchObject({
       pauseQueueOnCancel: false,
       queueResumedAfterCancel: true,
     });
 
-    const ended = transitionChatStreamHost(resumed.state, {
+    const ended = transitionChatStreamHost(confirmed.state, {
       type: "STREAM_ENDED",
       intentId: activeIntent.intentId,
       invocationRef: activeIntent.invocationRef!,
@@ -257,6 +345,48 @@ describe("transitionChatStreamHost", () => {
         },
       },
     ]);
+  });
+
+  it("retains the Stop latch when an explicit queue resume is rejected", () => {
+    const activeIntent = intent("active");
+    const state = {
+      ...initialChatStreamHostState({
+        queueRevision: 4,
+        queuePaused: true,
+        queue: [],
+      }),
+      phase: "cancelling" as const,
+      active: {
+        intent: activeIntent,
+        invocationRef: activeIntent.invocationRef!,
+        targetAppId: 3,
+        pauseQueueOnCancel: true,
+        queueResumedAfterCancel: false,
+      },
+    };
+    const requested = transitionChatStreamHost(state, {
+      type: "RESUME_QUEUE",
+      expectedQueueRevision: 4,
+      mutationId: "failed-resume",
+    });
+    expect(requested.kind).toBe("applied");
+    if (requested.kind !== "applied") return;
+
+    const rejected = transitionChatStreamHost(requested.state, {
+      type: "QUEUE_MUTATION_REJECTED",
+      mutationId: "failed-resume",
+      error: "revision conflict",
+      queueRevision: 4,
+      paused: true,
+      entries: [],
+    });
+    expect(rejected.kind).toBe("applied");
+    if (rejected.kind !== "applied") return;
+    expect(rejected.state.pendingQueueResumeMutationId).toBeNull();
+    expect(rejected.state.active).toMatchObject({
+      pauseQueueOnCancel: true,
+      queueResumedAfterCancel: false,
+    });
   });
 
   it("preserves a genuine response pause after the Stop latch is resumed", () => {

@@ -302,9 +302,15 @@ function assertMatchingDueFollowUp(intent: SerializableChatTurnIntent): void {
 export function persistSessionQueuedIntent(
   database: ChatDatabase,
   intent: SerializableChatTurnIntent,
+  options?: { resumeQueue?: boolean },
 ): PersistAdmissionResult {
   assertMatchingDueFollowUp(intent);
-  return persistIntentInQueue(database, intent, false);
+  return persistIntentInQueue(
+    database,
+    intent,
+    false,
+    options?.resumeQueue === true,
+  );
 }
 
 export function isSessionQueuedIntent(intentId: string): boolean {
@@ -338,6 +344,7 @@ export type PersistAdmissionResult =
       kind: "queued";
       entry: ChatQueueEntry;
       queueRevision: number;
+      queuePaused: boolean;
     }
   | {
       kind: "replayed";
@@ -349,6 +356,7 @@ function persistIntentInQueue(
   database: ChatDatabase,
   intent: SerializableChatTurnIntent,
   durable: boolean,
+  resumeQueue: boolean,
 ): PersistAdmissionResult {
   assertChatTurnPayloadHash(intent);
   let existing = recordFor(intent.intentId);
@@ -424,7 +432,11 @@ function persistIntentInQueue(
         })
         .run();
       tx.update(chatQueueStates)
-        .set({ revision: nextRevision, updatedAt: new Date() })
+        .set({
+          revision: nextRevision,
+          ...(resumeQueue ? { paused: false } : {}),
+          updatedAt: new Date(),
+        })
         .where(eq(chatQueueStates.chatId, intent.chatId))
         .run();
     });
@@ -439,16 +451,19 @@ function persistIntentInQueue(
   });
   aggregate.intentIds.push(intent.intentId);
   aggregate.revision = nextRevision;
+  if (resumeQueue) aggregate.paused = false;
   return {
     kind: "queued",
     entry: toQueueEntry(intent),
     queueRevision: aggregate.revision,
+    queuePaused: aggregate.paused,
   };
 }
 
 export function persistQueuedIntent(
   database: ChatDatabase,
   intent: SerializableChatTurnIntent,
+  options?: { resumeQueue?: boolean },
 ): PersistAdmissionResult {
   if (intent.owner?.kind === "user-input-follow-up") {
     throw new DyadError(
@@ -456,7 +471,12 @@ export function persistQueuedIntent(
       DyadErrorKind.Validation,
     );
   }
-  return persistIntentInQueue(database, intent, intent.owner === undefined);
+  return persistIntentInQueue(
+    database,
+    intent,
+    intent.owner === undefined,
+    options?.resumeQueue === true,
+  );
 }
 
 export function stageActiveIntent(

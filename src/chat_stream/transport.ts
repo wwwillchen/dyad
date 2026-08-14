@@ -114,6 +114,7 @@ export const ChatStreamIntentEventSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("SUBMIT"),
       intent: SerializableChatTurnIntentSchema,
+      queueOnly: z.boolean().optional(),
     })
     .strict(),
   z
@@ -197,6 +198,8 @@ export const ChatStreamHostEventSchema = z.discriminatedUnion("type", [
       intentId: z.string(),
       entry: ChatQueueEntrySchema,
       queueRevision: expectedQueueRevision,
+      queuePaused: z.boolean(),
+      resumeQueue: z.boolean(),
     })
     .strict(),
   z

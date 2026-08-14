@@ -120,6 +120,31 @@ describe("chat stream persistence", () => {
     ).toMatchObject({ revision: 2, paused: true });
   });
 
+  it("atomically appends and resumes an explicitly sent queued intent", async () => {
+    persistQueuedIntent(database, intent("first"));
+    await parkChatQueue(database, chatId);
+
+    expect(
+      persistQueuedIntent(database, intent("second"), { resumeQueue: true }),
+    ).toMatchObject({
+      kind: "queued",
+      queueRevision: 3,
+      queuePaused: false,
+    });
+    expect(loadChatQueue(database, chatId)).toMatchObject({
+      queueRevision: 3,
+      queuePaused: false,
+      queue: [{ intentId: "first" }, { intentId: "second" }],
+    });
+    expect(
+      database
+        .select()
+        .from(chatQueueStates)
+        .where(eq(chatQueueStates.chatId, chatId))
+        .get(),
+    ).toMatchObject({ revision: 3, paused: false });
+  });
+
   it("bounds the aggregate queue projection before transport", () => {
     expect(() =>
       assertQueueSnapshotWithinLimit(

@@ -172,7 +172,7 @@ test.describe("queued messages", () => {
     });
     await expect(chatInput).toBeVisible();
 
-    await queueMessage(po.page, chatInput, "queued before stop");
+    await queueMessage(po.page, chatInput, "tc=2 [sleep=medium]");
     const queueHeader = po.page.getByTestId("queue-header");
     await expect(queueHeader).toContainText("1 Queued");
     await expect(queueHeader).not.toContainText("Paused");
@@ -188,7 +188,23 @@ test.describe("queued messages", () => {
     ).not.toBeVisible({ timeout: Timeout.MEDIUM });
     await expect(queueHeader).toContainText("1 Queued");
     await expect(
-      queueHeader.getByText("queued before stop", { exact: true }),
+      queueHeader.getByText("tc=2 [sleep=medium]", { exact: true }),
+    ).toBeVisible();
+    await po.toastNotifications.expectNoToast();
+
+    await chatInput.fill("tc=3");
+    await chatInput.press("Enter");
+
+    await expect(
+      po.page.getByRole("button", { name: /cancel generation/i }),
+    ).toBeVisible({ timeout: Timeout.MEDIUM });
+    await expect(queueHeader).not.toContainText("Paused");
+    await expect(queueHeader).toContainText("1 Queued");
+    await expect(queueHeader.getByText("tc=3", { exact: true })).toBeVisible();
+    await expect(
+      po.page
+        .locator('[data-testid="messages-list"]')
+        .getByText("tc=2 [sleep=medium]", { exact: true }),
     ).toBeVisible();
     await po.toastNotifications.expectNoToast();
   });

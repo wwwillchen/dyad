@@ -619,8 +619,9 @@ export function ChatInput({ chatId }: { chatId?: number }) {
       return;
     }
 
-    // Queue while actively streaming. If we're paused but currently idle,
-    // send the new message immediately and keep existing queued items paused.
+    // Queue while actively streaming. When the queue is paused but the actor
+    // is idle, the normal Send path appends this prompt and resumes FIFO so
+    // the oldest queued prompt runs first.
     if (isStreaming) {
       const queued = queueMessage({
         prompt: currentInput,
