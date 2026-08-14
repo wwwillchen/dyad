@@ -597,6 +597,7 @@
     // can deliver it to Dyad with the source identity the parent expects.
     if (
       e.source !== window.parent &&
+      e.origin === window.location.origin &&
       e.data?.type === "dyad-preview-reload-shortcut"
     ) {
       window.parent.postMessage(e.data, "*");

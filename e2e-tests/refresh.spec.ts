@@ -166,6 +166,33 @@ testSkipIfWindows(
     }
 
     const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
+    const untrustedSelectorReadyCount = await getSelectorReadyCount();
+    await frame.locator("body").evaluate((body) => {
+      body.dataset.reloadShortcutMarker = "untrusted-child-blocked";
+      window.addEventListener("message", (event) => {
+        if (event.data?.type === "untrusted-reload-attempted") {
+          body.dataset.untrustedReloadAttempted = "true";
+        }
+      });
+      const untrustedFrame = document.createElement("iframe");
+      untrustedFrame.dataset.testid = "untrusted-preview-frame";
+      untrustedFrame.src = `data:text/html,${encodeURIComponent(
+        '<script>parent.postMessage({type:"dyad-preview-reload-shortcut"},"*");parent.postMessage({type:"untrusted-reload-attempted"},"*");</script>',
+      )}`;
+      body.appendChild(untrustedFrame);
+    });
+    await expect(frame.locator("body")).toHaveAttribute(
+      "data-untrusted-reload-attempted",
+      "true",
+      { timeout: Timeout.LONG },
+    );
+    await po.page.waitForTimeout(250);
+    await expect(frame.locator("body")).toHaveAttribute(
+      "data-reload-shortcut-marker",
+      "untrusted-child-blocked",
+    );
+    expect(await getSelectorReadyCount()).toBe(untrustedSelectorReadyCount);
+
     const selectorReadyCount = await getSelectorReadyCount();
     await frame.locator("body").evaluate((body) => {
       const nestedFrame = document.createElement("iframe");
