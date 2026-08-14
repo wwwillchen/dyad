@@ -74,7 +74,12 @@ function queueMutation(
     event.type === "PAUSE_QUEUE"
       ? { type: "pause" }
       : event.type === "RESUME_QUEUE"
-        ? { type: "resume" }
+        ? {
+            type: "resume",
+            preserveStopPause:
+              state.queuePauseReason === "stop" &&
+              state.active?.pauseQueueOnCancel !== true,
+          }
         : event.type === "EDIT_QUEUE_ENTRY"
           ? {
               type: "edit",
@@ -110,6 +115,10 @@ function queueMutation(
         mutation,
         expectedQueueRevision: event.expectedQueueRevision,
         mutationId: event.mutationId,
+        ...(event.type === "RESUME_QUEUE" &&
+        event.observedStopPolicyVersion !== undefined
+          ? { observedStopPolicyVersion: event.observedStopPolicyVersion }
+          : {}),
       },
     ],
   };
@@ -653,7 +662,8 @@ export function transitionChatStreamHost(
               : [];
         const resumeStopLatch =
           event.mutationId === state.pendingQueueResumeMutationId &&
-          !event.paused;
+          !event.paused &&
+          event.observedStopPolicyVersion === state.stopPolicyVersion;
         const queuedAdmissionResumesCurrentStop =
           event.resumeQueue === true &&
           event.observedStopPolicyVersion === state.stopPolicyVersion;

@@ -1092,6 +1092,8 @@ describe("main-hosted chat stream actor", () => {
   });
 
   it("settles a durable review barrier without renderer ownership", async () => {
+    const { markIntentTerminal } = await import("./persistence");
+    vi.mocked(markIntentTerminal).mockClear();
     const clock = createFakeClock();
     const host = new ActorHost({
       placement: "main",
@@ -1137,6 +1139,13 @@ describe("main-hosted chat stream actor", () => {
       expect(actor.getSnapshot().queuePaused).toBe(false);
       expect(execution.admissions).toContain("queued");
     });
+    expect(markIntentTerminal).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ intentId: "review" }),
+      true,
+      false,
+      "manual",
+    );
 
     const reloaded = new ChatStreamRemoteManager(
       createStore(),

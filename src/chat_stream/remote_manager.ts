@@ -261,6 +261,7 @@ export class ChatStreamRemoteManager {
     let releaseSettlement = IDLE_UNSUBSCRIBE;
     try {
       await actor.resync();
+      const observedStopPolicyVersion = actor.getSnapshot().stopPolicyVersion;
       const mutationId = this.ids.next("chat-queue");
       const settlement = new Promise<
         NonNullable<ChatStreamRemoteSnapshot["lastQueueMutation"]>
@@ -278,6 +279,7 @@ export class ChatStreamRemoteManager {
         ...event,
         mutationId,
         expectedQueueRevision: mutationQueueRevision,
+        ...(event.type === "RESUME_QUEUE" ? { observedStopPolicyVersion } : {}),
       } as ChatStreamIntentEvent);
       if (receipt.kind === "rejected") {
         throw new Error(`Chat queue request rejected: ${receipt.reason}`);
@@ -352,6 +354,14 @@ export class ChatStreamRemoteManager {
         if (!invocationRef) return;
         const stopId = this.ids.next("chat-stop");
         const observedStopPolicyVersion = snapshot.stopPolicyVersion;
+        for (const pending of this.pendingSubmissions.values()) {
+          if (
+            pending.request.chatId === chatId &&
+            pending.observedStopPolicyVersion === undefined
+          ) {
+            pending.observedStopPolicyVersion = observedStopPolicyVersion;
+          }
+        }
         const optimistic = [...this.pendingSubmissions.entries()].find(
           ([, pending]) =>
             !pending.acceptanceDelivered &&

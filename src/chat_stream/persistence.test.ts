@@ -146,6 +146,31 @@ describe("chat stream persistence", () => {
     ).toMatchObject({ revision: 3, paused: false });
   });
 
+  it("does not durably clear an idle Stop pause for a queue resume", async () => {
+    persistQueuedIntent(database, intent("queued"));
+    const parked = await parkChatQueue(database, chatId);
+
+    const queue = await mutateChatQueue(database, chatId, {
+      type: "mutate-queue",
+      mutation: { type: "resume", preserveStopPause: true },
+      expectedQueueRevision: parked.queueRevision,
+      mutationId: "idle-resume",
+      observedStopPolicyVersion: 1,
+    });
+
+    expect(queue).toMatchObject({
+      queuePaused: true,
+      queuePauseReason: "stop",
+    });
+    expect(
+      database
+        .select()
+        .from(chatQueueStates)
+        .where(eq(chatQueueStates.chatId, chatId))
+        .get(),
+    ).toMatchObject({ paused: true, pauseReason: "stop" });
+  });
+
   it("resumes the authoritative queue when a queued send is replayed", async () => {
     const queuedIntent = intent("queued");
     persistQueuedIntent(database, queuedIntent);

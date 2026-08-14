@@ -845,8 +845,10 @@ export async function mutateChatQueue(
         aggregate.pauseReason = "manual";
         break;
       case "resume":
-        aggregate.paused = false;
-        aggregate.pauseReason = null;
+        if (!(mutation.preserveStopPause && aggregate.pauseReason === "stop")) {
+          aggregate.paused = false;
+          aggregate.pauseReason = null;
+        }
         break;
       case "edit": {
         const selectedRecord = selected[0]?.record;

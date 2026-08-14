@@ -144,6 +144,7 @@ export const ChatStreamIntentEventSchema = z.discriminatedUnion("type", [
       type: z.literal("RESUME_QUEUE"),
       expectedQueueRevision,
       mutationId: queueMutationId,
+      observedStopPolicyVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z

@@ -651,6 +651,7 @@ describe("transitionChatStreamHost", () => {
       type: "RESUME_QUEUE",
       expectedQueueRevision: stopped.state.queueRevision,
       mutationId: "resume-after-stop",
+      observedStopPolicyVersion: stopped.state.stopPolicyVersion,
     });
     expect(resumed.kind).toBe("applied");
     if (resumed.kind !== "applied") return;
@@ -667,6 +668,7 @@ describe("transitionChatStreamHost", () => {
       queueRevision: resumed.state.queueRevision + 1,
       paused: false,
       entries: [],
+      observedStopPolicyVersion: stopped.state.stopPolicyVersion,
     });
     expect(confirmed.kind).toBe("applied");
     if (confirmed.kind !== "applied") return;
@@ -703,6 +705,59 @@ describe("transitionChatStreamHost", () => {
         },
       },
     ]);
+  });
+
+  it("keeps a newer Stop authoritative over a late resume acknowledgement", () => {
+    const activeIntent = intent("active");
+    const state = {
+      ...initialChatStreamHostState(),
+      phase: "cancelling" as const,
+      stopPolicyVersion: 1,
+      queuePaused: true,
+      queuePauseReason: "stop" as const,
+      active: {
+        intent: activeIntent,
+        invocationRef: activeIntent.invocationRef!,
+        targetAppId: 3,
+        pauseQueueOnCancel: true,
+      },
+    };
+    const requested = transitionChatStreamHost(state, {
+      type: "RESUME_QUEUE",
+      expectedQueueRevision: 0,
+      mutationId: "stale-resume",
+      observedStopPolicyVersion: 1,
+    });
+    expect(requested.kind).toBe("applied");
+    if (requested.kind !== "applied") return;
+
+    const stoppedAgain = transitionChatStreamHost(requested.state, {
+      type: "CANCEL",
+      invocationRef: activeIntent.invocationRef!,
+      pauseQueue: true,
+      stopId: "newer-stop",
+      observedStopPolicyVersion: 1,
+    });
+    expect(stoppedAgain.kind).toBe("applied");
+    if (stoppedAgain.kind !== "applied") return;
+
+    const confirmed = transitionChatStreamHost(stoppedAgain.state, {
+      type: "QUEUE_MUTATED",
+      mutationId: "stale-resume",
+      queueRevision: 1,
+      paused: false,
+      entries: [],
+      observedStopPolicyVersion: 1,
+    });
+    expect(confirmed.kind).toBe("applied");
+    if (confirmed.kind !== "applied") return;
+    expect(confirmed.state).toMatchObject({
+      stopPolicyVersion: 2,
+      queuePaused: true,
+      queuePauseReason: "stop",
+      active: { pauseQueueOnCancel: true },
+    });
+    expect(confirmed.commands).toEqual([]);
   });
 
   it("retains the Stop latch when an explicit queue resume is rejected", () => {

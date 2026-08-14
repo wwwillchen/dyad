@@ -89,7 +89,7 @@ export type ChatStreamHostCommand =
       readonly type: "mutate-queue";
       readonly mutation:
         | { type: "pause" }
-        | { type: "resume" }
+        | { type: "resume"; preserveStopPause?: boolean }
         | {
             type: "edit";
             itemId: string;
@@ -102,6 +102,7 @@ export type ChatStreamHostCommand =
         | { type: "clear" };
       readonly expectedQueueRevision: number;
       readonly mutationId: string;
+      readonly observedStopPolicyVersion?: number;
     }
   | {
       readonly type: "finalize";

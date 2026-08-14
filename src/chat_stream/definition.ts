@@ -408,13 +408,26 @@ function createCommandRunner(
       }
       case "mutate-queue": {
         try {
-          const queue = await mutateChatQueue(db, context.key.chatId, command);
+          let queue = await mutateChatQueue(db, context.key.chatId, command);
+          if (
+            command.mutation.type === "resume" &&
+            command.observedStopPolicyVersion !== undefined &&
+            command.observedStopPolicyVersion !==
+              context.getSnapshot().stopPolicyVersion
+          ) {
+            queue = await parkChatQueue(db, context.key.chatId);
+          }
           emit({
             type: "QUEUE_MUTATED",
             mutationId: command.mutationId,
             queueRevision: queue.queueRevision,
             paused: queue.queuePaused,
             entries: queue.queue,
+            ...(command.observedStopPolicyVersion === undefined
+              ? {}
+              : {
+                  observedStopPolicyVersion: command.observedStopPolicyVersion,
+                }),
           });
         } catch (error) {
           console.error("[chat-stream] Queue mutation failed", error);
@@ -436,8 +449,11 @@ function createCommandRunner(
           throw new Error("Finalization does not match the active chat intent");
         }
         try {
-          const pauseForStepLimit = command.response?.pausePromptQueue === true;
+          const pauseForStepLimit =
+            command.response?.pausePromptQueue === true &&
+            command.response.reviewBarrierRequested !== true;
           const pauseForReview =
+            command.response?.reviewBarrierRequested === true ||
             active.intent.owner?.kind === "review-remediation" ||
             context.getSnapshot().reviewBarrier.phase ===
               "awaiting-continuation";
@@ -445,7 +461,8 @@ function createCommandRunner(
             active.queueResumedAfterCancel !== true &&
             (active.pauseQueueOnCancel === true ||
               command.pausePromptQueue === true) &&
-            !pauseForStepLimit;
+            !pauseForStepLimit &&
+            !pauseForReview;
           const queue = markIntentTerminal(
             db,
             active.intent,
