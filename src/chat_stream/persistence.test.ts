@@ -1,17 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { apps, chats } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { apps, chats, chatQueueEntries, chatTurnIntents } from "@/db/schema";
 import { DyadErrorKind } from "@/errors/dyad_error";
 import { createInMemoryTestDb, type TestDb } from "@/testing/test_db";
 import {
   assertQueueSnapshotWithinLimit,
   claimQueueHead,
   disposeSessionChatQueue,
+  getAcceptedMessageId,
   getRetainedIntentPayloadBytes,
   hydrateChatStreamPersistence,
   loadChatQueue,
   markIntentAccepted,
   markIntentTerminal,
   mutateChatQueue,
+  persistAcceptedChatTurn,
   persistQueuedIntent,
   restoreClaimedQueueHead,
   stageActiveIntent,
@@ -65,19 +68,28 @@ describe("chat stream persistence", () => {
     };
   }
 
-  it("keeps an intent and queue revision in main-process memory", () => {
+  it("durably stores an intent and queue revision", () => {
     const queued = persistQueuedIntent(database, intent("turn-1"));
 
     expect(queued).toMatchObject({
       kind: "queued",
       queueRevision: 1,
-      entry: { intentId: "turn-1", persistence: "main-session" },
+      entry: { intentId: "turn-1", persistence: "durable" },
     });
     expect(loadChatQueue(database, chatId)).toMatchObject({
       queueRevision: 1,
       queuePaused: false,
       queue: [{ intentId: "turn-1" }],
     });
+  });
+
+  it("cascades queue entries through their parent intents", () => {
+    persistQueuedIntent(database, intent("turn-1"));
+
+    database.delete(chats).where(eq(chats.id, chatId)).run();
+
+    expect(database.select().from(chatTurnIntents).all()).toEqual([]);
+    expect(database.select().from(chatQueueEntries).all()).toEqual([]);
   });
 
   it("bounds the aggregate queue projection before transport", () => {
@@ -193,10 +205,7 @@ describe("chat stream persistence", () => {
       intent: { prompt: "Build the edited version" },
       queue: { queueRevision: 3, queue: [] },
     });
-    expect(stageActiveIntent(database, claimed!.intent)).toEqual({
-      kind: "replayed",
-      acceptance: "queued",
-    });
+    expect(stageActiveIntent(database, claimed!.intent)).toBeNull();
   });
 
   it("makes a claimed queue head immutable before asynchronous admission", async () => {
@@ -295,16 +304,170 @@ describe("chat stream persistence", () => {
     });
   });
 
-  it("does not restore queued work after process-lifetime state is disposed", () => {
+  it("restores durable queued work paused after process-lifetime disposal", () => {
     persistQueuedIntent(database, intent("turn-1"));
     disposeSessionChatQueue(chatId);
 
     const hydrated = hydrateChatStreamPersistence(database, chatId);
 
     expect(hydrated).toEqual({
-      queueRevision: 0,
-      queuePaused: false,
-      queue: [],
+      queueRevision: 2,
+      queuePaused: true,
+      queue: [expect.objectContaining({ intentId: "turn-1" })],
     });
+  });
+
+  it("restores a claimed durable head paused after a process crash", async () => {
+    persistQueuedIntent(database, intent("turn-1"));
+    await claimQueueHead(database, chatId);
+    disposeSessionChatQueue(chatId);
+
+    expect(hydrateChatStreamPersistence(database, chatId)).toMatchObject({
+      queueRevision: 3,
+      queuePaused: true,
+      queue: [{ intentId: "turn-1", persistence: "durable" }],
+    });
+  });
+
+  it("quarantines an unusable persisted intent without blocking the chat", () => {
+    persistQueuedIntent(database, intent("broken"));
+    persistQueuedIntent(database, intent("healthy"));
+    database
+      .update(chatTurnIntents)
+      .set({
+        intent: {
+          schemaVersion: 999,
+        } as unknown as SerializableChatTurnIntent,
+      })
+      .where(eq(chatTurnIntents.intentId, "broken"))
+      .run();
+    disposeSessionChatQueue(chatId);
+
+    expect(
+      hydrateChatStreamPersistence(database, chatId).queue.map(
+        (entry) => entry.intentId,
+      ),
+    ).toEqual(["healthy"]);
+    expect(
+      database
+        .select()
+        .from(chatQueueEntries)
+        .where(eq(chatQueueEntries.intentId, "broken"))
+        .get(),
+    ).toBeUndefined();
+  });
+
+  it("restores a claimed head before later queued entries after compaction", async () => {
+    const first = intent("first");
+    persistQueuedIntent(database, first);
+    persistQueuedIntent(database, intent("second"));
+    persistQueuedIntent(database, intent("third"));
+    persistAcceptedChatTurn(database, first, first.intentId, 1);
+    markIntentAccepted(first.intentId, 1);
+    await claimQueueHead(database, chatId);
+    await mutateChatQueue(database, chatId, {
+      type: "mutate-queue",
+      mutation: { type: "pause" },
+      expectedQueueRevision: 5,
+      mutationId: "pause-with-claimed-head",
+    });
+    disposeSessionChatQueue(chatId);
+
+    expect(
+      hydrateChatStreamPersistence(database, chatId).queue.map(
+        (entry) => entry.intentId,
+      ),
+    ).toEqual(["second", "third"]);
+  });
+
+  it("does not retain a terminal claimed row after releasing its payload", async () => {
+    const turn = intent("terminal-claimed");
+    persistQueuedIntent(database, turn);
+    await claimQueueHead(database, chatId);
+    markIntentTerminal(database, turn, false);
+    disposeSessionChatQueue(chatId);
+
+    expect(hydrateChatStreamPersistence(database, chatId).queue).toEqual([]);
+  });
+
+  it("does not hydrate terminal receipts into main-process memory", () => {
+    const turn = intent("accepted-receipt");
+    persistQueuedIntent(database, turn);
+    persistAcceptedChatTurn(database, turn, turn.intentId, 42);
+    markIntentAccepted(turn.intentId, 42);
+    disposeSessionChatQueue(chatId);
+
+    hydrateChatStreamPersistence(database, chatId);
+    expect(getAcceptedMessageId(turn.intentId)).toBeUndefined();
+  });
+
+  it("restores durable edits, ordering, pause state, and attachments", async () => {
+    const first = intent("first", "Original");
+    const second = {
+      ...intent("second", "Second"),
+      attachments: [
+        {
+          name: "context.txt",
+          type: "text/plain",
+          data: "data:text/plain;base64,ZHVyYWJsZSBhdHRhY2htZW50",
+          attachmentType: "chat-context" as const,
+        },
+      ],
+    };
+    second.payloadHash = computeChatTurnPayloadHash(second);
+    persistQueuedIntent(database, first);
+    persistQueuedIntent(database, second);
+    await mutateChatQueue(database, chatId, {
+      type: "mutate-queue",
+      mutation: {
+        type: "edit",
+        itemId: "first",
+        prompt: "Edited",
+      },
+      expectedQueueRevision: 2,
+      mutationId: "edit-first",
+    });
+    await mutateChatQueue(database, chatId, {
+      type: "mutate-queue",
+      mutation: { type: "reorder", itemId: "second", toIndex: 0 },
+      expectedQueueRevision: 3,
+      mutationId: "reorder-second",
+    });
+    await mutateChatQueue(database, chatId, {
+      type: "mutate-queue",
+      mutation: { type: "pause" },
+      expectedQueueRevision: 4,
+      mutationId: "pause",
+    });
+    disposeSessionChatQueue(chatId);
+
+    const restored = hydrateChatStreamPersistence(database, chatId);
+    expect(restored.queuePaused).toBe(true);
+    expect(restored.queue.map((entry) => entry.intentId)).toEqual([
+      "second",
+      "first",
+    ]);
+    expect(restored.queue[0]?.attachments).toEqual(second.attachments);
+    expect(restored.queue[1]?.prompt).toBe("Edited");
+  });
+
+  it("does not restore removed or machine-owned queue entries", async () => {
+    persistQueuedIntent(database, intent("ordinary"));
+    persistQueuedIntent(
+      database,
+      intent("plan", "Implement", {
+        kind: "plan-handoff",
+        handoffId: "handoff",
+      }),
+    );
+    await mutateChatQueue(database, chatId, {
+      type: "mutate-queue",
+      mutation: { type: "remove", itemId: "ordinary" },
+      expectedQueueRevision: 2,
+      mutationId: "remove-ordinary",
+    });
+    disposeSessionChatQueue(chatId);
+
+    expect(hydrateChatStreamPersistence(database, chatId).queue).toEqual([]);
   });
 });

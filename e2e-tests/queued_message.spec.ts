@@ -1,6 +1,17 @@
-import { test, Timeout } from "./helpers/test_helper";
-import { expect, type Locator, type Page } from "@playwright/test";
+import { PageObject, test, Timeout } from "./helpers/test_helper";
+import {
+  expect,
+  test as baseTest,
+  type Locator,
+  type Page,
+  type TestInfo,
+} from "@playwright/test";
+import fs from "fs";
+import os from "os";
 import path from "path";
+import type { ElectronApplication } from "playwright";
+import { FAKE_LLM_BASE_PORT } from "./helpers/test-ports";
+import { launchElectronApp, terminateElectronApp } from "./helpers/fixtures";
 
 async function queueMessage(page: Page, chatInput: Locator, message: string) {
   await expect(async () => {
@@ -13,6 +24,39 @@ async function queueMessage(page: Page, chatInput: Locator, message: string) {
   await expect(page.locator("li", { hasText: message })).toBeVisible({
     timeout: Timeout.MEDIUM,
   });
+}
+
+async function launchDyadWithProfile({
+  userDataDir,
+  fakeLlmPort,
+  testInfo,
+}: {
+  userDataDir: string;
+  fakeLlmPort: number;
+  testInfo: TestInfo;
+}) {
+  const electronApp = await launchElectronApp({
+    userDataDir,
+    fakeLlmPort,
+    parallelIndex: testInfo.parallelIndex,
+  });
+  const page = await electronApp.firstWindow();
+  const po = new PageObject(electronApp, page, {
+    userDataDir,
+    fakeLlmPort,
+    testInfo,
+  });
+  await page.evaluate(async () => {
+    await (window as any).electron.ipcRenderer.invoke("set-user-settings", {
+      enablePnpmMinimumReleaseAgeWarning: false,
+      hidePnpmMinimumReleaseAgeWarning: true,
+    });
+  });
+  return { electronApp, po };
+}
+
+async function closeDyad(electronApp: ElectronApplication) {
+  await terminateElectronApp(electronApp);
 }
 
 test.describe("queued messages", () => {
@@ -215,3 +259,70 @@ test("keeps queued prompts across renderer reload", async ({
     await expect(po.page.locator("li", { hasText: prompt })).toBeVisible();
   }
 });
+
+baseTest(
+  "restores queued prompts paused after app restart",
+  async ({}, testInfo) => {
+    baseTest.skip(
+      process.platform === "win32",
+      "Manual Electron restarts can hang on Windows in this E2E environment.",
+    );
+    baseTest.setTimeout(120_000);
+
+    const fakeLlmPort = FAKE_LLM_BASE_PORT + testInfo.parallelIndex;
+    const userDataDir = path.join(
+      os.tmpdir(),
+      `dyad-e2e-durable-queue-${testInfo.parallelIndex}-${Date.now()}`,
+    );
+    const queuedPrompts = ["durable queued one", "durable queued two"];
+    let activeApp: ElectronApplication | undefined;
+
+    try {
+      const firstSession = await launchDyadWithProfile({
+        userDataDir,
+        fakeLlmPort,
+        testInfo,
+      });
+      activeApp = firstSession.electronApp;
+      await firstSession.po.setUp({ autoApprove: true });
+      const chatInput = firstSession.po.chatActions.getChatInput();
+      await firstSession.po.sendPrompt("tc=1 [sleep=long]", {
+        skipWaitForCompletion: true,
+      });
+      await expect(chatInput).toBeVisible();
+      for (const prompt of queuedPrompts) {
+        await queueMessage(firstSession.po.page, chatInput, prompt);
+      }
+      await expect(
+        firstSession.po.page.getByTestId("queue-header"),
+      ).toContainText("2 Queued");
+
+      await closeDyad(firstSession.electronApp);
+      activeApp = undefined;
+
+      const secondSession = await launchDyadWithProfile({
+        userDataDir,
+        fakeLlmPort,
+        testInfo,
+      });
+      activeApp = secondSession.electronApp;
+      await secondSession.po.navigation.goToChatTab();
+      const queueHeader = secondSession.po.page.getByTestId("queue-header");
+      await expect(queueHeader).toContainText("2 Queued", {
+        timeout: Timeout.EXTRA_LONG,
+      });
+      await expect(queueHeader).toContainText("Paused");
+      await expect(
+        secondSession.po.page.getByRole("button", { name: "Resume queue" }),
+      ).toBeVisible();
+      for (const prompt of queuedPrompts) {
+        await expect(
+          secondSession.po.page.locator("li", { hasText: prompt }),
+        ).toBeVisible();
+      }
+    } finally {
+      if (activeApp) await closeDyad(activeApp);
+      await fs.promises.rm(userDataDir, { recursive: true, force: true });
+    }
+  },
+);
