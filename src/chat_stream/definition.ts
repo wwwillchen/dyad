@@ -85,6 +85,7 @@ function projectSnapshot(
     queueRevision: state.queueRevision,
     queuePaused: state.queuePaused,
     queue: [...state.queue],
+    stopPolicyVersion: state.stopPolicyVersion,
     capabilities: {
       canSubmit: true,
       canCancel: canCancelActiveChatStreamPhase(state.phase),
@@ -718,6 +719,16 @@ export const chatStreamDefinition = {
         if (event.intent.owner || event.intent.userInputRequestId) {
           throw new DyadError(
             "Main-owned follow-up identity cannot be submitted by a renderer",
+            DyadErrorKind.Auth,
+          );
+        }
+        if (
+          event.observedStopPolicyVersion !== undefined &&
+          currentState &&
+          event.observedStopPolicyVersion > currentState.stopPolicyVersion
+        ) {
+          throw new DyadError(
+            "Chat submission observed an unknown Stop policy version",
             DyadErrorKind.Auth,
           );
         }

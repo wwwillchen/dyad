@@ -123,6 +123,9 @@ Background and before/after examples of why this pattern exists:
   idempotency key through every queue, IPC, and persistence boundary. Make the
   receiving boundary durably deduplicate acceptance, and acknowledge only
   after that acceptance; a renderer-local enqueue is not durable acceptance.
+  Cross-window cancellation cutoffs must likewise be main-owned and versioned;
+  have submissions echo the authoritative version they observed so delayed
+  pre-cancel work cannot masquerade as an explicit post-cancel resume.
   Bounded dedup caches may evict settled history, never unresolved receipts;
   reject excess in-flight work through a separate bounded admission limit.
   Scope renderer retries to the stable window-session identity, not an

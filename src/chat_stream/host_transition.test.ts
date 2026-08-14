@@ -141,12 +141,13 @@ describe("transitionChatStreamHost", () => {
     const parked = {
       ...initialChatStreamHostState(),
       queuePaused: true,
+      stopPolicyVersion: 1,
     };
 
     const submitted = transitionChatStreamHost(parked, {
       type: "SUBMIT",
       intent: intent("late"),
-      queueOnly: true,
+      observedStopPolicyVersion: 0,
     });
 
     expect(submitted.kind).toBe("applied");
@@ -157,6 +158,31 @@ describe("transitionChatStreamHost", () => {
         type: "persist-queued",
         intent: intent("late"),
         resumeQueue: false,
+      },
+    ]);
+  });
+
+  it("resumes only after a submission observes the latest Stop policy", () => {
+    const parked = {
+      ...initialChatStreamHostState(),
+      queuePaused: true,
+      stopPolicyVersion: 2,
+      lastStopId: "stop-2",
+    };
+
+    const submitted = transitionChatStreamHost(parked, {
+      type: "SUBMIT",
+      intent: intent("after-stop"),
+      observedStopPolicyVersion: 2,
+    });
+
+    expect(submitted.kind).toBe("applied");
+    if (submitted.kind !== "applied") return;
+    expect(submitted.commands).toEqual([
+      {
+        type: "persist-queued",
+        intent: intent("after-stop"),
+        resumeQueue: true,
       },
     ]);
   });
@@ -174,10 +200,12 @@ describe("transitionChatStreamHost", () => {
       type: "CANCEL",
       invocationRef: activeIntent.invocationRef!,
       pauseQueue: true,
+      stopId: "stop-1",
     });
     expect(cancelling.kind).toBe("applied");
     if (cancelling.kind !== "applied") return;
     expect(cancelling.state.active?.pauseQueueOnCancel).toBe(true);
+    expect(cancelling.state.stopPolicyVersion).toBe(1);
     expect(cancelling.state.queuePaused).toBe(false);
     expect(cancelling.commands).toEqual([
       { type: "park-queue" },
@@ -215,6 +243,28 @@ describe("transitionChatStreamHost", () => {
         pausePromptQueue: true,
       },
     ]);
+  });
+
+  it("does not advance or reapply an already-observed Stop cutoff", () => {
+    const stopped = {
+      ...initialChatStreamHostState(),
+      stopPolicyVersion: 1,
+      lastStopId: "stop-1",
+      queuePaused: true,
+    };
+
+    const duplicate = transitionChatStreamHost(stopped, {
+      type: "CANCEL",
+      invocationRef: intent("old").invocationRef!,
+      pauseQueue: true,
+      stopId: "stop-1",
+    });
+
+    expect(duplicate).toEqual({
+      kind: "ignored",
+      state: stopped,
+      reason: "not-cancellable",
+    });
   });
 
   it("parks a late Stop while finalization is already in progress", () => {

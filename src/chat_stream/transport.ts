@@ -114,7 +114,7 @@ export const ChatStreamIntentEventSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("SUBMIT"),
       intent: SerializableChatTurnIntentSchema,
-      queueOnly: z.boolean().optional(),
+      observedStopPolicyVersion: z.number().int().nonnegative().optional(),
     })
     .strict(),
   z
@@ -122,6 +122,7 @@ export const ChatStreamIntentEventSchema = z.discriminatedUnion("type", [
       type: z.literal("CANCEL"),
       invocationRef: ChatStreamInvocationRefSchema,
       pauseQueue: z.boolean().optional(),
+      stopId: z.string().min(1).max(MAX_CHAT_WIRE_ID_CHARS).optional(),
     })
     .strict(),
   z
@@ -327,6 +328,7 @@ export const ChatStreamRemoteSnapshotSchema = z
     queueRevision: expectedQueueRevision,
     queuePaused: z.boolean(),
     queue: z.array(ChatQueueEntrySchema),
+    stopPolicyVersion: z.number().int().nonnegative(),
     capabilities: z
       .object({
         canSubmit: z.boolean(),
@@ -393,6 +395,7 @@ export function unavailableChatStreamSnapshot(
     queueRevision: 0,
     queuePaused: false,
     queue: [],
+    stopPolicyVersion: 0,
     capabilities: {
       canSubmit: true,
       canCancel: false,

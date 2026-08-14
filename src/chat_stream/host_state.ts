@@ -21,6 +21,8 @@ export interface ChatStreamHostState {
   readonly queueRevision: number;
   readonly queuePaused: boolean;
   readonly queue: readonly ChatQueueEntry[];
+  readonly stopPolicyVersion: number;
+  readonly lastStopId: string | null;
   readonly lastAcceptance: {
     readonly intentId: string;
     readonly acceptance:

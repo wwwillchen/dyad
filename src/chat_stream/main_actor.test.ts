@@ -800,6 +800,106 @@ describe("main-hosted chat stream actor", () => {
     await host.dispose();
   });
 
+  it("keeps delayed cross-window submissions behind the authoritative Stop cutoff", async () => {
+    let releaseAttachment!: () => void;
+    const attachmentGate = new Promise<void>((resolve) => {
+      releaseAttachment = resolve;
+    });
+    execution.convertAttachments.mockImplementationOnce(async () => {
+      await attachmentGate;
+      return [];
+    });
+    const clock = createFakeClock();
+    const host = new ActorHost({
+      placement: "main",
+      clock,
+      ids: createSequentialIdSource(),
+    });
+    const manifest = createRemoteMachineManifest([chatStreamDefinition]);
+    const windows = new TwoWindowHarness();
+    const [windowA, windowB] = windows.createPair();
+    const transport = new RemoteMachineTransport({
+      host,
+      manifest,
+      windows: windows.registry,
+      clock,
+    });
+    const duplex = new FakeDuplexRemoteTransport(transport, manifest, windows);
+    const managerA = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(),
+      duplex.connect(windowA),
+    );
+    const managerB = new ChatStreamRemoteManager(
+      createStore(),
+      createSequentialIdSource(1_000),
+      duplex.connect(windowB),
+    );
+    managerA.start();
+    managerB.start();
+    const actorA = managerA.ensure(7);
+    const actorB = managerB.ensure(7);
+    const releaseA = actorA.subscribe(() => undefined);
+    const releaseB = actorB.subscribe(() => undefined);
+    await flush();
+
+    actorA.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "active in window A" },
+    });
+    await vi.waitFor(() =>
+      expect(
+        [...execution.observers.values()].some(
+          (observer) => observer.intent.prompt === "active in window A",
+        ),
+      ).toBe(true),
+    );
+
+    actorB.send({
+      type: "submit",
+      request: {
+        chatId: 7,
+        prompt: "serializing in window B",
+        attachments: [{ file: {} as File, type: "chat-context" }],
+      },
+    });
+    actorA.send({ type: "cancel" });
+    expect(actorB.getSnapshot().stopPolicyVersion).toBe(0);
+    actorB.send({
+      type: "submit",
+      request: { chatId: 7, prompt: "submitted just after Stop" },
+    });
+
+    await vi.waitFor(() => expect(persisted.paused).toBe(true));
+    await vi.waitFor(() =>
+      expect(actorB.getSnapshot().stopPolicyVersion).toBe(1),
+    );
+    releaseAttachment();
+    await vi.waitFor(() =>
+      expect(persisted.entries.map((entry) => entry.prompt)).toEqual([
+        "serializing in window B",
+        "submitted just after Stop",
+      ]),
+    );
+    const observedPrompts = [...execution.observers.values()].map(
+      (observer) => observer.intent.prompt,
+    );
+    expect(observedPrompts).not.toContain("serializing in window B");
+    expect(observedPrompts).not.toContain("submitted just after Stop");
+    expect(actorA.getSnapshot()).toMatchObject({
+      phase: "idle",
+      queuePaused: true,
+      stopPolicyVersion: 1,
+    });
+
+    releaseA();
+    releaseB();
+    managerA.dispose();
+    managerB.dispose();
+    await transport.dispose();
+    await host.dispose();
+  });
+
   it("bootstraps actor interest before dispatching a first submission", async () => {
     const clock = createFakeClock();
     const host = new ActorHost({

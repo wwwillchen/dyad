@@ -51,7 +51,7 @@ interface PendingSubmission {
   request: StreamRequest;
   invocationRef: NonNullable<ChatStreamRemoteSnapshot["invocationRef"]>;
   dispatch: Promise<boolean>;
-  queueOnly: boolean;
+  observedStopPolicyVersion: number;
   acceptanceDelivered: boolean;
   releaseSubscription: () => void;
 }
@@ -350,9 +350,7 @@ export class ChatStreamRemoteManager {
         const snapshot = this.getSnapshot(chatId);
         const invocationRef = snapshot.invocationRef;
         if (!invocationRef) return;
-        for (const pending of this.pendingSubmissions.values()) {
-          if (pending.request.chatId === chatId) pending.queueOnly = true;
-        }
+        const stopId = this.ids.next("chat-stop");
         const optimistic = [...this.pendingSubmissions.entries()].find(
           ([, pending]) =>
             !pending.acceptanceDelivered &&
@@ -379,7 +377,12 @@ export class ChatStreamRemoteManager {
                 ) {
                   this.dispatchCompatibilityCommand(
                     chatId,
-                    { type: "CANCEL", invocationRef, pauseQueue: true },
+                    {
+                      type: "CANCEL",
+                      invocationRef,
+                      pauseQueue: true,
+                      stopId,
+                    },
                     "cancel the chat",
                   );
                 }
@@ -396,7 +399,7 @@ export class ChatStreamRemoteManager {
         }
         this.dispatchCompatibilityCommand(
           chatId,
-          { type: "CANCEL", invocationRef, pauseQueue: true },
+          { type: "CANCEL", invocationRef, pauseQueue: true, stopId },
           "cancel the chat",
         );
         return;
@@ -452,7 +455,7 @@ export class ChatStreamRemoteManager {
       request,
       invocationRef,
       dispatch: Promise.resolve(false),
-      queueOnly: false,
+      observedStopPolicyVersion: actor.getSnapshot().stopPolicyVersion,
       acceptanceDelivered: false,
       releaseSubscription: release,
     };
@@ -518,7 +521,7 @@ export class ChatStreamRemoteManager {
       const receipt = await actor.dispatch({
         type: "SUBMIT",
         intent,
-        ...(pending.queueOnly ? { queueOnly: true } : {}),
+        observedStopPolicyVersion: pending.observedStopPolicyVersion,
       });
       if (receipt.kind === "rejected") {
         throw new Error(`Chat submission rejected: ${receipt.reason}`);

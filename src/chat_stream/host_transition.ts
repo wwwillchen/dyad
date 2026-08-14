@@ -22,6 +22,8 @@ export function initialChatStreamHostState(input?: {
     queueRevision: input?.queueRevision ?? 0,
     queuePaused: input?.queuePaused ?? false,
     queue: input?.queue ?? [],
+    stopPolicyVersion: 0,
+    lastStopId: null,
     lastAcceptance: null,
     lastCompletion: null,
     pendingQueueMutationId: null,
@@ -116,10 +118,13 @@ export function transitionChatStreamHost(
 > {
   switch (event.type) {
     case "SUBMIT": {
+      const predatesLatestStop =
+        event.observedStopPolicyVersion !== undefined &&
+        event.observedStopPolicyVersion < state.stopPolicyVersion;
       if (
         (state.phase === "idle" || state.phase === "errored") &&
         !state.queuePaused &&
-        event.queueOnly !== true
+        !predatesLatestStop
       ) {
         const invocationRef = event.intent.invocationRef;
         if (!invocationRef) {
@@ -161,28 +166,38 @@ export function transitionChatStreamHost(
             type: "persist-queued",
             intent: event.intent,
             resumeQueue:
-              event.queueOnly !== true &&
+              !predatesLatestStop &&
               state.queuePaused &&
               (state.phase === "idle" || state.phase === "errored"),
           },
         ],
       };
     }
-    case "CANCEL":
+    case "CANCEL": {
+      const isNewStop =
+        event.pauseQueue === true &&
+        (event.stopId === undefined || event.stopId !== state.lastStopId);
+      const stoppedState = isNewStop
+        ? {
+            ...state,
+            stopPolicyVersion: state.stopPolicyVersion + 1,
+            lastStopId: event.stopId ?? null,
+          }
+        : state;
       if (!state.active) {
-        return event.pauseQueue
+        return isNewStop
           ? {
               kind: "applied",
-              state,
+              state: stoppedState,
               commands: [{ type: "park-queue" }],
             }
           : ignore(state, "not-cancellable");
       }
       if (!sameInvocationRef(state.active.invocationRef, event.invocationRef)) {
-        return event.pauseQueue
+        return isNewStop
           ? {
               kind: "applied",
-              state,
+              state: stoppedState,
               commands: [{ type: "park-queue" }],
             }
           : ignore(state, "stale-invocation");
@@ -190,14 +205,14 @@ export function transitionChatStreamHost(
       if (
         state.phase !== "admitting" &&
         state.phase !== "streaming" &&
-        !event.pauseQueue
+        !isNewStop
       ) {
         return ignore(state, "not-cancellable");
       }
       {
         const shouldCancelActive =
           state.phase === "admitting" || state.phase === "streaming";
-        const shouldParkQueue = event.pauseQueue === true;
+        const shouldParkQueue = isNewStop;
         const shouldUpdateStopPolicy =
           shouldParkQueue &&
           (!state.active.pauseQueueOnCancel ||
@@ -207,7 +222,7 @@ export function transitionChatStreamHost(
           state:
             shouldCancelActive || shouldUpdateStopPolicy
               ? {
-                  ...state,
+                  ...stoppedState,
                   phase: shouldCancelActive ? "cancelling" : state.phase,
                   active: {
                     ...state.active,
@@ -218,7 +233,7 @@ export function transitionChatStreamHost(
                       : state.active.queueResumedAfterCancel,
                   },
                 }
-              : state,
+              : stoppedState,
           commands: [
             ...(shouldParkQueue ? [{ type: "park-queue" as const }] : []),
             ...(shouldCancelActive
@@ -232,6 +247,7 @@ export function transitionChatStreamHost(
           ],
         };
       }
+    }
     case "REPORT_ERROR":
       return {
         kind: "applied",
