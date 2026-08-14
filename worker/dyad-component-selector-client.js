@@ -525,6 +525,30 @@
   }
 
   function onKeyDown(e) {
+    const key = e.key.toLowerCase();
+    const hasCtrlOrMeta = isMac ? e.metaKey : e.ctrlKey;
+
+    // Electron's native reload accelerators target the whole Dyad renderer.
+    // Keep reload shortcuts scoped to the preview even while it owns focus.
+    const hasUnexpectedReloadModifier =
+      e.altKey || (isMac ? e.ctrlKey : e.metaKey);
+    if (key === "r" && hasCtrlOrMeta) {
+      if (hasUnexpectedReloadModifier) {
+        // Chromium still treats mixed primary-modifier chords as reloads. Let
+        // real AltGr input through, but suppress those other browser defaults.
+        if (!e.getModifierState("AltGraph")) e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      window.parent.postMessage(
+        {
+          type: "dyad-preview-reload-shortcut",
+        },
+        "*",
+      );
+      return;
+    }
+
     // Ignore keystrokes if the user is typing in an input field, textarea, or editable element
     if (
       e.target.tagName === "INPUT" ||
@@ -535,9 +559,7 @@
     }
 
     // Forward shortcuts to parent window
-    const key = e.key.toLowerCase();
     const hasShift = e.shiftKey;
-    const hasCtrlOrMeta = isMac ? e.metaKey : e.ctrlKey;
     if (key === "c" && hasShift && hasCtrlOrMeta) {
       e.preventDefault();
       window.parent.postMessage(
@@ -576,6 +598,17 @@
 
   /* ---------- message bridge -------------------------------------------- */
   window.addEventListener("message", (e) => {
+    // The shim can also run inside iframes nested in the app preview. Bubble a
+    // child's shortcut request one frame at a time until the top preview frame
+    // can deliver it to Dyad with the source identity the parent expects.
+    if (
+      e.source !== window.parent &&
+      e.origin === window.location.origin &&
+      e.data?.type === "dyad-preview-reload-shortcut"
+    ) {
+      window.parent.postMessage(e.data, "*");
+      return;
+    }
     if (e.source !== window.parent) return;
     if (e.data.type === "dyad-pro-mode") {
       isProMode = e.data.enabled;

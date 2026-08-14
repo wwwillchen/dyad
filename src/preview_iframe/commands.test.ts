@@ -52,6 +52,7 @@ describe("preview iframe command adapter", () => {
     expect(onComponentMessage).toHaveBeenCalledWith(selectorMessage);
     expect(PREVIEW_IFRAME_MESSAGE_ROUTES).toEqual({
       "dyad-component-selector-initialized": "shared-and-component",
+      "dyad-preview-reload-shortcut": "component",
       "dyad-screenshot-response": "shared-and-component",
       pushState: "machine",
       replaceState: "machine",
@@ -188,6 +189,30 @@ describe("preview iframe command adapter", () => {
     });
 
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("routes a trusted iframe reload shortcut to the component binding", () => {
+    const contentWindow = { postMessage: vi.fn() };
+    const send = vi.fn<(event: PreviewIframeEvent) => void>();
+    const onSharedMachineEvent = vi.fn();
+    const onComponentMessage = vi.fn();
+
+    const message = {
+      source: contentWindow,
+      data: { type: "dyad-preview-reload-shortcut" },
+    } as unknown as MessageEvent;
+    routePreviewIframeMessage({
+      event: message,
+      contentWindow,
+      appUrl: "http://localhost:3000",
+      send,
+      onSharedMachineEvent,
+      onComponentMessage,
+    });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(onSharedMachineEvent).not.toHaveBeenCalled();
+    expect(onComponentMessage).toHaveBeenCalledWith(message);
   });
 
   it("rejects iframe navigation outside the trusted app origin", () => {

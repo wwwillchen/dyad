@@ -72,6 +72,7 @@ export function createPreviewIframeCommandAdapter(
 
 export type PreviewIframeMachineMessageType =
   | "dyad-component-selector-initialized"
+  | "dyad-preview-reload-shortcut"
   | "dyad-screenshot-response"
   | "pushState"
   | "replaceState"
@@ -84,6 +85,9 @@ export const PREVIEW_IFRAME_MESSAGE_ROUTES: Readonly<
   >
 > = {
   "dyad-component-selector-initialized": "shared-and-component",
+  // The component binding owns the visual-editing cleanup that must accompany
+  // every user-requested reload.
+  "dyad-preview-reload-shortcut": "component",
   // The screenshot machine and annotator share this response. Correlation by
   // requestId lets each owner ignore messages belonging to the other.
   "dyad-screenshot-response": "shared-and-component",

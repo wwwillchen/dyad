@@ -1,6 +1,251 @@
 import { testSkipIfWindows, Timeout } from "./helpers/test_helper";
 import { expect } from "@playwright/test";
 
+testSkipIfWindows(
+  "reload shortcuts stay scoped to the focused preview",
+  async ({ electronApp, po }) => {
+    await po.setUpDyadPro();
+    await po.sendPrompt("tc=basic");
+    await po.previewPanel.expectPreviewIframeIsVisible();
+
+    const reloadItems = await electronApp.evaluate(({ Menu }) => {
+      const viewMenu = Menu.getApplicationMenu()?.items.find(
+        (item) => item.label === "View",
+      );
+      return (
+        viewMenu?.submenu?.items
+          .filter((item) =>
+            ["Reload Dyad", "Force Reload Dyad"].includes(item.label),
+          )
+          .map((item) => ({
+            label: item.label,
+            accelerator: item.accelerator ?? null,
+          })) ?? []
+      );
+    });
+    expect(reloadItems).toEqual([
+      { label: "Reload Dyad", accelerator: null },
+      { label: "Force Reload Dyad", accelerator: null },
+    ]);
+
+    await po.page.evaluate(() => {
+      const testWindow = window as typeof window & {
+        reloadShortcutMarker?: string;
+        previewSelectorReadyCount?: number;
+      };
+      testWindow.reloadShortcutMarker = "outer-renderer-still-alive";
+      testWindow.previewSelectorReadyCount = 0;
+      window.addEventListener("message", (event) => {
+        if (event.data?.type === "dyad-component-selector-initialized") {
+          testWindow.previewSelectorReadyCount =
+            (testWindow.previewSelectorReadyCount ?? 0) + 1;
+        }
+      });
+    });
+
+    const getSelectorReadyCount = () =>
+      po.page.evaluate(
+        () =>
+          (window as typeof window & { previewSelectorReadyCount?: number })
+            .previewSelectorReadyCount ?? 0,
+      );
+
+    const modifier = process.platform === "darwin" ? "Meta" : "Control";
+    const shortcuts = [`${modifier}+r`, `${modifier}+Shift+r`];
+
+    const pickerShortcutFrame = po.previewPanel
+      .getPreviewIframeElement()
+      .contentFrame();
+    await expect(po.previewPanel.getPreviewPickElementButton()).toBeEnabled({
+      timeout: Timeout.EXTRA_LONG,
+    });
+    const pickerSelectorReadyCount = await getSelectorReadyCount();
+    await pickerShortcutFrame.locator("body").evaluate((body) => {
+      body.tabIndex = -1;
+      body.focus();
+    });
+    await po.page.keyboard.press(`${modifier}+Shift+c`);
+    await expect(po.previewPanel.getPreviewPickElementButton()).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(await getSelectorReadyCount()).toBe(pickerSelectorReadyCount);
+    await po.previewPanel
+      .getPreviewIframeElement()
+      .contentFrame()
+      .getByRole("heading", { name: "Welcome to Your Blank App" })
+      .click();
+    const marginButton = po.page.getByRole("button", { name: "Margin" });
+    await expect(marginButton).toBeVisible({ timeout: Timeout.MEDIUM });
+    await marginButton.click();
+    await po.page.getByLabel("Horizontal").fill("20");
+    await po.page.keyboard.press("Escape");
+    await expect(po.page.getByText(/\d+ component[s]? modified/)).toBeVisible({
+      timeout: Timeout.MEDIUM,
+    });
+
+    const initialFrame = po.previewPanel
+      .getPreviewIframeElement()
+      .contentFrame();
+    const initialSelectorReadyCount = await getSelectorReadyCount();
+    await initialFrame.locator("body").evaluate((body) => {
+      body.dataset.reloadShortcutMarker = "not-reloaded";
+      body.tabIndex = -1;
+      body.focus();
+    });
+    await po.page.keyboard.press(`${modifier}+Alt+r`);
+    await po.page.waitForTimeout(500);
+    await expect(initialFrame.locator("body")).toHaveAttribute(
+      "data-reload-shortcut-marker",
+      "not-reloaded",
+    );
+    expect(await getSelectorReadyCount()).toBe(initialSelectorReadyCount);
+
+    for (const [index, shortcut] of shortcuts.entries()) {
+      const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
+      const selectorReadyCount = await getSelectorReadyCount();
+      await frame.locator("body").evaluate((body) => {
+        body.dataset.reloadShortcutMarker = "before-reload";
+        body.tabIndex = -1;
+        sessionStorage.removeItem("dyad-app-key-handler");
+        document.addEventListener(
+          "keydown",
+          () => sessionStorage.setItem("dyad-app-key-handler", "observed"),
+          { once: true },
+        );
+        body.focus();
+      });
+
+      await po.page.keyboard.press(shortcut);
+
+      await expect(frame.locator("body")).not.toHaveAttribute(
+        "data-reload-shortcut-marker",
+        "before-reload",
+        { timeout: Timeout.LONG },
+      );
+      await expect
+        .poll(getSelectorReadyCount)
+        .toBeGreaterThan(selectorReadyCount);
+      await expect
+        .poll(() =>
+          po.page.evaluate(
+            () =>
+              (window as typeof window & { reloadShortcutMarker?: string })
+                .reloadShortcutMarker,
+          ),
+        )
+        .toBe("outer-renderer-still-alive");
+      await expect
+        .poll(() =>
+          frame
+            .locator("body")
+            .evaluate(() => sessionStorage.getItem("dyad-app-key-handler")),
+        )
+        .toBe("observed");
+
+      if (index === 0) {
+        await expect(marginButton).not.toBeVisible();
+        await expect(
+          po.page.getByText(/\d+ component[s]? modified/),
+        ).not.toBeVisible();
+      }
+    }
+
+    const rendererAltFrame = po.previewPanel
+      .getPreviewIframeElement()
+      .contentFrame();
+    await expect(
+      rendererAltFrame.getByRole("heading", {
+        name: "Welcome to Your Blank App",
+      }),
+    ).toBeVisible({ timeout: Timeout.LONG });
+    const rendererAltSelectorReadyCount = await getSelectorReadyCount();
+    await rendererAltFrame.locator("body").evaluate((body) => {
+      body.dataset.reloadShortcutMarker = "renderer-alt-not-reloaded";
+    });
+    await po.page.getByTestId("preview-refresh-button").focus();
+    await po.page.keyboard.press(`${modifier}+Alt+r`);
+    await po.page.waitForTimeout(500);
+    await expect(rendererAltFrame.locator("body")).toHaveAttribute(
+      "data-reload-shortcut-marker",
+      "renderer-alt-not-reloaded",
+    );
+    expect(await getSelectorReadyCount()).toBe(rendererAltSelectorReadyCount);
+
+    for (const shortcut of shortcuts) {
+      const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
+      const selectorReadyCount = await getSelectorReadyCount();
+      await frame.locator("body").evaluate((body) => {
+        body.dataset.reloadShortcutMarker = "before-reload";
+      });
+      await po.page.getByTestId("preview-refresh-button").focus();
+
+      await po.page.keyboard.press(shortcut);
+
+      await expect(frame.locator("body")).not.toHaveAttribute(
+        "data-reload-shortcut-marker",
+        "before-reload",
+        { timeout: Timeout.LONG },
+      );
+      await expect
+        .poll(getSelectorReadyCount)
+        .toBeGreaterThan(selectorReadyCount);
+    }
+
+    const frame = po.previewPanel.getPreviewIframeElement().contentFrame();
+    const untrustedSelectorReadyCount = await getSelectorReadyCount();
+    await frame.locator("body").evaluate((body) => {
+      body.dataset.reloadShortcutMarker = "untrusted-child-blocked";
+      window.addEventListener("message", (event) => {
+        if (event.data?.type === "untrusted-reload-attempted") {
+          body.dataset.untrustedReloadAttempted = "true";
+        }
+      });
+      const untrustedFrame = document.createElement("iframe");
+      untrustedFrame.dataset.testid = "untrusted-preview-frame";
+      untrustedFrame.src = `data:text/html,${encodeURIComponent(
+        '<script>parent.postMessage({type:"dyad-preview-reload-shortcut"},"*");parent.postMessage({type:"untrusted-reload-attempted"},"*");</script>',
+      )}`;
+      body.appendChild(untrustedFrame);
+    });
+    await expect(frame.locator("body")).toHaveAttribute(
+      "data-untrusted-reload-attempted",
+      "true",
+      { timeout: Timeout.LONG },
+    );
+    await po.page.waitForTimeout(250);
+    await expect(frame.locator("body")).toHaveAttribute(
+      "data-reload-shortcut-marker",
+      "untrusted-child-blocked",
+    );
+    expect(await getSelectorReadyCount()).toBe(untrustedSelectorReadyCount);
+
+    const selectorReadyCount = await getSelectorReadyCount();
+    await frame.locator("body").evaluate((body) => {
+      const nestedFrame = document.createElement("iframe");
+      nestedFrame.dataset.testid = "nested-preview-frame";
+      nestedFrame.src = window.location.href;
+      body.appendChild(nestedFrame);
+    });
+    const nestedFrame = frame
+      .locator('iframe[data-testid="nested-preview-frame"]')
+      .contentFrame();
+    await expect(nestedFrame.locator("body")).toBeVisible({
+      timeout: Timeout.LONG,
+    });
+    await nestedFrame.locator("body").evaluate((body) => {
+      body.tabIndex = -1;
+      body.focus();
+    });
+
+    await po.page.keyboard.press(`${modifier}+r`);
+
+    await expect
+      .poll(getSelectorReadyCount)
+      .toBeGreaterThan(selectorReadyCount);
+  },
+);
+
 testSkipIfWindows("refresh app", async ({ po }) => {
   await po.setUp({ autoApprove: true });
   await po.sendPrompt("hi");

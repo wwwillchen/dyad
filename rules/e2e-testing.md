@@ -18,6 +18,11 @@ coverage, opt into `macos_native_lifecycle.spec.ts` with
 multiple packaged Dyad instances are running. Post Command-Q directly to the
 Electron PID so another process cannot receive it.
 
+Keep each keyboard shortcut owned by one active listener. Duplicate global and
+feature-scoped listeners can make modifier guards or cleanup appear ineffective;
+packaged Electron E2E should exercise the chord with focus in every supported
+context and assert both the intended reload and non-reload paths.
+
 Do NOT write lots of e2e test cases for one feature. Each e2e test case adds a significant amount of overhead, so instead prefer just one or two E2E test cases that each have broad coverage of the feature in question.
 
 **IMPORTANT: You MUST run `npm run build` before running E2E tests.** E2E tests run against the built application binary, not the source code. If you make any changes to application code (anything outside of `e2e-tests/`), you MUST re-run `npm run build` before running E2E tests, otherwise you'll be testing the old version of the application.
@@ -57,6 +62,10 @@ await po.navigation.goToChatTab();
 ```
 
 Key sub-components: `po.appManagement`, `po.navigation`, `po.chatActions`, `po.previewPanel`, `po.codeEditor`, `po.githubConnector`, `po.toastNotifications`, `po.settings`, `po.securityReview`, `po.modelPicker`.
+
+Playwright's `FrameLocator` does not expose `evaluate()`. To run code in a
+preview frame, select an element first (for example,
+`frame.locator("body").evaluate(...)`) and evaluate through that locator.
 
 When an E2E assertion needs main-owned state after a legacy read IPC channel is
 deleted, read the authoritative remote-machine snapshot through

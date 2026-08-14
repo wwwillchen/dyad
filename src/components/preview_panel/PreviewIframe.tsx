@@ -1,4 +1,5 @@
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
+import { isPreviewOpenAtom } from "@/atoms/viewAtoms";
 import { useCurrentAppUrl } from "@/hooks/useAppRun";
 import { useAtomValue, useSetAtom, useAtom } from "jotai";
 import {
@@ -229,6 +230,7 @@ export const PreviewIframe = ({
 }) => {
   const { t } = useTranslation("home");
   const selectedAppId = useAtomValue(selectedAppIdAtom);
+  const isPreviewOpen = useAtomValue(isPreviewOpenAtom);
   const { appUrl, originalUrl, mode } = useCurrentAppUrl(selectedAppId);
   const appRunManager = useAppRunRemoteManager();
   const selectedChatId = useAtomValue(selectedChatIdAtom);
@@ -342,6 +344,20 @@ export const PreviewIframe = ({
 
   const { addAttachments } = useAttachments();
   const setPendingChanges = useSetAtom(pendingVisualChangesAtom);
+
+  const handleReload = useCallback(() => {
+    sendIframeEvent({ type: "RELOAD_REQUESTED" });
+    setVisualEditingSelectedComponent(null);
+    setPendingChanges(new Map());
+    setCurrentComponentCoordinates(null);
+    console.debug("Reloading iframe preview for app", selectedAppId);
+  }, [
+    selectedAppId,
+    sendIframeEvent,
+    setCurrentComponentCoordinates,
+    setPendingChanges,
+    setVisualEditingSelectedComponent,
+  ]);
   const pendingAnnotatorScreenshotRequestIdRef = useRef<string | null>(null);
   const skipNextAddressBarBlurRef = useRef(false);
 
@@ -774,6 +790,11 @@ export const PreviewIframe = ({
         return;
       }
 
+      if (event.data?.type === "dyad-preview-reload-shortcut") {
+        handleReload();
+        return;
+      }
+
       if (event.data?.type === "dyad-text-updated") {
         handleTextUpdated(event.data);
         return;
@@ -987,6 +1008,7 @@ export const PreviewIframe = ({
       setSelectedComponentsPreview,
       setVisualEditingSelectedComponent,
       queryClient,
+      handleReload,
     ],
   );
   componentMessageHandlerRef.current = handleComponentMessage;
@@ -1022,6 +1044,29 @@ export const PreviewIframe = ({
     }
   };
 
+  // Keep reload scoped to the preview while its panel is active, including
+  // when focus is in the parent renderer rather than inside the iframe. Match
+  // the native shortcut exactly so AltGr and mixed primary modifiers remain
+  // available to the focused control.
+  useEffect(() => {
+    if (!isPreviewOpen) return;
+    const handleReloadShortcut = (event: KeyboardEvent) => {
+      const hasPrimaryModifier = isMac ? event.metaKey : event.ctrlKey;
+      const hasUnexpectedModifier =
+        event.altKey || (isMac ? event.ctrlKey : event.metaKey);
+      if (event.key.toLowerCase() === "r" && hasPrimaryModifier) {
+        if (hasUnexpectedModifier) {
+          if (!event.getModifierState("AltGraph")) event.preventDefault();
+          return;
+        }
+        event.preventDefault();
+        handleReload();
+      }
+    };
+    window.addEventListener("keydown", handleReloadShortcut);
+    return () => window.removeEventListener("keydown", handleReloadShortcut);
+  }, [handleReload, isMac, isPreviewOpen]);
+
   // Activate component selector using a shortcut
   useShortcut(
     "c",
@@ -1047,16 +1092,6 @@ export const PreviewIframe = ({
       sendIframeEvent({ type: "GO_FORWARD" });
       recorder.recordHistoryMove("forward");
     }
-  };
-
-  // Function to handle reload
-  const handleReload = () => {
-    sendIframeEvent({ type: "RELOAD_REQUESTED" });
-    // Reset visual editing state
-    setVisualEditingSelectedComponent(null);
-    setPendingChanges(new Map());
-    setCurrentComponentCoordinates(null);
-    console.debug("Reloading iframe preview for app", selectedAppId);
   };
 
   // Function to navigate to a specific route

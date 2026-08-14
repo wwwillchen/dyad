@@ -1240,12 +1240,22 @@ const createApplicationMenu = () => {
     {
       label: "View",
       submenu: [
-        { role: "reload" as const },
-        { role: "forceReload" as const },
-        ...(process.env.NODE_ENV === "development"
-          ? [{ role: "toggleDevTools" as const }]
-          : []),
+        {
+          label: "Reload Dyad",
+          click: () => BrowserWindow.getFocusedWindow()?.reload(),
+        },
+        {
+          label: "Force Reload Dyad",
+          click: () =>
+            BrowserWindow.getFocusedWindow()?.webContents.reloadIgnoringCache(),
+        },
         { type: "separator" as const },
+        ...(process.env.NODE_ENV === "development"
+          ? [
+              { role: "toggleDevTools" as const },
+              { type: "separator" as const },
+            ]
+          : []),
         { role: "togglefullscreen" as const },
       ],
     },
