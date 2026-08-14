@@ -24,7 +24,7 @@ testSkipIfWindows(
 );
 
 testSkipIfWindows(
-  "local-agent - Explorer appears and completes in Agent team",
+  "local-agent - Explorer appears inline and returns partial findings",
   async ({ po }) => {
     await po.setUpDyadPro({ localAgent: true, autoApprove: true });
     await po.importApp("minimal");
@@ -32,18 +32,32 @@ testSkipIfWindows(
 
     await po.sendPrompt("tc=local-agent/subagent-spawn");
 
-    const teamButton = po.page.getByRole("button", { name: /Agent team/ });
-    await expect(teamButton).toBeVisible({ timeout: Timeout.LONG });
-    if ((await teamButton.getAttribute("aria-expanded")) !== "true") {
-      await teamButton.click();
-    }
-    await expect(po.page.getByText("explorer", { exact: true })).toBeVisible();
     await expect(
-      po.page.getByText("Inspect app entry", { exact: true }),
-    ).toBeVisible();
-    await expect(po.page.getByText("completed", { exact: true })).toBeVisible({
-      timeout: Timeout.LONG,
-    });
+      po.page.getByRole("button", {
+        name: /Inspect app entry explorer · Partial findings/,
+      }),
+    ).toBeVisible({ timeout: Timeout.LONG });
+    await expect
+      .poll(
+        () =>
+          po.page.evaluate(async () => {
+            const threads = await (window as any).electron.ipcRenderer.invoke(
+              "agent:list-subagents",
+              { chatId: 1 },
+            );
+            return threads.map((thread: any) => ({
+              persona: thread.persona,
+              taskName: thread.taskName,
+              status: thread.status,
+            }));
+          }),
+        { timeout: Timeout.LONG },
+      )
+      .toContainEqual({
+        persona: "explorer",
+        taskName: "Inspect app entry",
+        status: "partial",
+      });
   },
 );
 

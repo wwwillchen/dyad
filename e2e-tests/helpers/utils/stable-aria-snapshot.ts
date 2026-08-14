@@ -9,7 +9,7 @@ function isMoreIndented(line: string, baseIndent: number) {
   return indent > baseIndent;
 }
 
-function normalizeTextLine(line: string) {
+function normalizeTextLine(line: string, normalizeVersionNumbers: boolean) {
   const indent = line.match(/^ */)?.[0] ?? "";
   line = line.replace(/http:\/\/localhost:\d+/g, "http://localhost:[[port]]");
   const trimmed = line.trim();
@@ -27,7 +27,8 @@ function normalizeTextLine(line: string) {
     versionMatch &&
     (/files changed/.test(trimmed) || /wrote \d+ file\(s\)/.test(trimmed))
   ) {
-    return `${indent}- text: "[[Version ${versionMatch[1]}: files changed]]"`;
+    const version = normalizeVersionNumbers ? "*" : versionMatch[1];
+    return `${indent}- text: "[[Version ${version}: files changed]]"`;
   }
 
   return line;
@@ -113,12 +114,15 @@ function shouldDropLine(line: string) {
  * Normalizes broad chat message ARIA snapshots to focus on message semantics
  * instead of accessibility-tree representation details for repeated controls.
  */
-export function normalizeMessagesAriaSnapshot(rawSnapshot: string) {
+export function normalizeMessagesAriaSnapshot(
+  rawSnapshot: string,
+  { normalizeVersionNumbers = false } = {},
+) {
   const lines = rawSnapshot.replace(/\r\n/g, "\n").split("\n");
   const normalizedLines: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
-    const line = normalizeTextLine(lines[i]);
+    const line = normalizeTextLine(lines[i], normalizeVersionNumbers);
     const button = parseButtonLine(line);
 
     if (button) {

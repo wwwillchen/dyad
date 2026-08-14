@@ -5,8 +5,6 @@
 - paragraph: End of turbo edit
 - button "Copy"
 - text: auto
-- button "Agent team" [expanded]
-- button "Review changes"
 - button "Copy Request ID"
 - button "Undo"
 - button "Retry"

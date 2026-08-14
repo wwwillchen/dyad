@@ -95,6 +95,15 @@ describe("normalizeMessagesAriaSnapshot", () => {
 `);
   });
 
+  it("optionally normalizes version numbers", () => {
+    expect(
+      normalizeMessagesAriaSnapshot(
+        '- text: "Version 4: (6 files changed)"\n',
+        { normalizeVersionNumbers: true },
+      ),
+    ).toBe('- text: "[[Version *: files changed]]"\n');
+  });
+
   it("normalizes localhost ports in links", () => {
     expect(
       normalizeMessagesAriaSnapshot(`- link "http://localhost:42101/src/pages/Index.tsx:6:6":
