@@ -130,7 +130,7 @@ export function DyadCard({
   const variantClasses =
     effectiveVariant === "ghost"
       ? "hover:bg-(--background-lightest) rounded-lg"
-      : `bg-(--background-lightest) hover:bg-(--background-lighter) rounded-xl border border-border/60 ${leftBorder}`;
+      : `bg-(--background-lightest) hover:bg-(--background-lighter) dark:bg-(--background-lighter) dark:hover:bg-muted/50 rounded-xl border border-border/60 ${leftBorder}`;
 
   return (
     <div

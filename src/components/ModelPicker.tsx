@@ -359,7 +359,7 @@ export function ModelPicker() {
       chat?.modelSelection?.effortLevel ??
       settings.modelEffortPreferences?.[getModelPreferenceKey(selectedModel)],
   }).effortLevel;
-  const modelDisplayName = `${getModelDisplayName()} (${formatEffortLevel(selectedEffortLevel)})`;
+  const modelDisplayName = getModelDisplayName();
   const trialAutoModel = autoModels.find((model) => model.apiName === "auto");
   const trialAutoEffortSettings = getEffortSettings(trialAutoModel);
   const trialAutoEffort = createModelSelection({
@@ -956,7 +956,7 @@ export function ModelPicker() {
             {modelDisplayName}
           </span>
         </DropdownMenuTrigger>
-        <DropdownMenuContent className="w-[17rem]" align="start">
+        <DropdownMenuContent className="w-[320px]" align="start">
           {/* Trial user upgrade banner */}
           {isTrial && (
             <>
@@ -983,6 +983,8 @@ export function ModelPicker() {
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger
                   hideChevron
+                  data-model-provider="auto"
+                  data-model-name="auto"
                   aria-label={`Auto. Trial. Selected. Effort: ${formatEffortLevel(trialAutoEffort)}. Press Enter to select; press Right Arrow to configure effort.`}
                   className="relative py-2 bg-primary/8 before:absolute before:inset-y-1.5 before:left-0 before:w-[3px] before:rounded-r-full before:bg-primary"
                   onMouseDown={(event) => {
