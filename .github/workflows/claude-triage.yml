@@ -62,7 +62,7 @@ jobs:
           claude_args: |
             --model claude-opus-5
             --setting-sources user
-            --allowedTools "Bash(echo:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Write(tmp/issue-triage/**)"
+            --allowedTools "Bash(echo:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Edit(/tmp/issue-triage/**)"
 
       - name: Verify issue triage output
         run: |
