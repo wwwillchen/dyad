@@ -101,6 +101,7 @@ describe("transitionChatStreamHost", () => {
     const submitted = transitionChatStreamHost(parked, {
       type: "SUBMIT",
       intent: intent("late"),
+      observedStopPolicyVersion: 0,
     });
 
     expect(submitted.kind).toBe("applied");
@@ -186,6 +187,30 @@ describe("transitionChatStreamHost", () => {
         type: "persist-queued",
         intent: intent("after-stop"),
         resumeQueue: true,
+      },
+    ]);
+  });
+
+  it("does not resume a Stop-parked queue without an observed policy version", () => {
+    const parked = {
+      ...initialChatStreamHostState(),
+      queuePaused: true,
+      queuePauseReason: "stop" as const,
+      stopPolicyVersion: 2,
+    };
+
+    const submitted = transitionChatStreamHost(parked, {
+      type: "SUBMIT",
+      intent: intent("missing-version"),
+    });
+
+    expect(submitted.kind).toBe("applied");
+    if (submitted.kind !== "applied") return;
+    expect(submitted.commands).toEqual([
+      {
+        type: "persist-queued",
+        intent: intent("missing-version"),
+        resumeQueue: false,
       },
     ]);
   });
@@ -320,6 +345,39 @@ describe("transitionChatStreamHost", () => {
     expect(queued.commands).toEqual([{ type: "dispatch-next" }]);
   });
 
+  it("keeps an admission parked when Stop takes ownership before persistence settles", () => {
+    const stopped = {
+      ...initialChatStreamHostState(),
+      queuePaused: false,
+      queuePauseReason: "stop" as const,
+      stopPolicyVersion: 1,
+    };
+    const queued = transitionChatStreamHost(stopped, {
+      type: "ADMISSION_QUEUED",
+      intentId: "late",
+      entry: {
+        itemId: "late",
+        intentId: "late",
+        prompt: "Late prompt",
+        persistence: "durable",
+        editable: true,
+        removable: true,
+      },
+      queueRevision: 1,
+      queuePaused: false,
+      resumeQueue: false,
+    });
+
+    expect(queued.kind).toBe("applied");
+    if (queued.kind !== "applied") return;
+    expect(queued.state).toMatchObject({
+      queuePaused: true,
+      queuePauseReason: "stop",
+      queue: [{ intentId: "late" }],
+    });
+    expect(queued.commands).toEqual([]);
+  });
+
   it("does not advance or reapply an already-observed Stop cutoff", () => {
     const stopped = {
       ...initialChatStreamHostState(),
@@ -399,6 +457,39 @@ describe("transitionChatStreamHost", () => {
     expect(latePause.kind).toBe("applied");
     if (latePause.kind !== "applied") return;
     expect(latePause.state.queuePauseReason).toBe("stop");
+  });
+
+  it("keeps Stop authoritative when an in-flight manual pause is rejected", () => {
+    const activeIntent = intent("active");
+    const stopped = {
+      ...initialChatStreamHostState(),
+      phase: "cancelling" as const,
+      active: {
+        intent: activeIntent,
+        invocationRef: activeIntent.invocationRef!,
+        targetAppId: 3,
+        pauseQueueOnCancel: true,
+      },
+      queuePauseReason: "stop" as const,
+      pendingQueueMutationId: "manual-pause",
+    };
+
+    const rejected = transitionChatStreamHost(stopped, {
+      type: "QUEUE_MUTATION_REJECTED",
+      mutationId: "manual-pause",
+      error: "revision conflict",
+      queueRevision: 1,
+      paused: false,
+      entries: [],
+    });
+
+    expect(rejected.kind).toBe("applied");
+    if (rejected.kind !== "applied") return;
+    expect(rejected.state).toMatchObject({
+      queuePaused: true,
+      queuePauseReason: "stop",
+      pendingQueueMutationId: null,
+    });
   });
 
   it("parks a late Stop while finalization is already in progress", () => {
@@ -816,6 +907,13 @@ describe("transitionChatStreamHost", () => {
     );
     expect(admitted.kind).toBe("applied");
     if (admitted.kind !== "applied") return;
+    expect(admitted.commands).toEqual([
+      {
+        type: "persist-queued",
+        intent: intent("queued"),
+        resumeQueue: false,
+      },
+    ]);
 
     const replayed = transitionChatStreamHost(admitted.state, {
       type: "ADMISSION_REPLAYED",

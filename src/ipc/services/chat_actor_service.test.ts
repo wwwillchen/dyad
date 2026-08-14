@@ -31,11 +31,13 @@ const actor = vi.hoisted(() => {
         } | null;
         lastAcceptance: null;
         lastCompletion: { intentId: string; outcome: string } | null;
+        stopPolicyVersion: number;
       } => ({
         phase,
         active: null,
         lastAcceptance: null,
         lastCompletion,
+        stopPolicyVersion: 3,
       }),
     ),
     subscribe: vi.fn((nextListener: () => void) => {
@@ -174,6 +176,7 @@ describe("waitForChatActorIdle", () => {
       },
       lastAcceptance: null,
       lastCompletion: null,
+      stopPolicyVersion: 0,
     });
 
     await expect(waitForChatActorIdle(7, { cancelActive: true })).resolves.toBe(
@@ -244,6 +247,9 @@ describe("waitForChatActorIdle", () => {
         },
       }),
     ).resolves.toBe("rejected");
+    expect(actor.send).toHaveBeenCalledWith(
+      expect.objectContaining({ observedStopPolicyVersion: 3 }),
+    );
   });
 
   it("rejects main-owned dispatch while chat actor admission is fenced", async () => {

@@ -124,8 +124,12 @@ Background and before/after examples of why this pattern exists:
   receiving boundary durably deduplicate acceptance, and acknowledge only
   after that acceptance; a renderer-local enqueue is not durable acceptance.
   Cross-window cancellation cutoffs must likewise be main-owned and versioned;
-  have submissions echo the authoritative version they observed so delayed
-  pre-cancel work cannot masquerade as an explicit post-cancel resume.
+  have every submission source, including main-owned follow-ups and internal
+  redispatch, echo the authoritative version it observed so delayed pre-cancel
+  work cannot masquerade as an explicit post-cancel resume. When admission or
+  persistence completes asynchronously, gate follow-up dispatch on the current
+  main-owned cutoff as well as the completion payload; a stale unpaused result
+  must not override a newer Stop latch.
   Bounded dedup caches may evict settled history, never unresolved receipts;
   reject excess in-flight work through a separate bounded admission limit.
   Scope renderer retries to the stable window-session identity, not an

@@ -328,7 +328,7 @@ describe("main-hosted chat stream actor", () => {
     persisted.intents.clear();
   });
 
-  it("resumes a replayed durable intent from its recovered paused queue", async () => {
+  it("keeps a replayed durable intent in its recovered paused queue", async () => {
     const queued = turn("queued");
     persisted.paused = true;
     persisted.revision = 2;
@@ -371,11 +371,11 @@ describe("main-hosted chat stream actor", () => {
     await flush();
 
     expect(actor.getSnapshot()).toMatchObject({
-      phase: "streaming",
-      queuePaused: false,
-      queue: [],
+      phase: "idle",
+      queuePaused: true,
+      queue: [{ intentId: "queued" }],
     });
-    expect(execution.observers.has("queued")).toBe(true);
+    expect(execution.observers.has("queued")).toBe(false);
 
     release();
     client.dispose();

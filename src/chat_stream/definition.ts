@@ -594,7 +594,12 @@ function createCommandRunner(
             }
             // Move the actor out of idle before publishing the shorter queue so
             // that projection refresh cannot schedule a second head concurrently.
-            emit({ type: "SUBMIT", intent: claimed.intent });
+            emit({
+              type: "SUBMIT",
+              intent: claimed.intent,
+              observedStopPolicyVersion:
+                snapshotBeforeDispatch.stopPolicyVersion,
+            });
             emit({
               type: "QUEUE_MUTATED",
               queueRevision: claimed.queue.queueRevision,

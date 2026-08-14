@@ -125,6 +125,9 @@ export function transitionChatStreamHost(
       const predatesLatestStop =
         event.observedStopPolicyVersion !== undefined &&
         event.observedStopPolicyVersion < state.stopPolicyVersion;
+      const observesLatestStop =
+        event.observedStopPolicyVersion !== undefined &&
+        event.observedStopPolicyVersion >= state.stopPolicyVersion;
       const replaysQueuedIntent = state.queue.some(
         (entry) => entry.intentId === event.intent.intentId,
       );
@@ -174,10 +177,10 @@ export function transitionChatStreamHost(
             type: "persist-queued",
             intent: event.intent,
             resumeQueue:
-              !predatesLatestStop &&
+              observesLatestStop &&
               state.queuePaused &&
               (state.phase === "idle" || state.phase === "errored") &&
-              (state.queuePauseReason === "stop" || replaysQueuedIntent),
+              state.queuePauseReason === "stop",
           },
         ],
       };
@@ -305,14 +308,23 @@ export function transitionChatStreamHost(
         },
         commands: [],
       };
-    case "ADMISSION_QUEUED":
+    case "ADMISSION_QUEUED": {
+      const stopOwnsQueue =
+        state.queuePauseReason === "stop" ||
+        state.active?.pauseQueueOnCancel === true;
+      const queuePaused =
+        event.queuePaused || (stopOwnsQueue && !event.resumeQueue);
       return {
         kind: "applied",
         state: {
           ...state,
           queueRevision: event.queueRevision,
-          queuePaused: event.queuePaused,
-          queuePauseReason: event.queuePaused ? state.queuePauseReason : null,
+          queuePaused,
+          queuePauseReason: queuePaused
+            ? stopOwnsQueue
+              ? "stop"
+              : state.queuePauseReason
+            : null,
           queue: [...state.queue, event.entry],
           lastAcceptance: {
             intentId: event.intentId,
@@ -320,11 +332,11 @@ export function transitionChatStreamHost(
           },
         },
         commands:
-          !event.queuePaused &&
-          (state.phase === "idle" || state.phase === "errored")
+          !queuePaused && (state.phase === "idle" || state.phase === "errored")
             ? [{ type: "dispatch-next" }]
             : [],
       };
+    }
     case "ADMISSION_REPLAYED":
       if (
         state.active?.intent.intentId === event.intentId &&
@@ -626,7 +638,7 @@ export function transitionChatStreamHost(
                         ? "queued-override"
                         : "user-setting",
                   },
-              ]
+                ]
               : [];
         const resumeStopLatch =
           event.mutationId === state.pendingQueueResumeMutationId &&
@@ -649,9 +661,7 @@ export function transitionChatStreamHost(
               : event.mutationId === undefined &&
                   state.lastCompletion?.pausePromptQueue === true
                 ? ("step-limit" as const)
-                : state.active?.pauseQueueOnCancel
-                  ? ("stop" as const)
-                  : state.queuePauseReason;
+                : state.queuePauseReason;
         return {
           kind: "applied",
           state: {
@@ -798,31 +808,40 @@ export function transitionChatStreamHost(
       if (event.mutationId !== state.pendingQueueMutationId) {
         return ignore(state, "invalid-host-event");
       }
-      return {
-        kind: "applied",
-        state: {
-          ...state,
-          queueRevision: event.queueRevision,
-          queuePaused: event.paused,
-          queuePauseReason: event.paused ? state.queuePauseReason : null,
-          queue: event.entries,
-          pendingQueueMutationId: null,
-          pendingQueuePauseMutationId:
-            event.mutationId === state.pendingQueuePauseMutationId
-              ? null
-              : state.pendingQueuePauseMutationId,
-          pendingQueueResumeMutationId:
-            event.mutationId === state.pendingQueueResumeMutationId
-              ? null
-              : state.pendingQueueResumeMutationId,
-          lastQueueMutation: {
-            mutationId: event.mutationId,
-            outcome: "rejected",
-            error: event.error,
+      {
+        const stopOwnsQueue =
+          state.queuePauseReason === "stop" ||
+          state.active?.pauseQueueOnCancel === true;
+        return {
+          kind: "applied",
+          state: {
+            ...state,
+            queueRevision: event.queueRevision,
+            queuePaused: stopOwnsQueue || event.paused,
+            queuePauseReason: stopOwnsQueue
+              ? "stop"
+              : event.paused
+                ? state.queuePauseReason
+                : null,
+            queue: event.entries,
+            pendingQueueMutationId: null,
+            pendingQueuePauseMutationId:
+              event.mutationId === state.pendingQueuePauseMutationId
+                ? null
+                : state.pendingQueuePauseMutationId,
+            pendingQueueResumeMutationId:
+              event.mutationId === state.pendingQueueResumeMutationId
+                ? null
+                : state.pendingQueueResumeMutationId,
+            lastQueueMutation: {
+              mutationId: event.mutationId,
+              outcome: "rejected",
+              error: event.error,
+            },
           },
-        },
-        commands: [],
-      };
+          commands: [],
+        };
+      }
     case "QUEUE_PARKED":
       if (event.queueRevision < state.queueRevision) {
         return ignore(state, "invalid-host-event");

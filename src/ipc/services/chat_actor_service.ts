@@ -210,7 +210,11 @@ export async function dispatchChatIntentAndWait(
     signal?.addEventListener("abort", abort, { once: true });
     inspect();
   });
-  actor.send({ type: "SUBMIT", intent });
+  actor.send({
+    type: "SUBMIT",
+    intent,
+    observedStopPolicyVersion: actor.getSnapshot().stopPolicyVersion,
+  });
   return settled;
 }
 
