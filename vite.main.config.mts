@@ -21,6 +21,11 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
+      output: {
+        // main_bootstrap.ts relies on Rollup lowering its conditional runtime
+        // import to a microtask-scheduled require before Electron becomes ready.
+        format: "cjs",
+      },
       external: [
         ...nodeBuiltins,
         "better-sqlite3",

@@ -7,6 +7,7 @@ Debugging update failures reported by users, or changing updater/debug-report co
 - The full .NET inner-exception chain persists across restarts in Squirrel's own log next to `Update.exe`: `%LocalAppData%\dyad\SquirrelSetup.log`. Debug bundles capture its tail via `readUpdaterLogs()` in `src/ipc/handlers/debug_handlers.ts` (`updaterLogs` field).
 - Bug-report bodies travel in the GitHub issue-creation URL (`openGitHubIssue` in `HelpDialog.tsx`), so any new log section added there must be tightly size-capped (~1-2k chars) to avoid overlong URLs. When capping updater logs, reserve space for the `Last updater error (this session)` block; blindly taking the tail can keep only Squirrel stack tails and drop the root cause. Do not split updater log sections on arbitrary blank lines because .NET exception text can contain internal blank lines; use known section headers such as `Squirrel*.log (tail):`.
 - Session upload bundles are POSTed and can carry larger updater log tails, but every new uploaded debug field must also be rendered in the `HelpDialog` review screen so users can inspect it before submitting.
+- Keep the Squirrel entry point limited to Electron, logging, and `electron-squirrel-startup` static imports; load the application runtime only after ruling out a Squirrel event. Pin and test the main bundle's pre-ready ordering, including an AST import allowlist, so application imports cannot silently move ahead of the Squirrel guard.
 
 ## Trusted releases
 

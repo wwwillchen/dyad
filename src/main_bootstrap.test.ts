@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import ts from "typescript";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -7,11 +10,23 @@ const mocks = vi.hoisted(() => ({
   showErrorBox: vi.fn(),
   runtimeLoaded: vi.fn(),
   runtimeError: { value: undefined as Error | undefined },
+  runtimeGate: { value: undefined as Promise<void> | undefined },
+  resolveReady: { value: undefined as (() => void) | undefined },
   squirrelStarted: { value: true },
+  whenReady: vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        mocks.resolveReady.value = resolve;
+      }),
+  ),
 }));
 
 vi.mock("electron", () => ({
-  app: { exit: mocks.exit, quit: mocks.quit },
+  app: {
+    exit: mocks.exit,
+    quit: mocks.quit,
+    whenReady: mocks.whenReady,
+  },
   dialog: { showErrorBox: mocks.showErrorBox },
 }));
 
@@ -36,8 +51,12 @@ describe("main process bootstrap", () => {
     mocks.showErrorBox.mockClear();
     mocks.runtimeLoaded.mockClear();
     mocks.runtimeError.value = undefined;
+    mocks.runtimeGate.value = undefined;
+    mocks.resolveReady.value = undefined;
     mocks.squirrelStarted.value = true;
-    vi.doMock("./main", () => {
+    mocks.whenReady.mockClear();
+    vi.doMock("./main", async () => {
+      await mocks.runtimeGate.value;
       if (mocks.runtimeError.value) {
         throw mocks.runtimeError.value;
       }
@@ -48,9 +67,11 @@ describe("main process bootstrap", () => {
 
   it("quits without loading the application during a Squirrel event", async () => {
     await import("./main_bootstrap");
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(mocks.quit).toHaveBeenCalledOnce();
     expect(mocks.runtimeLoaded).not.toHaveBeenCalled();
+    expect(mocks.whenReady).not.toHaveBeenCalled();
   });
 
   it("loads the application outside a Squirrel event", async () => {
@@ -60,6 +81,28 @@ describe("main process bootstrap", () => {
 
     await vi.waitFor(() => expect(mocks.runtimeLoaded).toHaveBeenCalledOnce());
     expect(mocks.quit).not.toHaveBeenCalled();
+  });
+
+  it("fails startup if Electron becomes ready before the runtime loads", async () => {
+    let releaseRuntime: (() => void) | undefined;
+    mocks.squirrelStarted.value = false;
+    mocks.runtimeGate.value = new Promise<void>((resolve) => {
+      releaseRuntime = resolve;
+    });
+
+    await import("./main_bootstrap");
+    mocks.resolveReady.value?.();
+
+    await vi.waitFor(() => expect(mocks.exit).toHaveBeenCalledWith(1));
+    expect(mocks.logError).toHaveBeenCalledWith(
+      "Failed to load the Dyad application runtime:",
+      expect.objectContaining({
+        message:
+          "Electron became ready before the application runtime completed its pre-ready registrations",
+      }),
+    );
+    expect(mocks.runtimeLoaded).not.toHaveBeenCalled();
+    releaseRuntime?.();
   });
 
   it("reports a failure and exits when the application cannot load", async () => {
@@ -79,5 +122,31 @@ describe("main process bootstrap", () => {
       "The application runtime could not be loaded. Please reinstall Dyad or contact support.",
     );
     expect(mocks.runtimeLoaded).not.toHaveBeenCalled();
+  });
+
+  it("has no static imports outside the minimal bootstrap dependencies", () => {
+    const bootstrapPath = path.resolve(__dirname, "main_bootstrap.ts");
+    const sourceFile = ts.createSourceFile(
+      bootstrapPath,
+      fs.readFileSync(bootstrapPath, "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const staticImports = sourceFile.statements.flatMap((statement) => {
+      if (
+        !ts.isImportDeclaration(statement) ||
+        !ts.isStringLiteralLike(statement.moduleSpecifier)
+      ) {
+        return [];
+      }
+      return [statement.moduleSpecifier.text];
+    });
+
+    expect(staticImports).toEqual([
+      "electron",
+      "electron-log",
+      "electron-squirrel-startup",
+    ]);
   });
 });
