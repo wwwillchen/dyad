@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/dyad-sh/dyad.git"
   },
-  "main": ".vite/build/main.js",
+  "main": ".vite/build/main_bootstrap.js",
   "scripts": {
     "bump": "node scripts/bump-version.mjs",
     "clean": "rimraf out scaffold/node_modules",
