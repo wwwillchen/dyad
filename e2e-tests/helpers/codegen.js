@@ -10,7 +10,7 @@ const { _electron: electron } = require("playwright");
 (async () => {
   const browser = await electron.launch({
     args: [
-      "../../out/dyad-darwin-arm64/dyad.app/Contents/Resources/app.asar/.vite/build/main.js",
+      "../../out/dyad-darwin-arm64/dyad.app/Contents/Resources/app.asar/.vite/build/main_bootstrap.js",
       "--enable-logging",
       "--user-data-dir=/tmp/dyad-e2e-tests",
     ],
