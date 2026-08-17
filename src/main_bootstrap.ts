@@ -5,11 +5,24 @@ import started from "electron-squirrel-startup";
 
 const logger = log.scope("main_bootstrap");
 
+function getErrorSummary(error: unknown): string {
+  const messages: string[] = [];
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current != null && !seen.has(current)) {
+    seen.add(current);
+    messages.push(current instanceof Error ? current.message : String(current));
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return messages.join("\nCaused by: ").slice(0, 1_000);
+}
+
 function reportRuntimeLoadFailure(error: unknown): void {
   logger.error("Failed to load the Dyad application runtime:", error);
+  const logPath = log.transports.file.getFile().path;
   dialog.showErrorBox(
     "Dyad failed to start",
-    "The application runtime could not be loaded. Please reinstall Dyad or contact support.",
+    `The application runtime could not be loaded.\n\nError: ${getErrorSummary(error)}\n\nDetails were written to:\n${logPath}\n\nPlease share this error and log file when contacting support.`,
   );
   app.exit(1);
 }

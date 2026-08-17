@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   exit: vi.fn(),
   logError: vi.fn(),
+  logFilePath: "/logs/main.log",
   quit: vi.fn(),
   showErrorBox: vi.fn(),
   runtimeLoaded: vi.fn(),
@@ -33,6 +34,11 @@ vi.mock("electron", () => ({
 vi.mock("electron-log", () => ({
   default: {
     scope: () => ({ error: mocks.logError }),
+    transports: {
+      file: {
+        getFile: () => ({ path: mocks.logFilePath }),
+      },
+    },
   },
 }));
 
@@ -119,7 +125,12 @@ describe("main process bootstrap", () => {
     );
     expect(mocks.showErrorBox).toHaveBeenCalledWith(
       "Dyad failed to start",
-      "The application runtime could not be loaded. Please reinstall Dyad or contact support.",
+      expect.stringMatching(
+        new RegExp(
+          `^The application runtime could not be loaded\\.\\n\\nError: .+runtime failed\\n\\nDetails were written to:\\n${mocks.logFilePath}\\n\\nPlease share this error and log file when contacting support\\.$`,
+          "s",
+        ),
+      ),
     );
     expect(mocks.runtimeLoaded).not.toHaveBeenCalled();
   });

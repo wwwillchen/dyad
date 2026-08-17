@@ -1,11 +1,12 @@
 import { builtinModules } from "node:module";
 import { defineConfig } from "vite";
 import path from "path";
+import { assertDeferredMainBootstrapBundle } from "./src/lib/main_bootstrap_bundle";
 
 const nodeBuiltins = builtinModules.flatMap((name) => [name, `node:${name}`]);
 
 // https://vitejs.dev/config
-export default defineConfig({
+export default defineConfig(({ forgeConfigSelf }) => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -20,11 +21,18 @@ export default defineConfig({
     },
   },
   build: {
+    // Defining lib here makes the Forge/Vite contract explicit. Forge skips
+    // its CommonJS defaults whenever the user config supplies this object.
+    lib: {
+      entry: forgeConfigSelf.entry,
+      fileName: (_format, entryName) => `${entryName}.js`,
+      formats: ["cjs"],
+    },
     rollupOptions: {
       output: {
-        // main_bootstrap.ts relies on Rollup lowering its conditional runtime
-        // import to a microtask-scheduled require before Electron becomes ready.
-        format: "cjs",
+        // Squirrel handling depends on main.ts remaining behind the conditional
+        // dynamic import in main_bootstrap.ts.
+        inlineDynamicImports: false,
       },
       external: [
         ...nodeBuiltins,
@@ -38,10 +46,16 @@ export default defineConfig({
   },
   plugins: [
     {
+      name: "verify-deferred-main-bootstrap",
+      generateBundle(outputOptions, bundle) {
+        assertDeferredMainBootstrapBundle(outputOptions, bundle);
+      },
+    },
+    {
       name: "restart",
       closeBundle() {
         process.stdin.emit("data", "rs");
       },
     },
   ],
-});
+}));
