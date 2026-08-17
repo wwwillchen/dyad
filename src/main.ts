@@ -16,8 +16,6 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { registerIpcHandlers } from "./ipc/ipc_host";
 import dotenv from "dotenv";
-// @ts-ignore
-import started from "electron-squirrel-startup";
 import { updateElectronApp, UpdateSourceType } from "update-electron-app";
 import log from "electron-log";
 import {
@@ -346,11 +344,6 @@ dotenv.config();
 
 // Register IPC handlers before app is ready
 registerIpcHandlers();
-
-// Handle creating/removing shortcuts on Windows when installing/uninstalling.
-if (started) {
-  app.quit();
-}
 
 // Decide the git directory depending on environment
 function resolveLocalGitDirectory() {
