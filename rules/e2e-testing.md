@@ -86,6 +86,11 @@ await page.getByRole("radio", { name: "Vue" }).click();
 await page.getByLabel("Vue").click();
 ```
 
+Base UI tooltip popups rendered by `src/components/ui/tooltip.tsx` are not
+exposed as `role="tooltip"` in the current app build. Locate them with
+`[data-slot="tooltip-content"]`, filter by visible text when needed, and wait
+for visibility before reading popup attributes or geometry.
+
 ## Lexical editor in Playwright E2E tests
 
 The chat input uses a Lexical editor (contenteditable). Standard Playwright methods don't always work:

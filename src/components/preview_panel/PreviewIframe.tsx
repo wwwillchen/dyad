@@ -1245,7 +1245,7 @@ export const PreviewIframe = ({
               >
                 <MousePointerClick size={16} />
               </TooltipTrigger>
-              <TooltipContent>
+              <TooltipContent side="bottom">
                 {isPicking
                   ? "Deactivate component selector"
                   : `Select component (${isMac ? "⌘ + ⇧ + C" : "Ctrl + ⇧ + C"})`}
@@ -1286,7 +1286,7 @@ export const PreviewIframe = ({
               >
                 <Pen size={16} />
               </TooltipTrigger>
-              <TooltipContent>
+              <TooltipContent side="bottom">
                 {recorder.phase !== "idle"
                   ? "Finish the recording before using the annotator"
                   : annotatorMode
@@ -1340,7 +1340,7 @@ export const PreviewIframe = ({
                     <CircleDot size={16} />
                   )}
                 </TooltipTrigger>
-                <TooltipContent>
+                <TooltipContent side="bottom">
                   {recorder.phase === "idle"
                     ? "Record a test"
                     : recorder.isRecording
@@ -1372,7 +1372,9 @@ export const PreviewIframe = ({
                 >
                   <Cloud size={14} />
                 </TooltipTrigger>
-                <TooltipContent>Running in a Cloud sandbox</TooltipContent>
+                <TooltipContent side="bottom">
+                  Running in a Cloud sandbox
+                </TooltipContent>
               </Tooltip>
             )}
             <div className="flex items-center gap-0.5">
@@ -1390,7 +1392,7 @@ export const PreviewIframe = ({
                 >
                   <ArrowLeft size={16} />
                 </TooltipTrigger>
-                <TooltipContent>Navigate back</TooltipContent>
+                <TooltipContent side="bottom">Navigate back</TooltipContent>
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger
@@ -1406,7 +1408,7 @@ export const PreviewIframe = ({
                 >
                   <ArrowRight size={16} />
                 </TooltipTrigger>
-                <TooltipContent>Navigate forward</TooltipContent>
+                <TooltipContent side="bottom">Navigate forward</TooltipContent>
               </Tooltip>
             </div>
           </div>
@@ -1435,7 +1437,7 @@ export const PreviewIframe = ({
               >
                 <MonitorSmartphone size={14} />
               </TooltipTrigger>
-              <TooltipContent>Device Mode</TooltipContent>
+              <TooltipContent side="bottom">Device Mode</TooltipContent>
             </Tooltip>
             <PopoverContent className="w-auto p-2">
               <ToggleGroup
@@ -1581,7 +1583,7 @@ export const PreviewIframe = ({
               >
                 <RefreshCw size={14} />
               </TooltipTrigger>
-              <TooltipContent>Refresh preview</TooltipContent>
+              <TooltipContent side="bottom">Refresh preview</TooltipContent>
             </Tooltip>
           </div>
 
@@ -1600,7 +1602,7 @@ export const PreviewIframe = ({
               >
                 <ExternalLink size={14} />
               </TooltipTrigger>
-              <TooltipContent>Open in browser</TooltipContent>
+              <TooltipContent side="bottom">Open in browser</TooltipContent>
             </Tooltip>
           )}
 
@@ -1621,7 +1623,7 @@ export const PreviewIframe = ({
               >
                 <Power size={16} />
               </TooltipTrigger>
-              <TooltipContent>
+              <TooltipContent side="bottom">
                 {isCloudMode ? "Restart Cloud Sandbox" : "Restart App"}
               </TooltipContent>
             </Tooltip>
