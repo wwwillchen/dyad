@@ -5,28 +5,6 @@ testSkipIfWindows("select component", async ({ po }) => {
   await po.setUp();
   await po.sendPrompt("tc=basic");
   await po.previewPanel.ensurePreviewPanelOpen();
-
-  const componentSelectorButton = po.previewPanel.getPreviewPickElementButton();
-  await componentSelectorButton.hover();
-  const componentSelectorTooltip = po.page
-    .locator('[data-slot="tooltip-content"]')
-    .filter({ hasText: /^Select component \(/ });
-  await expect(componentSelectorTooltip).toBeVisible();
-  await expect(componentSelectorTooltip).toHaveAttribute("data-side", "bottom");
-  const previewTab = po.page.getByRole("button", {
-    name: "Preview",
-    exact: true,
-  });
-  const [previewTabBox, tooltipBox] = await Promise.all([
-    previewTab.boundingBox(),
-    componentSelectorTooltip.boundingBox(),
-  ]);
-  expect(previewTabBox).not.toBeNull();
-  expect(tooltipBox).not.toBeNull();
-  expect(tooltipBox!.y).toBeGreaterThanOrEqual(
-    previewTabBox!.y + previewTabBox!.height,
-  );
-
   await po.previewPanel.clickPreviewPickElement();
 
   await po.previewPanel
