@@ -58,9 +58,10 @@ export const APP_MUTATING_TOOL_NAMES = [
   "add_integration",
   "enable_nitro",
   "generate_image",
-  "git_restore_file",
   "generate_test_assertions",
+  "git_restore_file",
 ] as const;
+export type AppMutatingToolName = (typeof APP_MUTATING_TOOL_NAMES)[number];
 
 export interface AgentContext {
   event: IpcMainInvokeEvent;
@@ -87,6 +88,8 @@ export interface AgentContext {
   sharedServerModulePaths: string[];
   /** Function deploys skipped because a shared module had already changed. */
   pendingFunctionDeploys: string[];
+  /** Preserve remote Supabase functions that are absent from local files. */
+  skipPruneEdgeFunctions?: boolean;
   chatSummary?: string;
   /** Turn-scoped todo list for agent task tracking */
   todos: Todo[];
@@ -98,6 +101,8 @@ export interface AgentContext {
   workspaceMutated?: boolean;
   /** True after any directly registered or sandbox-hosted MCP tool succeeds. */
   mcpToolRan?: boolean;
+  /** Successful workspace-file mutations completed during this turn. */
+  fileMutationCount?: number;
   /**
    * Turn-scoped count of successfully completed tool invocations that change
    * the app or its data: file edits (including sandbox write_file host calls)
@@ -107,7 +112,17 @@ export interface AgentContext {
    */
   mutationCount?: number;
   /** Propagates successful child-tool mutations to the owning root turn. */
-  onWorkspaceMutation?: () => void;
+  onWorkspaceMutation?: (didMutateFile?: boolean) => void;
+  /** Whether Git had an executable pre-commit hook when this turn started. */
+  preCommitHookAvailable?: boolean;
+  /** Actual pre-commit hook processes started during this turn. */
+  preCommitRunCount?: number;
+  /** File mutation count observed when the last pre-commit run started. */
+  preCommitFileMutationCountAtLastRun?: number;
+  /** Git snapshot after the last completed pre-commit run, when measurable. */
+  preCommitGitStateFingerprintAtLastRun?: string;
+  /** Whether the last completed pre-commit run passed. */
+  preCommitLastRunPassed?: boolean;
   /**
    * If true, the user has Dyad Pro enabled.
    * Engine-dependent tools require this to access the Dyad Pro API.
@@ -414,6 +429,16 @@ export interface ToolDefinition<T = any> {
     result: ToolResult,
     ctx: AgentContext,
   ) => boolean;
+
+  /**
+   * Overrides whether a successful app mutation changed Git-visible workspace
+   * files. Use for tools whose file impact depends on their result or context.
+   */
+  shouldTrackFileMutation?: (
+    args: T,
+    result: ToolResult,
+    ctx: AgentContext,
+  ) => boolean | Promise<boolean>;
 
   /**
    * Build XML from parsed partial args.

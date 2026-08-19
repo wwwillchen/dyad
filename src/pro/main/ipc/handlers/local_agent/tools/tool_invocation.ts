@@ -12,9 +12,11 @@ import { readSettings } from "@/main/settings";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { getAppBlueprintForChat } from "@/ipc/handlers/app_blueprint_handlers";
 import type { AgentToolConsent } from "@/lib/schemas";
+import { execGit } from "@/ipc/utils/git_utils";
 import {
   AgentContext,
   APP_MUTATING_TOOL_NAMES,
+  AppMutatingToolName,
   FILE_EDIT_TOOL_NAMES,
   FileEditToolName,
   ToolDefinition,
@@ -22,6 +24,136 @@ import {
 
 const FILE_EDIT_TOOLS: Set<FileEditToolName> = new Set(FILE_EDIT_TOOL_NAMES);
 const APP_MUTATING_TOOLS: Set<string> = new Set(APP_MUTATING_TOOL_NAMES);
+
+type FileMutationPolicy = "always" | "never" | "path" | "paths" | "tool";
+type MutationToolName = FileEditToolName | AppMutatingToolName;
+const gitVisibilityCache = new WeakMap<AgentContext, Map<string, boolean>>();
+
+/**
+ * Exhaustive Git-visible file-impact policy for every mutation-counted tool.
+ * Adding a name to either mutation-tool tuple without classifying it here is a
+ * type error, so pre-commit eligibility cannot silently drift from the tool
+ * registry.
+ */
+export const FILE_MUTATION_POLICIES = {
+  write_file: "path",
+  search_replace: "path",
+  copy_file: "tool",
+  delete_file: "path",
+  rename_file: "paths",
+  add_dependency: "always",
+  execute_sql: "tool",
+  add_integration: "tool",
+  enable_nitro: "always",
+  generate_image: "never",
+  generate_test_assertions: "always",
+  git_restore_file: "always",
+} as const satisfies Record<MutationToolName, FileMutationPolicy>;
+
+export async function isPathGitVisible(
+  ctx: AgentContext,
+  filePath: string,
+): Promise<boolean> {
+  return arePathsGitVisible(ctx, [filePath]);
+}
+
+async function arePathsGitVisible(
+  ctx: AgentContext,
+  filePaths: string[],
+): Promise<boolean> {
+  if (ctx.preCommitHookAvailable !== true || filePaths.length === 0) {
+    return false;
+  }
+
+  const normalizedPaths = filePaths.map((filePath) =>
+    filePath.replaceAll("\\", "/"),
+  );
+  let cache = gitVisibilityCache.get(ctx);
+  if (!cache) {
+    cache = new Map();
+    gitVisibilityCache.set(ctx, cache);
+  }
+  if (
+    normalizedPaths.some(
+      (filePath) =>
+        filePath === ".gitignore" ||
+        filePath.endsWith("/.gitignore") ||
+        filePath === ".git/info/exclude",
+    )
+  ) {
+    cache.clear();
+  }
+  const cacheKey = [...normalizedPaths].sort().join("\0");
+  const cached = cache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  try {
+    // Inspect the actual post-tool Git state. This catches staged deletes and
+    // renames even when their old path now matches an ignore rule.
+    const result = await execGit(
+      [
+        "-c",
+        "core.fsmonitor=false",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--",
+        ...normalizedPaths,
+      ],
+      ctx.appPath,
+      { maxBuffer: 64_000 },
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr || "git status failed");
+    }
+    const visible = result.stdout.length > 0;
+    cache.set(cacheKey, visible);
+    return visible;
+  } catch {
+    // Failure to classify must not suppress verification of a real edit.
+    return true;
+  }
+}
+
+export async function shouldTrackToolFileMutation<T>(
+  tool: ToolDefinition<T>,
+  args: T,
+  result: string,
+  ctx: AgentContext,
+): Promise<boolean> {
+  // The counter is consumed only by run_pre_commit. Avoid putting a Git
+  // subprocess on every edit's critical path when that tool is unavailable.
+  if (ctx.preCommitHookAvailable !== true) {
+    return false;
+  }
+  const policy =
+    FILE_MUTATION_POLICIES[tool.name as MutationToolName] ?? "never";
+  switch (policy) {
+    case "always":
+      return true;
+    case "never":
+      return false;
+    case "path": {
+      const pathArgs = args as { file_path?: string; path?: string };
+      const filePath = pathArgs.file_path ?? pathArgs.path;
+      return filePath ? isPathGitVisible(ctx, filePath) : false;
+    }
+    case "paths": {
+      const pathArgs = args as { from?: string; to?: string };
+      return arePathsGitVisible(
+        ctx,
+        [pathArgs.from, pathArgs.to].filter((filePath): filePath is string =>
+          Boolean(filePath),
+        ),
+      );
+    }
+    case "tool":
+      return (await tool.shouldTrackFileMutation?.(args, result, ctx)) ?? false;
+  }
+}
 
 /**
  * Track file edit tool usage for retry/fallback telemetry. This intentionally
@@ -58,6 +190,7 @@ export function trackAppMutation(
   ctx: AgentContext,
   toolName: string,
   didMutate = true,
+  didMutateFile = false,
 ): void {
   if (!didMutate) {
     return;
@@ -69,7 +202,24 @@ export function trackAppMutation(
     return;
   }
   ctx.mutationCount = (ctx.mutationCount ?? 0) + 1;
-  ctx.onWorkspaceMutation?.();
+  if (didMutateFile) {
+    ctx.fileMutationCount = (ctx.fileMutationCount ?? 0) + 1;
+    ctx.workspaceMutated = true;
+  }
+  ctx.onWorkspaceMutation?.(didMutateFile);
+}
+
+/** Track a workspace mutation performed outside the ordinary tool registry. */
+export function trackWorkspaceMutation(
+  ctx: AgentContext,
+  didMutateFile = true,
+): void {
+  ctx.mutationCount = (ctx.mutationCount ?? 0) + 1;
+  if (didMutateFile) {
+    ctx.fileMutationCount = (ctx.fileMutationCount ?? 0) + 1;
+    ctx.workspaceMutated = true;
+  }
+  ctx.onWorkspaceMutation?.(didMutateFile);
 }
 
 /**

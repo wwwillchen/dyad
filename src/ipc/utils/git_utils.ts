@@ -1,7 +1,9 @@
 import { getGitAuthor } from "./git_author";
+import { createHash } from "node:crypto";
 import {
   exec,
   ExecError,
+  setupEnvironment,
   type IGitStringExecutionOptions,
   type IGitStringResult,
 } from "dugite";
@@ -21,7 +23,12 @@ import {
   redactDotenvValues,
   selectTextLineRange,
 } from "@/utils/dotenv_redaction";
+import { runBufferedProcess } from "./buffered_process";
 const logger = log.scope("git_utils");
+
+const GIT_STATE_FINGERPRINT_TIMEOUT_MS = 30_000;
+const GIT_STATE_FINGERPRINT_MAX_PATH_BYTES = 16 * 1024 * 1024;
+const GIT_STATE_FINGERPRINT_MAX_UNTRACKED_PATHS = 10_000;
 
 function isUserVisibleGitPath(filePath: string) {
   return !filePath.startsWith(".dyad/") && filePath !== "pnpm-workspace.yaml";
@@ -147,57 +154,270 @@ function getWindowsSanitizedEnv():
   };
 }
 
+/** Build caller overrides for Dugite without bypassing Dyad's platform fixes. */
+function getSanitizedGitEnv(
+  callerEnv?: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const sanitizedEnv = getWindowsSanitizedEnv();
+
+  if (sanitizedEnv) {
+    const pathKey = getPathEnvKey(sanitizedEnv);
+    return {
+      ...sanitizedEnv,
+      ...callerEnv,
+      // Keep the sanitized PATH authoritative even when a caller supplies env.
+      [pathKey]: sanitizedEnv[pathKey],
+    };
+  }
+
+  const shimDir = ensureLibcurlShimOnLinux();
+  if (shimDir) {
+    const existingLdPath =
+      callerEnv?.LD_LIBRARY_PATH ?? process.env.LD_LIBRARY_PATH;
+    return {
+      ...callerEnv,
+      LD_LIBRARY_PATH: [shimDir, existingLdPath].filter(Boolean).join(":"),
+    };
+  }
+
+  return callerEnv ?? {};
+}
+
 /**
- * Wrapper around dugite's exec that uses a sanitized environment on Windows
- * to prevent WSL interop issues.
+ * Return the bundled Git executable and hardened environment used by Dyad.
+ * Use this for Git processes that need streaming or bounded execution and
+ * therefore cannot go through {@link execGit}.
  */
-async function execGit(
+export function getGitProcessEnvironment(
+  callerEnv?: Record<string, string | undefined>,
+): ReturnType<typeof setupEnvironment> {
+  return setupEnvironment(getSanitizedGitEnv(callerEnv));
+}
+
+export async function execGit(
   args: string[],
   path: string,
   options?: IGitStringExecutionOptions,
 ): Promise<IGitStringResult> {
-  const sanitizedEnv = getWindowsSanitizedEnv();
+  return exec(args, path, {
+    ...options,
+    env: getSanitizedGitEnv(options?.env),
+  });
+}
 
-  // Only create execOptions if we need to modify the environment
-  // On Windows: merge sanitized env with any caller-provided env, ensuring sanitized PATH takes precedence
-  // On non-Windows: pass through options unchanged (dugite will use process.env by default)
-  if (sanitizedEnv) {
-    // Find the PATH key used in the sanitized env
-    const pathKey = getPathEnvKey(sanitizedEnv);
-    const execOptions: IGitStringExecutionOptions = {
-      ...options,
-      env: {
-        ...sanitizedEnv,
-        ...options?.env,
-        // Ensure sanitized PATH always takes precedence to prevent WSL contamination
-        [pathKey]: sanitizedEnv[pathKey],
-      },
-    };
-    return exec(args, path, execOptions);
+async function hashGitOutput(
+  appPath: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<string> {
+  const hash = createHash("sha256");
+  const { env, gitLocation } = getGitProcessEnvironment();
+  const result = await runBufferedProcess({
+    command: gitLocation,
+    args,
+    cwd: appPath,
+    env,
+    signal,
+    timeoutMs: GIT_STATE_FINGERPRINT_TIMEOUT_MS,
+    maxOutputBytes: 1_024,
+    captureOutputOnSuccess: false,
+    waitForCloseAfterForceKill: true,
+    onStdoutBytes: (chunk) => hash.update(chunk),
+  });
+  if (result.code !== 0 || result.aborted || result.timedOut) {
+    throw new Error(`Git fingerprint command failed: git ${args.join(" ")}`);
+  }
+  return hash.digest("hex");
+}
+
+async function collectRawGitOutput(
+  appPath: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  const { env, gitLocation } = getGitProcessEnvironment();
+  const result = await runBufferedProcess({
+    command: gitLocation,
+    args,
+    cwd: appPath,
+    env,
+    signal,
+    timeoutMs: GIT_STATE_FINGERPRINT_TIMEOUT_MS,
+    maxOutputBytes: 1_024,
+    captureOutputOnSuccess: false,
+    waitForCloseAfterForceKill: true,
+    onStdoutBytes: (chunk) => {
+      totalBytes += chunk.length;
+      if (totalBytes > GIT_STATE_FINGERPRINT_MAX_PATH_BYTES) {
+        throw new Error("Git fingerprint path output exceeded its byte limit");
+      }
+      chunks.push(Buffer.from(chunk));
+    },
+  });
+  if (result.code !== 0 || result.aborted || result.timedOut) {
+    throw new Error(`Git fingerprint command failed: git ${args.join(" ")}`);
+  }
+  return Buffer.concat(chunks, totalBytes);
+}
+
+function parseUntrackedPorcelainPaths(output: Buffer): Buffer[] {
+  const paths: Buffer[] = [];
+  let offset = 0;
+  while (offset < output.length) {
+    const terminator = output.indexOf(0, offset);
+    const end = terminator === -1 ? output.length : terminator;
+    const record = output.subarray(offset, end);
+    offset = end + 1;
+    if (record.length < 3) {
+      continue;
+    }
+
+    const x = record[0];
+    const y = record[1];
+    if (x === 0x3f && y === 0x3f) {
+      paths.push(Buffer.from(record.subarray(3)));
+      if (paths.length > GIT_STATE_FINGERPRINT_MAX_UNTRACKED_PATHS) {
+        throw new Error("Git fingerprint exceeded its untracked-path limit");
+      }
+    }
+
+    // In porcelain v1 -z output, rename/copy records are followed by a second
+    // NUL-delimited pathname without another status prefix.
+    if (x === 0x52 || x === 0x43 || y === 0x52 || y === 0x43) {
+      const sourceTerminator = output.indexOf(0, offset);
+      offset = sourceTerminator === -1 ? output.length : sourceTerminator + 1;
+    }
+  }
+  return paths;
+}
+
+function resolveRawGitPath(appPath: string, relativePath: Buffer): fs.PathLike {
+  if (
+    relativePath.length === 0 ||
+    relativePath[0] === 0x2f ||
+    relativePath.includes(0)
+  ) {
+    throw new Error("Git returned an invalid relative pathname");
   }
 
-  // On Linux, the bundled git http helpers are linked against
-  // libcurl-gnutls.so.4, which RHEL-based distros don't ship. When needed,
-  // prepend a shim directory to LD_LIBRARY_PATH that exposes the system
-  // libcurl under that soname. No-op (returns undefined) on distros that
-  // already have libcurl-gnutls.so.4.
-  const shimDir = ensureLibcurlShimOnLinux();
-  if (shimDir) {
-    const existingLdPath =
-      options?.env?.LD_LIBRARY_PATH ?? process.env.LD_LIBRARY_PATH;
-    const ldLibraryPath = [shimDir, existingLdPath].filter(Boolean).join(":");
-    return exec(args, path, {
-      ...options,
-      env: {
-        ...process.env,
-        ...options?.env,
-        LD_LIBRARY_PATH: ldLibraryPath,
-      },
-    });
+  const components = relativePath.toString("latin1").split("/");
+  if (components.some((component) => component === "..")) {
+    throw new Error("Git returned a pathname outside the repository");
   }
 
-  // On non-Windows without a shim, pass options through unchanged
-  return exec(args, path, options);
+  if (process.platform === "win32") {
+    return safeJoin(appPath, relativePath.toString("utf8"));
+  }
+  return Buffer.concat([
+    Buffer.from(appPath),
+    Buffer.from(pathModule.sep),
+    relativePath,
+  ]);
+}
+
+async function hashUntrackedPath(
+  appPath: string,
+  relativePath: Buffer,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  signal?.throwIfAborted();
+  const filePath = resolveRawGitPath(appPath, relativePath);
+  const stat = await fsPromises.lstat(filePath);
+  const hash = createHash("sha256");
+  hash.update(`${stat.mode}\0`);
+  if (stat.isSymbolicLink()) {
+    hash.update(await fsPromises.readlink(filePath, { encoding: "buffer" }));
+  } else if (stat.isFile()) {
+    for await (const chunk of fs.createReadStream(filePath, { signal })) {
+      hash.update(chunk as Buffer);
+    }
+  }
+  return hash.digest();
+}
+
+async function hashUntrackedContents(
+  appPath: string,
+  statusOutput: Buffer,
+  signal?: AbortSignal,
+): Promise<string> {
+  const hash = createHash("sha256");
+  for (const relativePath of parseUntrackedPorcelainPaths(statusOutput)) {
+    const pathLength = Buffer.allocUnsafe(4);
+    pathLength.writeUInt32BE(relativePath.length);
+    hash.update(pathLength);
+    hash.update(relativePath);
+    hash.update(await hashUntrackedPath(appPath, relativePath, signal));
+  }
+  return hash.digest("hex");
+}
+
+/** Fingerprint staged, tracked-worktree, and untracked path/content state. */
+export async function getGitStateFingerprint(
+  appPath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const timeoutSignal = AbortSignal.timeout(GIT_STATE_FINGERPRINT_TIMEOUT_MS);
+  const fingerprintSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
+  const results = await Promise.allSettled([
+    hashGitOutput(
+      appPath,
+      [
+        "-c",
+        "core.fsmonitor=false",
+        "diff",
+        "--cached",
+        "--binary",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--",
+      ],
+      fingerprintSignal,
+    ),
+    hashGitOutput(
+      appPath,
+      [
+        "-c",
+        "core.fsmonitor=false",
+        "diff",
+        "--binary",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--",
+      ],
+      fingerprintSignal,
+    ),
+    (async () => {
+      const args = [
+        "-c",
+        "core.fsmonitor=false",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+      ];
+      const statusOutput = await collectRawGitOutput(
+        appPath,
+        args,
+        fingerprintSignal,
+      );
+      return [
+        createHash("sha256").update(statusOutput).digest("hex"),
+        await hashUntrackedContents(appPath, statusOutput, fingerprintSignal),
+      ].join(":");
+    })(),
+  ]);
+  return results
+    .map((result) => {
+      if (result.status === "rejected") {
+        throw result.reason;
+      }
+      return result.value;
+    })
+    .join("\0");
 }
 import type {
   GitBaseParams,
@@ -643,12 +863,16 @@ export async function gitCommit({
   path,
   message,
   amend,
+  noVerify = false,
   paths,
 }: GitCommitParams): Promise<string> {
   // Perform the commit using dugite with -c user.name/email config
   const commitArgs = ["commit", "-m", message];
   if (amend) {
     commitArgs.push("--amend");
+  }
+  if (noVerify) {
+    commitArgs.push("--no-verify");
   }
   if (paths?.length) {
     // `--` scopes the commit to these paths, so unrelated staged changes stay

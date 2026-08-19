@@ -451,6 +451,7 @@ export async function handleLocalAgentStream(
     settingsOverride,
     modelSelectionOverride,
     freeModelMode,
+    preCommitHookAvailable = false,
     referencedApps = [],
     currentTurnHasOnDiskAttachment,
   }: {
@@ -475,6 +476,8 @@ export async function handleLocalAgentStream(
     settingsOverride?: UserSettings;
     modelSelectionOverride?: ModelSelection;
     freeModelMode?: boolean;
+    /** Snapshot shared by the prompt and toolset for this writable turn. */
+    preCommitHookAvailable?: boolean;
     /**
      * Apps referenced via `@app:Name` mentions in the user's prompt.
      * Read-only tools can target these via an `app_name` parameter.
@@ -799,12 +802,14 @@ export async function handleLocalAgentStream(
       isSharedModulesChanged: false,
       sharedServerModulePaths: [],
       pendingFunctionDeploys: [],
+      skipPruneEdgeFunctions: settings.skipPruneEdgeFunctions ?? false,
       spawnedSubagentThreadIds,
       spawnedImplementerThreadIds,
       deliveredExplorerThreadIds,
       todos: persistedTodos,
       dyadRequestId,
       fileEditTracker,
+      preCommitHookAvailable,
       testingEnabled: Boolean(chat.app.testingEnabled),
       testRunAttempts: new Map(),
       isDyadPro: isDyadProEnabled(settings),

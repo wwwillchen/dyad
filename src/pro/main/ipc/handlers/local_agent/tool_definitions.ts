@@ -35,6 +35,7 @@ import { generateImageTool } from "./tools/generate_image";
 import { updateTodosTool } from "./tools/update_todos";
 import { runTypeChecksTool } from "./tools/run_type_checks";
 import { runTestsTool } from "./tools/run_tests";
+import { runPreCommitTool } from "./tools/run_pre_commit";
 import { generateTestAssertionsTool } from "./tools/generate_test_assertions";
 import { rebuildAppTool, restartAppTool } from "./tools/app_lifecycle";
 import { grepTool } from "./tools/grep";
@@ -78,6 +79,7 @@ import {
 import {
   assertAppBlueprintApproved,
   requireToolConsentOrThrow,
+  shouldTrackToolFileMutation,
   shouldTrackToolMutation,
   trackAppMutation,
   trackFileEditTool,
@@ -161,6 +163,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   generateImageTool,
   updateTodosTool,
   runTypeChecksTool,
+  runPreCommitTool,
   runTestsTool,
   generateTestAssertionsTool,
   restartAppTool,
@@ -660,15 +663,23 @@ export function buildAgentToolSet(
             // Only completed mutations unblock run_tests. Failed tool calls are
             // still present in fileEditTracker for retry/fallback telemetry, but
             // must not masquerade as a code change.
+            const didMutate = shouldTrackToolMutation(
+              tool,
+              processedArgs,
+              result,
+              invocationCtx,
+            );
             trackAppMutation(
               invocationCtx,
               tool.name,
-              shouldTrackToolMutation(
-                tool,
-                processedArgs,
-                result,
-                invocationCtx,
-              ),
+              didMutate,
+              didMutate &&
+                (await shouldTrackToolFileMutation(
+                  tool,
+                  processedArgs,
+                  result,
+                  invocationCtx,
+                )),
             );
 
             if (toolCallId && invocationCtx.onToolActivity) {
