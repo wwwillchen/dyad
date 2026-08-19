@@ -77,7 +77,11 @@ jobs:
           gpg --dearmor /tmp/llvm-snapshot.gpg.key
           sudo install -m 0644 /tmp/llvm-snapshot.gpg.key.gpg /etc/apt/keyrings/apt.llvm.org.gpg
           echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm-toolchain-jammy-18.list
-          sudo apt-get update
+          # Preserve the runner's package indexes and avoid refreshing unrelated Ubuntu mirrors.
+          sudo apt-get update \
+            -o Dir::Etc::sourcelist="sources.list.d/llvm-toolchain-jammy-18.list" \
+            -o Dir::Etc::sourceparts="-" \
+            -o APT::Get::List-Cleanup="0"
           sudo apt-get install -y clang-18
           echo "CC=clang-18" >> "$GITHUB_ENV"
           echo "CXX=clang++-18" >> "$GITHUB_ENV"
