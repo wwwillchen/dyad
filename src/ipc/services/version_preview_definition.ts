@@ -12,6 +12,7 @@ import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalid
 import { ignore } from "@/state_machines/types";
 import {
   CLOSED_STATE,
+  isRestoreRecoveryFlowState,
   type PreviewCommand,
   type PreviewState,
   type RestoreRecovery,
@@ -38,6 +39,7 @@ import { versionPreviewPresentationService } from "./version_preview_presentatio
 import { versionPreviewService } from "./version_preview_service";
 import { versionPreviewPersistence } from "./version_preview_persistence";
 import { versionPreviewWindowInterestService } from "./version_preview_window_interest";
+import { versionPreviewRemoteIntentContract } from "@/version_preview/remote_intent_contract";
 
 interface VersionPreviewActorCommand {
   readonly command: PreviewCommand | { readonly type: "reconcile" };
@@ -82,7 +84,9 @@ function isMutationCommand(command: PreviewCommand): boolean {
     command.type === "return" ||
     command.type === "switch-branch" ||
     command.type === "restore" ||
-    command.type === "restore-to-message"
+    command.type === "restore-to-message" ||
+    command.type === "validate-current-repository" ||
+    command.type === "checkpoint-current-repository"
   );
 }
 
@@ -92,6 +96,8 @@ function isFailureEvent(event: VersionPreviewWireEvent): boolean {
     event.type === "CHECKOUT_FAILED" ||
     event.type === "RESTORE_FAILED" ||
     event.type === "RESTORE_RECOVERY_REQUIRED" ||
+    event.type === "CURRENT_REPOSITORY_DIRTY" ||
+    event.type === "CURRENT_REPOSITORY_REJECTED" ||
     event.type === "RETURN_FAILED" ||
     event.type === "SWITCH_BRANCH_FAILED"
   );
@@ -405,12 +411,16 @@ function createCommandRunner(
                 command,
                 invocationRef.operationId,
                 (progress) => {
+                  const recovery =
+                    command.type === "restore-to-message"
+                      ? { ...progress, affectedChatId: command.chatId }
+                      : progress;
                   versionPreviewPersistence.checkpointRestore(
                     appId,
                     context.getSnapshot().state,
-                    progress,
+                    recovery,
                   );
-                  restoreProgress = progress;
+                  restoreProgress = recovery;
                 },
               )
             : versionPreviewService.run(command, invocationRef.operationId);
@@ -540,6 +550,109 @@ function createCommandRunner(
           });
         return;
       }
+      case "validate-current-repository":
+      case "checkpoint-current-repository": {
+        if (!invocationRef) return;
+        const operation =
+          command.type === "validate-current-repository"
+            ? versionPreviewService.validateCurrentRepository(appId)
+            : versionPreviewService.checkpointCurrentRepository(appId);
+        const lifecycle = operation.then(
+          (result) => {
+            if (result.kind === "dirty") {
+              emit({ type: "CURRENT_REPOSITORY_DIRTY", invocationRef });
+              return;
+            }
+            if (result.kind === "blocked") {
+              emit({
+                type: "CURRENT_REPOSITORY_REJECTED",
+                error: { message: result.message },
+                assessment: result.assessment,
+                invocationRef,
+              });
+              return;
+            }
+
+            try {
+              const recoveryState = context.getSnapshot().state;
+              const affectedChatId = isRestoreRecoveryFlowState(recoveryState)
+                ? (recoveryState.restoreRecovery?.affectedChatId ?? null)
+                : null;
+              const originHandledScopes = [
+                { family: "branches", appId },
+                { family: "versions", appId },
+                { family: "app", appId },
+                { family: "problems", appId },
+              ] as const;
+              const scopes = [
+                ...originHandledScopes,
+                { family: "chats" },
+                ...(affectedChatId
+                  ? ([{ family: "chat", chatId: affectedChatId }] as const)
+                  : []),
+              ] as const;
+              queryInvalidationBus.publish(scopes, {
+                originEndpoint:
+                  versionPreviewPresentationService.originEndpointFor(
+                    invocationRef.operationId,
+                  ),
+                originHandledScopes,
+              });
+              versionPreviewPresentationService.publishResult(
+                appId,
+                invocationRef.operationId,
+                {
+                  repositoryOutcome: "unchanged",
+                  notification: result.savedVersionId
+                    ? {
+                        kind: "success",
+                        message:
+                          "Current changes saved as a recovery version. Version History is ready.",
+                      }
+                    : {
+                        kind: "success",
+                        message:
+                          "Version History is ready. Continuing from the current code version.",
+                      },
+                  runtimeAction: "none",
+                  affectedChatId,
+                  createdChatId: null,
+                },
+              );
+            } finally {
+              emit({
+                type: "CURRENT_REPOSITORY_ACCEPTED",
+                appId,
+                branch: result.branch,
+                acceptedHead: result.headOid,
+                savedVersionId: result.savedVersionId,
+                invocationRef,
+              });
+            }
+          },
+          (error) => {
+            emit({
+              type: "CURRENT_REPOSITORY_REJECTED",
+              error: errorInfo(error),
+              assessment: {
+                type: "blocked",
+                blocker: "repository-error",
+              },
+              invocationRef,
+            });
+          },
+        );
+        void versionPreviewService
+          .trackLifecycle(appId, lifecycle)
+          .catch((error) => {
+            versionPreviewPresentationService.publishError(
+              appId,
+              invocationRef.operationId,
+              `Version recovery completion failed: ${errorInfo(error).message}`,
+            );
+          });
+        return;
+      }
       case "notify-error":
         if (invocationRef) {
           try {
@@ -582,7 +695,9 @@ type Definition = DistributedMachineDefinition<
   VersionPreviewActorState,
   VersionPreviewWireEvent,
   VersionPreviewActorCommand,
-  import("@/version_preview/transition").PreviewIgnoreReason | "stale-operation"
+  | import("@/version_preview/transition").PreviewIgnoreReason
+  | "stale-operation",
+  VersionPreviewIntentEvent
 > & {
   readonly host: "main";
   readonly remote: NonNullable<
@@ -593,7 +708,8 @@ type Definition = DistributedMachineDefinition<
       VersionPreviewWireEvent,
       VersionPreviewActorCommand,
       | import("@/version_preview/transition").PreviewIgnoreReason
-      | "stale-operation"
+      | "stale-operation",
+      VersionPreviewIntentEvent
     >["remote"]
   >;
 };
@@ -719,4 +835,5 @@ export const versionPreviewDefinition: Definition = {
       );
     },
   },
+  remoteIntentDeclaration: versionPreviewRemoteIntentContract,
 };

@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   send: vi.fn(),
   versions: [] as Version[],
   state: { type: "closed" } as PreviewState,
+  paneVisible: false,
 }));
 
 vi.mock("react-virtuoso", () => ({
@@ -62,7 +63,7 @@ vi.mock("@/hooks/useVersionPreview", () => ({
   useVersionPreview: () => ({
     state: mocks.state,
     projection: projectVersionPreview(mocks.state),
-    isPaneVisible: isPaneVisibleState(mocks.state),
+    isPaneVisible: mocks.paneVisible || isPaneVisibleState(mocks.state),
     send: mocks.send,
     sendAndWaitForMutation: vi.fn(),
   }),
@@ -113,6 +114,7 @@ describe("VersionPane", () => {
     vi.clearAllMocks();
     mocks.versions.length = 0;
     mocks.state = { type: "closed" };
+    mocks.paneVisible = false;
     mocks.listAppScreenshots.mockResolvedValue({ screenshots: [] });
     mocks.refreshVersions.mockResolvedValue({ data: mocks.versions });
   });
@@ -158,5 +160,26 @@ describe("VersionPane", () => {
     expect(projectVersionPreview(mocks.state).capabilities.canRestore).toBe(
       false,
     );
+  });
+
+  it("shows an inline blocked state while restore recovery is unresolved", async () => {
+    const browsing = browsingState();
+    if (browsing.type !== "browsing") throw new Error("invalid fixture");
+    mocks.state = {
+      type: "restore-recovery-required",
+      session: browsing.session,
+      error: { message: "restore interrupted" },
+    };
+    mocks.paneVisible = true;
+
+    render(<VersionPane />, { wrapper });
+
+    expect(
+      await screen.findByText("Version History is temporarily unavailable"),
+    ).toBeDefined();
+    expect(
+      screen.getByText("Resolve the version recovery notice to continue."),
+    ).toBeDefined();
+    expect(screen.queryByTestId("virtualized-version-list")).toBeNull();
   });
 });

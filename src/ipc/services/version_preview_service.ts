@@ -7,15 +7,45 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import type { VersionCommandResult } from "@/ipc/types";
 import { getDyadAppPath } from "@/paths/paths";
 import type { PreviewCommand, RestoreRecovery } from "@/version_preview/state";
+import type { CurrentRepositoryAssessment } from "@/version_preview/state";
 import {
   getCurrentCommitHash,
   getGitUncommittedFilesWithStatus,
+  gitAddAll,
+  gitCommit,
   gitCurrentBranch,
+  inspectRepositoryHealth,
 } from "../utils/git_utils";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "./app_operation_coordinator";
 import { versionPreviewHandlerService } from "../handlers/version_handlers";
 import { versionPreviewPresentationService } from "./version_preview_presentation_service";
+import {
+  beginAppChatActorMutation,
+  hasActiveAppChatActors,
+} from "./chat_actor_service";
+import {
+  blockNewStreamsForApp,
+  hasActiveStreamsForApp,
+} from "../handlers/chat_stream_handlers";
 
 const NO_BRANCH = "<no-branch>";
+
+export type CurrentRepositoryValidation =
+  | {
+      kind: "healthy";
+      branch: string;
+      headOid: string;
+      savedVersionId?: string;
+    }
+  | { kind: "dirty" }
+  | {
+      kind: "blocked";
+      assessment: Exclude<CurrentRepositoryAssessment, { type: "dirty" }>;
+      message: string;
+    };
 
 export class VersionPreviewService {
   private readonly deletionFences = new Map<number, number>();
@@ -156,6 +186,113 @@ export class VersionPreviewService {
     );
   }
 
+  validateCurrentRepository(
+    appId: number,
+  ): Promise<CurrentRepositoryValidation> {
+    return this.track(
+      appId,
+      this.runRepositoryRecoveryOperation({
+        appId,
+        operation: "validate-current-version",
+        refuseWhenRecording: "use the current version",
+        resources: [readAppResource("app-path"), readAppResource("repository")],
+        execute: () => this.inspectCurrentRepository(appId),
+      }),
+    );
+  }
+
+  checkpointCurrentRepository(
+    appId: number,
+  ): Promise<CurrentRepositoryValidation> {
+    return this.track(
+      appId,
+      this.runRepositoryRecoveryOperation({
+        appId,
+        operation: "checkpoint-current-version",
+        refuseWhenRecording: "save the current version",
+        resources: [readAppResource("app-path"), "repository"],
+        execute: async () => {
+          const before = await this.inspectCurrentRepository(appId);
+          if (before.kind === "blocked" || before.kind === "healthy") {
+            return before;
+          }
+
+          const app = await db.query.apps.findFirst({
+            columns: { path: true },
+            where: eq(apps.id, appId),
+          });
+          if (!app) {
+            return this.missingRepository("App not found");
+          }
+          const appPath = getDyadAppPath(app.path);
+          await gitAddAll({ path: appPath });
+          const savedVersionId = await gitCommit({
+            path: appPath,
+            message:
+              "[Recovery] Saved current changes before continuing Version History",
+          });
+          const after = await this.inspectCurrentRepository(appId);
+          if (after.kind !== "healthy") {
+            return after.kind === "dirty"
+              ? {
+                  kind: "blocked",
+                  assessment: {
+                    type: "blocked",
+                    blocker: "repository-error",
+                  },
+                  message:
+                    "The current changes were saved, but the repository is still not clean. Check the project and try again.",
+                }
+              : after;
+          }
+          return { ...after, savedVersionId };
+        },
+      }),
+    );
+  }
+
+  private async runRepositoryRecoveryOperation<Result>({
+    appId,
+    operation,
+    refuseWhenRecording,
+    resources,
+    execute,
+  }: {
+    appId: number;
+    operation: string;
+    refuseWhenRecording: string;
+    resources: Parameters<typeof appOperationCoordinator.run>[0]["resources"];
+    execute: () => Promise<Result>;
+  }): Promise<Result> {
+    const releaseStreamAdmission = blockNewStreamsForApp(appId);
+    let releaseActorAdmission: (() => void) | undefined;
+    try {
+      releaseActorAdmission = await beginAppChatActorMutation(appId);
+      const [hasActorStream, hasLegacyStream] = await Promise.all([
+        hasActiveAppChatActors(appId),
+        hasActiveStreamsForApp(appId),
+      ]);
+      if (hasActorStream || hasLegacyStream) {
+        throw new DyadError(
+          "Stop the active generation before continuing Version History.",
+          DyadErrorKind.Precondition,
+        );
+      }
+      return await appOperationCoordinator.run(
+        {
+          appId,
+          operation,
+          resources,
+          refuseWhenRecording,
+        },
+        execute,
+      );
+    } finally {
+      releaseActorAdmission?.();
+      releaseStreamAdmission();
+    }
+  }
+
   beginAppDeletion(appId: number): void {
     this.deletionFences.set(appId, (this.deletionFences.get(appId) ?? 0) + 1);
   }
@@ -244,6 +381,65 @@ export class VersionPreviewService {
       targetHead: command.type === "restore" ? command.versionId : null,
       nextStep: "preparing",
     });
+  }
+
+  private missingRepository(message: string): CurrentRepositoryValidation {
+    return {
+      kind: "blocked",
+      assessment: { type: "blocked", blocker: "missing-repository" },
+      message,
+    };
+  }
+
+  private async inspectCurrentRepository(
+    appId: number,
+  ): Promise<CurrentRepositoryValidation> {
+    const app = await db.query.apps.findFirst({
+      columns: { path: true },
+      where: eq(apps.id, appId),
+    });
+    if (!app) return this.missingRepository("App not found");
+    const appPath = getDyadAppPath(app.path);
+    if (!fs.existsSync(path.join(appPath, ".git"))) {
+      return this.missingRepository(
+        "The project repository could not be found.",
+      );
+    }
+
+    const health = await inspectRepositoryHealth({ path: appPath });
+    if (health.unmergedFiles.length > 0) {
+      return {
+        kind: "blocked",
+        assessment: { type: "blocked", blocker: "conflicted" },
+        message:
+          "This project has unresolved file conflicts. Resolve them outside Dyad, then check again.",
+      };
+    }
+    if (health.operationInProgress) {
+      return {
+        kind: "blocked",
+        assessment: {
+          type: "blocked",
+          blocker: "git-operation",
+          operation: health.operationInProgress,
+        },
+        message: `A Git ${health.operationInProgress} is still in progress. Finish or cancel it outside Dyad, then check again.`,
+      };
+    }
+    if (!health.branch) {
+      return {
+        kind: "blocked",
+        assessment: { type: "blocked", blocker: "detached-head" },
+        message:
+          "This project is not on a named branch. Return it to a branch outside Dyad, then check again.",
+      };
+    }
+    if (!health.isClean) return { kind: "dirty" };
+    return {
+      kind: "healthy",
+      branch: health.branch,
+      headOid: health.headOid,
+    };
   }
 
   trackLifecycle<Result>(

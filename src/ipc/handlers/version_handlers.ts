@@ -1,5 +1,11 @@
 import { db } from "../../db";
-import { apps, chats, messages, versions } from "../../db/schema";
+import {
+  apps,
+  chats,
+  chatTurnIntents,
+  messages,
+  versions,
+} from "../../db/schema";
 import { desc, eq, and, gt, gte } from "drizzle-orm";
 import type { GitCommit } from "../git_types";
 import fs from "node:fs";
@@ -33,7 +39,7 @@ import {
   gitCommitExists,
   gitCurrentBranch,
   gitLog,
-  isGitStatusClean,
+  inspectRepositoryHealth,
   getChangedFilesForCommit,
   getFileAtCommit,
   getOldFileContent,
@@ -70,6 +76,8 @@ import {
 import type { RestoreRecovery } from "@/version_preview/state";
 import { readStoredReferencedAppIds } from "../utils/mention_apps";
 import { blockRecordingStart } from "../services/recording_registry";
+import { isCancelledResponseContent } from "@/shared/chatCancellation";
+import type { ChatTurnTerminalOutcome } from "@/shared/chat_turn_outcome";
 
 const logger = log.scope("version_handlers");
 
@@ -183,6 +191,8 @@ function appendWarning(existing: string, addition: string): string {
 
 const INTERRUPTED_GENERATION_WARNING =
   "An in-progress generation was cancelled during this restore attempt. Re-submit its prompt to continue.";
+const INTERRUPTED_CHECKPOINT_NOTICE =
+  "Partial changes from the interrupted generation were saved as an [Interrupted] version in Version History.";
 
 function versionRuntimeAction(
   app: typeof apps.$inferSelect,
@@ -230,8 +240,73 @@ function appendInterruptedGenerationWarning(
 
 type RestoreMessageCommitMetadata = Pick<
   typeof messages.$inferSelect,
-  "role" | "sourceCommitHash" | "commitHash"
+  "role" | "content" | "sourceCommitHash" | "commitHash" | "chatTurnIntentId"
 >;
+
+type RestoreTargetTurnOutcome = ChatTurnTerminalOutcome | "unknown";
+
+async function getRestoreTargetTurnOutcome({
+  chatMessages,
+  targetIndex,
+}: {
+  chatMessages: RestoreMessageCommitMetadata[];
+  targetIndex: number;
+}): Promise<RestoreTargetTurnOutcome> {
+  const target = chatMessages[targetIndex];
+  if (!target || target.role !== "user") return "unknown";
+
+  return getStoredTurnOutcome(target, chatMessages[targetIndex + 1]);
+}
+
+async function getStoredTurnOutcome(
+  target: RestoreMessageCommitMetadata,
+  nextMessage?: RestoreMessageCommitMetadata,
+): Promise<RestoreTargetTurnOutcome> {
+  if (target.chatTurnIntentId) {
+    const intent = await db.query.chatTurnIntents.findFirst({
+      columns: { terminalOutcome: true },
+      where: eq(chatTurnIntents.intentId, target.chatTurnIntentId),
+    });
+    if (intent?.terminalOutcome) return intent.terminalOutcome;
+  }
+
+  if (
+    nextMessage?.role === "assistant" &&
+    !nextMessage.commitHash &&
+    isCancelledResponseContent(nextMessage.content)
+  ) {
+    return "cancelled";
+  }
+
+  return "unknown";
+}
+
+async function getRestoreTargetTurnOutcomeForMessage({
+  chatId,
+  messageId,
+}: {
+  chatId: number;
+  messageId: number;
+}): Promise<RestoreTargetTurnOutcome> {
+  const columns = {
+    role: true,
+    content: true,
+    sourceCommitHash: true,
+    commitHash: true,
+    chatTurnIntentId: true,
+  } as const;
+  const target = await db.query.messages.findFirst({
+    columns,
+    where: and(eq(messages.chatId, chatId), eq(messages.id, messageId)),
+  });
+  if (!target || target.role !== "user") return "unknown";
+  const nextMessage = await db.query.messages.findFirst({
+    columns,
+    where: and(eq(messages.chatId, chatId), gt(messages.id, messageId)),
+    orderBy: (messages, { asc }) => [asc(messages.id)],
+  });
+  return getStoredTurnOutcome(target, nextMessage);
+}
 
 function resolveTargetCommitHash({
   chatMessages,
@@ -441,6 +516,7 @@ async function revertCodebaseToVersion({
     RestoreRecovery,
     { repositoryOutcome: "target-applied" }
   > & { nextStep: "chat-mutation" };
+  preservedInterruptedChanges: boolean;
 }> {
   let successMessage = "Restored version";
   let warningMessage = "";
@@ -455,6 +531,26 @@ async function revertCodebaseToVersion({
     preRestoreBranch: targetBranchName ?? currentBranch,
     targetHead: previousVersionId,
   } as const;
+
+  // Restores rewrite the index and working tree. In particular, preserving an
+  // interrupted turn stages and commits the entire tree, which Git can treat as
+  // resolving conflicts or completing an unrelated merge/cherry-pick. Refuse
+  // every restore while Git owns the repository for another operation, before
+  // emitting progress or making any mutation.
+  const repositoryHealth = await inspectRepositoryHealth({ path: appPath });
+  if (repositoryHealth.unmergedFiles.length > 0) {
+    throw new DyadError(
+      "Cannot revert: repository has unresolved file conflicts.",
+      DyadErrorKind.Conflict,
+    );
+  }
+  if (repositoryHealth.operationInProgress) {
+    throw new DyadError(
+      `Cannot revert: a Git ${repositoryHealth.operationInProgress} is in progress. Finish or cancel it outside Dyad, then try again.`,
+      DyadErrorKind.Conflict,
+    );
+  }
+
   const checkpointGitStep = (
     nextStep:
       | "preparing"
@@ -471,12 +567,14 @@ async function revertCodebaseToVersion({
   // revert commit would be created on the detached HEAD and then abandoned when
   // the saved branch is checked out again, silently discarding the restore. Bail
   // out with a clear message instead of doing the work only to throw it away.
-  // A stream cancelled specifically for restore-to-message may leave partial
-  // writes behind. Preserve that interrupted turn before reverting. Existing
-  // Restore, Undo, Retry, and checkout paths intentionally keep their prior
-  // dirty-tree conflict behavior instead of silently committing manual edits.
+  // A cancelled stream may leave partial writes behind. Preserve that
+  // interrupted turn before reverting when the caller can prove the dirty tree
+  // belongs to a durably cancelled turn. Other restore and checkout paths keep
+  // their prior dirty-tree conflict behavior instead of silently committing
+  // manual edits.
   let detachedCheckpointCommit: string | null = null;
-  if (preserveDirtyTree && !(await isGitStatusClean({ path: appPath }))) {
+  let preservedInterruptedChanges = false;
+  if (preserveDirtyTree && !repositoryHealth.isClean) {
     // Stage everything first so untracked files (e.g. a newly added
     // pnpm-workspace.yaml) are included. With native git, `git commit` only
     // commits staged changes, so without this the commit would fail with
@@ -507,18 +605,62 @@ async function revertCodebaseToVersion({
     const checkpointCommit = await gitCommit({
       path: appPath,
       message:
-        "Saved partial changes (from an interrupted generation) before restoring to an earlier version",
+        "[Interrupted] Saved partial changes before restoring to an earlier version",
     });
+    preservedInterruptedChanges = true;
     if (!currentBranch) {
       detachedCheckpointCommit = checkpointCommit;
     }
   }
 
-  checkpointGitStep("checkout-branch");
-  await gitCheckout({
-    path: appPath,
-    ref: revertRef,
-  });
+  if (!preserveDirtyTree) {
+    const userVisibleChanges = await getGitUncommittedFilesWithStatus({
+      path: appPath,
+    });
+    if (userVisibleChanges.length > 0) {
+      throw new DyadError(
+        "Cannot revert: working tree has uncommitted changes.",
+        DyadErrorKind.Conflict,
+      );
+    }
+  }
+
+  if (currentBranch !== revertRef) {
+    const [checkoutStartBranch, checkoutStartHead] = await Promise.all([
+      gitCurrentBranch({ path: appPath }),
+      getCurrentCommitHash({ path: appPath }),
+    ]);
+    checkpointGitStep("checkout-branch");
+    try {
+      await gitCheckout({
+        path: appPath,
+        ref: revertRef,
+      });
+    } catch (error) {
+      try {
+        const [branchAfterFailure, headAfterFailure] = await Promise.all([
+          gitCurrentBranch({ path: appPath }),
+          getCurrentCommitHash({ path: appPath }),
+        ]);
+        if (
+          !preservedInterruptedChanges &&
+          branchAfterFailure === checkoutStartBranch &&
+          headAfterFailure === checkoutStartHead
+        ) {
+          onRestoreProgress?.({
+            repositoryOutcome: "unchanged",
+            nextStep: "completed",
+          });
+        }
+      } catch (probeError) {
+        logger.warn(
+          `Could not inspect repository state after checkout failed for app ${appId}; preserving the original checkout error.`,
+          probeError,
+        );
+      }
+      throw error;
+    }
+  }
 
   // When the interrupted writes were checkpointed from a detached historical
   // preview, carry that exact tree onto the live branch before restoring. This
@@ -535,7 +677,7 @@ async function revertCodebaseToVersion({
       await gitCommit({
         path: appPath,
         message:
-          "Saved partial changes (from an interrupted generation) before restoring to an earlier version",
+          "[Interrupted] Saved partial changes before restoring to an earlier version",
       });
     }
   }
@@ -714,7 +856,12 @@ async function revertCodebaseToVersion({
   } as const;
   onRestoreProgress?.(restoreCompletion);
 
-  return { successMessage, warningMessage, restoreCompletion };
+  return {
+    successMessage,
+    warningMessage,
+    restoreCompletion,
+    preservedInterruptedChanges,
+  };
 }
 
 export function registerVersionHandlers() {
@@ -945,15 +1092,40 @@ export function registerVersionHandlers() {
           }
         }
 
-        const { successMessage, warningMessage, restoreCompletion } =
-          await revertCodebaseToVersion({
-            appId,
-            app,
-            appPath,
-            previousVersionId,
-            targetBranchName,
-            onRestoreProgress,
+        let preserveDirtyTree = false;
+        if (currentChatMessageId) {
+          const targetChat = await db.query.chats.findFirst({
+            columns: { appId: true },
+            where: eq(chats.id, currentChatMessageId.chatId),
           });
+          preserveDirtyTree =
+            targetChat?.appId === appId &&
+            (await getRestoreTargetTurnOutcomeForMessage({
+              chatId: currentChatMessageId.chatId,
+              messageId: currentChatMessageId.messageId,
+            })) === "cancelled";
+        }
+
+        const revertResult = await revertCodebaseToVersion({
+          appId,
+          app,
+          appPath,
+          previousVersionId,
+          targetBranchName,
+          preserveDirtyTree,
+          onRestoreProgress,
+        });
+        let { successMessage, warningMessage, restoreCompletion } =
+          revertResult;
+        if (revertResult.preservedInterruptedChanges) {
+          successMessage = `${successMessage} ${INTERRUPTED_CHECKPOINT_NOTICE}`;
+          if (warningMessage) {
+            warningMessage = appendWarning(
+              warningMessage,
+              INTERRUPTED_CHECKPOINT_NOTICE,
+            );
+          }
+        }
 
         let affectedChatId: number | null = null;
 
@@ -1095,10 +1267,7 @@ export function registerVersionHandlers() {
           where: eq(chats.id, chatId),
           with: {
             messages: {
-              orderBy: (messages, { asc }) => [
-                asc(messages.createdAt),
-                asc(messages.id),
-              ],
+              orderBy: (messages, { asc }) => [asc(messages.id)],
             },
           },
         });
@@ -1247,7 +1416,8 @@ export function registerVersionHandlers() {
       const didCancelTransport = restoreCodebase
         ? await cancelActiveStreamsForApp(appId, event.sender)
         : false;
-      const preserveDirtyTree = didCancelActor || didCancelTransport;
+      const preservedByActiveCancellation =
+        didCancelActor || didCancelTransport;
 
       // No recording recheck here: the block taken above is what rules one out
       // for the rest of this operation, and it was taken while a refusal was
@@ -1299,10 +1469,7 @@ export function registerVersionHandlers() {
             where: eq(chats.id, chatId),
             with: {
               messages: {
-                orderBy: (messages, { asc }) => [
-                  asc(messages.createdAt),
-                  asc(messages.id),
-                ],
+                orderBy: (messages, { asc }) => [asc(messages.id)],
               },
             },
           });
@@ -1322,6 +1489,23 @@ export function registerVersionHandlers() {
           if (latestTargetIndex === -1) {
             throw new DyadError("Message not found", DyadErrorKind.NotFound);
           }
+
+          const latestTargetTurnOutcome = await getRestoreTargetTurnOutcome({
+            chatMessages: latestChat.messages,
+            targetIndex: latestTargetIndex,
+          });
+          const preserveDirtyTree =
+            preservedByActiveCancellation ||
+            latestTargetTurnOutcome === "cancelled";
+          logger.info(
+            `Restore-to-message dirty-tree preservation for app ${appId}: ${
+              preservedByActiveCancellation
+                ? "active-cancel"
+                : latestTargetTurnOutcome === "cancelled"
+                  ? "durable-cancelled-turn"
+                  : "none"
+            }`,
+          );
 
           const latestMessagesBefore = latestChat.messages
             .slice(0, latestTargetIndex)
@@ -1343,7 +1527,7 @@ export function registerVersionHandlers() {
                 kind: "warning",
                 message: appendInterruptedGenerationWarning(
                   "Could not determine a version to restore to for this message.",
-                  preserveDirtyTree,
+                  preservedByActiveCancellation,
                 ),
               },
             });
@@ -1365,7 +1549,7 @@ export function registerVersionHandlers() {
                     kind: "warning",
                     message: appendInterruptedGenerationWarning(
                       "Could not restore the codebase because the target version no longer exists in the repository.",
-                      preserveDirtyTree,
+                      preservedByActiveCancellation,
                     ),
                   },
                 });
@@ -1402,6 +1586,15 @@ export function registerVersionHandlers() {
             });
             successMessage = result.successMessage;
             warningMessage = result.warningMessage;
+            if (result.preservedInterruptedChanges) {
+              successMessage = `${successMessage} ${INTERRUPTED_CHECKPOINT_NOTICE}`;
+              if (warningMessage) {
+                warningMessage = appendWarning(
+                  warningMessage,
+                  INTERRUPTED_CHECKPOINT_NOTICE,
+                );
+              }
+            }
             restoreCompletion = result.restoreCompletion;
           }
 

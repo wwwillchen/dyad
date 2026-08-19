@@ -36,6 +36,8 @@ const actor = {
 };
 
 const toastError = vi.hoisted(() => vi.fn());
+const toastLoading = vi.hoisted(() => vi.fn());
+const showError = vi.hoisted(() => vi.fn());
 const windowInterest = vi.hoisted(() => ({
   acquire: vi.fn(async () => ({ acquired: true })),
   restoreIfOrphaned: vi.fn(async () => ({ acquired: false })),
@@ -56,9 +58,14 @@ vi.mock("sonner", () => ({
     custom: vi.fn(),
     dismiss: vi.fn(),
     error: toastError,
+    loading: toastLoading,
     success: vi.fn(),
     warning: vi.fn(),
   },
+}));
+vi.mock("@/lib/toast", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/toast")>()),
+  showError,
 }));
 vi.mock("./window_interest_client", () => ({
   VersionPreviewWindowInterestClient: class {
@@ -115,6 +122,8 @@ describe("VersionPreviewProvider", () => {
     actorListeners.clear();
     remoteState = CLOSED_STATE;
     toastError.mockClear();
+    toastLoading.mockClear();
+    showError.mockClear();
     windowInterest.acquire.mockReset().mockResolvedValue({ acquired: true });
     windowInterest.restoreIfOrphaned
       .mockReset()
@@ -436,7 +445,7 @@ describe("VersionPreviewProvider", () => {
     );
   });
 
-  it("resyncs a rejected recovery retry and surfaces terminal rejection", async () => {
+  it("resyncs a duplicate recovery action without showing a false error", async () => {
     getDefaultStore().set(selectedAppIdAtom, 1);
     remoteState = {
       type: "recovery-required",
@@ -451,14 +460,21 @@ describe("VersionPreviewProvider", () => {
       },
       error: { message: "Return failed" },
     };
+    const recoverySession = remoteState.session;
     actor.dispatch
       .mockResolvedValueOnce({
         kind: "rejected",
         reason: "revision-conflict",
       })
-      .mockResolvedValueOnce({
-        kind: "ignored",
-        reason: "invalid-transition",
+      .mockImplementationOnce(async () => {
+        remoteState = {
+          type: "returning",
+          session: recoverySession,
+        };
+        return {
+          kind: "ignored" as const,
+          reason: "invalid-transition" as const,
+        };
       });
     const queryClient = new QueryClient();
     render(
@@ -479,6 +495,45 @@ describe("VersionPreviewProvider", () => {
 
     await waitFor(() => expect(actor.dispatch).toHaveBeenCalledTimes(2));
     expect(actor.resync).toHaveBeenCalled();
+    expect(toastError).not.toHaveBeenCalledWith(
+      "Version recovery could not be started. Please try again.",
+    );
+  });
+
+  it("reports an ignored recovery action when recovery did not advance", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    remoteState = {
+      type: "recovery-required",
+      session: {
+        appId: 1,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: "abc123",
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "Return failed" },
+    };
+    actor.dispatch.mockResolvedValueOnce({
+      kind: "ignored",
+      reason: "invalid-transition",
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <div>content</div>
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    const recoveryToast = toastError.mock.calls.find(
+      ([message]) =>
+        message ===
+        "Unable to return to the branch that was active before previewing this version.",
+    );
+    act(() => recoveryToast?.[1]?.action?.onClick());
+
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith(
         "Version recovery could not be started. Please try again.",
@@ -486,7 +541,231 @@ describe("VersionPreviewProvider", () => {
     );
   });
 
-  it("surfaces interrupted restore recovery without offering an unsafe retry", async () => {
+  it("opens the pane without a false error while recovery notice dispatch is refused", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    remoteState = {
+      type: "restore-recovery-required",
+      session: {
+        appId: 1,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: null,
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "Recovery is reconciling." },
+    };
+    actor.dispatch.mockRejectedValueOnce(
+      new Error("Version preview is reconciling after restart"),
+    );
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <Probe />
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(await screen.findByTestId("probe"));
+    await waitFor(() =>
+      expect(screen.getByTestId("probe").getAttribute("data-visible")).toBe(
+        "true",
+      ),
+    );
+    expect(showError).not.toHaveBeenCalledWith(
+      "Version controls are temporarily unavailable. Please try again.",
+    );
+  });
+
+  it("releases pane ownership when recovery is closed", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    remoteState = {
+      type: "restore-recovery-required",
+      session: {
+        appId: 1,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: null,
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "Recovery is unresolved." },
+    };
+    function RecoveryCloseProbe() {
+      const { isPaneVisible, send } = useVersionPreview(1);
+      return (
+        <div data-visible={isPaneVisible}>
+          <button onClick={() => send({ type: "OPEN", appId: 1 })}>Open</button>
+          <button onClick={() => send({ type: "CLOSE" })}>Close</button>
+        </div>
+      );
+    }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <RecoveryCloseProbe />
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByText("Open"));
+    await waitFor(() => expect(windowInterest.acquire).toHaveBeenCalledWith(1));
+    fireEvent.click(screen.getByText("Close"));
+    await waitFor(() =>
+      expect(windowInterest.release).toHaveBeenCalledWith(
+        1,
+        expect.stringMatching(/^version-preview:/),
+        { type: "close" },
+      ),
+    );
+  });
+
+  it("closes and releases the pane after current repository acceptance", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    const session = {
+      appId: 1,
+      originBranch: "main",
+      targetVersionId: "abc123",
+      checkedOutVersionId: null,
+      exitIntent: { type: "none" } as const,
+      selectedDiffFile: null,
+      isDiffVisible: false,
+    };
+    remoteState = {
+      type: "restore-recovery-required",
+      session,
+      error: { message: "Recovery is unresolved." },
+    };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <Probe />
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("probe"));
+    await waitFor(() =>
+      expect(screen.getByTestId("probe").getAttribute("data-visible")).toBe(
+        "true",
+      ),
+    );
+    act(() => {
+      remoteState = {
+        type: "validating-current-repository",
+        session,
+        error: { message: "Recovery is unresolved." },
+      };
+      actorListeners.forEach((listener) => listener());
+    });
+    act(() => {
+      remoteState = CLOSED_STATE;
+      actorListeners.forEach((listener) => listener());
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("probe").getAttribute("data-visible")).toBe(
+        "false",
+      ),
+    );
+    expect(windowInterest.release).toHaveBeenCalledWith(
+      1,
+      expect.stringMatching(/^version-preview:/),
+      { type: "close" },
+    );
+  });
+
+  it("retries window cleanup after current repository acceptance", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    const session = {
+      appId: 1,
+      originBranch: "main",
+      targetVersionId: "abc123",
+      checkedOutVersionId: null,
+      exitIntent: { type: "none" } as const,
+      selectedDiffFile: null,
+      isDiffVisible: false,
+    };
+    remoteState = {
+      type: "restore-recovery-required",
+      session,
+      error: { message: "Recovery is unresolved." },
+    };
+    windowInterest.release
+      .mockRejectedValueOnce(new Error("transport unavailable"))
+      .mockResolvedValueOnce({ cleanupStarted: false });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <Probe />
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("probe"));
+    act(() => {
+      remoteState = {
+        type: "validating-current-repository",
+        session,
+        error: { message: "Recovery is unresolved." },
+      };
+      actorListeners.forEach((listener) => listener());
+    });
+    act(() => {
+      remoteState = CLOSED_STATE;
+      actorListeners.forEach((listener) => listener());
+    });
+
+    await waitFor(() =>
+      expect(windowInterest.release).toHaveBeenCalledTimes(2),
+    );
+    expect(actor.resync).toHaveBeenCalled();
+    expect(windowInterest.release.mock.calls[0]?.[1]).toBe(
+      windowInterest.release.mock.calls[1]?.[1],
+    );
+    expect(toastError).not.toHaveBeenCalledWith(
+      "Version History closed, but its window cleanup did not finish. Reopen the app and try again.",
+    );
+  });
+
+  it("uses a neutral progress toast while repository recovery is running", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    remoteState = {
+      type: "validating-current-repository",
+      session: {
+        appId: 1,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: null,
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "Recovery is unresolved." },
+    };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <div>content</div>
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(toastLoading).toHaveBeenCalledWith(
+        "Checking the current version…",
+        expect.objectContaining({ duration: Infinity }),
+      ),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(
+      "Version restore needs attention.",
+      expect.anything(),
+    );
+  });
+
+  it("offers validated acceptance for interrupted restore recovery", async () => {
     getDefaultStore().set(selectedAppIdAtom, 1);
     remoteState = {
       type: "restore-recovery-required",
@@ -518,7 +797,89 @@ describe("VersionPreviewProvider", () => {
         }),
       ),
     );
-    expect(toastError.mock.calls.at(-1)?.[1]).not.toHaveProperty("action");
+    const action = toastError.mock.calls.at(-1)?.[1]?.action;
+    expect(action?.label).toBe("Use current version");
+    act(() => action?.onClick());
+    await waitFor(() =>
+      expect(actor.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "ACCEPT_CURRENT_REPOSITORY" }),
+      ),
+    );
+  });
+
+  it("offers to checkpoint a dirty tree before accepting it", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    remoteState = {
+      type: "restore-recovery-required",
+      session: {
+        appId: 1,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: null,
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "dirty repository" },
+      currentRepositoryAssessment: { type: "dirty" },
+    };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <div>content</div>
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    const action = toastError.mock.calls.at(-1)?.[1]?.action;
+    expect(action?.label).toBe("Save changes & use current version");
+    act(() => action?.onClick());
+    await waitFor(() =>
+      expect(actor.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY",
+        }),
+      ),
+    );
+  });
+
+  it("only offers a read-only recheck for conflicted repositories", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    remoteState = {
+      type: "restore-recovery-required",
+      session: {
+        appId: 1,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: null,
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "Resolve conflicts outside Dyad." },
+      currentRepositoryAssessment: {
+        type: "blocked",
+        blocker: "conflicted",
+      },
+    };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <div>content</div>
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    const action = toastError.mock.calls.at(-1)?.[1]?.action;
+    expect(action?.label).toBe("Check again");
+    act(() => action?.onClick());
+    await waitFor(() =>
+      expect(actor.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "ACCEPT_CURRENT_REPOSITORY" }),
+      ),
+    );
   });
 
   it("serializes rapid selections so an accepted version stays visible", async () => {

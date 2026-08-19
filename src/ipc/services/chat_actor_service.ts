@@ -2,6 +2,7 @@ import { remoteMachineHost } from "@/ipc/services/distributed_machine_actor_host
 import { computeChatTurnPayloadHash } from "@/ipc/utils/chat_turn_intent_hash";
 import { chatStreamDefinition } from "@/chat_stream/definition";
 import { getIntentAcceptance } from "@/chat_stream/persistence";
+import { canCancelChatStreamPhase } from "@/chat_stream/transition";
 import {
   chatStreamKey,
   type ChatStreamWireEvent,
@@ -148,6 +149,23 @@ export async function waitForAppChatActorsIdle(
     appChats.map(({ id }) => waitForChatActorIdle(id, options)),
   );
   return cancellationResults.some(Boolean);
+}
+
+/** Read-only active actor probe used while app/chat admission is fenced. */
+export async function hasActiveAppChatActors(appId: number): Promise<boolean> {
+  const appChats = await db.query.chats.findMany({
+    columns: { id: true },
+    where: eq(chats.appId, appId),
+  });
+  return appChats.some(({ id }) => {
+    const actor = remoteMachineHost.peek<
+      ChatStreamHostState,
+      ChatStreamWireEvent,
+      ChatStreamHostIgnoreReason
+    >(chatStreamDefinition.id, chatStreamKey(id));
+    const phase = actor?.getSnapshot().phase;
+    return phase !== undefined && canCancelChatStreamPhase(phase);
+  });
 }
 
 export async function beginAppChatActorMutation(

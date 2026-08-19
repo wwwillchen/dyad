@@ -721,6 +721,23 @@ export async function cancelActiveStreamsForApp(
   );
 }
 
+/** Read-only active-stream probe used while an app-wide admission block is held. */
+export async function hasActiveStreamsForApp(appId: number): Promise<boolean> {
+  const inFlightChatIds = [
+    ...new Set([...activeStreams.keys(), ...streamCompletions.keys()]),
+  ].filter(
+    (chatId) =>
+      (activeStreams.get(chatId)?.size ?? 0) > 0 ||
+      (streamCompletions.get(chatId)?.size ?? 0) > 0,
+  );
+  if (inFlightChatIds.length === 0) return false;
+  const matchingChat = await db.query.chats.findFirst({
+    columns: { id: true },
+    where: and(eq(chats.appId, appId), inArray(chats.id, inFlightChatIds)),
+  });
+  return matchingChat !== undefined;
+}
+
 // Use escapeXmlAttr from shared/xmlEscape for XML escaping
 
 // Safely parse an MCP tool key that combines server and tool names.

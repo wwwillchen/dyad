@@ -1,6 +1,7 @@
 import { SnapshotStore } from "@/state_machines/snapshot_store";
 import {
   CLOSED_STATE,
+  isRestoreRecoveryFlowState,
   type PreviewEvent,
   type PreviewSession,
   type PreviewState,
@@ -127,7 +128,7 @@ export function combineVersionPreviewState(
     remote.type === "returning" ||
     remote.type === "switching-branch" ||
     remote.type === "recovery-required" ||
-    remote.type === "restore-recovery-required"
+    isRestoreRecoveryFlowState(remote)
   ) {
     return remote;
   }

@@ -1,0 +1,1 @@
+ALTER TABLE `chat_turn_intents` ADD `terminal_outcome` text;

@@ -17,7 +17,7 @@ import { useRemoteMachineClient } from "@/distributed_machines/react";
 import { useRegisterEntityDisposer } from "@/state_machines/react";
 import { versionPreviewClientDefinition } from "./client_definition";
 import { VersionPreviewPresentationStore } from "./presentation_store";
-import { ownsHistoricalCheckout } from "./state";
+import { ownsHistoricalCheckout, type PreviewState } from "./state";
 import { versionPreviewKey } from "./transport";
 import { VersionPreviewWindowInterestClient } from "./window_interest_client";
 
@@ -25,6 +25,48 @@ const PresentationStoreContext =
   createContext<VersionPreviewPresentationStore | null>(null);
 const WindowInterestContext =
   createContext<VersionPreviewWindowInterestClient | null>(null);
+
+type WindowInterestExit = Parameters<
+  VersionPreviewWindowInterestClient["release"]
+>[2];
+
+async function releaseWindowInterestWithRetry({
+  windowInterest,
+  appId,
+  operationId,
+  exit,
+  resync,
+}: {
+  windowInterest: VersionPreviewWindowInterestClient;
+  appId: number;
+  operationId: string;
+  exit: WindowInterestExit;
+  resync: () => Promise<void>;
+}) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await windowInterest.release(appId, operationId, exit);
+    } catch (error) {
+      if (attempt === 2) throw error;
+      try {
+        await resync();
+      } catch {
+        // The stable release operation remains safe to retry even when the
+        // actor transport cannot resync yet.
+      }
+    }
+  }
+  throw new Error("Version preview window release exhausted its retries");
+}
+
+function recoveryIntentAlreadyAdvanced(state: PreviewState): boolean {
+  return (
+    state.type === "returning" ||
+    state.type === "validating-current-repository" ||
+    state.type === "checkpointing-current-repository" ||
+    state.type === "closed"
+  );
+}
 
 export function useVersionPreviewPresentationStore() {
   const store = useContext(PresentationStoreContext);
@@ -65,38 +107,30 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
       if (previousAppId !== null && previousAppId !== nextAppId) {
         const releasedAppId = previousAppId;
         const operationId = `version-preview:${globalThis.crypto.randomUUID()}`;
-        void (async () => {
-          for (let attempt = 0; attempt < 3; attempt += 1) {
-            try {
-              await windowInterest.release(releasedAppId, operationId, {
-                type: "switch-app",
-                nextAppId,
-              });
-              presentation.send(releasedAppId, {
-                type: "APP_CHANGED",
-                nextAppId,
-              });
-              return;
-            } catch (error) {
-              if (attempt === 2) throw error;
-              try {
-                await client
-                  .actor(
-                    versionPreviewClientDefinition,
-                    versionPreviewKey(releasedAppId),
-                  )
-                  .resync();
-              } catch {
-                // The stable release operation remains safe to retry even when
-                // the actor transport cannot resync yet.
-              }
-            }
-          }
-        })().catch(() => {
-          toast.error(
-            "Version preview could not finish switching apps. Reopen the app and try again.",
-          );
-        });
+        void releaseWindowInterestWithRetry({
+          windowInterest,
+          appId: releasedAppId,
+          operationId,
+          exit: { type: "switch-app", nextAppId },
+          resync: () =>
+            client
+              .actor(
+                versionPreviewClientDefinition,
+                versionPreviewKey(releasedAppId),
+              )
+              .resync(),
+        })
+          .then(() => {
+            presentation.send(releasedAppId, {
+              type: "APP_CHANGED",
+              nextAppId,
+            });
+          })
+          .catch(() => {
+            toast.error(
+              "Version preview could not finish switching apps. Reopen the app and try again.",
+            );
+          });
       }
       previousAppId = nextAppId;
     });
@@ -169,6 +203,50 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
         versionPreviewClientDefinition,
         versionPreviewKey(appId),
       );
+      const dispatchRecoveryIntent = (
+        type:
+          | "RETRY_RETURN"
+          | "ACCEPT_CURRENT_REPOSITORY"
+          | "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY",
+      ) => {
+        const event = {
+          type,
+          operationId: `version-preview:${globalThis.crypto.randomUUID()}`,
+        } as const;
+        void (async () => {
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            if (actor.getStatus() !== "ready") await actor.resync();
+            const receipt = await actor.dispatch(event);
+            // A rapid duplicate can become ignored after the first dispatch
+            // advances the actor into its in-flight recovery state. The
+            // original operation remains authoritative, so this is not a user
+            // failure and must not produce a contradictory error toast.
+            if (receipt.kind === "applied") {
+              return;
+            }
+            if (receipt.kind === "ignored") {
+              if (recoveryIntentAlreadyAdvanced(actor.getView().state.state)) {
+                return;
+              }
+              throw new Error("Version recovery intent was ignored");
+            }
+            if (
+              receipt.kind === "rejected" &&
+              (receipt.reason === "revision-conflict" ||
+                receipt.reason === "stale-actor")
+            ) {
+              await actor.resync();
+              continue;
+            }
+            throw new Error("Version recovery was not accepted");
+          }
+          throw new Error("Version recovery remained stale");
+        })().catch(() => {
+          toast.error(
+            "Version recovery could not be started. Please try again.",
+          );
+        });
+      };
       let previousStateType = actor.getView().state.state.type;
       let restorationStarted = false;
       let restoredPresentation = false;
@@ -231,10 +309,24 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
           state.type === "closed" &&
           (previousStateType === "restoring" ||
             previousStateType === "switching-branch" ||
+            previousStateType === "validating-current-repository" ||
+            previousStateType === "checkpointing-current-repository" ||
             restoredPresentation)
         ) {
           presentation.send(appId, { type: "CLOSE" });
           restoredPresentation = false;
+          const operationId = `version-preview:${globalThis.crypto.randomUUID()}`;
+          void releaseWindowInterestWithRetry({
+            windowInterest,
+            appId,
+            operationId,
+            exit: { type: "close" },
+            resync: () => actor.resync(),
+          }).catch(() => {
+            toast.error(
+              "Version History closed, but its window cleanup did not finish. Reopen the app and try again.",
+            );
+          });
         }
         previousStateType = state.type;
         const toastId = `version-preview-recovery-${appId}`;
@@ -247,44 +339,56 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
               duration: Infinity,
               action: {
                 label: "Retry",
-                onClick: () => {
-                  const event = {
-                    type: "RETRY_RETURN" as const,
-                    operationId: `version-preview:${globalThis.crypto.randomUUID()}`,
-                  };
-                  void (async () => {
-                    for (let attempt = 0; attempt < 3; attempt += 1) {
-                      if (actor.getStatus() !== "ready") await actor.resync();
-                      const receipt = await actor.dispatch(event);
-                      if (receipt.kind === "applied") return;
-                      if (
-                        receipt.kind === "rejected" &&
-                        (receipt.reason === "revision-conflict" ||
-                          receipt.reason === "stale-actor")
-                      ) {
-                        await actor.resync();
-                        continue;
-                      }
-                      throw new Error(
-                        "The version recovery retry was not accepted",
-                      );
-                    }
-                    throw new Error(
-                      "The version recovery retry remained stale",
-                    );
-                  })().catch(() => {
-                    toast.error(
-                      "Version recovery could not be started. Please try again.",
-                    );
-                  });
-                },
+                onClick: () => dispatchRecoveryIntent("RETRY_RETURN"),
               },
             },
           );
         } else if (state.type === "restore-recovery-required") {
-          toast.error("Version restore needs attention.", {
+          if (state.currentRepositoryAssessment?.type === "dirty") {
+            toast.error("Your current changes need to be saved", {
+              id: toastId,
+              description:
+                "Dyad found changes that are not part of a saved version. Save them as the current version to continue using Version History.",
+              duration: Infinity,
+              action: {
+                label: "Save changes & use current version",
+                onClick: () =>
+                  dispatchRecoveryIntent(
+                    "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY",
+                  ),
+              },
+            });
+          } else {
+            const isBlocked =
+              state.currentRepositoryAssessment?.type === "blocked";
+            toast.error(
+              isBlocked
+                ? "Version History is unavailable"
+                : "Version restore needs attention.",
+              {
+                id: toastId,
+                description: state.error.message,
+                duration: Infinity,
+                action: {
+                  label: isBlocked ? "Check again" : "Use current version",
+                  onClick: () =>
+                    dispatchRecoveryIntent("ACCEPT_CURRENT_REPOSITORY"),
+                },
+              },
+            );
+          }
+        } else if (state.type === "validating-current-repository") {
+          toast.loading("Checking the current version…", {
             id: toastId,
-            description: state.error.message,
+            description:
+              "Dyad is verifying that Version History can continue safely.",
+            duration: Infinity,
+          });
+        } else if (state.type === "checkpointing-current-repository") {
+          toast.loading("Saving the current version…", {
+            id: toastId,
+            description:
+              "Dyad is saving your current changes before continuing.",
             duration: Infinity,
           });
         } else {

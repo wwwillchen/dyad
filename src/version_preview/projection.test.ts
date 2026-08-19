@@ -47,6 +47,22 @@ const states: PreviewState[] = [
     session: { ...session(), originBranch: null, checkedOutVersionId: null },
     error: { message: "restore interrupted" },
   },
+  {
+    type: "restore-recovery-required",
+    session: { ...session(), originBranch: null, checkedOutVersionId: null },
+    error: { message: "dirty repository" },
+    currentRepositoryAssessment: { type: "dirty" },
+  },
+  {
+    type: "validating-current-repository",
+    session: { ...session(), originBranch: null, checkedOutVersionId: null },
+    error: { message: "restore interrupted" },
+  },
+  {
+    type: "checkpointing-current-repository",
+    session: { ...session(), originBranch: null, checkedOutVersionId: null },
+    error: { message: "dirty repository" },
+  },
 ];
 
 describe("version_preview capabilities", () => {

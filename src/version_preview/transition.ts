@@ -63,6 +63,8 @@ function ignoreEvent(
     case "RESTORE":
     case "RESTORE_TO_MESSAGE":
     case "RETRY_RETURN":
+    case "ACCEPT_CURRENT_REPOSITORY":
+    case "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY":
     case "ORIGIN_RESOLVED":
     case "ORIGIN_RESOLUTION_FAILED":
     case "CHECKOUT_SUCCEEDED":
@@ -70,6 +72,9 @@ function ignoreEvent(
     case "RESTORE_SUCCEEDED":
     case "RESTORE_FAILED":
     case "RESTORE_RECOVERY_REQUIRED":
+    case "CURRENT_REPOSITORY_ACCEPTED":
+    case "CURRENT_REPOSITORY_DIRTY":
+    case "CURRENT_REPOSITORY_REJECTED":
     case "RETURN_SUCCEEDED":
     case "RETURN_FAILED":
     case "SWITCH_BRANCH_SUCCEEDED":
@@ -759,6 +764,43 @@ export function transition(
     }
 
     case "restore-recovery-required": {
+      if (event.type === "ACCEPT_CURRENT_REPOSITORY") {
+        return {
+          kind: "applied",
+          state: {
+            type: "validating-current-repository",
+            session: state.session,
+            error: state.error,
+            restoreRecovery: state.restoreRecovery,
+          },
+          commands: [
+            {
+              type: "validate-current-repository",
+              appId: state.session.appId,
+            },
+          ],
+        };
+      }
+      if (
+        event.type === "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY" &&
+        state.currentRepositoryAssessment?.type === "dirty"
+      ) {
+        return {
+          kind: "applied",
+          state: {
+            type: "checkpointing-current-repository",
+            session: state.session,
+            error: state.error,
+            restoreRecovery: state.restoreRecovery,
+          },
+          commands: [
+            {
+              type: "checkpoint-current-repository",
+              appId: state.session.appId,
+            },
+          ],
+        };
+      }
       if (event.type === "OPEN") {
         return {
           kind: "applied",
@@ -770,6 +812,62 @@ export function transition(
               error: state.error,
             },
           ],
+        };
+      }
+      return ignoreEvent(state, event);
+    }
+
+    case "validating-current-repository": {
+      if (event.type === "CURRENT_REPOSITORY_ACCEPTED") {
+        return { kind: "applied", state: CLOSED_STATE, commands: [] };
+      }
+      if (event.type === "CURRENT_REPOSITORY_DIRTY") {
+        return {
+          kind: "applied",
+          state: {
+            type: "restore-recovery-required",
+            session: state.session,
+            error: {
+              message:
+                "Dyad found changes that are not part of a saved version.",
+            },
+            restoreRecovery: state.restoreRecovery,
+            currentRepositoryAssessment: { type: "dirty" },
+          },
+          commands: [],
+        };
+      }
+      if (event.type === "CURRENT_REPOSITORY_REJECTED") {
+        return {
+          kind: "applied",
+          state: {
+            type: "restore-recovery-required",
+            session: state.session,
+            error: event.error,
+            restoreRecovery: state.restoreRecovery,
+            currentRepositoryAssessment: event.assessment,
+          },
+          commands: [],
+        };
+      }
+      return ignoreEvent(state, event);
+    }
+
+    case "checkpointing-current-repository": {
+      if (event.type === "CURRENT_REPOSITORY_ACCEPTED") {
+        return { kind: "applied", state: CLOSED_STATE, commands: [] };
+      }
+      if (event.type === "CURRENT_REPOSITORY_REJECTED") {
+        return {
+          kind: "applied",
+          state: {
+            type: "restore-recovery-required",
+            session: state.session,
+            error: event.error,
+            restoreRecovery: state.restoreRecovery,
+            currentRepositoryAssessment: event.assessment,
+          },
+          commands: [],
         };
       }
       return ignoreEvent(state, event);

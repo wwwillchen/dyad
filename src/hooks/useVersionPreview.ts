@@ -6,6 +6,7 @@ import {
 import { showError } from "@/lib/toast";
 import {
   CLOSED_STATE,
+  isRestoreRecoveryFlowState,
   type PreviewEvent,
   type PreviewState,
 } from "@/version_preview/state";
@@ -35,6 +36,8 @@ function toIntent(
   switch (event.type) {
     case "CLOSE":
     case "RETRY_RETURN":
+    case "ACCEPT_CURRENT_REPOSITORY":
+    case "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY":
       return { type: event.type, operationId: id };
     case "APP_CHANGED":
       return { ...event, operationId: id };
@@ -70,6 +73,9 @@ function toIntent(
     case "RESTORE_SUCCEEDED":
     case "RESTORE_FAILED":
     case "RESTORE_RECOVERY_REQUIRED":
+    case "CURRENT_REPOSITORY_ACCEPTED":
+    case "CURRENT_REPOSITORY_DIRTY":
+    case "CURRENT_REPOSITORY_REJECTED":
     case "RETURN_SUCCEEDED":
     case "RETURN_FAILED":
     case "SWITCH_BRANCH_SUCCEEDED":
@@ -110,6 +116,10 @@ export function useVersionPreview(appId: number | null): {
       : combineVersionPreviewState(appId, remote.state.state, presentation);
   const isPaneVisible =
     appId !== null && presentationStore.isPaneVisible(appId);
+  const dispatchActorIntent = useCallback(
+    (intent: VersionPreviewIntentEvent) => actor.dispatch(intent),
+    [actor],
+  );
 
   const dispatchNow = useCallback(
     async (
@@ -131,6 +141,26 @@ export function useVersionPreview(appId: number | null): {
       };
       if (event.type === "OPEN") {
         await windowInterest.acquire(appId);
+        presentationStore.send(appId, event);
+        if (actor.getView().state.state.type === "restore-recovery-required") {
+          try {
+            await dispatchActorIntent({
+              type: "SHOW_RECOVERY_NOTICE",
+              operationId: operationId(),
+            });
+          } catch {
+            // Recovery is already projected by the provider. Startup
+            // reconciliation may temporarily refuse this best-effort resurface
+            // request, but pane opening itself succeeded.
+          }
+        }
+        return;
+      }
+      if (
+        event.type === "CLOSE" &&
+        isRestoreRecoveryFlowState(actor.getView().state.state)
+      ) {
+        await releaseSelectionInterest(operationId());
         presentationStore.send(appId, event);
         return;
       }
@@ -194,7 +224,7 @@ export function useVersionPreview(appId: number | null): {
           await settlement;
           return;
         }
-        const receipt = await actor.dispatch(intent);
+        const receipt = await dispatchActorIntent(intent);
         if (receipt.kind === "applied") {
           if (event.type === "SELECT_VERSION") {
             selectionAccepted = true;
@@ -216,7 +246,7 @@ export function useVersionPreview(appId: number | null): {
         throw error;
       }
     },
-    [actor, appId, presentationStore, windowInterest],
+    [actor, appId, dispatchActorIntent, presentationStore, windowInterest],
   );
   const dispatch = useCallback(
     (event: PreviewEvent, waitForSettlement: boolean): Promise<void> => {

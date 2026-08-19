@@ -476,6 +476,11 @@ function createCommandRunner(
             command.error !== undefined ||
               command.response?.wasCancelled === true,
             pauseForStop ? "stop" : pauseForStepLimit ? "step-limit" : "manual",
+            command.response?.wasCancelled === true
+              ? "cancelled"
+              : command.error !== undefined
+                ? "errored"
+                : "completed",
           );
           publishChatInvalidations(context.key.chatId, active.targetAppId);
           emit({

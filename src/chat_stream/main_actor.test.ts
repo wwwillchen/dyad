@@ -1146,6 +1146,7 @@ describe("main-hosted chat stream actor", () => {
       true,
       false,
       "manual",
+      "completed",
     );
 
     const reloaded = new ChatStreamRemoteManager(
@@ -1634,6 +1635,7 @@ describe("main-hosted chat stream actor", () => {
         true,
         true,
         "stop",
+        "cancelled",
       ),
     );
     resolveCancel(true);

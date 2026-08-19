@@ -3,6 +3,7 @@ import type { InvocationRef } from "@/state_machines/invocation_ref";
 import { SafeGitRefSchema } from "@/shared/git_refs";
 import type {
   BranchSwitchFallback,
+  CurrentRepositoryAssessment,
   PreviewError,
   PreviewEvent,
   PreviewSession,
@@ -44,6 +45,8 @@ type SafeRemotePreviewState =
         | "switching-branch"
         | "recovery-required"
         | "restore-recovery-required"
+        | "validating-current-repository"
+        | "checkpointing-current-repository"
       >]: {
         readonly type: Kind;
         readonly session: SafeRemoteSession;
@@ -55,6 +58,8 @@ type SafeRemotePreviewState =
       | "switching-branch"
       | "recovery-required"
       | "restore-recovery-required"
+      | "validating-current-repository"
+      | "checkpointing-current-repository"
     >]
   | {
       readonly type: "restoring";
@@ -74,6 +79,14 @@ type SafeRemotePreviewState =
     }
   | {
       readonly type: "restore-recovery-required";
+      readonly session: SafeRemoteSession;
+      readonly error: PreviewError;
+      readonly currentRepositoryAssessment?: CurrentRepositoryAssessment;
+    }
+  | {
+      readonly type:
+        | "validating-current-repository"
+        | "checkpointing-current-repository";
       readonly session: SafeRemoteSession;
       readonly error: PreviewError;
     };
@@ -177,6 +190,24 @@ export const VersionPreviewIntentEventSchema = z.discriminatedUnion("type", [
       operationId: z.string().min(1),
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("ACCEPT_CURRENT_REPOSITORY"),
+      operationId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY"),
+      operationId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("SHOW_RECOVERY_NOTICE"),
+      operationId: z.string().min(1),
+    })
+    .strict(),
 ]);
 export type VersionPreviewIntentEvent = z.infer<
   typeof VersionPreviewIntentEventSchema
@@ -225,6 +256,24 @@ export type VersionPreviewProducerEvent =
       invocationRef: VersionPreviewInvocationRef;
     }
   | {
+      type: "CURRENT_REPOSITORY_ACCEPTED";
+      appId: number;
+      branch: string;
+      acceptedHead: string;
+      savedVersionId?: string;
+      invocationRef: VersionPreviewInvocationRef;
+    }
+  | {
+      type: "CURRENT_REPOSITORY_DIRTY";
+      invocationRef: VersionPreviewInvocationRef;
+    }
+  | {
+      type: "CURRENT_REPOSITORY_REJECTED";
+      error: PreviewError;
+      assessment: Exclude<CurrentRepositoryAssessment, { type: "dirty" }>;
+      invocationRef: VersionPreviewInvocationRef;
+    }
+  | {
       type: "RETURN_SUCCEEDED";
       invocationRef: VersionPreviewInvocationRef;
     }
@@ -260,6 +309,24 @@ export interface VersionPreviewActorState {
 }
 
 const previewErrorSchema = z.object({ message: z.string() }).strict();
+const currentRepositoryAssessmentSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("dirty") }).strict(),
+  z
+    .object({
+      type: z.literal("blocked"),
+      blocker: z.enum([
+        "conflicted",
+        "detached-head",
+        "missing-repository",
+        "git-operation",
+        "repository-error",
+      ]),
+      operation: z
+        .enum(["merge", "rebase", "cherry-pick", "revert", "bisect"])
+        .optional(),
+    })
+    .strict(),
+]);
 const exitIntentSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("none") }).strict(),
   z.object({ type: z.literal("close") }).strict(),
@@ -335,6 +402,21 @@ export const PreviewStateSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("restore-recovery-required"),
+      session: sessionSchema,
+      error: previewErrorSchema,
+      currentRepositoryAssessment: currentRepositoryAssessmentSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("validating-current-repository"),
+      session: sessionSchema,
+      error: previewErrorSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("checkpointing-current-repository"),
       session: sessionSchema,
       error: previewErrorSchema,
     })
@@ -426,6 +508,14 @@ function stripWindowPresentation(state: PreviewState): SafeRemotePreviewState {
         session: stripSessionPresentation(state.session),
       };
     }
+    case "validating-current-repository":
+    case "checkpointing-current-repository": {
+      const { restoreRecovery: _restoreRecovery, ...safeState } = state;
+      return {
+        ...safeState,
+        session: stripSessionPresentation(state.session),
+      };
+    }
     default:
       return {
         ...state,
@@ -444,7 +534,11 @@ export function toPreviewDomainEvent(
       throw new Error(`${event.type} is handled by the hosted actor`);
     case "CLOSE":
     case "RETRY_RETURN":
+    case "ACCEPT_CURRENT_REPOSITORY":
+    case "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY":
       return { type: event.type };
+    case "SHOW_RECOVERY_NOTICE":
+      return { type: "OPEN", appId };
     case "APP_CHANGED":
       return { type: event.type, nextAppId: event.nextAppId };
     case "SELECT_VERSION":
@@ -484,6 +578,22 @@ export function toPreviewDomainEvent(
         type: event.type,
         error: event.error,
         restoreRecovery: event.restoreRecovery,
+      };
+    case "CURRENT_REPOSITORY_ACCEPTED":
+      return {
+        type: event.type,
+        appId: event.appId,
+        branch: event.branch,
+        acceptedHead: event.acceptedHead,
+        savedVersionId: event.savedVersionId,
+      };
+    case "CURRENT_REPOSITORY_DIRTY":
+      return { type: event.type };
+    case "CURRENT_REPOSITORY_REJECTED":
+      return {
+        type: event.type,
+        error: event.error,
+        assessment: event.assessment,
       };
     case "RESTORE_SUCCEEDED":
       return {

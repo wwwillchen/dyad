@@ -66,6 +66,8 @@ const EVENT_SAMPLES: PreviewEvent[] = [
     restoreCodebase: true,
   },
   { type: "RETRY_RETURN" },
+  { type: "ACCEPT_CURRENT_REPOSITORY" },
+  { type: "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY" },
   { type: "ORIGIN_RESOLVED", branch: "feature/origin" },
   { type: "ORIGIN_RESOLUTION_FAILED" },
   { type: "CHECKOUT_SUCCEEDED" },
@@ -81,6 +83,18 @@ const EVENT_SAMPLES: PreviewEvent[] = [
       targetHead: "v1",
       nextStep: "soft-reset",
     },
+  },
+  {
+    type: "CURRENT_REPOSITORY_ACCEPTED",
+    appId: APP_ID,
+    branch: "main",
+    acceptedHead: "accepted-head",
+  },
+  { type: "CURRENT_REPOSITORY_DIRTY" },
+  {
+    type: "CURRENT_REPOSITORY_REJECTED",
+    error: { message: "repository blocked" },
+    assessment: { type: "blocked", blocker: "conflicted" },
   },
   { type: "RETURN_SUCCEEDED" },
   { type: "RETURN_FAILED", error: { message: "return failed" } },
@@ -99,6 +113,8 @@ const STATE_KINDS = [
   "switching-branch",
   "recovery-required",
   "restore-recovery-required",
+  "validating-current-repository",
+  "checkpointing-current-repository",
 ] as const satisfies readonly PreviewState["type"][];
 const COMMAND_KINDS = [
   "resolve-origin",
@@ -107,6 +123,8 @@ const COMMAND_KINDS = [
   "switch-branch",
   "restore",
   "restore-to-message",
+  "validate-current-repository",
+  "checkpoint-current-repository",
   "notify-error",
   "notify-recovery",
   "dismiss-recovery",
@@ -190,6 +208,16 @@ const STATE_SAMPLES: PreviewState[] = [
     error: { message: "restore interrupted" },
   },
   {
+    type: "validating-current-repository",
+    session: session(),
+    error: { message: "restore interrupted" },
+  },
+  {
+    type: "checkpointing-current-repository",
+    session: session(),
+    error: { message: "dirty repository" },
+  },
+  {
     type: "switching-branch",
     appId: APP_ID,
     branch: "main",
@@ -203,6 +231,7 @@ const MUTATING_COMMAND_TYPES = new Set([
   "switch-branch",
   "restore",
   "restore-to-message",
+  "checkpoint-current-repository",
 ]);
 
 /**
@@ -933,6 +962,80 @@ describe("return failure and recovery", () => {
         error: { message: "return failed" },
       },
     ]);
+  });
+});
+
+describe("restore recovery acceptance", () => {
+  const recovery: PreviewState = {
+    type: "restore-recovery-required",
+    session: session({ originBranch: "main", targetVersionId: "v1" }),
+    error: { message: "restore interrupted" },
+  };
+
+  it("validates before accepting the current repository", () => {
+    const result = step(recovery, { type: "ACCEPT_CURRENT_REPOSITORY" });
+    expect(result.state.type).toBe("validating-current-repository");
+    expect(commandsOf(result)).toEqual([
+      { type: "validate-current-repository", appId: APP_ID },
+    ]);
+  });
+
+  it("offers checkpointing only after validation finds a dirty tree", () => {
+    const validated = run(
+      [
+        { type: "ACCEPT_CURRENT_REPOSITORY" },
+        { type: "CURRENT_REPOSITORY_DIRTY" },
+      ],
+      recovery,
+    );
+    expect(validated.state).toMatchObject({
+      type: "restore-recovery-required",
+      currentRepositoryAssessment: { type: "dirty" },
+    });
+
+    const checkpoint = step(validated.state, {
+      type: "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY",
+    });
+    expect(checkpoint.state.type).toBe("checkpointing-current-repository");
+    expect(commandsOf(checkpoint)).toEqual([
+      { type: "checkpoint-current-repository", appId: APP_ID },
+    ]);
+  });
+
+  it("keeps blocked repositories latched until a later recheck succeeds", () => {
+    const blocked = run(
+      [
+        { type: "ACCEPT_CURRENT_REPOSITORY" },
+        {
+          type: "CURRENT_REPOSITORY_REJECTED",
+          error: { message: "resolve conflicts" },
+          assessment: { type: "blocked", blocker: "conflicted" },
+        },
+      ],
+      recovery,
+    );
+    expect(blocked.state).toMatchObject({
+      type: "restore-recovery-required",
+      error: { message: "resolve conflicts" },
+      currentRepositoryAssessment: {
+        type: "blocked",
+        blocker: "conflicted",
+      },
+    });
+
+    const accepted = run(
+      [
+        { type: "ACCEPT_CURRENT_REPOSITORY" },
+        {
+          type: "CURRENT_REPOSITORY_ACCEPTED",
+          appId: APP_ID,
+          branch: "main",
+          acceptedHead: "live-head",
+        },
+      ],
+      blocked.state,
+    );
+    expect(accepted.state.type).toBe("closed");
   });
 });
 

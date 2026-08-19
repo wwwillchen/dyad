@@ -455,7 +455,10 @@ export async function isGitStatusClean({
 }: {
   path: string;
 }): Promise<boolean> {
-  const result = await execGit(["status", "--porcelain"], path);
+  const result = await execGit(
+    ["status", "--porcelain", "--untracked-files=all"],
+    path,
+  );
 
   if (result.exitCode !== 0) {
     throw new DyadError(
@@ -467,6 +470,118 @@ export async function isGitStatusClean({
   // If output is empty, working directory is clean (no changes)
   const isClean = result.stdout.trim().length === 0;
   return isClean;
+}
+
+/**
+ * Returns whether the user-visible working tree is clean. Dyad-managed runtime
+ * paths are deliberately ignored so every restore/recovery guard uses the
+ * same definition of work that needs user acknowledgement.
+ */
+export async function isUserVisibleGitStatusClean({
+  path,
+}: GitBaseParams): Promise<boolean> {
+  const result = await execGit(
+    ["status", "--porcelain", "--untracked-files=all"],
+    path,
+  );
+  if (result.exitCode !== 0) {
+    throw new DyadError(
+      `Failed to get status: ${result.stderr.trim() || result.stdout.trim()}`,
+      DyadErrorKind.Conflict,
+    );
+  }
+  return !result.stdout
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .flatMap(getPorcelainPaths)
+    .some(isUserVisibleGitPath);
+}
+
+export type GitOperationInProgress =
+  | "merge"
+  | "rebase"
+  | "cherry-pick"
+  | "revert"
+  | "bisect";
+
+export interface RepositoryHealth {
+  branch: string | null;
+  headOid: string;
+  isClean: boolean;
+  unmergedFiles: string[];
+  operationInProgress: GitOperationInProgress | null;
+}
+
+async function gitInternalPath(
+  repositoryPath: string,
+  marker: string,
+): Promise<string> {
+  const result = await execGit(
+    ["rev-parse", "--git-path", marker],
+    repositoryPath,
+  );
+  if (result.exitCode !== 0) {
+    throw new DyadError(
+      `Failed to inspect Git state: ${result.stderr.trim() || result.stdout.trim()}`,
+      DyadErrorKind.Conflict,
+    );
+  }
+  const markerPath = result.stdout.trim();
+  return pathModule.isAbsolute(markerPath)
+    ? markerPath
+    : pathModule.resolve(repositoryPath, markerPath);
+}
+
+/** One source of truth for whether a repository is safe to accept as current. */
+export async function inspectRepositoryHealth({
+  path,
+}: GitBaseParams): Promise<RepositoryHealth> {
+  const [branch, headOid, isClean, unmergedFiles, markerPaths] =
+    await Promise.all([
+      gitCurrentBranch({ path }),
+      getCurrentCommitHash({ path }),
+      isUserVisibleGitStatusClean({ path }),
+      gitGetMergeConflicts({ path }),
+      Promise.all(
+        [
+          "MERGE_HEAD",
+          "rebase-apply",
+          "rebase-merge",
+          "CHERRY_PICK_HEAD",
+          "REVERT_HEAD",
+          "BISECT_START",
+        ].map((marker) => gitInternalPath(path, marker)),
+      ),
+    ]);
+  const [
+    mergeHead,
+    rebaseApply,
+    rebaseMerge,
+    cherryPickHead,
+    revertHead,
+    bisectStart,
+  ] = markerPaths;
+  const operationInProgress: GitOperationInProgress | null = fs.existsSync(
+    mergeHead,
+  )
+    ? "merge"
+    : fs.existsSync(rebaseApply) || fs.existsSync(rebaseMerge)
+      ? "rebase"
+      : fs.existsSync(cherryPickHead)
+        ? "cherry-pick"
+        : fs.existsSync(revertHead)
+          ? "revert"
+          : fs.existsSync(bisectStart)
+            ? "bisect"
+            : null;
+
+  return {
+    branch: branch && branch !== "<no-branch>" ? branch : null,
+    headOid,
+    isClean,
+    unmergedFiles,
+    operationInProgress,
+  };
 }
 
 /**

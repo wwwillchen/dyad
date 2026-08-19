@@ -54,6 +54,8 @@ export function selectVersionPreviewCapabilities(
     case "restoring":
     case "returning":
     case "switching-branch":
+    case "validating-current-repository":
+    case "checkpointing-current-repository":
       return {
         canRestore: false,
         canSelectVersion: false,
