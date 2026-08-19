@@ -17,7 +17,7 @@ import { useRemoteMachineClient } from "@/distributed_machines/react";
 import { useRegisterEntityDisposer } from "@/state_machines/react";
 import { versionPreviewClientDefinition } from "./client_definition";
 import { VersionPreviewPresentationStore } from "./presentation_store";
-import { ownsHistoricalCheckout } from "./state";
+import { ownsHistoricalCheckout, type PreviewState } from "./state";
 import { versionPreviewKey } from "./transport";
 import { VersionPreviewWindowInterestClient } from "./window_interest_client";
 
@@ -25,6 +25,48 @@ const PresentationStoreContext =
   createContext<VersionPreviewPresentationStore | null>(null);
 const WindowInterestContext =
   createContext<VersionPreviewWindowInterestClient | null>(null);
+
+type WindowInterestExit = Parameters<
+  VersionPreviewWindowInterestClient["release"]
+>[2];
+
+async function releaseWindowInterestWithRetry({
+  windowInterest,
+  appId,
+  operationId,
+  exit,
+  resync,
+}: {
+  windowInterest: VersionPreviewWindowInterestClient;
+  appId: number;
+  operationId: string;
+  exit: WindowInterestExit;
+  resync: () => Promise<void>;
+}) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await windowInterest.release(appId, operationId, exit);
+    } catch (error) {
+      if (attempt === 2) throw error;
+      try {
+        await resync();
+      } catch {
+        // The stable release operation remains safe to retry even when the
+        // actor transport cannot resync yet.
+      }
+    }
+  }
+  throw new Error("Version preview window release exhausted its retries");
+}
+
+function recoveryIntentAlreadyAdvanced(state: PreviewState): boolean {
+  return (
+    state.type === "returning" ||
+    state.type === "validating-current-repository" ||
+    state.type === "checkpointing-current-repository" ||
+    state.type === "closed"
+  );
+}
 
 export function useVersionPreviewPresentationStore() {
   const store = useContext(PresentationStoreContext);
@@ -65,38 +107,30 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
       if (previousAppId !== null && previousAppId !== nextAppId) {
         const releasedAppId = previousAppId;
         const operationId = `version-preview:${globalThis.crypto.randomUUID()}`;
-        void (async () => {
-          for (let attempt = 0; attempt < 3; attempt += 1) {
-            try {
-              await windowInterest.release(releasedAppId, operationId, {
-                type: "switch-app",
-                nextAppId,
-              });
-              presentation.send(releasedAppId, {
-                type: "APP_CHANGED",
-                nextAppId,
-              });
-              return;
-            } catch (error) {
-              if (attempt === 2) throw error;
-              try {
-                await client
-                  .actor(
-                    versionPreviewClientDefinition,
-                    versionPreviewKey(releasedAppId),
-                  )
-                  .resync();
-              } catch {
-                // The stable release operation remains safe to retry even when
-                // the actor transport cannot resync yet.
-              }
-            }
-          }
-        })().catch(() => {
-          toast.error(
-            "Version preview could not finish switching apps. Reopen the app and try again.",
-          );
-        });
+        void releaseWindowInterestWithRetry({
+          windowInterest,
+          appId: releasedAppId,
+          operationId,
+          exit: { type: "switch-app", nextAppId },
+          resync: () =>
+            client
+              .actor(
+                versionPreviewClientDefinition,
+                versionPreviewKey(releasedAppId),
+              )
+              .resync(),
+        })
+          .then(() => {
+            presentation.send(releasedAppId, {
+              type: "APP_CHANGED",
+              nextAppId,
+            });
+          })
+          .catch(() => {
+            toast.error(
+              "Version preview could not finish switching apps. Reopen the app and try again.",
+            );
+          });
       }
       previousAppId = nextAppId;
     });
@@ -187,8 +221,14 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
             // advances the actor into its in-flight recovery state. The
             // original operation remains authoritative, so this is not a user
             // failure and must not produce a contradictory error toast.
-            if (receipt.kind === "applied" || receipt.kind === "ignored") {
+            if (receipt.kind === "applied") {
               return;
+            }
+            if (receipt.kind === "ignored") {
+              if (recoveryIntentAlreadyAdvanced(actor.getView().state.state)) {
+                return;
+              }
+              throw new Error("Version recovery intent was ignored");
             }
             if (
               receipt.kind === "rejected" &&
@@ -275,17 +315,18 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
         ) {
           presentation.send(appId, { type: "CLOSE" });
           restoredPresentation = false;
-          void windowInterest
-            .release(
-              appId,
-              `version-preview:${globalThis.crypto.randomUUID()}`,
-              { type: "close" },
-            )
-            .catch(() => {
-              toast.error(
-                "Version History closed, but its window cleanup did not finish. Reopen the app and try again.",
-              );
-            });
+          const operationId = `version-preview:${globalThis.crypto.randomUUID()}`;
+          void releaseWindowInterestWithRetry({
+            windowInterest,
+            appId,
+            operationId,
+            exit: { type: "close" },
+            resync: () => actor.resync(),
+          }).catch(() => {
+            toast.error(
+              "Version History closed, but its window cleanup did not finish. Reopen the app and try again.",
+            );
+          });
         }
         previousStateType = state.type;
         const toastId = `version-preview-recovery-${appId}`;

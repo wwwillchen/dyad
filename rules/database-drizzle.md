@@ -2,6 +2,12 @@
 
 This app uses SQLite and drizzle ORM.
 
+When logic depends on conversation insertion adjacency (for example, finding
+the assistant response immediately after a user message), order messages by
+`messages.id`, not `createdAt`. Compaction summaries may be inserted later with
+an older logical timestamp, so timestamp ordering can move them ahead of the
+response they followed in storage.
+
 Generate SQL migrations by running this:
 
 ```sh

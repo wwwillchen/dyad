@@ -404,6 +404,95 @@ describe("context compaction (integration)", () => {
     }
   });
 
+  it("does not create an interrupted version for Dyad-managed-only churn", async () => {
+    const targetCommitHash = await getCurrentCommitHash({
+      path: harness.appDir,
+    });
+    const targetBranch = await gitCurrentBranch({ path: harness.appDir });
+    const [chatRow] = await harness.db
+      .insert(chats)
+      .values({
+        appId: harness.appId,
+        chatMode: "local-agent",
+        initialCommitHash: targetCommitHash,
+      })
+      .returning();
+    const intentId = `managed-only-stopped-${chatRow.id}`;
+    await harness.db.insert(chatTurnIntents).values({
+      intentId,
+      chatId: chatRow.id,
+      payloadHash: "managed-only-stopped",
+      acceptance: "message-accepted",
+      recovery: "terminal",
+      terminalOutcome: "cancelled",
+    });
+    const [targetMessage] = await harness.db
+      .insert(messages)
+      .values({
+        chatId: chatRow.id,
+        role: "user",
+        content: "Stopped generation with managed-only churn",
+        chatTurnIntentId: intentId,
+      })
+      .returning();
+    await harness.db.insert(messages).values({
+      chatId: chatRow.id,
+      role: "assistant",
+      content: "Generation stopped before completion.",
+      sourceCommitHash: targetCommitHash,
+    });
+
+    const managedRelativePath = "pnpm-workspace.yaml";
+    const managedPath = path.join(harness.appDir, managedRelativePath);
+    const managedPathExisted = fs.existsSync(managedPath);
+    const originalManagedContent = managedPathExisted
+      ? await fs.promises.readFile(managedPath, "utf8")
+      : null;
+    await fs.promises.writeFile(
+      managedPath,
+      `packages:\n  - managed-only-${chatRow.id}\n`,
+    );
+    expect(
+      gitCommand(harness.appDir, [
+        "status",
+        "--porcelain",
+        "--",
+        managedRelativePath,
+      ]),
+    ).not.toBe("");
+
+    try {
+      const result = await versionPreviewHandlerService.revertVersion({
+        appId: harness.appId,
+        previousVersionId: targetCommitHash,
+        targetBranchName: targetBranch ?? undefined,
+        currentChatMessageId: {
+          chatId: chatRow.id,
+          messageId: targetMessage.id,
+        },
+      });
+
+      expect(result.notification?.message).not.toContain("[Interrupted]");
+      await expect(
+        getCurrentCommitHash({ path: harness.appDir }),
+      ).resolves.toBe(targetCommitHash);
+      expect(
+        gitCommand(harness.appDir, [
+          "status",
+          "--porcelain",
+          "--",
+          managedRelativePath,
+        ]),
+      ).not.toBe("");
+    } finally {
+      if (originalManagedContent === null) {
+        await fs.promises.rm(managedPath, { force: true });
+      } else {
+        await fs.promises.writeFile(managedPath, originalManagedContent);
+      }
+    }
+  });
+
   it("does not checkpoint a stopped generation over an unresolved Git merge", async () => {
     const targetCommitHash = await getCurrentCommitHash({
       path: harness.appDir,
@@ -586,6 +675,65 @@ describe("context compaction (integration)", () => {
           }),
         ]),
       );
+    } finally {
+      await fs.promises.unlink(partialFile).catch(() => undefined);
+    }
+  });
+
+  it("restores and forks a legacy cancelled turn before a later compaction summary", async () => {
+    const targetCommitHash = await getCurrentCommitHash({
+      path: harness.appDir,
+    });
+    const [chatRow] = await harness.db
+      .insert(chats)
+      .values({
+        appId: harness.appId,
+        chatMode: "local-agent",
+        initialCommitHash: targetCommitHash,
+      })
+      .returning();
+    const [targetMessage] = await harness.db
+      .insert(messages)
+      .values({
+        chatId: chatRow.id,
+        role: "user",
+        content: "Legacy stopped generation restored through fork",
+      })
+      .returning();
+    await harness.db.insert(messages).values({
+      chatId: chatRow.id,
+      role: "assistant",
+      content: "Partial response\n\n[Response cancelled by user]",
+      sourceCommitHash: targetCommitHash,
+      createdAt: new Date(10_000),
+    });
+    await harness.db.insert(messages).values({
+      chatId: chatRow.id,
+      role: "assistant",
+      content: "Earlier conversation summary",
+      isCompactionSummary: true,
+      createdAt: new Date(0),
+    });
+    const partialFile = path.join(
+      harness.appDir,
+      "legacy-stopped-fork-partial.txt",
+    );
+    await fs.promises.writeFile(partialFile, "legacy fork partial output\n");
+
+    try {
+      const result = await versionPreviewHandlerService.restoreToMessage({
+        appId: harness.appId,
+        chatId: chatRow.id,
+        messageId: targetMessage.id,
+        restoreCodebase: true,
+      });
+
+      expect(result.repositoryOutcome).toBe("target-applied");
+      expect(result.notification?.message).toContain(
+        "saved as an [Interrupted] version in Version History",
+      );
+      expect(result.createdChatId).not.toBeNull();
+      await expect(fs.promises.stat(partialFile)).rejects.toThrow();
     } finally {
       await fs.promises.unlink(partialFile).catch(() => undefined);
     }

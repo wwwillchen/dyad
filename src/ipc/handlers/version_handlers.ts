@@ -40,7 +40,6 @@ import {
   gitCurrentBranch,
   gitLog,
   inspectRepositoryHealth,
-  isGitStatusClean,
   getChangedFilesForCommit,
   getFileAtCommit,
   getOldFileContent,
@@ -575,7 +574,7 @@ async function revertCodebaseToVersion({
   // manual edits.
   let detachedCheckpointCommit: string | null = null;
   let preservedInterruptedChanges = false;
-  if (preserveDirtyTree && !(await isGitStatusClean({ path: appPath }))) {
+  if (preserveDirtyTree && !repositoryHealth.isClean) {
     // Stage everything first so untracked files (e.g. a newly added
     // pnpm-workspace.yaml) are included. With native git, `git commit` only
     // commits staged changes, so without this the commit would fail with
@@ -1268,10 +1267,7 @@ export function registerVersionHandlers() {
           where: eq(chats.id, chatId),
           with: {
             messages: {
-              orderBy: (messages, { asc }) => [
-                asc(messages.createdAt),
-                asc(messages.id),
-              ],
+              orderBy: (messages, { asc }) => [asc(messages.id)],
             },
           },
         });
@@ -1473,10 +1469,7 @@ export function registerVersionHandlers() {
             where: eq(chats.id, chatId),
             with: {
               messages: {
-                orderBy: (messages, { asc }) => [
-                  asc(messages.createdAt),
-                  asc(messages.id),
-                ],
+                orderBy: (messages, { asc }) => [asc(messages.id)],
               },
             },
           });

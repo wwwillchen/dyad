@@ -460,14 +460,21 @@ describe("VersionPreviewProvider", () => {
       },
       error: { message: "Return failed" },
     };
+    const recoverySession = remoteState.session;
     actor.dispatch
       .mockResolvedValueOnce({
         kind: "rejected",
         reason: "revision-conflict",
       })
-      .mockResolvedValueOnce({
-        kind: "ignored",
-        reason: "invalid-transition",
+      .mockImplementationOnce(async () => {
+        remoteState = {
+          type: "returning",
+          session: recoverySession,
+        };
+        return {
+          kind: "ignored" as const,
+          reason: "invalid-transition" as const,
+        };
       });
     const queryClient = new QueryClient();
     render(
@@ -490,6 +497,47 @@ describe("VersionPreviewProvider", () => {
     expect(actor.resync).toHaveBeenCalled();
     expect(toastError).not.toHaveBeenCalledWith(
       "Version recovery could not be started. Please try again.",
+    );
+  });
+
+  it("reports an ignored recovery action when recovery did not advance", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    remoteState = {
+      type: "recovery-required",
+      session: {
+        appId: 1,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: "abc123",
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "Return failed" },
+    };
+    actor.dispatch.mockResolvedValueOnce({
+      kind: "ignored",
+      reason: "invalid-transition",
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <div>content</div>
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    const recoveryToast = toastError.mock.calls.find(
+      ([message]) =>
+        message ===
+        "Unable to return to the branch that was active before previewing this version.",
+    );
+    act(() => recoveryToast?.[1]?.action?.onClick());
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Version recovery could not be started. Please try again.",
+      ),
     );
   });
 
@@ -626,6 +674,59 @@ describe("VersionPreviewProvider", () => {
       1,
       expect.stringMatching(/^version-preview:/),
       { type: "close" },
+    );
+  });
+
+  it("retries window cleanup after current repository acceptance", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    const session = {
+      appId: 1,
+      originBranch: "main",
+      targetVersionId: "abc123",
+      checkedOutVersionId: null,
+      exitIntent: { type: "none" } as const,
+      selectedDiffFile: null,
+      isDiffVisible: false,
+    };
+    remoteState = {
+      type: "restore-recovery-required",
+      session,
+      error: { message: "Recovery is unresolved." },
+    };
+    windowInterest.release
+      .mockRejectedValueOnce(new Error("transport unavailable"))
+      .mockResolvedValueOnce({ cleanupStarted: false });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <Probe />
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("probe"));
+    act(() => {
+      remoteState = {
+        type: "validating-current-repository",
+        session,
+        error: { message: "Recovery is unresolved." },
+      };
+      actorListeners.forEach((listener) => listener());
+    });
+    act(() => {
+      remoteState = CLOSED_STATE;
+      actorListeners.forEach((listener) => listener());
+    });
+
+    await waitFor(() =>
+      expect(windowInterest.release).toHaveBeenCalledTimes(2),
+    );
+    expect(actor.resync).toHaveBeenCalled();
+    expect(windowInterest.release.mock.calls[0]?.[1]).toBe(
+      windowInterest.release.mock.calls[1]?.[1],
+    );
+    expect(toastError).not.toHaveBeenCalledWith(
+      "Version History closed, but its window cleanup did not finish. Reopen the app and try again.",
     );
   });
 
