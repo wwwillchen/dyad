@@ -1,4 +1,5 @@
 import { hasDyadProKey, type UserSettings } from "@/lib/schemas";
+import { DEFAULT_ENABLE_TESTING_FOR_NEW_APPS } from "@/shared/settings_defaults";
 
 type TelemetryProperties = Record<string, unknown> | undefined;
 
@@ -13,6 +14,8 @@ export function getSettingsPersonTelemetryProperties(settings: UserSettings) {
   return {
     isPro: hasDyadProKey(settings),
     enableAppBlueprint: settings.enableAppBlueprint ?? true,
+    enableTestingForNewApps:
+      settings.enableTestingForNewApps ?? DEFAULT_ENABLE_TESTING_FOR_NEW_APPS,
   };
 }
 
@@ -98,6 +101,12 @@ export function shouldBypassNonProTelemetrySampling(
   }
 
   if (eventName === "app:initial-load") {
+    return true;
+  }
+
+  // PostHog people.set emits a $set event. Sampling it would leave person
+  // properties stale even though the corresponding settings update succeeded.
+  if (eventName === "$set") {
     return true;
   }
 

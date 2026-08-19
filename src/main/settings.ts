@@ -33,6 +33,7 @@ import {
   getRecoveryStats,
   recoverLegacySafeStorageSecret,
 } from "./safe_storage_legacy";
+import { DEFAULT_ENABLE_TESTING_FOR_NEW_APPS } from "@/shared/settings_defaults";
 
 const logger = log.scope("settings");
 
@@ -57,7 +58,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   enableProSmartFilesContextMode: true,
   selectedChatMode: "build",
   enableAppBlueprint: true,
-  enableTestingForNewApps: false,
+  enableTestingForNewApps: DEFAULT_ENABLE_TESTING_FOR_NEW_APPS,
   enableAutoUpdate: true,
   releaseChannel: "stable",
   selectedTemplateId: DEFAULT_TEMPLATE_ID,
