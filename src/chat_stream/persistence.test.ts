@@ -251,9 +251,16 @@ describe("chat stream persistence", () => {
     );
 
     markIntentAccepted(turn.intentId, 42);
-    markIntentTerminal(database, turn, false);
+    markIntentTerminal(database, turn, false, false, "manual", "cancelled");
 
     expect(getRetainedIntentPayloadBytes(turn.intentId)).toBe(0);
+    expect(
+      database
+        .select({ terminalOutcome: chatTurnIntents.terminalOutcome })
+        .from(chatTurnIntents)
+        .where(eq(chatTurnIntents.intentId, turn.intentId))
+        .get(),
+    ).toEqual({ terminalOutcome: "cancelled" });
     expect(persistQueuedIntent(database, turn)).toEqual({
       kind: "replayed",
       acceptance: "message-accepted",
@@ -404,13 +411,27 @@ describe("chat stream persistence", () => {
     const turn = intent("failed-turn");
     persistQueuedIntent(database, turn);
 
-    const queue = markIntentTerminal(database, turn, false, true);
+    const queue = markIntentTerminal(
+      database,
+      turn,
+      false,
+      true,
+      "manual",
+      "errored",
+    );
 
     expect(queue).toMatchObject({ queueRevision: 2, queue: [] });
     expect(persistQueuedIntent(database, turn)).toEqual({
       kind: "replayed",
       acceptance: "rejected",
     });
+    expect(
+      database
+        .select({ terminalOutcome: chatTurnIntents.terminalOutcome })
+        .from(chatTurnIntents)
+        .where(eq(chatTurnIntents.intentId, turn.intentId))
+        .get(),
+    ).toEqual({ terminalOutcome: null });
   });
 
   it("restores durable queued work paused after process-lifetime disposal", () => {

@@ -13,6 +13,7 @@ import {
   rejectDueFollowUp,
 } from "@/ipc/services/user_input_followup_service";
 import { computeChatTurnPayloadHash } from "@/ipc/utils/chat_turn_intent_hash";
+import type { ChatTurnTerminalOutcome } from "@/shared/chat_turn_outcome";
 import {
   CHAT_STREAM_MAX_QUEUE_BYTES,
   SerializableChatTurnIntentSchema,
@@ -34,6 +35,7 @@ interface IntentRecord {
   payloadHash: string;
   acceptance: "queued" | "message-accepted" | "rejected";
   recovery: "not-started" | "started" | "terminal";
+  terminalOutcome: ChatTurnTerminalOutcome | null;
   acceptedMessageId?: number;
   durable: boolean;
 }
@@ -185,6 +187,7 @@ export function hydrateChatStreamPersistence(
         intent: chatTurnIntents.intent,
         acceptance: chatTurnIntents.acceptance,
         recovery: chatTurnIntents.recovery,
+        terminalOutcome: chatTurnIntents.terminalOutcome,
         acceptedMessageId: chatTurnIntents.acceptedMessageId,
       })
       .from(chatQueueEntries)
@@ -246,6 +249,7 @@ export function hydrateChatStreamPersistence(
         payloadHash: entry.payloadHash,
         acceptance: entry.acceptance,
         recovery: entry.recovery,
+        terminalOutcome: entry.terminalOutcome,
         acceptedMessageId: entry.acceptedMessageId ?? undefined,
         durable: true,
       });
@@ -413,6 +417,7 @@ function persistIntentInQueue(
         payloadHash: persisted.payloadHash,
         acceptance: persisted.acceptance,
         recovery: persisted.recovery,
+        terminalOutcome: persisted.terminalOutcome,
         acceptedMessageId: persisted.acceptedMessageId ?? undefined,
         durable: true,
       };
@@ -493,6 +498,7 @@ function persistIntentInQueue(
     payloadHash: intent.payloadHash,
     acceptance: "queued",
     recovery: "not-started",
+    terminalOutcome: null,
     durable,
   });
   aggregate.intentIds.push(intent.intentId);
@@ -552,6 +558,7 @@ export function stageActiveIntent(
     payloadHash: intent.payloadHash,
     acceptance: "queued",
     recovery: "not-started",
+    terminalOutcome: null,
     durable: false,
   });
   return null;
@@ -570,6 +577,7 @@ export function ensureIntentRecord(intent: SerializableChatTurnIntent): void {
     payloadHash: intent.payloadHash,
     acceptance: "queued",
     recovery: "not-started",
+    terminalOutcome: null,
     durable: false,
   });
 }
@@ -612,6 +620,7 @@ export function persistAcceptedChatTurn(
         payloadHash: existing.payloadHash,
         acceptance: existing.acceptance,
         recovery: existing.recovery,
+        terminalOutcome: existing.terminalOutcome,
         acceptedMessageId: existing.acceptedMessageId ?? undefined,
         durable: true,
       },
@@ -1020,6 +1029,7 @@ export function markIntentTerminal(
   pauseQueue: boolean,
   rejectBeforeAcceptance = false,
   pauseReason: QueueAggregate["pauseReason"] = "manual",
+  terminalOutcome: ChatTurnTerminalOutcome | null = null,
 ): ReturnType<typeof loadChatQueue> {
   const record = recordFor(intent.intentId);
   if (!record) {
@@ -1039,6 +1049,7 @@ export function markIntentTerminal(
     intent: record.intent,
     acceptance: record.acceptance,
     recovery: record.recovery,
+    terminalOutcome: record.terminalOutcome,
   };
   let changed = false;
   if (rejectBeforeAcceptance && record.acceptance === "queued") {
@@ -1048,8 +1059,10 @@ export function markIntentTerminal(
       changed = true;
     }
     record.acceptance = "rejected";
+    terminalOutcome = null;
   }
   record.recovery = "terminal";
+  record.terminalOutcome = terminalOutcome;
   if (
     pauseQueue &&
     (!aggregate.paused ||
@@ -1070,6 +1083,7 @@ export function markIntentTerminal(
           .set({
             acceptance: record.acceptance,
             recovery: "terminal",
+            terminalOutcome: record.terminalOutcome,
             intent: null,
             updatedAt: new Date(),
           })
@@ -1093,6 +1107,7 @@ export function markIntentTerminal(
       record.intent = originalRecord.intent;
       record.acceptance = originalRecord.acceptance;
       record.recovery = originalRecord.recovery;
+      record.terminalOutcome = originalRecord.terminalOutcome;
       throw error;
     }
   }

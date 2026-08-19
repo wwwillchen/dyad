@@ -82,7 +82,9 @@ function isMutationCommand(command: PreviewCommand): boolean {
     command.type === "return" ||
     command.type === "switch-branch" ||
     command.type === "restore" ||
-    command.type === "restore-to-message"
+    command.type === "restore-to-message" ||
+    command.type === "validate-current-repository" ||
+    command.type === "checkpoint-current-repository"
   );
 }
 
@@ -92,6 +94,7 @@ function isFailureEvent(event: VersionPreviewWireEvent): boolean {
     event.type === "CHECKOUT_FAILED" ||
     event.type === "RESTORE_FAILED" ||
     event.type === "RESTORE_RECOVERY_REQUIRED" ||
+    event.type === "CURRENT_REPOSITORY_REJECTED" ||
     event.type === "RETURN_FAILED" ||
     event.type === "SWITCH_BRANCH_FAILED"
   );
@@ -538,6 +541,91 @@ function createCommandRunner(
               `Version preview completion failed: ${errorInfo(error).message}`,
             );
           });
+        return;
+      }
+      case "validate-current-repository":
+      case "checkpoint-current-repository": {
+        if (!invocationRef) return;
+        const operation =
+          command.type === "validate-current-repository"
+            ? versionPreviewService.validateCurrentRepository(appId)
+            : versionPreviewService.checkpointCurrentRepository(appId);
+        const lifecycle = operation.then(
+          (result) => {
+            if (result.kind === "dirty") {
+              emit({ type: "CURRENT_REPOSITORY_DIRTY", invocationRef });
+              return;
+            }
+            if (result.kind === "blocked") {
+              emit({
+                type: "CURRENT_REPOSITORY_REJECTED",
+                error: { message: result.message },
+                assessment: result.assessment,
+                invocationRef,
+              });
+              return;
+            }
+
+            const originHandledScopes = [
+              { family: "branches", appId },
+              { family: "versions", appId },
+              { family: "app", appId },
+              { family: "problems", appId },
+            ] as const;
+            const scopes = [
+              ...originHandledScopes,
+              { family: "chats" },
+            ] as const;
+            queryInvalidationBus.publish(scopes, {
+              originEndpoint:
+                versionPreviewPresentationService.originEndpointFor(
+                  invocationRef.operationId,
+                ),
+              originHandledScopes,
+            });
+            versionPreviewPresentationService.publishResult(
+              appId,
+              invocationRef.operationId,
+              {
+                repositoryOutcome: "unchanged",
+                notification: result.savedVersionId
+                  ? {
+                      kind: "success",
+                      message:
+                        "Current changes saved as a recovery version. Version History is ready.",
+                    }
+                  : {
+                      kind: "success",
+                      message:
+                        "Version History is ready. Continuing from the current code version.",
+                    },
+                runtimeAction: "none",
+                affectedChatId: null,
+                createdChatId: null,
+              },
+            );
+            emit({
+              type: "CURRENT_REPOSITORY_ACCEPTED",
+              appId,
+              branch: result.branch,
+              acceptedHead: result.headOid,
+              savedVersionId: result.savedVersionId,
+              invocationRef,
+            });
+          },
+          (error) => {
+            emit({
+              type: "CURRENT_REPOSITORY_REJECTED",
+              error: errorInfo(error),
+              assessment: {
+                type: "blocked",
+                blocker: "repository-error",
+              },
+              invocationRef,
+            });
+          },
+        );
+        void versionPreviewService.trackLifecycle(appId, lifecycle);
         return;
       }
       case "notify-error":

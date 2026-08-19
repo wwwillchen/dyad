@@ -35,6 +35,8 @@ function toIntent(
   switch (event.type) {
     case "CLOSE":
     case "RETRY_RETURN":
+    case "ACCEPT_CURRENT_REPOSITORY":
+    case "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY":
       return { type: event.type, operationId: id };
     case "APP_CHANGED":
       return { ...event, operationId: id };
@@ -70,6 +72,9 @@ function toIntent(
     case "RESTORE_SUCCEEDED":
     case "RESTORE_FAILED":
     case "RESTORE_RECOVERY_REQUIRED":
+    case "CURRENT_REPOSITORY_ACCEPTED":
+    case "CURRENT_REPOSITORY_DIRTY":
+    case "CURRENT_REPOSITORY_REJECTED":
     case "RETURN_SUCCEEDED":
     case "RETURN_FAILED":
     case "SWITCH_BRANCH_SUCCEEDED":
@@ -110,6 +115,10 @@ export function useVersionPreview(appId: number | null): {
       : combineVersionPreviewState(appId, remote.state.state, presentation);
   const isPaneVisible =
     appId !== null && presentationStore.isPaneVisible(appId);
+  const dispatchActorIntent = useCallback(
+    (intent: VersionPreviewIntentEvent) => actor.dispatch(intent),
+    [actor],
+  );
 
   const dispatchNow = useCallback(
     async (
@@ -131,6 +140,23 @@ export function useVersionPreview(appId: number | null): {
       };
       if (event.type === "OPEN") {
         await windowInterest.acquire(appId);
+        presentationStore.send(appId, event);
+        if (actor.getView().state.state.type === "restore-recovery-required") {
+          await dispatchActorIntent({
+            type: "SHOW_RECOVERY_NOTICE",
+            operationId: operationId(),
+          });
+        }
+        return;
+      }
+      if (
+        event.type === "CLOSE" &&
+        (actor.getView().state.state.type === "restore-recovery-required" ||
+          actor.getView().state.state.type ===
+            "validating-current-repository" ||
+          actor.getView().state.state.type ===
+            "checkpointing-current-repository")
+      ) {
         presentationStore.send(appId, event);
         return;
       }
@@ -194,7 +220,7 @@ export function useVersionPreview(appId: number | null): {
           await settlement;
           return;
         }
-        const receipt = await actor.dispatch(intent);
+        const receipt = await dispatchActorIntent(intent);
         if (receipt.kind === "applied") {
           if (event.type === "SELECT_VERSION") {
             selectionAccepted = true;
@@ -216,7 +242,7 @@ export function useVersionPreview(appId: number | null): {
         throw error;
       }
     },
-    [actor, appId, presentationStore, windowInterest],
+    [actor, appId, dispatchActorIntent, presentationStore, windowInterest],
   );
   const dispatch = useCallback(
     (event: PreviewEvent, waitForSettlement: boolean): Promise<void> => {
@@ -277,6 +303,8 @@ export function useVersionPreview(appId: number | null): {
         canRestore: false,
         canSelectVersion: false,
         canSwitchBranch: false,
+        canAcceptCurrentRepository: false,
+        canCheckpointAndAcceptCurrentRepository: false,
       },
     };
   }, [remote.connection, state]);

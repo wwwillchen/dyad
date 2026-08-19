@@ -169,6 +169,38 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
         versionPreviewClientDefinition,
         versionPreviewKey(appId),
       );
+      const dispatchRecoveryIntent = (
+        type:
+          | "RETRY_RETURN"
+          | "ACCEPT_CURRENT_REPOSITORY"
+          | "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY",
+      ) => {
+        const event = {
+          type,
+          operationId: `version-preview:${globalThis.crypto.randomUUID()}`,
+        } as const;
+        void (async () => {
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            if (actor.getStatus() !== "ready") await actor.resync();
+            const receipt = await actor.dispatch(event);
+            if (receipt.kind === "applied") return;
+            if (
+              receipt.kind === "rejected" &&
+              (receipt.reason === "revision-conflict" ||
+                receipt.reason === "stale-actor")
+            ) {
+              await actor.resync();
+              continue;
+            }
+            throw new Error("Version recovery was not accepted");
+          }
+          throw new Error("Version recovery remained stale");
+        })().catch(() => {
+          toast.error(
+            "Version recovery could not be started. Please try again.",
+          );
+        });
+      };
       let previousStateType = actor.getView().state.state.type;
       let restorationStarted = false;
       let restoredPresentation = false;
@@ -247,44 +279,55 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
               duration: Infinity,
               action: {
                 label: "Retry",
-                onClick: () => {
-                  const event = {
-                    type: "RETRY_RETURN" as const,
-                    operationId: `version-preview:${globalThis.crypto.randomUUID()}`,
-                  };
-                  void (async () => {
-                    for (let attempt = 0; attempt < 3; attempt += 1) {
-                      if (actor.getStatus() !== "ready") await actor.resync();
-                      const receipt = await actor.dispatch(event);
-                      if (receipt.kind === "applied") return;
-                      if (
-                        receipt.kind === "rejected" &&
-                        (receipt.reason === "revision-conflict" ||
-                          receipt.reason === "stale-actor")
-                      ) {
-                        await actor.resync();
-                        continue;
-                      }
-                      throw new Error(
-                        "The version recovery retry was not accepted",
-                      );
-                    }
-                    throw new Error(
-                      "The version recovery retry remained stale",
-                    );
-                  })().catch(() => {
-                    toast.error(
-                      "Version recovery could not be started. Please try again.",
-                    );
-                  });
-                },
+                onClick: () => dispatchRecoveryIntent("RETRY_RETURN"),
               },
             },
           );
         } else if (state.type === "restore-recovery-required") {
+          if (state.currentRepositoryAssessment?.type === "dirty") {
+            toast.error("Your current changes need to be saved", {
+              id: toastId,
+              description:
+                "Dyad found changes that are not part of a saved version. Save them as the current version to continue using Version History.",
+              duration: Infinity,
+              action: {
+                label: "Save changes & use current version",
+                onClick: () =>
+                  dispatchRecoveryIntent(
+                    "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY",
+                  ),
+              },
+            });
+          } else {
+            const isBlocked =
+              state.currentRepositoryAssessment?.type === "blocked";
+            toast.error(
+              isBlocked
+                ? "Version History is unavailable"
+                : "Version restore needs attention.",
+              {
+                id: toastId,
+                description: state.error.message,
+                duration: Infinity,
+                action: {
+                  label: isBlocked ? "Check again" : "Use current version",
+                  onClick: () =>
+                    dispatchRecoveryIntent("ACCEPT_CURRENT_REPOSITORY"),
+                },
+              },
+            );
+          }
+        } else if (state.type === "validating-current-repository") {
           toast.error("Version restore needs attention.", {
             id: toastId,
-            description: state.error.message,
+            description: "Checking the current repository…",
+            duration: Infinity,
+          });
+        } else if (state.type === "checkpointing-current-repository") {
+          toast.error("Saving the current version…", {
+            id: toastId,
+            description:
+              "Dyad is saving your current changes before continuing.",
             duration: Infinity,
           });
         } else {

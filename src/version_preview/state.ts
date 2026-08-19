@@ -15,6 +15,24 @@ export interface PreviewError {
   message: string;
 }
 
+export type CurrentRepositoryAssessment =
+  | { readonly type: "dirty" }
+  | {
+      readonly type: "blocked";
+      readonly blocker:
+        | "conflicted"
+        | "detached-head"
+        | "missing-repository"
+        | "git-operation"
+        | "repository-error";
+      readonly operation?:
+        | "merge"
+        | "rebase"
+        | "cherry-pick"
+        | "revert"
+        | "bisect";
+    };
+
 export type RestoreRecovery =
   | {
       readonly preRestoreHead: string;
@@ -91,6 +109,19 @@ export type PreviewState =
       session: PreviewSession;
       error: PreviewError;
       restoreRecovery?: RestoreRecovery;
+      currentRepositoryAssessment?: CurrentRepositoryAssessment;
+    }
+  | {
+      type: "validating-current-repository";
+      session: PreviewSession;
+      error: PreviewError;
+      restoreRecovery?: RestoreRecovery;
+    }
+  | {
+      type: "checkpointing-current-repository";
+      session: PreviewSession;
+      error: PreviewError;
+      restoreRecovery?: RestoreRecovery;
     }
   | {
       type: "switching-branch";
@@ -143,6 +174,8 @@ export type PreviewEvent =
       restoreCodebase: boolean;
     }
   | { type: "RETRY_RETURN" }
+  | { type: "ACCEPT_CURRENT_REPOSITORY" }
+  | { type: "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY" }
   // Command completions (dispatched only by the controller)
   | { type: "ORIGIN_RESOLVED"; branch: string }
   | { type: "ORIGIN_RESOLUTION_FAILED" }
@@ -157,6 +190,19 @@ export type PreviewEvent =
       type: "RESTORE_RECOVERY_REQUIRED";
       error: PreviewError;
       restoreRecovery: RestoreRecovery;
+    }
+  | {
+      type: "CURRENT_REPOSITORY_ACCEPTED";
+      appId: number;
+      branch: string;
+      acceptedHead: string;
+      savedVersionId?: string;
+    }
+  | { type: "CURRENT_REPOSITORY_DIRTY" }
+  | {
+      type: "CURRENT_REPOSITORY_REJECTED";
+      error: PreviewError;
+      assessment: Exclude<CurrentRepositoryAssessment, { type: "dirty" }>;
     }
   | { type: "RETURN_SUCCEEDED" }
   | { type: "RETURN_FAILED"; error: PreviewError }
@@ -189,6 +235,8 @@ export type PreviewCommand =
       targetBranch: string | null;
     }
   | { type: "notify-error"; message: string }
+  | { type: "validate-current-repository"; appId: number }
+  | { type: "checkpoint-current-repository"; appId: number }
   | { type: "notify-recovery"; appId: number; error: PreviewError }
   | { type: "dismiss-recovery"; appId: number };
 
@@ -210,6 +258,8 @@ export function isPaneVisibleState(state: PreviewState): boolean {
     case "switching-branch":
     case "recovery-required":
     case "restore-recovery-required":
+    case "validating-current-repository":
+    case "checkpointing-current-repository":
       return false;
   }
 }
@@ -221,6 +271,7 @@ export function isMutatingState(state: PreviewState): boolean {
     case "restoring":
     case "returning":
     case "switching-branch":
+    case "checkpointing-current-repository":
       return true;
     case "closed":
     case "viewing-diff":
@@ -229,6 +280,7 @@ export function isMutatingState(state: PreviewState): boolean {
     case "previewing":
     case "recovery-required":
     case "restore-recovery-required":
+    case "validating-current-repository":
       return false;
   }
 }
@@ -244,13 +296,25 @@ function canShowDiff(state: PreviewState): state is Exclude<
       session: PreviewSession;
       error: PreviewError;
     }
+  | {
+      type: "validating-current-repository";
+      session: PreviewSession;
+      error: PreviewError;
+    }
+  | {
+      type: "checkpointing-current-repository";
+      session: PreviewSession;
+      error: PreviewError;
+    }
 > {
   return (
     state.type !== "closed" &&
     state.type !== "returning" &&
     state.type !== "switching-branch" &&
     state.type !== "recovery-required" &&
-    state.type !== "restore-recovery-required"
+    state.type !== "restore-recovery-required" &&
+    state.type !== "validating-current-repository" &&
+    state.type !== "checkpointing-current-repository"
   );
 }
 

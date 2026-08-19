@@ -197,6 +197,21 @@ function toPersistedState(state: PreviewState): PersistedState | null {
         ...state,
         fallback: persistedFallback(state.fallback),
       };
+    case "restore-recovery-required":
+      return {
+        type: state.type,
+        session: persistedSession(state.session),
+        error: state.error,
+        restoreRecovery: state.restoreRecovery,
+      };
+    case "validating-current-repository":
+    case "checkpointing-current-repository":
+      return {
+        type: "restore-recovery-required",
+        session: persistedSession(state.session),
+        error: state.error,
+        restoreRecovery: state.restoreRecovery,
+      };
     default:
       return {
         ...state,

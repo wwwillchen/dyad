@@ -47,6 +47,22 @@ const states: PreviewState[] = [
     session: { ...session(), originBranch: null, checkedOutVersionId: null },
     error: { message: "restore interrupted" },
   },
+  {
+    type: "restore-recovery-required",
+    session: { ...session(), originBranch: null, checkedOutVersionId: null },
+    error: { message: "dirty repository" },
+    currentRepositoryAssessment: { type: "dirty" },
+  },
+  {
+    type: "validating-current-repository",
+    session: { ...session(), originBranch: null, checkedOutVersionId: null },
+    error: { message: "restore interrupted" },
+  },
+  {
+    type: "checkpointing-current-repository",
+    session: { ...session(), originBranch: null, checkedOutVersionId: null },
+    error: { message: "dirty repository" },
+  },
 ];
 
 describe("version_preview capabilities", () => {
@@ -107,6 +123,26 @@ describe("version_preview capabilities", () => {
             }),
             disabledReason: "invalid-in-current-state",
           },
+          canAcceptCurrentRepository: {
+            representativeEvents: () => ({
+              valid: [
+                {
+                  type: "ACCEPT_CURRENT_REPOSITORY",
+                } satisfies PreviewEvent,
+              ],
+            }),
+            disabledReason: "invalid-in-current-state",
+          },
+          canCheckpointAndAcceptCurrentRepository: {
+            representativeEvents: () => ({
+              valid: [
+                {
+                  type: "CHECKPOINT_AND_ACCEPT_CURRENT_REPOSITORY",
+                } satisfies PreviewEvent,
+              ],
+            }),
+            disabledReason: "invalid-in-current-state",
+          },
         },
       }),
     ).not.toThrow();
@@ -120,6 +156,8 @@ describe("version_preview capabilities", () => {
       canRestore: false,
       canSelectVersion: false,
       canSwitchBranch: true,
+      canAcceptCurrentRepository: false,
+      canCheckpointAndAcceptCurrentRepository: false,
     });
   });
 });

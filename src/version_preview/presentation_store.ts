@@ -127,7 +127,9 @@ export function combineVersionPreviewState(
     remote.type === "returning" ||
     remote.type === "switching-branch" ||
     remote.type === "recovery-required" ||
-    remote.type === "restore-recovery-required"
+    remote.type === "restore-recovery-required" ||
+    remote.type === "validating-current-repository" ||
+    remote.type === "checkpointing-current-repository"
   ) {
     return remote;
   }

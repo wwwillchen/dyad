@@ -536,6 +536,37 @@ export function VersionPane() {
     return null;
   }
 
+  if (
+    previewState.type === "restore-recovery-required" ||
+    previewState.type === "validating-current-repository" ||
+    previewState.type === "checkpointing-current-repository"
+  ) {
+    return (
+      <div className="h-full border-t border-2 border-border w-full flex flex-col">
+        <div className="p-2 border-b border-border flex items-center justify-between">
+          <h2 className="text-base font-medium pl-2">Version History</h2>
+          <button
+            onClick={() => send({ type: "CLOSE" })}
+            className="p-1 hover:bg-(--background-lightest) rounded-md"
+            aria-label="Close version pane"
+          >
+            <X size={20} />
+          </button>
+        </div>
+        <div className="flex-1 flex items-center justify-center p-6">
+          <div className="max-w-sm text-center">
+            <h3 className="text-sm font-medium">
+              Version History is temporarily unavailable
+            </h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Resolve the version recovery notice to continue.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const handleVersionClick = (version: Version) => {
     send({
       type: "SELECT_VERSION",

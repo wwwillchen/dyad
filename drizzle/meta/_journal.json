@@ -344,6 +344,13 @@
       "when": 1786721941438,
       "tag": "0048_familiar_mystique",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1787112815219,
+      "tag": "0049_high_sersi",
+      "breakpoints": true
     }
   ]
 }

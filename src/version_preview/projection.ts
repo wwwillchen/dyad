@@ -4,6 +4,8 @@ export interface VersionPreviewCapabilities {
   readonly canRestore: boolean;
   readonly canSelectVersion: boolean;
   readonly canSwitchBranch: boolean;
+  readonly canAcceptCurrentRepository: boolean;
+  readonly canCheckpointAndAcceptCurrentRepository: boolean;
 }
 
 export interface VersionPreviewProjection {
@@ -25,39 +27,54 @@ export function selectVersionPreviewCapabilities(
         canRestore: true,
         canSelectVersion: true,
         canSwitchBranch: true,
+        canAcceptCurrentRepository: false,
+        canCheckpointAndAcceptCurrentRepository: false,
       };
     case "closed":
       return {
         canRestore: true,
         canSelectVersion: false,
         canSwitchBranch: true,
+        canAcceptCurrentRepository: false,
+        canCheckpointAndAcceptCurrentRepository: false,
       };
     case "resolving-origin":
       return {
         canRestore: false,
         canSelectVersion: true,
         canSwitchBranch: false,
+        canAcceptCurrentRepository: false,
+        canCheckpointAndAcceptCurrentRepository: false,
       };
     case "recovery-required":
       return {
         canRestore: false,
         canSelectVersion: false,
         canSwitchBranch: true,
+        canAcceptCurrentRepository: false,
+        canCheckpointAndAcceptCurrentRepository: false,
       };
     case "restore-recovery-required":
       return {
         canRestore: false,
         canSelectVersion: false,
         canSwitchBranch: false,
+        canAcceptCurrentRepository: true,
+        canCheckpointAndAcceptCurrentRepository:
+          state.currentRepositoryAssessment?.type === "dirty",
       };
     case "checking-out":
     case "restoring":
     case "returning":
     case "switching-branch":
+    case "validating-current-repository":
+    case "checkpointing-current-repository":
       return {
         canRestore: false,
         canSelectVersion: false,
         canSwitchBranch: false,
+        canAcceptCurrentRepository: false,
+        canCheckpointAndAcceptCurrentRepository: false,
       };
   }
 }

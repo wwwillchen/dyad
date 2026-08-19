@@ -469,6 +469,97 @@ export async function isGitStatusClean({
   return isClean;
 }
 
+export type GitOperationInProgress =
+  | "merge"
+  | "rebase"
+  | "cherry-pick"
+  | "revert"
+  | "bisect";
+
+export interface RepositoryHealth {
+  branch: string | null;
+  headOid: string;
+  isClean: boolean;
+  unmergedFiles: string[];
+  operationInProgress: GitOperationInProgress | null;
+}
+
+async function gitInternalPath(
+  repositoryPath: string,
+  marker: string,
+): Promise<string> {
+  const result = await execGit(
+    ["rev-parse", "--git-path", marker],
+    repositoryPath,
+  );
+  if (result.exitCode !== 0) {
+    throw new DyadError(
+      `Failed to inspect Git state: ${result.stderr.trim() || result.stdout.trim()}`,
+      DyadErrorKind.Conflict,
+    );
+  }
+  const markerPath = result.stdout.trim();
+  return pathModule.isAbsolute(markerPath)
+    ? markerPath
+    : pathModule.resolve(repositoryPath, markerPath);
+}
+
+/** One source of truth for whether a repository is safe to accept as current. */
+export async function inspectRepositoryHealth({
+  path,
+}: GitBaseParams): Promise<RepositoryHealth> {
+  const [branch, headOid, isClean, unmergedFiles, markerPaths] =
+    await Promise.all([
+      gitCurrentBranch({ path }),
+      getCurrentCommitHash({ path }),
+      isGitStatusClean({ path }),
+      gitGetMergeConflicts({ path }),
+      Promise.all(
+        [
+          "MERGE_HEAD",
+          "REBASE_HEAD",
+          "rebase-apply",
+          "rebase-merge",
+          "CHERRY_PICK_HEAD",
+          "REVERT_HEAD",
+          "BISECT_START",
+        ].map((marker) => gitInternalPath(path, marker)),
+      ),
+    ]);
+  const [
+    mergeHead,
+    rebaseHead,
+    rebaseApply,
+    rebaseMerge,
+    cherryPickHead,
+    revertHead,
+    bisectStart,
+  ] = markerPaths;
+  const operationInProgress: GitOperationInProgress | null = fs.existsSync(
+    mergeHead,
+  )
+    ? "merge"
+    : fs.existsSync(rebaseHead) ||
+        fs.existsSync(rebaseApply) ||
+        fs.existsSync(rebaseMerge)
+      ? "rebase"
+      : fs.existsSync(cherryPickHead)
+        ? "cherry-pick"
+        : fs.existsSync(revertHead)
+          ? "revert"
+          : fs.existsSync(bisectStart)
+            ? "bisect"
+            : null;
+
+  return {
+    branch: branch && branch !== "<no-branch>" ? branch : null,
+    headOid,
+    isClean,
+    unmergedFiles,
+    operationInProgress,
+  };
+}
+
 /**
  * Whether one path has no staged or unstaged changes (and is not untracked).
  *

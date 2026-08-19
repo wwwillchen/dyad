@@ -31,7 +31,7 @@ import {
 import { h } from "@/testing/hybrid.setup";
 import { ipc } from "@/ipc/types";
 import { versionPreviewHandlerService } from "@/ipc/handlers/version_handlers";
-import { chats, messages } from "@/db/schema";
+import { chatTurnIntents, chats, messages } from "@/db/schema";
 import {
   getCurrentCommitHash,
   gitAddAll,
@@ -315,6 +315,131 @@ describe("context compaction (integration)", () => {
       appId: harness.appId,
       initialCommitHash,
     });
+  });
+
+  it("checkpoints partial files when restoring to an already-stopped generation", async () => {
+    const targetCommitHash = await getCurrentCommitHash({
+      path: harness.appDir,
+    });
+    const [chatRow] = await harness.db
+      .insert(chats)
+      .values({
+        appId: harness.appId,
+        chatMode: "local-agent",
+        initialCommitHash: targetCommitHash,
+      })
+      .returning();
+    const intentId = `stopped-before-undo-${chatRow.id}`;
+    await harness.db.insert(chatTurnIntents).values({
+      intentId,
+      chatId: chatRow.id,
+      payloadHash: "stopped-before-undo",
+      acceptance: "message-accepted",
+      recovery: "terminal",
+      terminalOutcome: "cancelled",
+    });
+    const [targetMessage] = await harness.db
+      .insert(messages)
+      .values({
+        chatId: chatRow.id,
+        role: "user",
+        content: "Stopped generation with partial files",
+        chatTurnIntentId: intentId,
+      })
+      .returning();
+    await harness.db.insert(messages).values({
+      chatId: chatRow.id,
+      role: "assistant",
+      content: "Generation stopped before completion.",
+      sourceCommitHash: targetCommitHash,
+    });
+    const partialFile = path.join(harness.appDir, "stopped-partial.txt");
+    await fs.promises.writeFile(partialFile, "partial generation output\n");
+
+    const result = await versionPreviewHandlerService.restoreToMessage({
+      appId: harness.appId,
+      chatId: chatRow.id,
+      messageId: targetMessage.id,
+      restoreCodebase: true,
+    });
+
+    expect(result.repositoryOutcome).toBe("target-applied");
+    expect(result.notification).toMatchObject({
+      kind: "success",
+      message: expect.stringContaining(
+        "saved as an [Interrupted] version in Version History",
+      ),
+    });
+    await expect(fs.promises.stat(partialFile)).rejects.toThrow();
+    const versions = await gitLog({ path: harness.appDir });
+    expect(
+      versions.some(
+        (version) =>
+          version.commit.message.startsWith("[Interrupted]") &&
+          version.commit.message.includes(
+            "Saved partial changes before restoring to an earlier version",
+          ),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps a preflight dirty-tree refusal outside restore recovery", async () => {
+    const headBeforeRestore = await getCurrentCommitHash({
+      path: harness.appDir,
+    });
+    const branchBeforeRestore = await gitCurrentBranch({
+      path: harness.appDir,
+    });
+    const [chatRow] = await harness.db
+      .insert(chats)
+      .values({
+        appId: harness.appId,
+        chatMode: "local-agent",
+        initialCommitHash: headBeforeRestore,
+      })
+      .returning();
+    const [targetMessage] = await harness.db
+      .insert(messages)
+      .values({
+        chatId: chatRow.id,
+        role: "user",
+        content: "Completed generation followed by manual edits",
+      })
+      .returning();
+    await harness.db.insert(messages).values({
+      chatId: chatRow.id,
+      role: "assistant",
+      content: "Completed normally.",
+      sourceCommitHash: headBeforeRestore,
+      commitHash: headBeforeRestore,
+    });
+    const manualFile = path.join(harness.appDir, "manual-uncommitted.txt");
+    await fs.promises.writeFile(manualFile, "manual work\n");
+    const progress: RestoreRecovery[] = [];
+
+    try {
+      await expect(
+        versionPreviewHandlerService.restoreToMessage(
+          {
+            appId: harness.appId,
+            chatId: chatRow.id,
+            messageId: targetMessage.id,
+            restoreCodebase: true,
+          },
+          undefined,
+          (checkpoint) => progress.push(checkpoint),
+        ),
+      ).rejects.toThrow("Cannot revert: working tree has uncommitted changes.");
+      expect(progress).toEqual([]);
+      await expect(
+        getCurrentCommitHash({ path: harness.appDir }),
+      ).resolves.toBe(headBeforeRestore);
+      await expect(gitCurrentBranch({ path: harness.appDir })).resolves.toBe(
+        branchBeforeRestore,
+      );
+    } finally {
+      await fs.promises.unlink(manualFile).catch(() => {});
+    }
   });
 
   it("carries sticky referenced apps into the forked chat", async () => {

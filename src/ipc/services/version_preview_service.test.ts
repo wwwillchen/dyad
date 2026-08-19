@@ -6,7 +6,22 @@ const database = vi.hoisted(() => ({
 const git = vi.hoisted(() => ({
   getCurrentCommitHash: vi.fn(async () => "live-head"),
   getGitUncommittedFilesWithStatus: vi.fn(async () => []),
+  gitAddAll: vi.fn(async () => undefined),
+  gitCommit: vi.fn(async () => "saved-head"),
   gitCurrentBranch: vi.fn(async () => "main"),
+  inspectRepositoryHealth: vi.fn(async () => ({
+    branch: "main" as string | null,
+    headOid: "live-head",
+    isClean: true,
+    unmergedFiles: [] as string[],
+    operationInProgress: null as
+      | "merge"
+      | "rebase"
+      | "cherry-pick"
+      | "revert"
+      | "bisect"
+      | null,
+  })),
 }));
 const handlers = vi.hoisted(() => ({
   revertVersion: vi.fn(),
@@ -19,7 +34,16 @@ vi.mock("@/db", () => ({
 }));
 vi.mock("@/db/schema", () => ({ apps: { id: "id" } }));
 vi.mock("@/paths/paths", () => ({ getDyadAppPath: () => "/test/app" }));
+vi.mock("node:fs", () => ({
+  default: { existsSync: vi.fn(() => true) },
+}));
 vi.mock("../utils/git_utils", () => git);
+vi.mock("./app_operation_coordinator", () => ({
+  readAppResource: (resource: string) => `read:${resource}`,
+  appOperationCoordinator: {
+    run: (_request: unknown, operation: () => Promise<unknown>) => operation(),
+  },
+}));
 vi.mock("../handlers/version_handlers", () => ({
   versionPreviewHandlerService: handlers,
 }));
@@ -36,6 +60,14 @@ describe("VersionPreviewService reconciliation admission", () => {
     git.getCurrentCommitHash.mockResolvedValue("live-head");
     git.gitCurrentBranch.mockResolvedValue("main");
     git.getGitUncommittedFilesWithStatus.mockResolvedValue([]);
+    git.gitCommit.mockResolvedValue("saved-head");
+    git.inspectRepositoryHealth.mockResolvedValue({
+      branch: "main",
+      headOid: "live-head",
+      isClean: true,
+      unmergedFiles: [],
+      operationInProgress: null,
+    });
   });
 
   it("blocks renderer intents until startup reconciliation settles", () => {
@@ -110,5 +142,79 @@ describe("VersionPreviewService reconciliation admission", () => {
     expect(progress).toEqual([]);
     expect(git.getCurrentCommitHash).not.toHaveBeenCalled();
     expect(handlers.restoreToMessage).toHaveBeenCalledOnce();
+  });
+
+  it("accepts only a clean repository on a named branch", async () => {
+    const service = new VersionPreviewService();
+
+    await expect(service.validateCurrentRepository(7)).resolves.toEqual({
+      kind: "healthy",
+      branch: "main",
+      headOid: "live-head",
+    });
+
+    git.inspectRepositoryHealth.mockResolvedValueOnce({
+      branch: null,
+      headOid: "live-head",
+      isClean: true,
+      unmergedFiles: [],
+      operationInProgress: null,
+    });
+    await expect(service.validateCurrentRepository(7)).resolves.toMatchObject({
+      kind: "blocked",
+      assessment: { type: "blocked", blocker: "detached-head" },
+    });
+  });
+
+  it("checkpoints a dirty repository with a visible recovery version", async () => {
+    git.inspectRepositoryHealth
+      .mockResolvedValueOnce({
+        branch: "main",
+        headOid: "live-head",
+        isClean: false,
+        unmergedFiles: [],
+        operationInProgress: null,
+      })
+      .mockResolvedValueOnce({
+        branch: "main",
+        headOid: "saved-head",
+        isClean: true,
+        unmergedFiles: [],
+        operationInProgress: null,
+      });
+    const service = new VersionPreviewService();
+
+    await expect(service.checkpointCurrentRepository(7)).resolves.toEqual({
+      kind: "healthy",
+      branch: "main",
+      headOid: "saved-head",
+      savedVersionId: "saved-head",
+    });
+    expect(git.gitAddAll).toHaveBeenCalledWith({ path: "/test/app" });
+    expect(git.gitCommit).toHaveBeenCalledWith({
+      path: "/test/app",
+      message:
+        "[Recovery] Saved current changes before continuing Version History",
+    });
+  });
+
+  it("does not mutate a conflicted repository", async () => {
+    git.inspectRepositoryHealth.mockResolvedValueOnce({
+      branch: "main",
+      headOid: "live-head",
+      isClean: false,
+      unmergedFiles: ["src/conflicted.ts"],
+      operationInProgress: "merge",
+    });
+    const service = new VersionPreviewService();
+
+    await expect(service.checkpointCurrentRepository(7)).resolves.toMatchObject(
+      {
+        kind: "blocked",
+        assessment: { type: "blocked", blocker: "conflicted" },
+      },
+    );
+    expect(git.gitAddAll).not.toHaveBeenCalled();
+    expect(git.gitCommit).not.toHaveBeenCalled();
   });
 });
