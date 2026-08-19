@@ -39,6 +39,7 @@ import {
   gitCommitExists,
   gitCurrentBranch,
   gitLog,
+  inspectRepositoryHealth,
   isGitStatusClean,
   getChangedFilesForCommit,
   getFileAtCommit,
@@ -531,6 +532,26 @@ async function revertCodebaseToVersion({
     preRestoreBranch: targetBranchName ?? currentBranch,
     targetHead: previousVersionId,
   } as const;
+
+  // Restores rewrite the index and working tree. In particular, preserving an
+  // interrupted turn stages and commits the entire tree, which Git can treat as
+  // resolving conflicts or completing an unrelated merge/cherry-pick. Refuse
+  // every restore while Git owns the repository for another operation, before
+  // emitting progress or making any mutation.
+  const repositoryHealth = await inspectRepositoryHealth({ path: appPath });
+  if (repositoryHealth.unmergedFiles.length > 0) {
+    throw new DyadError(
+      "Cannot revert: repository has unresolved file conflicts.",
+      DyadErrorKind.Conflict,
+    );
+  }
+  if (repositoryHealth.operationInProgress) {
+    throw new DyadError(
+      `Cannot revert: a Git ${repositoryHealth.operationInProgress} is in progress. Finish or cancel it outside Dyad, then try again.`,
+      DyadErrorKind.Conflict,
+    );
+  }
+
   const checkpointGitStep = (
     nextStep:
       | "preparing"

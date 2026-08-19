@@ -19,6 +19,7 @@
 // of a stream error. Dyad Engine calls are routed to the harness fake server
 // via `engine: true`.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -41,6 +42,22 @@ import {
   gitLog,
 } from "@/ipc/utils/git_utils";
 import type { RestoreRecovery } from "@/version_preview/state";
+
+function gitCommand(appDir: string, args: string[], input?: string): string {
+  return execFileSync(
+    "git",
+    [
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ],
+    { cwd: appDir, input, stdio: ["pipe", "pipe", "pipe"] },
+  ).toString();
+}
 
 describe("context compaction (integration)", () => {
   let harness: HybridChatHarness;
@@ -384,6 +401,121 @@ describe("context compaction (integration)", () => {
       ).toBe(true);
     } finally {
       await fs.promises.unlink(partialFile).catch(() => undefined);
+    }
+  });
+
+  it("does not checkpoint a stopped generation over an unresolved Git merge", async () => {
+    const targetCommitHash = await getCurrentCommitHash({
+      path: harness.appDir,
+    });
+    const [chatRow] = await harness.db
+      .insert(chats)
+      .values({
+        appId: harness.appId,
+        chatMode: "local-agent",
+        initialCommitHash: targetCommitHash,
+      })
+      .returning();
+    const intentId = `stopped-during-merge-${chatRow.id}`;
+    await harness.db.insert(chatTurnIntents).values({
+      intentId,
+      chatId: chatRow.id,
+      payloadHash: "stopped-during-merge",
+      acceptance: "message-accepted",
+      recovery: "terminal",
+      terminalOutcome: "cancelled",
+    });
+    const [targetMessage] = await harness.db
+      .insert(messages)
+      .values({
+        chatId: chatRow.id,
+        role: "user",
+        content: "Stopped generation with a conflicted merge",
+        chatTurnIntentId: intentId,
+      })
+      .returning();
+    await harness.db.insert(messages).values({
+      chatId: chatRow.id,
+      role: "assistant",
+      content: "Generation stopped before completion.",
+      sourceCommitHash: targetCommitHash,
+    });
+
+    const conflictPath = "stopped-merge-conflict.txt";
+    const conflictFile = path.join(harness.appDir, conflictPath);
+    const gitDir = path.resolve(
+      harness.appDir,
+      gitCommand(harness.appDir, ["rev-parse", "--git-dir"]).trim(),
+    );
+    const mergeHeadPath = path.join(gitDir, "MERGE_HEAD");
+    const writeBlob = (content: string) =>
+      gitCommand(
+        harness.appDir,
+        ["hash-object", "-w", "--stdin"],
+        content,
+      ).trim();
+    const baseBlob = writeBlob("base\n");
+    const oursBlob = writeBlob("ours\n");
+    const theirsBlob = writeBlob("theirs\n");
+
+    gitCommand(harness.appDir, [
+      "update-index",
+      "--force-remove",
+      "--",
+      conflictPath,
+    ]);
+    gitCommand(
+      harness.appDir,
+      ["update-index", "--index-info"],
+      [
+        `100644 ${baseBlob} 1\t${conflictPath}`,
+        `100644 ${oursBlob} 2\t${conflictPath}`,
+        `100644 ${theirsBlob} 3\t${conflictPath}`,
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      conflictFile,
+      "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n",
+    );
+    fs.writeFileSync(mergeHeadPath, `${targetCommitHash}\n`);
+
+    const headBeforeRestore = await getCurrentCommitHash({
+      path: harness.appDir,
+    });
+    const indexBeforeRestore = gitCommand(harness.appDir, [
+      "ls-files",
+      "--stage",
+      "--",
+      conflictPath,
+    ]);
+    const mergeHeadBeforeRestore = fs.readFileSync(mergeHeadPath, "utf8");
+
+    try {
+      await expect(
+        versionPreviewHandlerService.restoreToMessage({
+          appId: harness.appId,
+          chatId: chatRow.id,
+          messageId: targetMessage.id,
+          restoreCodebase: true,
+        }),
+      ).rejects.toThrow(
+        "Cannot revert: repository has unresolved file conflicts.",
+      );
+
+      await expect(
+        getCurrentCommitHash({ path: harness.appDir }),
+      ).resolves.toBe(headBeforeRestore);
+      expect(
+        gitCommand(harness.appDir, ["ls-files", "--stage", "--", conflictPath]),
+      ).toBe(indexBeforeRestore);
+      expect(fs.readFileSync(mergeHeadPath, "utf8")).toBe(
+        mergeHeadBeforeRestore,
+      );
+    } finally {
+      fs.rmSync(mergeHeadPath, { force: true });
+      gitCommand(harness.appDir, ["reset", "--hard", "HEAD"]);
+      fs.rmSync(conflictFile, { force: true });
     }
   });
 
