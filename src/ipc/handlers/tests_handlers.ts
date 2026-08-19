@@ -19,6 +19,7 @@ import type {
   MigrateLegacyTestResult,
   RunAppTestsResult,
   TestCase,
+  TestIsolation,
   TestResult,
   TestsRunStatePayload,
 } from "../types/tests";
@@ -152,8 +153,10 @@ function parallelWorkerCount(): number {
 interface TestRun {
   controller: AbortController;
   done: Promise<void>;
+  runId: number;
 }
 const testRunControllers = new Map<number, TestRun>();
+const testRunGenerationByAppId = new Map<number, number>();
 
 /**
  * Whether a test run is in flight for the app. Consulted by the recording
@@ -185,11 +188,13 @@ export function getRunningTestBaseUrl(appId: number): string | null {
 function emitOutput(
   event: IpcMainInvokeEvent,
   appId: number,
+  runId: number,
   chunk: string,
   phase: "setup" | "running",
 ): void {
   broadcastToRegisteredWindows(event.sender, "tests:output", {
     appId,
+    runId,
     chunk,
     phase,
   });
@@ -588,14 +593,76 @@ export async function runAppTestsWithIsolation({
   // clicks could both capture the same old run as `prior`, both wait for it,
   // then both start isolation setup at once and double-swap the env file.
   const prior = testRunControllers.get(appId);
-  prior?.controller.abort();
+  const runId = (testRunGenerationByAppId.get(appId) ?? 0) + 1;
+  testRunGenerationByAppId.set(appId, runId);
 
   const controller = new AbortController();
   let resolveDone!: () => void;
   const done = new Promise<void>((resolve) => {
     resolveDone = resolve;
   });
-  testRunControllers.set(appId, { controller, done });
+  testRunControllers.set(appId, { controller, done, runId });
+
+  /**
+   * Progress-only run-state events for the two waits a Stop cannot skip. Both
+   * are emitted only while this controller still owns the app, so a late event
+   * from a superseded run cannot affect its replacement. Neither carries
+   * results — only `finished` is terminal.
+   */
+  const emitProgress = (
+    state: "stopping" | "cleaning-up",
+    isolation?: TestIsolation,
+  ) => {
+    // Starting a replacement run aborts the prior controller too. Those
+    // progress events belong to the superseded run and would otherwise pin
+    // the replacement panel run at stopping/cleanup because the panel writes
+    // its new setup state before the IPC invocation reaches main.
+    if (testRunControllers.get(appId)?.runId !== runId) return;
+    emitRunState(event, {
+      appId,
+      runId,
+      source,
+      state,
+      wasStopped: controller.signal.aborted,
+      testFile: normalizedTestFile ?? undefined,
+      testLine,
+      grep,
+      // Only `cleaning-up` carries this, and only so the UI can name the work
+      // accurately: the Neon path restarts the preview, the Supabase path
+      // touches nothing the user can see.
+      isolation,
+    });
+  };
+
+  // Announce the kill the moment either Stop path fires. The panel button and
+  // the agent turn's cancellation both land on this one controller, so a single
+  // listener covers both surfaces. Registered BEFORE the external-signal wiring
+  // below, which can abort synchronously when the caller is already cancelled.
+  // `started` is published before that wiring, so progress always follows the
+  // generation it belongs to in a live renderer.
+  controller.signal.addEventListener("abort", () => emitProgress("stopping"), {
+    once: true,
+  });
+
+  // Publish the new generation before it waits for the prior teardown. A Stop
+  // can target this queued run immediately; the renderer must know that its
+  // progress belongs to the replacement rather than dropping it behind the
+  // prior run's later phase. Output and terminal events carry the same runId,
+  // so the prior lifecycle can safely finish after this announcement.
+  emitRunState(event, {
+    appId,
+    runId,
+    source,
+    state: "started",
+    testFile: normalizedTestFile ?? undefined,
+    testLine,
+    grep,
+  });
+
+  // Install and announce the new owner before aborting the prior run. Its
+  // abort listener is synchronous, so stale progress can see that ownership
+  // moved and stay out of the replacement run's renderer state.
+  prior?.controller.abort();
 
   // Cancelling the caller's lifecycle (e.g. the agent turn) aborts the run,
   // just like the Stop button does via the same controller.
@@ -609,7 +676,7 @@ export async function runAppTestsWithIsolation({
   }
 
   const emit = (chunk: string, phase: "setup" | "running") =>
-    emitOutput(event, appId, chunk, phase);
+    emitOutput(event, appId, runId, chunk, phase);
 
   let finalResult: RunAppTestsResult = { appId, results: [] };
   // Set by isolation teardown below when `.env.local` couldn't be put back. The
@@ -655,19 +722,6 @@ export async function runAppTestsWithIsolation({
     // and env-file swap. (The resolved app is re-fetched inside the lock below,
     // so this call exists only for the ordering barrier.)
     await getApp(appId);
-
-    // Emit "started" only after the prior lifecycle has fully drained: the
-    // prior run's `finally` emits its "finished" event during teardown, and
-    // announcing this run first would let that stale "finished" flip the
-    // panel back to idle while this run is still executing.
-    emitRunState(event, {
-      appId,
-      source,
-      state: "started",
-      testFile: normalizedTestFile ?? undefined,
-      testLine,
-      grep,
-    });
 
     // Own the runtime/test resources across the whole isolation lifecycle
     // (prepare → run → teardown). Startup reconciliation owns the same
@@ -762,6 +816,16 @@ export async function runAppTestsWithIsolation({
           // already restored).
           if (prepared) {
             try {
+              // Announce the teardown before it starts. It restores
+              // `.env.local`, restarts the dev server and deletes the temporary
+              // branch/user, takes no AbortSignal, and routinely outlasts the
+              // process kill by a wide margin (the Neon branch delete retries
+              // with backoff). Without this the UI reports "running" for the
+              // whole wait. Skipped for `none`, whose teardown is a NOOP that
+              // would only flash the label.
+              if (prepared.isolation.mode !== "none") {
+                emitProgress("cleaning-up", prepared.isolation);
+              }
               // Fail closed across the await: a teardown that throws has said
               // nothing about whether the env came back, and "unknown" has to
               // read the same as "no".
@@ -802,6 +866,7 @@ export async function runAppTestsWithIsolation({
     }
     emitRunState(event, {
       appId,
+      runId,
       source,
       state: "finished",
       testFile: normalizedTestFile ?? undefined,

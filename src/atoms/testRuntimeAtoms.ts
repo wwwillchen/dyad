@@ -42,10 +42,18 @@ export type RuntimeTestResult = Omit<TestResult, "status"> & {
 export type TestRunPhase =
   | "idle" // not running
   | "setup" // first-run Playwright bootstrap streaming
-  | "running"; // playwright test executing
+  | "running" // playwright test executing
+  | "stopping" // Stop pressed; killing the Playwright process tree
+  | "cleaning-up"; // tests gone; isolation teardown still restoring the app
 
 export interface TestRunState {
   phase: TestRunPhase;
+  /** Main-owned per-app generation used to reject stale lifecycle events. */
+  runId?: number;
+  /** Surface that started the active run. */
+  source?: "panel" | "agent";
+  /** Whether this run entered cleanup after being stopped by the user/agent. */
+  wasStopped?: boolean;
   /** Results keyed by spec file path. */
   results: Record<string, RuntimeTestResult>;
   /** Spec files in the current in-flight run (drives per-file spinners). */
@@ -218,12 +226,16 @@ export const applyTestRunStartedAtom = atom(
       testLine,
       grep,
       startedAt,
+      runId,
+      source,
     }: {
       appId: number;
       testFile?: string;
       testLine?: number;
       grep?: string;
       startedAt?: number;
+      runId?: number;
+      source: "panel" | "agent";
     },
   ) => {
     const isPartialRun = testFile != null && (testLine != null || !!grep);
@@ -242,6 +254,9 @@ export const applyTestRunStartedAtom = atom(
         // both run before the first test does. Setup-phase output keeps it
         // here; the first running-phase output advances it.
         phase: "setup",
+        runId,
+        source,
+        wasStopped: false,
         runningFiles: targetFiles,
         runningTests:
           testFile != null && testLine != null
@@ -280,11 +295,13 @@ export const applyTestRunFinishedAtom = atom(
       res,
       isPartialRun,
       expectedStartedAt,
+      expectedRunId,
     }: {
       appId: number;
       res: RunAppTestsResult;
       isPartialRun: boolean;
       expectedStartedAt?: number;
+      expectedRunId?: number;
     },
   ) => {
     // Playwright reports a spec's `file` relative to its own rootDir, which
@@ -298,8 +315,9 @@ export const applyTestRunFinishedAtom = atom(
       appId,
       update: (prev) => {
         if (
-          expectedStartedAt !== undefined &&
-          prev.startedAt !== expectedStartedAt
+          (expectedRunId !== undefined && prev.runId !== expectedRunId) ||
+          (expectedStartedAt !== undefined &&
+            prev.startedAt !== expectedStartedAt)
         ) {
           return prev;
         }
@@ -321,6 +339,7 @@ export const applyTestRunFinishedAtom = atom(
         return {
           ...prev,
           phase: "idle",
+          wasStopped: false,
           runningFiles: [],
           runningTests: [],
           results: nextResults,

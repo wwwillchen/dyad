@@ -406,6 +406,8 @@ export const testsContracts = {
 
 export const TestOutputPayloadSchema = z.object({
   appId: z.number(),
+  /** Main-owned per-app generation for the run that produced this output. */
+  runId: z.number().int().positive(),
   /** A chunk of raw bootstrap/runner output. */
   chunk: z.string(),
   /** Phase the run is in, so the panel can switch between setup/running copy. */
@@ -414,14 +416,30 @@ export const TestOutputPayloadSchema = z.object({
 export type TestOutputPayload = z.infer<typeof TestOutputPayloadSchema>;
 
 /**
- * Lifecycle of a test run, so the panel can reflect runs it didn't start
- * itself (e.g. the agent's run_tests tool). The panel ignores `source:
- * "panel"` — its own `runAppTests` call already writes run state directly.
+ * Lifecycle of a test run, so every renderer can reflect runs it didn't start
+ * itself (e.g. the agent's run_tests tool or a panel run in another window).
+ * The initiating panel also writes optimistic state before the IPC round trip.
  */
 export const TestsRunStatePayloadSchema = z.object({
   appId: z.number(),
+  /**
+   * Main-owned per-app generation. A new run registers before it waits for a
+   * prior teardown, so appId + phase alone cannot reject stale lifecycle
+   * events from overlapping runs.
+   */
+  runId: z.number().int().positive(),
   source: z.enum(["panel", "agent"]),
-  state: z.enum(["started", "finished"]),
+  /**
+   * `stopping` and `cleaning-up` are progress-only states covering the two
+   * waits between a Stop and the terminal `finished`: the kill of the
+   * Playwright process tree, then the isolation teardown (env restore,
+   * dev-server restart, temporary branch/user delete) that no caller can
+   * abort. Unlike `finished`, both are consumed for BOTH sources — the panel
+   * writes its own start/finish state directly but cannot observe these two.
+   */
+  state: z.enum(["started", "stopping", "cleaning-up", "finished"]),
+  /** Authoritative abort state, carried by progress events. */
+  wasStopped: z.boolean().optional(),
   /** Single spec targeted, when set; absent = whole suite. */
   testFile: z.string().optional(),
   /** With testFile: only the test at this 1-based line was run. */

@@ -64,6 +64,8 @@ import { useSummarizeInNewChat } from "./SummarizeInNewChatButton";
 import { ChatInputControls } from "../ChatInputControls";
 import { ChatErrorBox } from "./ChatErrorBox";
 import { AgentConsentBanner } from "./AgentConsentBanner";
+import { CancellationBanner } from "./CancellationBanner";
+import { useCancellationRequestLatch } from "./useCancellationRequestLatch";
 import { TodoList } from "./TodoList";
 import { QuestionnaireInput } from "./QuestionnaireInput";
 import { QueuedMessagesList } from "./QueuedMessagesList";
@@ -144,6 +146,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
   );
   const { settings } = useSettings();
   const {
+    chat: activeChat,
     selectedMode: chatMode,
     effectiveMode,
     storedChatMode,
@@ -169,6 +172,12 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     clearPauseOnly,
     resumeQueue,
   } = useStreamChat();
+  const { isCancellationRequested, requestCancellation } =
+    useCancellationRequestLatch({
+      chatId,
+      isStreaming,
+      isCancellationSettling,
+    });
   const [showError, setShowError] = useState(true);
   const [isApproving, setIsApproving] = useState(false); // State for approving
   const [isRejecting, setIsRejecting] = useState(false); // State for rejecting
@@ -446,7 +455,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
       chatId &&
       isPaused &&
       queuedMessages.length === 0 &&
-      !isCancellationSettling
+      !isCancellationRequested
     ) {
       clearPauseOnly();
     }
@@ -454,7 +463,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     chatId,
     isPaused,
     queuedMessages.length,
-    isCancellationSettling,
+    isCancellationRequested,
     clearPauseOnly,
   ]);
 
@@ -657,6 +666,9 @@ export function ChatInput({ chatId }: { chatId?: number }) {
   };
 
   const handleCancel = () => {
+    // A ref-backed optimistic latch closes the same-render double-click window
+    // before the stream actor's cancelling projection reaches React.
+    if (!requestCancellation()) return;
     // Stopping is non-destructive: queued prompts are parked, never deleted.
     // `isPaused` is a transient latch (resuming, an emptied queue, or a
     // step-limit continue all clear it), so it can be false while the user
@@ -802,12 +814,19 @@ export function ChatInput({ chatId }: { chatId?: number }) {
             contextWindow={tokenCountResult.contextWindow}
           />
         )}
+        {/* Cancelling a turn can take a minute when the agent is mid-tool (a
+            test run has to be killed and its isolation torn down). Pinned here
+            rather than inline in the transcript, which scrolls away. */}
+        {isCancellationRequested && (
+          <CancellationBanner appId={activeChat?.appId} />
+        )}
         <div
           className={cn(
             "relative flex flex-col border border-border rounded-2xl bg-(--background-lighter) transition-colors duration-200",
             "focus-within:border-primary/30 focus-within:ring-1 focus-within:ring-primary/20",
             isDraggingOver && "ring-2 ring-blue-500 border-blue-500",
-            (showBanner || showPromo) && "rounded-t-none border-t-0",
+            (showBanner || showPromo || isCancellationRequested) &&
+              "rounded-t-none border-t-0",
           )}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -1032,19 +1051,41 @@ export function ChatInput({ chatId }: { chatId?: number }) {
             )}
 
             {isStreaming ? (
+              // Cancelling is not instant — an in-flight tool has to unwind
+              // first. Confirm the click here (the banner above carries the
+              // reason) and refuse a second one, which would only re-abort an
+              // already-aborted controller.
               <Tooltip>
                 <TooltipTrigger
                   render={
                     <button
                       onClick={handleCancel}
-                      aria-label={t("cancelGeneration")}
-                      className="px-2 py-2 mb-0.5 mr-1 text-muted-foreground hover:text-destructive rounded-lg transition-colors duration-150 cursor-pointer"
+                      disabled={isCancellationRequested}
+                      aria-label={
+                        isCancellationRequested
+                          ? t("stoppingGeneration", "Stopping…")
+                          : t("cancelGeneration")
+                      }
+                      className={cn(
+                        "px-2 py-2 mb-0.5 mr-1 rounded-lg transition-colors duration-150",
+                        isCancellationRequested
+                          ? "text-amber-600 dark:text-amber-500 cursor-default"
+                          : "text-muted-foreground hover:text-destructive cursor-pointer",
+                      )}
                     />
                   }
                 >
-                  <StopCircleIcon size={20} />
+                  {isCancellationRequested ? (
+                    <Loader2 size={20} className="animate-spin" />
+                  ) : (
+                    <StopCircleIcon size={20} />
+                  )}
                 </TooltipTrigger>
-                <TooltipContent>{t("cancelGeneration")}</TooltipContent>
+                <TooltipContent>
+                  {isCancellationRequested
+                    ? t("stoppingGeneration", "Stopping…")
+                    : t("cancelGeneration")}
+                </TooltipContent>
               </Tooltip>
             ) : (
               <Tooltip>
