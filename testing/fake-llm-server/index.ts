@@ -226,12 +226,45 @@ export function createFakeLlmApp(getPort: () => number) {
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
   const cloudSandboxes = new Map<string, FakeCloudSandbox>();
+  let hangingWebCrawlState = {
+    started: false,
+    closed: false,
+    lateResponseAttempted: false,
+  };
+  let hangingWebCrawlResponse: express.Response | null = null;
 
   const getFakeCloudPreviewUrl = (sandboxId: string) =>
     `http://localhost:${getPort()}/cloud-preview/${sandboxId}`;
 
   app.get("/health", (req, res) => {
     res.send("OK");
+  });
+
+  app.post("/test/engine-web-crawl-hang/reset", (_req, res) => {
+    hangingWebCrawlState = {
+      started: false,
+      closed: false,
+      lateResponseAttempted: false,
+    };
+    hangingWebCrawlResponse = null;
+    res.status(204).end();
+  });
+
+  app.get("/test/engine-web-crawl-hang", (_req, res) => {
+    res.json(hangingWebCrawlState);
+  });
+
+  app.post("/test/engine-web-crawl-hang/release", (_req, res) => {
+    hangingWebCrawlState.lateResponseAttempted = true;
+    hangingWebCrawlResponse?.json({
+      pages: [
+        {
+          url: "https://hang.example.com",
+          markdown: "LATE_CANCELLED_TOOL_SUCCESS",
+        },
+      ],
+    });
+    res.status(204).end();
   });
 
   app.get("/api/default-approve-builds.txt", (req, res) => {
@@ -773,6 +806,15 @@ export function createFakeLlmApp(getPort: () => number) {
   app.post("/engine/v1/tools/web-crawl", (req, res) => {
     const { url, markdownOnly } = req.body;
     fakeLlmLog(`* web-crawl: url="${url}", markdownOnly=${markdownOnly}`);
+
+    if (url === "https://hang.example.com") {
+      hangingWebCrawlState.started = true;
+      hangingWebCrawlResponse = res;
+      res.once("close", () => {
+        hangingWebCrawlState.closed = true;
+      });
+      return;
+    }
 
     try {
       res.json({
