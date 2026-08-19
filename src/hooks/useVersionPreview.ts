@@ -6,6 +6,7 @@ import {
 import { showError } from "@/lib/toast";
 import {
   CLOSED_STATE,
+  isRestoreRecoveryFlowState,
   type PreviewEvent,
   type PreviewState,
 } from "@/version_preview/state";
@@ -142,20 +143,22 @@ export function useVersionPreview(appId: number | null): {
         await windowInterest.acquire(appId);
         presentationStore.send(appId, event);
         if (actor.getView().state.state.type === "restore-recovery-required") {
-          await dispatchActorIntent({
-            type: "SHOW_RECOVERY_NOTICE",
-            operationId: operationId(),
-          });
+          try {
+            await dispatchActorIntent({
+              type: "SHOW_RECOVERY_NOTICE",
+              operationId: operationId(),
+            });
+          } catch {
+            // Recovery is already projected by the provider. Startup
+            // reconciliation may temporarily refuse this best-effort resurface
+            // request, but pane opening itself succeeded.
+          }
         }
         return;
       }
       if (
         event.type === "CLOSE" &&
-        (actor.getView().state.state.type === "restore-recovery-required" ||
-          actor.getView().state.state.type ===
-            "validating-current-repository" ||
-          actor.getView().state.state.type ===
-            "checkpointing-current-repository")
+        isRestoreRecoveryFlowState(actor.getView().state.state)
       ) {
         presentationStore.send(appId, event);
         return;

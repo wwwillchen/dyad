@@ -255,6 +255,13 @@ async function getRestoreTargetTurnOutcome({
   const target = chatMessages[targetIndex];
   if (!target || target.role !== "user") return "unknown";
 
+  return getStoredTurnOutcome(target, chatMessages[targetIndex + 1]);
+}
+
+async function getStoredTurnOutcome(
+  target: RestoreMessageCommitMetadata,
+  nextMessage?: RestoreMessageCommitMetadata,
+): Promise<RestoreTargetTurnOutcome> {
   if (target.chatTurnIntentId) {
     const intent = await db.query.chatTurnIntents.findFirst({
       columns: { terminalOutcome: true },
@@ -263,7 +270,6 @@ async function getRestoreTargetTurnOutcome({
     if (intent?.terminalOutcome) return intent.terminalOutcome;
   }
 
-  const nextMessage = chatMessages[targetIndex + 1];
   if (
     nextMessage?.role === "assistant" &&
     !nextMessage.commitHash &&
@@ -273,6 +279,33 @@ async function getRestoreTargetTurnOutcome({
   }
 
   return "unknown";
+}
+
+async function getRestoreTargetTurnOutcomeForMessage({
+  chatId,
+  messageId,
+}: {
+  chatId: number;
+  messageId: number;
+}): Promise<RestoreTargetTurnOutcome> {
+  const columns = {
+    role: true,
+    content: true,
+    sourceCommitHash: true,
+    commitHash: true,
+    chatTurnIntentId: true,
+  } as const;
+  const target = await db.query.messages.findFirst({
+    columns,
+    where: and(eq(messages.chatId, chatId), eq(messages.id, messageId)),
+  });
+  if (!target || target.role !== "user") return "unknown";
+  const nextMessage = await db.query.messages.findFirst({
+    columns,
+    where: and(eq(messages.chatId, chatId), gt(messages.id, messageId)),
+    orderBy: (messages, { asc }) => [asc(messages.createdAt), asc(messages.id)],
+  });
+  return getStoredTurnOutcome(target, nextMessage);
 }
 
 function resolveTargetCommitHash({
@@ -573,6 +606,10 @@ async function revertCodebaseToVersion({
   }
 
   if (currentBranch !== revertRef) {
+    const [checkoutStartBranch, checkoutStartHead] = await Promise.all([
+      gitCurrentBranch({ path: appPath }),
+      getCurrentCommitHash({ path: appPath }),
+    ]);
     checkpointGitStep("checkout-branch");
     try {
       await gitCheckout({
@@ -580,18 +617,26 @@ async function revertCodebaseToVersion({
         ref: revertRef,
       });
     } catch (error) {
-      const [branchAfterFailure, headAfterFailure] = await Promise.all([
-        gitCurrentBranch({ path: appPath }),
-        getCurrentCommitHash({ path: appPath }),
-      ]);
-      if (
-        branchAfterFailure === restoreFacts.preRestoreBranch &&
-        headAfterFailure === restoreFacts.preRestoreHead
-      ) {
-        onRestoreProgress?.({
-          repositoryOutcome: "unchanged",
-          nextStep: "completed",
-        });
+      try {
+        const [branchAfterFailure, headAfterFailure] = await Promise.all([
+          gitCurrentBranch({ path: appPath }),
+          getCurrentCommitHash({ path: appPath }),
+        ]);
+        if (
+          !preservedInterruptedChanges &&
+          branchAfterFailure === checkoutStartBranch &&
+          headAfterFailure === checkoutStartHead
+        ) {
+          onRestoreProgress?.({
+            repositoryOutcome: "unchanged",
+            nextStep: "completed",
+          });
+        }
+      } catch (probeError) {
+        logger.warn(
+          `Could not inspect repository state after checkout failed for app ${appId}; preserving the original checkout error.`,
+          probeError,
+        );
       }
       throw error;
     }
@@ -1030,26 +1075,14 @@ export function registerVersionHandlers() {
         let preserveDirtyTree = false;
         if (currentChatMessageId) {
           const targetChat = await db.query.chats.findFirst({
+            columns: { appId: true },
             where: eq(chats.id, currentChatMessageId.chatId),
-            with: {
-              messages: {
-                orderBy: (messages, { asc }) => [
-                  asc(messages.createdAt),
-                  asc(messages.id),
-                ],
-              },
-            },
           });
-          const targetIndex =
-            targetChat?.messages.findIndex(
-              (message) => message.id === currentChatMessageId.messageId,
-            ) ?? -1;
           preserveDirtyTree =
             targetChat?.appId === appId &&
-            targetIndex >= 0 &&
-            (await getRestoreTargetTurnOutcome({
-              chatMessages: targetChat.messages,
-              targetIndex,
+            (await getRestoreTargetTurnOutcomeForMessage({
+              chatId: currentChatMessageId.chatId,
+              messageId: currentChatMessageId.messageId,
             })) === "cancelled";
         }
 

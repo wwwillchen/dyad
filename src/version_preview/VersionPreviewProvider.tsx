@@ -183,7 +183,13 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
           for (let attempt = 0; attempt < 3; attempt += 1) {
             if (actor.getStatus() !== "ready") await actor.resync();
             const receipt = await actor.dispatch(event);
-            if (receipt.kind === "applied") return;
+            // A rapid duplicate can become ignored after the first dispatch
+            // advances the actor into its in-flight recovery state. The
+            // original operation remains authoritative, so this is not a user
+            // failure and must not produce a contradictory error toast.
+            if (receipt.kind === "applied" || receipt.kind === "ignored") {
+              return;
+            }
             if (
               receipt.kind === "rejected" &&
               (receipt.reason === "revision-conflict" ||

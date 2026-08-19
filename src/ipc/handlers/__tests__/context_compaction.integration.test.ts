@@ -575,6 +575,70 @@ describe("context compaction (integration)", () => {
     }
   });
 
+  it("keeps a refused detached checkout outside restore recovery when Git is unchanged", async () => {
+    const targetBranchName = await gitCurrentBranch({ path: harness.appDir });
+    expect(targetBranchName).toBeTruthy();
+    const detachedHead = await getCurrentCommitHash({ path: harness.appDir });
+    const managedCollision = path.join(harness.appDir, "pnpm-workspace.yaml");
+    await fs.promises.writeFile(managedCollision, "packages:\n  - branch\n");
+    await gitAddAll({ path: harness.appDir });
+    await gitCommit({
+      path: harness.appDir,
+      message: "Add managed checkout collision fixture",
+    });
+    const [chatRow] = await harness.db
+      .insert(chats)
+      .values({
+        appId: harness.appId,
+        chatMode: "local-agent",
+        initialCommitHash: detachedHead,
+      })
+      .returning();
+    const [targetMessage] = await harness.db
+      .insert(messages)
+      .values({
+        chatId: chatRow.id,
+        role: "user",
+        content: "Restore across a refused detached checkout",
+      })
+      .returning();
+
+    await gitCheckout({ path: harness.appDir, ref: detachedHead });
+    await fs.promises.writeFile(managedCollision, "packages:\n  - detached\n");
+    const progress: RestoreRecovery[] = [];
+    try {
+      await expect(
+        versionPreviewHandlerService.restoreToMessage(
+          {
+            appId: harness.appId,
+            chatId: chatRow.id,
+            messageId: targetMessage.id,
+            restoreCodebase: true,
+            targetBranchName: targetBranchName!,
+          },
+          undefined,
+          (checkpoint) => progress.push(checkpoint),
+        ),
+      ).rejects.toThrow(/checkout|overwritten/i);
+
+      await expect(
+        gitCurrentBranch({ path: harness.appDir }),
+      ).resolves.toBeNull();
+      await expect(
+        getCurrentCommitHash({ path: harness.appDir }),
+      ).resolves.toBe(detachedHead);
+      expect(progress.at(-1)).toEqual({
+        repositoryOutcome: "unchanged",
+        nextStep: "completed",
+      });
+    } finally {
+      await fs.promises.rm(managedCollision, { force: true });
+      await gitCheckout({ path: harness.appDir, ref: targetBranchName! }).catch(
+        () => {},
+      );
+    }
+  });
+
   it("anchors a fork-only chat to the detached preview commit", async () => {
     const targetBranchName = await gitCurrentBranch({ path: harness.appDir });
     expect(targetBranchName).toBeTruthy();

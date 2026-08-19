@@ -469,6 +469,28 @@ export async function isGitStatusClean({
   return isClean;
 }
 
+/**
+ * Returns whether the user-visible working tree is clean. Dyad-managed runtime
+ * paths are deliberately ignored so every restore/recovery guard uses the
+ * same definition of work that needs user acknowledgement.
+ */
+export async function isUserVisibleGitStatusClean({
+  path,
+}: GitBaseParams): Promise<boolean> {
+  const result = await execGit(["status", "--porcelain"], path);
+  if (result.exitCode !== 0) {
+    throw new DyadError(
+      `Failed to get status: ${result.stderr.trim() || result.stdout.trim()}`,
+      DyadErrorKind.Conflict,
+    );
+  }
+  return !result.stdout
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .flatMap(getPorcelainPaths)
+    .some(isUserVisibleGitPath);
+}
+
 export type GitOperationInProgress =
   | "merge"
   | "rebase"
@@ -512,7 +534,7 @@ export async function inspectRepositoryHealth({
     await Promise.all([
       gitCurrentBranch({ path }),
       getCurrentCommitHash({ path }),
-      isGitStatusClean({ path }),
+      isUserVisibleGitStatusClean({ path }),
       gitGetMergeConflicts({ path }),
       Promise.all(
         [

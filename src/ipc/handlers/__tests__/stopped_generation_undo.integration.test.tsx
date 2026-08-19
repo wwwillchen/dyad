@@ -4,7 +4,10 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { asc, eq } from "drizzle-orm";
 
 import { chatTurnIntents, messages } from "@/db/schema";
-import { getGitUncommittedFilesWithStatus } from "@/ipc/utils/git_utils";
+import {
+  getGitUncommittedFilesWithStatus,
+  gitCurrentBranch,
+} from "@/ipc/utils/git_utils";
 import {
   setupHybridChatHarness,
   type HybridChatHarness,
@@ -50,6 +53,8 @@ describe("stopped generation undo (integration)", () => {
       { timeout: 15_000 },
     );
     await harness.selectChatMode("local-agent");
+    const initialBranch = await gitCurrentBranch({ path: harness.appDir });
+    expect(initialBranch).not.toBeNull();
 
     const streamStarted = harness.waitForEvent(
       "chat:stream:start",
@@ -134,6 +139,7 @@ describe("stopped generation undo (integration)", () => {
       {},
       { timeout: 20_000 },
     );
+    await harness.bridge.settleInFlight();
     await waitFor(
       () => {
         expect(screen.queryByText(PROMPT)).toBeNull();
@@ -143,6 +149,9 @@ describe("stopped generation undo (integration)", () => {
     );
     await waitFor(
       async () => {
+        expect(await gitCurrentBranch({ path: harness.appDir })).toBe(
+          initialBranch,
+        );
         expect(
           await getGitUncommittedFilesWithStatus({ path: harness.appDir }),
         ).toHaveLength(0);

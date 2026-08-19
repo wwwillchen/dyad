@@ -26,7 +26,10 @@ import {
 import { Virtuoso } from "react-virtuoso";
 
 import { useVersionPreview } from "@/hooks/useVersionPreview";
-import { diffVersionIdForState } from "@/version_preview/state";
+import {
+  diffVersionIdForState,
+  isRestoreRecoveryFlowState,
+} from "@/version_preview/state";
 
 function HighlightMatch({
   text,
@@ -536,11 +539,7 @@ export function VersionPane() {
     return null;
   }
 
-  if (
-    previewState.type === "restore-recovery-required" ||
-    previewState.type === "validating-current-repository" ||
-    previewState.type === "checkpointing-current-repository"
-  ) {
+  if (isRestoreRecoveryFlowState(previewState)) {
     return (
       <div className="h-full border-t border-2 border-border w-full flex flex-col">
         <div className="p-2 border-b border-border flex items-center justify-between">

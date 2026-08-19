@@ -22,6 +22,14 @@ import {
 } from "./app_operation_coordinator";
 import { versionPreviewHandlerService } from "../handlers/version_handlers";
 import { versionPreviewPresentationService } from "./version_preview_presentation_service";
+import {
+  beginAppChatActorMutation,
+  hasActiveAppChatActors,
+} from "./chat_actor_service";
+import {
+  blockNewStreamsForApp,
+  hasActiveStreamsForApp,
+} from "../handlers/chat_stream_handlers";
 
 const NO_BRANCH = "<no-branch>";
 
@@ -183,17 +191,13 @@ export class VersionPreviewService {
   ): Promise<CurrentRepositoryValidation> {
     return this.track(
       appId,
-      appOperationCoordinator.run(
-        {
-          appId,
-          operation: "validate-current-version",
-          resources: [
-            readAppResource("app-path"),
-            readAppResource("repository"),
-          ],
-        },
-        () => this.inspectCurrentRepository(appId),
-      ),
+      this.runRepositoryRecoveryOperation({
+        appId,
+        operation: "validate-current-version",
+        refuseWhenRecording: "use the current version",
+        resources: [readAppResource("app-path"), readAppResource("repository")],
+        execute: () => this.inspectCurrentRepository(appId),
+      }),
     );
   }
 
@@ -202,13 +206,12 @@ export class VersionPreviewService {
   ): Promise<CurrentRepositoryValidation> {
     return this.track(
       appId,
-      appOperationCoordinator.run(
-        {
-          appId,
-          operation: "checkpoint-current-version",
-          resources: [readAppResource("app-path"), "repository"],
-        },
-        async () => {
+      this.runRepositoryRecoveryOperation({
+        appId,
+        operation: "checkpoint-current-version",
+        refuseWhenRecording: "save the current version",
+        resources: [readAppResource("app-path"), "repository"],
+        execute: async () => {
           const before = await this.inspectCurrentRepository(appId);
           if (before.kind === "blocked" || before.kind === "healthy") {
             return before;
@@ -244,8 +247,50 @@ export class VersionPreviewService {
           }
           return { ...after, savedVersionId };
         },
-      ),
+      }),
     );
+  }
+
+  private async runRepositoryRecoveryOperation<Result>({
+    appId,
+    operation,
+    refuseWhenRecording,
+    resources,
+    execute,
+  }: {
+    appId: number;
+    operation: string;
+    refuseWhenRecording: string;
+    resources: Parameters<typeof appOperationCoordinator.run>[0]["resources"];
+    execute: () => Promise<Result>;
+  }): Promise<Result> {
+    const releaseStreamAdmission = blockNewStreamsForApp(appId);
+    let releaseActorAdmission: (() => void) | undefined;
+    try {
+      releaseActorAdmission = await beginAppChatActorMutation(appId);
+      const [hasActorStream, hasLegacyStream] = await Promise.all([
+        hasActiveAppChatActors(appId),
+        hasActiveStreamsForApp(appId),
+      ]);
+      if (hasActorStream || hasLegacyStream) {
+        throw new DyadError(
+          "Stop the active generation before continuing Version History.",
+          DyadErrorKind.Precondition,
+        );
+      }
+      return await appOperationCoordinator.run(
+        {
+          appId,
+          operation,
+          resources,
+          refuseWhenRecording,
+        },
+        execute,
+      );
+    } finally {
+      releaseActorAdmission?.();
+      releaseStreamAdmission();
+    }
   }
 
   beginAppDeletion(appId: number): void {

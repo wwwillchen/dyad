@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getUserDataPath } from "@/paths/paths";
 import {
   CLOSED_STATE,
+  isRestoreRecoveryFlowState,
   type BranchSwitchFallback,
   type PreviewSession,
   type PreviewState,
@@ -186,6 +187,14 @@ function hydratedFallback(fallback: PersistedFallback): BranchSwitchFallback {
 }
 
 function toPersistedState(state: PreviewState): PersistedState | null {
+  if (isRestoreRecoveryFlowState(state)) {
+    return {
+      type: "restore-recovery-required",
+      session: persistedSession(state.session),
+      error: state.error,
+      restoreRecovery: state.restoreRecovery,
+    };
+  }
   switch (state.type) {
     case "closed":
     case "viewing-diff":
@@ -196,21 +205,6 @@ function toPersistedState(state: PreviewState): PersistedState | null {
       return {
         ...state,
         fallback: persistedFallback(state.fallback),
-      };
-    case "restore-recovery-required":
-      return {
-        type: state.type,
-        session: persistedSession(state.session),
-        error: state.error,
-        restoreRecovery: state.restoreRecovery,
-      };
-    case "validating-current-repository":
-    case "checkpointing-current-repository":
-      return {
-        type: "restore-recovery-required",
-        session: persistedSession(state.session),
-        error: state.error,
-        restoreRecovery: state.restoreRecovery,
       };
     default:
       return {

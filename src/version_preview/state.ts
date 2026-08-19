@@ -131,6 +131,26 @@ export type PreviewState =
     }
   | { type: "recovery-required"; session: PreviewSession; error: PreviewError };
 
+export type RestoreRecoveryFlowState = Extract<
+  PreviewState,
+  {
+    type:
+      | "restore-recovery-required"
+      | "validating-current-repository"
+      | "checkpointing-current-repository";
+  }
+>;
+
+export function isRestoreRecoveryFlowState(
+  state: PreviewState,
+): state is RestoreRecoveryFlowState {
+  return (
+    state.type === "restore-recovery-required" ||
+    state.type === "validating-current-repository" ||
+    state.type === "checkpointing-current-repository"
+  );
+}
+
 export function ownsHistoricalCheckout(state: PreviewState): boolean {
   if (state.type === "switching-branch") {
     return (
@@ -312,9 +332,7 @@ function canShowDiff(state: PreviewState): state is Exclude<
     state.type !== "returning" &&
     state.type !== "switching-branch" &&
     state.type !== "recovery-required" &&
-    state.type !== "restore-recovery-required" &&
-    state.type !== "validating-current-repository" &&
-    state.type !== "checkpointing-current-repository"
+    !isRestoreRecoveryFlowState(state)
   );
 }
 

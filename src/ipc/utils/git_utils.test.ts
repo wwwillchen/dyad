@@ -29,6 +29,7 @@ import {
   countChangedLines,
   unquoteGitPath,
   isGitPathClean,
+  inspectRepositoryHealth,
   readGitIndexEntries,
   restoreGitIndexEntries,
 } from "@/ipc/utils/git_utils";
@@ -198,6 +199,40 @@ describe("ensureGitLineEndingPolicy", () => {
     await expect(
       runGitOutput(repoDir, ["config", "--local", "core.eol"]),
     ).resolves.toBe("crlf");
+  });
+});
+
+describe("inspectRepositoryHealth", () => {
+  let repoDir: string | undefined;
+
+  afterEach(async () => {
+    if (repoDir) {
+      await fs.promises.rm(repoDir, { recursive: true, force: true });
+      repoDir = undefined;
+    }
+  });
+
+  it("ignores Dyad-managed working-tree churn when assessing cleanliness", async () => {
+    repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "git-health-"));
+    await runGit(repoDir, ["init", "-b", "main"]);
+    await fs.promises.writeFile(
+      path.join(repoDir, "pnpm-workspace.yaml"),
+      "packages: []\n",
+    );
+    await commitAll(repoDir, "initial");
+    await fs.promises.writeFile(
+      path.join(repoDir, "pnpm-workspace.yaml"),
+      "packages:\n  - app\n",
+    );
+
+    await expect(
+      inspectRepositoryHealth({ path: repoDir }),
+    ).resolves.toMatchObject({ branch: "main", isClean: true });
+
+    await fs.promises.writeFile(path.join(repoDir, "visible.txt"), "dirty\n");
+    await expect(
+      inspectRepositoryHealth({ path: repoDir }),
+    ).resolves.toMatchObject({ branch: "main", isClean: false });
   });
 });
 

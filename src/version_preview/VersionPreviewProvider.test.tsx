@@ -436,7 +436,7 @@ describe("VersionPreviewProvider", () => {
     );
   });
 
-  it("resyncs a rejected recovery retry and surfaces terminal rejection", async () => {
+  it("resyncs a duplicate recovery action without showing a false error", async () => {
     getDefaultStore().set(selectedAppIdAtom, 1);
     remoteState = {
       type: "recovery-required",
@@ -479,10 +479,45 @@ describe("VersionPreviewProvider", () => {
 
     await waitFor(() => expect(actor.dispatch).toHaveBeenCalledTimes(2));
     expect(actor.resync).toHaveBeenCalled();
+    expect(toastError).not.toHaveBeenCalledWith(
+      "Version recovery could not be started. Please try again.",
+    );
+  });
+
+  it("opens the pane without a false error while recovery notice dispatch is refused", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    remoteState = {
+      type: "restore-recovery-required",
+      session: {
+        appId: 1,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: null,
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "Recovery is reconciling." },
+    };
+    actor.dispatch.mockRejectedValueOnce(
+      new Error("Version preview is reconciling after restart"),
+    );
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <Probe />
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(await screen.findByTestId("probe"));
     await waitFor(() =>
-      expect(toastError).toHaveBeenCalledWith(
-        "Version recovery could not be started. Please try again.",
+      expect(screen.getByTestId("probe").getAttribute("data-visible")).toBe(
+        "true",
       ),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(
+      "Version controls are temporarily unavailable. Please try again.",
     );
   });
 

@@ -28,6 +28,13 @@ const handlers = vi.hoisted(() => ({
   restoreToMessage: vi.fn(),
   checkoutVersion: vi.fn(),
 }));
+const coordination = vi.hoisted(() => ({
+  requests: [] as Array<Record<string, unknown>>,
+  hasActiveActor: vi.fn(async () => false),
+  hasActiveLegacy: vi.fn(async () => false),
+  releaseActor: vi.fn(),
+  releaseStreams: vi.fn(),
+}));
 
 vi.mock("@/db", () => ({
   db: { query: { apps: { findFirst: database.findFirst } } },
@@ -41,8 +48,22 @@ vi.mock("../utils/git_utils", () => git);
 vi.mock("./app_operation_coordinator", () => ({
   readAppResource: (resource: string) => `read:${resource}`,
   appOperationCoordinator: {
-    run: (_request: unknown, operation: () => Promise<unknown>) => operation(),
+    run: (
+      request: Record<string, unknown>,
+      operation: () => Promise<unknown>,
+    ) => {
+      coordination.requests.push(request);
+      return operation();
+    },
   },
+}));
+vi.mock("./chat_actor_service", () => ({
+  beginAppChatActorMutation: vi.fn(async () => coordination.releaseActor),
+  hasActiveAppChatActors: coordination.hasActiveActor,
+}));
+vi.mock("../handlers/chat_stream_handlers", () => ({
+  blockNewStreamsForApp: vi.fn(() => coordination.releaseStreams),
+  hasActiveStreamsForApp: coordination.hasActiveLegacy,
 }));
 vi.mock("../handlers/version_handlers", () => ({
   versionPreviewHandlerService: handlers,
@@ -56,6 +77,7 @@ import { VersionPreviewService } from "./version_preview_service";
 describe("VersionPreviewService reconciliation admission", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    coordination.requests.length = 0;
     database.findFirst.mockResolvedValue({ path: "app" });
     git.getCurrentCommitHash.mockResolvedValue("live-head");
     git.gitCurrentBranch.mockResolvedValue("main");
@@ -164,6 +186,37 @@ describe("VersionPreviewService reconciliation admission", () => {
       kind: "blocked",
       assessment: { type: "blocked", blocker: "detached-head" },
     });
+  });
+
+  it("refuses recovery actions during recording instead of queueing silently", async () => {
+    const service = new VersionPreviewService();
+
+    await service.validateCurrentRepository(7);
+    await service.checkpointCurrentRepository(7);
+
+    expect(coordination.requests).toEqual([
+      expect.objectContaining({
+        operation: "validate-current-version",
+        refuseWhenRecording: "use the current version",
+      }),
+      expect.objectContaining({
+        operation: "checkpoint-current-version",
+        refuseWhenRecording: "save the current version",
+      }),
+    ]);
+  });
+
+  it("refuses repository recovery while a generation is active", async () => {
+    coordination.hasActiveActor.mockResolvedValueOnce(true);
+    const service = new VersionPreviewService();
+
+    await expect(service.checkpointCurrentRepository(7)).rejects.toThrow(
+      "Stop the active generation",
+    );
+    expect(coordination.requests).toHaveLength(0);
+    expect(coordination.releaseActor).toHaveBeenCalledOnce();
+    expect(coordination.releaseStreams).toHaveBeenCalledOnce();
+    expect(git.gitAddAll).not.toHaveBeenCalled();
   });
 
   it("checkpoints a dirty repository with a visible recovery version", async () => {

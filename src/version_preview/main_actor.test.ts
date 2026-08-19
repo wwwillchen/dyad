@@ -18,6 +18,8 @@ const service = vi.hoisted(() => ({
   resolveOriginBranch: vi.fn(),
   run: vi.fn(),
   reconcile: vi.fn(),
+  validateCurrentRepository: vi.fn(),
+  checkpointCurrentRepository: vi.fn(),
   settle: vi.fn(async () => undefined),
   assertAcceptingOperations: vi.fn(),
   assertReadyForIntent: vi.fn(),
@@ -162,6 +164,108 @@ describe("version_preview main actor", () => {
     persistence.load.mockReturnValue({ type: "closed" });
     persistence.checkpoint.mockImplementation(() => undefined);
     persistence.checkpointRestore.mockImplementation(() => undefined);
+    invalidations.publish.mockImplementation(() => undefined);
+  });
+
+  it("settles dirty repository acceptance as failed while keeping recovery actionable", async () => {
+    persistence.load.mockReturnValue({
+      type: "restore-recovery-required",
+      session: {
+        appId: 7,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: null,
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "restore interrupted" },
+    });
+    service.reconcile.mockResolvedValue({
+      branch: null,
+      headOid: "preview-head",
+      isClean: true,
+    });
+    service.validateCurrentRepository.mockResolvedValue({ kind: "dirty" });
+    const harness = createHarness();
+    await harness.actorA.resync();
+    await flush();
+
+    await harness.actorA.dispatch({
+      type: "ACCEPT_CURRENT_REPOSITORY",
+      operationId: "accept-dirty",
+    });
+    await flush();
+
+    expect(harness.actorA.getSnapshot().state).toMatchObject({
+      type: "restore-recovery-required",
+      currentRepositoryAssessment: { type: "dirty" },
+    });
+    expect(harness.actorA.getSnapshot().lastSettlement).toMatchObject({
+      operationId: "accept-dirty",
+      outcome: "failed",
+    });
+
+    harness.releaseA();
+    harness.releaseB();
+    harness.clientA.dispose();
+    harness.clientB.dispose();
+    harness.transport.dispose();
+  });
+
+  it("settles repository acceptance even when result presentation throws", async () => {
+    persistence.load.mockReturnValue({
+      type: "restore-recovery-required",
+      session: {
+        appId: 7,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: null,
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "restore interrupted" },
+    });
+    service.reconcile.mockResolvedValue({
+      branch: null,
+      headOid: "preview-head",
+      isClean: true,
+    });
+    service.validateCurrentRepository.mockResolvedValue({
+      kind: "healthy",
+      branch: "main",
+      headOid: "live-head",
+    });
+    invalidations.publish.mockImplementationOnce(() => {
+      throw new Error("invalidation failed");
+    });
+    const harness = createHarness();
+    await harness.actorA.resync();
+    await flush();
+
+    await harness.actorA.dispatch({
+      type: "ACCEPT_CURRENT_REPOSITORY",
+      operationId: "accept-presentation-failure",
+    });
+    await flush();
+
+    expect(harness.actorA.getSnapshot().state.type).toBe("closed");
+    expect(harness.actorA.getSnapshot().lastSettlement).toMatchObject({
+      operationId: "accept-presentation-failure",
+      outcome: "succeeded",
+    });
+    expect(presentation.publishError).toHaveBeenCalledWith(
+      7,
+      "accept-presentation-failure",
+      expect.stringContaining("invalidation failed"),
+    );
+
+    harness.releaseA();
+    harness.releaseB();
+    harness.clientA.dispose();
+    harness.clientB.dispose();
+    harness.transport.dispose();
   });
 
   it("continues checkout after the initiating window closes and reattaches", async () => {

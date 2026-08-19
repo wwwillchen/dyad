@@ -150,6 +150,23 @@ export async function waitForAppChatActorsIdle(
   return cancellationResults.some(Boolean);
 }
 
+/** Read-only active actor probe used while app/chat admission is fenced. */
+export async function hasActiveAppChatActors(appId: number): Promise<boolean> {
+  const appChats = await db.query.chats.findMany({
+    columns: { id: true },
+    where: eq(chats.appId, appId),
+  });
+  return appChats.some(({ id }) => {
+    const actor = remoteMachineHost.peek<
+      ChatStreamHostState,
+      ChatStreamWireEvent,
+      ChatStreamHostIgnoreReason
+    >(chatStreamDefinition.id, chatStreamKey(id));
+    const phase = actor?.getSnapshot().phase;
+    return phase === "admitting" || phase === "streaming";
+  });
+}
+
 export async function beginAppChatActorMutation(
   appId: number,
 ): Promise<() => void> {
