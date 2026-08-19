@@ -1513,7 +1513,7 @@ export function registerVersionHandlers() {
                 kind: "warning",
                 message: appendInterruptedGenerationWarning(
                   "Could not determine a version to restore to for this message.",
-                  preserveDirtyTree,
+                  preservedByActiveCancellation,
                 ),
               },
             });
@@ -1535,7 +1535,7 @@ export function registerVersionHandlers() {
                     kind: "warning",
                     message: appendInterruptedGenerationWarning(
                       "Could not restore the codebase because the target version no longer exists in the repository.",
-                      preserveDirtyTree,
+                      preservedByActiveCancellation,
                     ),
                   },
                 });

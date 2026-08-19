@@ -324,13 +324,14 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
             );
           }
         } else if (state.type === "validating-current-repository") {
-          toast.error("Version restore needs attention.", {
+          toast.loading("Checking the current version…", {
             id: toastId,
-            description: "Checking the current repository…",
+            description:
+              "Dyad is verifying that Version History can continue safely.",
             duration: Infinity,
           });
         } else if (state.type === "checkpointing-current-repository") {
-          toast.error("Saving the current version…", {
+          toast.loading("Saving the current version…", {
             id: toastId,
             description:
               "Dyad is saving your current changes before continuing.",

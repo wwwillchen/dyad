@@ -455,7 +455,10 @@ export async function isGitStatusClean({
 }: {
   path: string;
 }): Promise<boolean> {
-  const result = await execGit(["status", "--porcelain"], path);
+  const result = await execGit(
+    ["status", "--porcelain", "--untracked-files=all"],
+    path,
+  );
 
   if (result.exitCode !== 0) {
     throw new DyadError(
@@ -477,7 +480,10 @@ export async function isGitStatusClean({
 export async function isUserVisibleGitStatusClean({
   path,
 }: GitBaseParams): Promise<boolean> {
-  const result = await execGit(["status", "--porcelain"], path);
+  const result = await execGit(
+    ["status", "--porcelain", "--untracked-files=all"],
+    path,
+  );
   if (result.exitCode !== 0) {
     throw new DyadError(
       `Failed to get status: ${result.stderr.trim() || result.stdout.trim()}`,
@@ -539,7 +545,6 @@ export async function inspectRepositoryHealth({
       Promise.all(
         [
           "MERGE_HEAD",
-          "REBASE_HEAD",
           "rebase-apply",
           "rebase-merge",
           "CHERRY_PICK_HEAD",
@@ -550,7 +555,6 @@ export async function inspectRepositoryHealth({
     ]);
   const [
     mergeHead,
-    rebaseHead,
     rebaseApply,
     rebaseMerge,
     cherryPickHead,
@@ -561,9 +565,7 @@ export async function inspectRepositoryHealth({
     mergeHead,
   )
     ? "merge"
-    : fs.existsSync(rebaseHead) ||
-        fs.existsSync(rebaseApply) ||
-        fs.existsSync(rebaseMerge)
+    : fs.existsSync(rebaseApply) || fs.existsSync(rebaseMerge)
       ? "rebase"
       : fs.existsSync(cherryPickHead)
         ? "cherry-pick"

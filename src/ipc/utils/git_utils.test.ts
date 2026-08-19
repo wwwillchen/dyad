@@ -227,12 +227,22 @@ describe("inspectRepositoryHealth", () => {
 
     await expect(
       inspectRepositoryHealth({ path: repoDir }),
-    ).resolves.toMatchObject({ branch: "main", isClean: true });
+    ).resolves.toMatchObject({
+      branch: "main",
+      isClean: true,
+      operationInProgress: null,
+    });
 
+    await runGit(repoDir, ["config", "status.showUntrackedFiles", "no"]);
+    await runGit(repoDir, ["update-ref", "REBASE_HEAD", "HEAD"]);
     await fs.promises.writeFile(path.join(repoDir, "visible.txt"), "dirty\n");
     await expect(
       inspectRepositoryHealth({ path: repoDir }),
-    ).resolves.toMatchObject({ branch: "main", isClean: false });
+    ).resolves.toMatchObject({
+      branch: "main",
+      isClean: false,
+      operationInProgress: null,
+    });
   });
 });
 

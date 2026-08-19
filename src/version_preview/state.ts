@@ -33,7 +33,7 @@ export type CurrentRepositoryAssessment =
         | "bisect";
     };
 
-export type RestoreRecovery =
+export type RestoreRecovery = (
   | {
       readonly preRestoreHead: string;
       readonly preRestoreBranch: string | null;
@@ -57,7 +57,8 @@ export type RestoreRecovery =
   | {
       readonly repositoryOutcome: "unchanged";
       readonly nextStep: "chat-mutation" | "completed";
-    };
+    }
+) & { readonly affectedChatId?: number };
 
 export interface PreviewSession {
   /** The app that owns this session. Never substituted after creation. */

@@ -160,6 +160,7 @@ export function useVersionPreview(appId: number | null): {
         event.type === "CLOSE" &&
         isRestoreRecoveryFlowState(actor.getView().state.state)
       ) {
+        await releaseSelectionInterest(operationId());
         presentationStore.send(appId, event);
         return;
       }
@@ -306,8 +307,6 @@ export function useVersionPreview(appId: number | null): {
         canRestore: false,
         canSelectVersion: false,
         canSwitchBranch: false,
-        canAcceptCurrentRepository: false,
-        canCheckpointAndAcceptCurrentRepository: false,
       },
     };
   }, [remote.connection, state]);

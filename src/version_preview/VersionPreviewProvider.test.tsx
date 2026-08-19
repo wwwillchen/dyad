@@ -36,6 +36,7 @@ const actor = {
 };
 
 const toastError = vi.hoisted(() => vi.fn());
+const toastLoading = vi.hoisted(() => vi.fn());
 const windowInterest = vi.hoisted(() => ({
   acquire: vi.fn(async () => ({ acquired: true })),
   restoreIfOrphaned: vi.fn(async () => ({ acquired: false })),
@@ -56,6 +57,7 @@ vi.mock("sonner", () => ({
     custom: vi.fn(),
     dismiss: vi.fn(),
     error: toastError,
+    loading: toastLoading,
     success: vi.fn(),
     warning: vi.fn(),
   },
@@ -115,6 +117,7 @@ describe("VersionPreviewProvider", () => {
     actorListeners.clear();
     remoteState = CLOSED_STATE;
     toastError.mockClear();
+    toastLoading.mockClear();
     windowInterest.acquire.mockReset().mockResolvedValue({ acquired: true });
     windowInterest.restoreIfOrphaned
       .mockReset()
@@ -518,6 +521,85 @@ describe("VersionPreviewProvider", () => {
     );
     expect(toastError).not.toHaveBeenCalledWith(
       "Version controls are temporarily unavailable. Please try again.",
+    );
+  });
+
+  it("releases pane ownership when recovery is closed", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    remoteState = {
+      type: "restore-recovery-required",
+      session: {
+        appId: 1,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: null,
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "Recovery is unresolved." },
+    };
+    function RecoveryCloseProbe() {
+      const { isPaneVisible, send } = useVersionPreview(1);
+      return (
+        <div data-visible={isPaneVisible}>
+          <button onClick={() => send({ type: "OPEN", appId: 1 })}>Open</button>
+          <button onClick={() => send({ type: "CLOSE" })}>Close</button>
+        </div>
+      );
+    }
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <RecoveryCloseProbe />
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByText("Open"));
+    await waitFor(() => expect(windowInterest.acquire).toHaveBeenCalledWith(1));
+    fireEvent.click(screen.getByText("Close"));
+    await waitFor(() =>
+      expect(windowInterest.release).toHaveBeenCalledWith(
+        1,
+        expect.stringMatching(/^version-preview:/),
+        { type: "close" },
+      ),
+    );
+  });
+
+  it("uses a neutral progress toast while repository recovery is running", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    remoteState = {
+      type: "validating-current-repository",
+      session: {
+        appId: 1,
+        originBranch: "main",
+        targetVersionId: "abc123",
+        checkedOutVersionId: null,
+        exitIntent: { type: "none" },
+        selectedDiffFile: null,
+        isDiffVisible: false,
+      },
+      error: { message: "Recovery is unresolved." },
+    };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <div>content</div>
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(toastLoading).toHaveBeenCalledWith(
+        "Checking the current version…",
+        expect.objectContaining({ duration: Infinity }),
+      ),
+    );
+    expect(toastError).not.toHaveBeenCalledWith(
+      "Version restore needs attention.",
+      expect.anything(),
     );
   });
 

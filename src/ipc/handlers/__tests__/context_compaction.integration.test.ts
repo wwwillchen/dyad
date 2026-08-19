@@ -356,31 +356,35 @@ describe("context compaction (integration)", () => {
     const partialFile = path.join(harness.appDir, "stopped-partial.txt");
     await fs.promises.writeFile(partialFile, "partial generation output\n");
 
-    const result = await versionPreviewHandlerService.restoreToMessage({
-      appId: harness.appId,
-      chatId: chatRow.id,
-      messageId: targetMessage.id,
-      restoreCodebase: true,
-    });
+    try {
+      const result = await versionPreviewHandlerService.restoreToMessage({
+        appId: harness.appId,
+        chatId: chatRow.id,
+        messageId: targetMessage.id,
+        restoreCodebase: true,
+      });
 
-    expect(result.repositoryOutcome).toBe("target-applied");
-    expect(result.notification).toMatchObject({
-      kind: "success",
-      message: expect.stringContaining(
-        "saved as an [Interrupted] version in Version History",
-      ),
-    });
-    await expect(fs.promises.stat(partialFile)).rejects.toThrow();
-    const versions = await gitLog({ path: harness.appDir });
-    expect(
-      versions.some(
-        (version) =>
-          version.commit.message.startsWith("[Interrupted]") &&
-          version.commit.message.includes(
-            "Saved partial changes before restoring to an earlier version",
-          ),
-      ),
-    ).toBe(true);
+      expect(result.repositoryOutcome).toBe("target-applied");
+      expect(result.notification).toMatchObject({
+        kind: "success",
+        message: expect.stringContaining(
+          "saved as an [Interrupted] version in Version History",
+        ),
+      });
+      await expect(fs.promises.stat(partialFile)).rejects.toThrow();
+      const versions = await gitLog({ path: harness.appDir });
+      expect(
+        versions.some(
+          (version) =>
+            version.commit.message.startsWith("[Interrupted]") &&
+            version.commit.message.includes(
+              "Saved partial changes before restoring to an earlier version",
+            ),
+        ),
+      ).toBe(true);
+    } finally {
+      await fs.promises.unlink(partialFile).catch(() => undefined);
+    }
   });
 
   it("keeps a preflight dirty-tree refusal outside restore recovery", async () => {

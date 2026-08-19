@@ -226,6 +226,15 @@ describe("version_preview main actor", () => {
         isDiffVisible: false,
       },
       error: { message: "restore interrupted" },
+      restoreRecovery: {
+        repositoryOutcome: "target-applied",
+        nextStep: "chat-mutation",
+        preRestoreHead: "old-head",
+        preRestoreBranch: "main",
+        targetHead: "target-head",
+        completedHead: "target-head",
+        affectedChatId: 23,
+      },
     });
     service.reconcile.mockResolvedValue({
       branch: null,
@@ -237,8 +246,8 @@ describe("version_preview main actor", () => {
       branch: "main",
       headOid: "live-head",
     });
-    invalidations.publish.mockImplementationOnce(() => {
-      throw new Error("invalidation failed");
+    presentation.publishResult.mockImplementationOnce(() => {
+      throw new Error("presentation failed");
     });
     const harness = createHarness();
     await harness.actorA.resync();
@@ -255,10 +264,15 @@ describe("version_preview main actor", () => {
       operationId: "accept-presentation-failure",
       outcome: "succeeded",
     });
+    expect(presentation.publishResult).toHaveBeenCalledWith(
+      7,
+      "accept-presentation-failure",
+      expect.objectContaining({ affectedChatId: 23 }),
+    );
     expect(presentation.publishError).toHaveBeenCalledWith(
       7,
       "accept-presentation-failure",
-      expect.stringContaining("invalidation failed"),
+      expect.stringContaining("presentation failed"),
     );
 
     harness.releaseA();
@@ -1117,8 +1131,10 @@ describe("version_preview main actor", () => {
     await harness.actorA.resync();
 
     await harness.actorA.dispatch({
-      type: "RESTORE",
-      versionId: "abc123",
+      type: "RESTORE_TO_MESSAGE",
+      chatId: 23,
+      messageId: 42,
+      restoreCodebase: true,
       operationId: "restore-checkout-failure",
     });
     await flush();
@@ -1132,7 +1148,7 @@ describe("version_preview main actor", () => {
       ).getSnapshot().state,
     ).toMatchObject({
       type: "restore-recovery-required",
-      restoreRecovery: { nextStep: "checkout-branch" },
+      restoreRecovery: { nextStep: "checkout-branch", affectedChatId: 23 },
     });
 
     harness.releaseA();

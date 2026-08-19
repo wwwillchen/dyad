@@ -12,6 +12,7 @@ import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalid
 import { ignore } from "@/state_machines/types";
 import {
   CLOSED_STATE,
+  isRestoreRecoveryFlowState,
   type PreviewCommand,
   type PreviewState,
   type RestoreRecovery,
@@ -410,12 +411,16 @@ function createCommandRunner(
                 command,
                 invocationRef.operationId,
                 (progress) => {
+                  const recovery =
+                    command.type === "restore-to-message"
+                      ? { ...progress, affectedChatId: command.chatId }
+                      : progress;
                   versionPreviewPersistence.checkpointRestore(
                     appId,
                     context.getSnapshot().state,
-                    progress,
+                    recovery,
                   );
-                  restoreProgress = progress;
+                  restoreProgress = recovery;
                 },
               )
             : versionPreviewService.run(command, invocationRef.operationId);
@@ -569,6 +574,10 @@ function createCommandRunner(
             }
 
             try {
+              const recoveryState = context.getSnapshot().state;
+              const affectedChatId = isRestoreRecoveryFlowState(recoveryState)
+                ? (recoveryState.restoreRecovery?.affectedChatId ?? null)
+                : null;
               const originHandledScopes = [
                 { family: "branches", appId },
                 { family: "versions", appId },
@@ -578,6 +587,9 @@ function createCommandRunner(
               const scopes = [
                 ...originHandledScopes,
                 { family: "chats" },
+                ...(affectedChatId
+                  ? ([{ family: "chat", chatId: affectedChatId }] as const)
+                  : []),
               ] as const;
               queryInvalidationBus.publish(scopes, {
                 originEndpoint:
@@ -603,7 +615,7 @@ function createCommandRunner(
                           "Version History is ready. Continuing from the current code version.",
                       },
                   runtimeAction: "none",
-                  affectedChatId: null,
+                  affectedChatId,
                   createdChatId: null,
                 },
               );
