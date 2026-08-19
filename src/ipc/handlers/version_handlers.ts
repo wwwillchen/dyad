@@ -303,7 +303,7 @@ async function getRestoreTargetTurnOutcomeForMessage({
   const nextMessage = await db.query.messages.findFirst({
     columns,
     where: and(eq(messages.chatId, chatId), gt(messages.id, messageId)),
-    orderBy: (messages, { asc }) => [asc(messages.createdAt), asc(messages.id)],
+    orderBy: (messages, { asc }) => [asc(messages.id)],
   });
   return getStoredTurnOutcome(target, nextMessage);
 }

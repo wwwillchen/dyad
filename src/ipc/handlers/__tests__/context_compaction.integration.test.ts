@@ -387,6 +387,78 @@ describe("context compaction (integration)", () => {
     }
   });
 
+  it("finds the legacy cancelled response before a later compaction summary", async () => {
+    const targetCommitHash = await getCurrentCommitHash({
+      path: harness.appDir,
+    });
+    const targetBranch = await gitCurrentBranch({ path: harness.appDir });
+    const [chatRow] = await harness.db
+      .insert(chats)
+      .values({
+        appId: harness.appId,
+        chatMode: "local-agent",
+        initialCommitHash: targetCommitHash,
+      })
+      .returning();
+    const [targetMessage] = await harness.db
+      .insert(messages)
+      .values({
+        chatId: chatRow.id,
+        role: "user",
+        content: "Legacy stopped generation",
+      })
+      .returning();
+    await harness.db.insert(messages).values({
+      chatId: chatRow.id,
+      role: "assistant",
+      content: "Partial response\n\n[Response cancelled by user]",
+      sourceCommitHash: targetCommitHash,
+      createdAt: new Date(10_000),
+    });
+    // Compaction summaries can preserve an old logical timestamp even though
+    // they are inserted later. The legacy fallback must follow insertion
+    // order so this summary cannot displace the cancelled assistant response.
+    await harness.db.insert(messages).values({
+      chatId: chatRow.id,
+      role: "assistant",
+      content: "Earlier conversation summary",
+      isCompactionSummary: true,
+      createdAt: new Date(0),
+    });
+    const partialFile = path.join(harness.appDir, "legacy-stopped-partial.txt");
+    await fs.promises.writeFile(partialFile, "legacy partial output\n");
+
+    try {
+      const result = await versionPreviewHandlerService.revertVersion({
+        appId: harness.appId,
+        previousVersionId: targetCommitHash,
+        targetBranchName: targetBranch ?? undefined,
+        currentChatMessageId: {
+          chatId: chatRow.id,
+          messageId: targetMessage.id,
+        },
+      });
+
+      expect(result.notification).toMatchObject({
+        message: expect.stringContaining(
+          "saved as an [Interrupted] version in Version History",
+        ),
+      });
+      await expect(fs.promises.stat(partialFile)).rejects.toThrow();
+      await expect(gitLog({ path: harness.appDir })).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            commit: expect.objectContaining({
+              message: expect.stringMatching(/^\[Interrupted\]/),
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      await fs.promises.unlink(partialFile).catch(() => undefined);
+    }
+  });
+
   it("keeps a preflight dirty-tree refusal outside restore recovery", async () => {
     const headBeforeRestore = await getCurrentCommitHash({
       path: harness.appDir,

@@ -37,6 +37,7 @@ const actor = {
 
 const toastError = vi.hoisted(() => vi.fn());
 const toastLoading = vi.hoisted(() => vi.fn());
+const showError = vi.hoisted(() => vi.fn());
 const windowInterest = vi.hoisted(() => ({
   acquire: vi.fn(async () => ({ acquired: true })),
   restoreIfOrphaned: vi.fn(async () => ({ acquired: false })),
@@ -61,6 +62,10 @@ vi.mock("sonner", () => ({
     success: vi.fn(),
     warning: vi.fn(),
   },
+}));
+vi.mock("@/lib/toast", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/toast")>()),
+  showError,
 }));
 vi.mock("./window_interest_client", () => ({
   VersionPreviewWindowInterestClient: class {
@@ -118,6 +123,7 @@ describe("VersionPreviewProvider", () => {
     remoteState = CLOSED_STATE;
     toastError.mockClear();
     toastLoading.mockClear();
+    showError.mockClear();
     windowInterest.acquire.mockReset().mockResolvedValue({ acquired: true });
     windowInterest.restoreIfOrphaned
       .mockReset()
@@ -519,7 +525,7 @@ describe("VersionPreviewProvider", () => {
         "true",
       ),
     );
-    expect(toastError).not.toHaveBeenCalledWith(
+    expect(showError).not.toHaveBeenCalledWith(
       "Version controls are temporarily unavailable. Please try again.",
     );
   });
@@ -565,6 +571,61 @@ describe("VersionPreviewProvider", () => {
         expect.stringMatching(/^version-preview:/),
         { type: "close" },
       ),
+    );
+  });
+
+  it("closes and releases the pane after current repository acceptance", async () => {
+    getDefaultStore().set(selectedAppIdAtom, 1);
+    const session = {
+      appId: 1,
+      originBranch: "main",
+      targetVersionId: "abc123",
+      checkedOutVersionId: null,
+      exitIntent: { type: "none" } as const,
+      selectedDiffFile: null,
+      isDiffVisible: false,
+    };
+    remoteState = {
+      type: "restore-recovery-required",
+      session,
+      error: { message: "Recovery is unresolved." },
+    };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <VersionPreviewProvider>
+          <Probe />
+        </VersionPreviewProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("probe"));
+    await waitFor(() =>
+      expect(screen.getByTestId("probe").getAttribute("data-visible")).toBe(
+        "true",
+      ),
+    );
+    act(() => {
+      remoteState = {
+        type: "validating-current-repository",
+        session,
+        error: { message: "Recovery is unresolved." },
+      };
+      actorListeners.forEach((listener) => listener());
+    });
+    act(() => {
+      remoteState = CLOSED_STATE;
+      actorListeners.forEach((listener) => listener());
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("probe").getAttribute("data-visible")).toBe(
+        "false",
+      ),
+    );
+    expect(windowInterest.release).toHaveBeenCalledWith(
+      1,
+      expect.stringMatching(/^version-preview:/),
+      { type: "close" },
     );
   });
 

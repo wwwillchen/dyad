@@ -2,6 +2,7 @@ import { remoteMachineHost } from "@/ipc/services/distributed_machine_actor_host
 import { computeChatTurnPayloadHash } from "@/ipc/utils/chat_turn_intent_hash";
 import { chatStreamDefinition } from "@/chat_stream/definition";
 import { getIntentAcceptance } from "@/chat_stream/persistence";
+import { canCancelChatStreamPhase } from "@/chat_stream/transition";
 import {
   chatStreamKey,
   type ChatStreamWireEvent,
@@ -163,7 +164,7 @@ export async function hasActiveAppChatActors(appId: number): Promise<boolean> {
       ChatStreamHostIgnoreReason
     >(chatStreamDefinition.id, chatStreamKey(id));
     const phase = actor?.getSnapshot().phase;
-    return phase === "admitting" || phase === "streaming";
+    return phase !== undefined && canCancelChatStreamPhase(phase);
   });
 }
 

@@ -12,6 +12,9 @@ const actor = vi.hoisted(() => {
       lastCompletion = null;
       listener = undefined;
     },
+    setPhase: (nextPhase: string) => {
+      phase = nextPhase;
+    },
     completeOnSend: (intentId: string) => {
       settleDuringSubscribe = false;
       actor.send.mockImplementationOnce(() => {
@@ -125,6 +128,7 @@ import {
   beginAppChatActorMutation,
   deleteOwnedChatAfterSettlingActors,
   dispatchChatIntentAndWait,
+  hasActiveAppChatActors,
   observeChatSubmissionStopPolicy,
   waitForAppChatActorsIdle,
   waitForChatActorIdle,
@@ -227,6 +231,16 @@ describe("waitForChatActorIdle", () => {
       expect.objectContaining({ chatId: 8 }),
     );
   });
+
+  it.each(["admitting", "streaming", "cancelling", "finalizing"])(
+    "treats the %s actor phase as active for repository recovery",
+    async (phase) => {
+      cleanup.findChats.mockResolvedValue([{ id: 7 }]);
+      actor.setPhase(phase);
+
+      await expect(hasActiveAppChatActors(3)).resolves.toBe(true);
+    },
+  );
 
   it("holds app creation and existing actor admission fences for a mutation", async () => {
     cleanup.findChats.mockResolvedValue([{ id: 7 }, { id: 8 }]);

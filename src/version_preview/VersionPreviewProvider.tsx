@@ -269,10 +269,23 @@ export function VersionPreviewProvider({ children }: PropsWithChildren) {
           state.type === "closed" &&
           (previousStateType === "restoring" ||
             previousStateType === "switching-branch" ||
+            previousStateType === "validating-current-repository" ||
+            previousStateType === "checkpointing-current-repository" ||
             restoredPresentation)
         ) {
           presentation.send(appId, { type: "CLOSE" });
           restoredPresentation = false;
+          void windowInterest
+            .release(
+              appId,
+              `version-preview:${globalThis.crypto.randomUUID()}`,
+              { type: "close" },
+            )
+            .catch(() => {
+              toast.error(
+                "Version History closed, but its window cleanup did not finish. Reopen the app and try again.",
+              );
+            });
         }
         previousStateType = state.type;
         const toastId = `version-preview-recovery-${appId}`;
