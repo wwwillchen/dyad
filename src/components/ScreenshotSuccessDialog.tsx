@@ -1,26 +1,23 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Button } from "./ui/button";
-import { BugIcon } from "lucide-react";
+import { type ReactNode } from "react";
 
 interface ScreenshotSuccessDialogProps {
   isOpen: boolean;
-  onClose: () => void;
-  handleReportBug: () => Promise<void>;
-  isLoading: boolean;
+  /** The reporter backed out without filing anything. */
+  onDismiss: () => void;
+  onSubmit: () => void;
+  icon: ReactNode;
 }
 
 export function ScreenshotSuccessDialog({
   isOpen,
-  onClose,
-  handleReportBug,
-  isLoading,
+  onDismiss,
+  onSubmit,
+  icon,
 }: ScreenshotSuccessDialogProps) {
-  const handleSubmit = async () => {
-    await handleReportBug();
-    onClose();
-  };
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={onDismiss}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
@@ -29,11 +26,10 @@ export function ScreenshotSuccessDialog({
         </DialogHeader>
         <Button
           variant="default"
-          onClick={handleSubmit}
+          onClick={onSubmit}
           className="w-full py-6 border-primary/50 shadow-sm shadow-primary/10 transition-all hover:shadow-md hover:shadow-primary/15"
         >
-          <BugIcon className="mr-2 h-5 w-5" />{" "}
-          {isLoading ? "Preparing Report..." : "Create GitHub issue"}
+          {icon} Create GitHub issue
         </Button>
       </DialogContent>
     </Dialog>
