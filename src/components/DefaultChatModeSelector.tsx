@@ -17,6 +17,7 @@ import {
   isFreeProBuildModeCombination,
   isFreeProModel,
 } from "@/lib/freeProModel";
+import { FREE_AGENT_QUOTA_LIMIT } from "@/lib/free_agent_quota_limit";
 
 export function DefaultChatModeSelector() {
   const { settings, updateSettings, envVars } = useSettings();
@@ -93,7 +94,7 @@ export function DefaultChatModeSelector() {
                   ? "Better at bigger tasks"
                   : quotaStatus?.isQuotaExceeded
                     ? "Daily limit reached; preference applies after reset"
-                    : "Free tier (10 messages/day)"}
+                    : `Free tier (${FREE_AGENT_QUOTA_LIMIT} messages/day)`}
               </span>
             </div>
           </SelectItem>
