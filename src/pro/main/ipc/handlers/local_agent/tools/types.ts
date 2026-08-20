@@ -60,6 +60,7 @@ export const APP_MUTATING_TOOL_NAMES = [
   "generate_image",
   "generate_test_assertions",
   "git_restore_file",
+  "reinstall_and_restart_app",
 ] as const;
 export type AppMutatingToolName = (typeof APP_MUTATING_TOOL_NAMES)[number];
 
@@ -286,8 +287,14 @@ export interface AgentContext {
    * specs. Preflight/dev-server refusals do not increment this.
    */
   testRunCount?: number;
-  /** Whether rebuild_app is registered in this turn's effective tool set. */
-  rebuildAppToolAvailable?: boolean;
+  /** Whether reinstall_and_restart_app is registered in this turn's effective tool set. */
+  reinstallAndRestartAppToolAvailable?: boolean;
+  /** Turn-scoped production-build attempts and unchanged-rerun guard. */
+  buildAttemptState?: {
+    count: number;
+    mutationCountAtLastRun?: number;
+    mutationCountAtLastSetupFailure?: number;
+  };
 }
 
 /** Per-spec fix-loop state for the `run_tests` tool, tracked across one turn. */

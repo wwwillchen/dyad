@@ -49,6 +49,7 @@ Agent tool definitions live in `src/pro/main/ipc/handlers/local_agent/tools/`. E
 - Local-agent Git commands must use `execGit` from `git_utils.ts`. When a command needs streaming or a bounded process runner, spawn the executable and environment from `getGitProcessEnvironment`; importing Dugite directly bypasses the Windows WSL-PATH filtering and Linux libcurl shim.
 - Git-consumer tests that mock `electron-log` must provide `debug` on scoped loggers. The Windows Git environment sanitizer calls it when filtering `WindowsApps`/WSL PATH entries, so an incomplete mock can surface only as an indeterminate fingerprint on Windows CI.
 - `fileMutationCount` is for Git-visible workspace mutations, not every file or provider change. Exclude ignored media such as `.dyad/media` and provider-only state changes, and use a result-aware `shouldTrackMutation` predicate for tools that write files only after user approval.
+- Adding a tool to `APP_MUTATING_TOOL_NAMES` also requires a result-aware `shouldTrackMutation` and an entry in the exhaustive `FILE_MUTATION_POLICIES` registry. Choose that policy independently: mutation counting gates test retries, while the file policy gates `run_pre_commit` after Git-visible changes.
 - Git-state fingerprints must hash raw output bytes, disable fsmonitor, external diffs, and textconv, and include untracked file contents rather than only their paths. Keep path collection and file streaming bounded, and hash symlink targets without following them outside the app.
 - Restrict filesystem tests that create invalid UTF-8 path bytes to Linux. macOS rejects those filenames with `EILSEQ`, so cover raw subprocess-byte preservation separately with platform-independent tests.
 - Do not spawn Git just to maintain `fileMutationCount` when pre-commit is unavailable. For hook-enabled turns, cache repeated path-visibility checks and classify deletes/renames from their post-mutation Git status so staged removals are not mistaken for ignored-only changes.
@@ -71,6 +72,101 @@ Agent tool definitions live in `src/pro/main/ipc/handlers/local_agent/tools/`. E
   reporting cancellation while teardown or dependency installation continues
   in the background. Allow rebuild readiness substantially more time than an
   ordinary restart because it includes a fresh dependency install.
+
+## Production build snapshots
+
+- Keep the in-place-versus-isolated build decision independent of the host OS.
+  Create an isolated build from a detached Git worktree on every platform, then
+  overlay the live repository's tracked edits and deletions plus untracked and
+  relevant ignored inputs. The overlay copy backend may vary—use clone-on-write
+  when Node and the filesystem support it and an ordinary bounded copy on
+  Windows—but the resulting inputs must have the same semantics.
+- When a preview is Docker-backed, isolate even otherwise preview-safe builds.
+  The live dependency tree may contain Linux-native packages installed by the
+  container and must not be reused by a host-side production build.
+- Preserve the app's path relative to the Git top-level in the temporary
+  worktree. Run the package manager from that corresponding app directory, but
+  overlay repository-wide changes so monorepo configuration and sibling
+  packages match the live workspace. Canonicalize the source app path once and
+  use that same path for repository-relative package-manager-root mapping;
+  mixing a symlinked app path with a canonical Git root can escape the snapshot.
+- Apply overlay exclusions at the same path depth on every backend. Exclude
+  `node_modules` anywhere in the repository and known generated output roots
+  directly under the target app; never overlay live dependency trees or root
+  build output. Do not exclude every nested directory with a common output name
+  because paths such as `app/out/page.tsx` can be application source. Enforce
+  these exclusions during recursive traversal too: Git can report an untracked
+  parent while ignored dependency or root-output directories sit beneath it.
+  Preserve an otherwise excluded app-root directory when Git tracks files under
+  it; committed `dist` or `out` content may be a build input rather than output.
+- An isolated build must exclude the live app's `node_modules` and install a
+  clean dependency tree inside the snapshot with the package manager selected
+  from the live app's existing signals. Use the lockfile's frozen/CI mode when
+  available, prefer the local package cache, stream install output, and surface
+  install failures separately without consuming a build attempt. After
+  materializing the worktree and overlay, inspect preserved symlinks and
+  junctions: remap targets inside the source repository into the worktree, and
+  reject targets outside the repository rather than leaving a path back to live
+  files.
+- A dependency-install failure does not consume one of the build-attempt slots,
+  but record it separately and refuse another setup attempt until the workspace
+  changes. This preserves useful retries after a fix without allowing repeated
+  clean installs against identical inputs.
+- For a nested workspace app, use ancestor package-manager and lockfile signals
+  only after confirming that the app belongs to that npm/pnpm workspace, then
+  install from the applicable workspace root. An unrelated ancestor lockfile
+  must not turn a child install into `npm ci`.
+- A detached superproject worktree does not populate Git submodules. Materialize
+  initialized live submodules from local state without fetching so isolated
+  builds retain both their inputs and Git boundary; leave live-uninitialized
+  submodules uninitialized.
+- On Windows, do not classify junctions from `Dirent`: libuv may report a
+  reparse-point directory as an ordinary directory. Use `lstat`, recreate
+  directory links as junctions, and copy linked files so snapshot setup does
+  not require symbolic-link privileges.
+- Bound recursive snapshot traversal with a fixed-size batch or worker pool,
+  especially on Windows where every entry uses explicit filesystem calls. An
+  unbounded recursive `Promise.all` can queue a large source tree before
+  cancellation is observed.
+- Keep build worktrees in a Dyad-owned scratch root and write an ownership
+  sidecar before registering each one. Keep the sidecar outside the worktree so
+  Git-aware tools do not see a Dyad-only untracked file. Startup and stale
+  cleanup must require a valid sidecar before deletion; a name pattern alone is
+  never proof of ownership. Unregister with `git worktree remove --force`, then
+  fall back to filesystem deletion and `git worktree prune` when necessary.
+- Start one deadline before snapshot validation/copying and give the build only
+  the remaining budget. Stream build output while it runs, and do not consume a
+  retry when snapshot setup fails before the build process starts. Record every
+  non-user-cancelled setup failure, including snapshot creation and deadline
+  expiry, against the current mutation count so unchanged retries are refused.
+- Do not run a host-side production build while the active preview uses a cloud
+  sandbox. Refuse with guidance to switch to the Host runtime until build
+  execution is supported inside the active cloud sandbox.
+- Snapshot teardown is best-effort and must not delay a cancelled or timed-out
+  turn. Start cleanup without awaiting it; the marked-directory startup sweep
+  remains the fallback for interrupted cleanup.
+- `AgentContext.onXmlStream` replaces the previous preview with the full accumulated XML; callers receiving delta output chunks must append them to a bounded buffer before emitting each update.
+- Throttle full accumulated build-output previews rather than emitting once per
+  stdout/stderr chunk, and synchronously flush the final buffered preview when
+  the child process settles so batching never hides terminal output.
+- Select build mode around preview continuity, not whether a build may generate
+  files. With no running preview, build in place. Beside a preview, run the exact
+  standard Vite build in place, run Next.js 16+ in place only when `.next/dev`
+  confirms separate development output, and isolate Next.js 15 and unknown or
+  custom build commands. Keep this decision independent of the host OS.
+  Because package managers may execute `prebuild` and `postbuild` around an
+  otherwise standard command, isolate any concurrent build with either hook.
+- Acquire app-operation claims before reading and validating build scripts,
+  lifecycle hooks, and preview facts. Re-detect framework facts from that
+  locked workspace instead of using turn-start context, because an integration
+  can change a Vite app into Vite/Nitro before `run_build`. If consent is
+  requested by the user's tool-permission settings, warn generically that the
+  package manager runs the current `prebuild`, `build`, and `postbuild`
+  lifecycle.
+- A workspace snapshot is an operational boundary for ordinary build outputs,
+  not a security sandbox for project code. Build approval must say that project
+  and dependency code runs with the user's account; do not claim that changing
+  `cwd` prevents an intentionally hostile script from accessing host paths.
 
 ## User-visible tool output
 

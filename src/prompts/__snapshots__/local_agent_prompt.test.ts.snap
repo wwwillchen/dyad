@@ -16,7 +16,7 @@ If you output this command, tell the user to look for the action button above th
 </app_commands>
 
 <app_lifecycle>
-Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or rebuild merely because files changed or as a routine verification step.
+Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or reinstall dependencies merely because files changed or as a routine verification step.
 
 Use \`restart_app\` only when:
 - The user explicitly asks to restart.
@@ -24,15 +24,15 @@ Use \`restart_app\` only when:
 - A process-boundary change requires a fresh server process, such as development-server configuration, startup scripts, environment variables, or server initialization code.
 - Logs or tool output explicitly say a restart is required.
 
-Use \`rebuild_app\` only when:
-- The user explicitly asks for a rebuild.
+Use \`reinstall_and_restart_app\` only when:
+- The user explicitly asks to reinstall dependencies.
 - \`node_modules\` is missing or incomplete.
 - Dependency installation, package resolution, the lockfile, or native package state is demonstrably broken or stale.
 - A diagnostic explicitly recommends reinstalling dependencies.
 
-Never rebuild for ordinary code errors, UI changes, configuration changes that only require restart, or as the first response to an unexplained failure.
+Never reinstall dependencies for ordinary code errors, UI changes, production build verification, configuration changes that only require restart, or as the first response to an unexplained failure.
 
-Prefer the least expensive available action. A rebuild already includes a restart, so never call both for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
+Prefer the least expensive available action. Reinstalling dependencies already includes a restart, so never call both lifecycle tools for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
 </app_lifecycle>
 
 <general_guidelines>
@@ -112,7 +112,7 @@ If \`search_replace\` fails twice in a row on the same edit (e.g., the target te
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.
 4. **Plan:** Build a coherent and grounded (based on the understanding in steps 1-3) plan for how you intend to resolve the user's task. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.
 5. **Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.
-6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.
+6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended. Treat \`run_build\` as an expensive final verification step that can take several minutes. Always use it when the user explicitly requests a production build. Otherwise, use it when the completed changes either create build-specific risk—such as package or lockfile changes, build configuration, production environment loading, framework routing or rendering behavior, or server/static generation—or materially change the app across multiple modules or layers, such as creating a new app, implementing a major feature, changing application architecture, or migrating a framework/runtime. Do not use it for routine isolated components, client-side logic, styling, copy, assets, preview troubleshooting, or merely because many files changed. Run it only after edits and type checks are complete. Call it once; retry only after fixing a cause indicated by the failed build.
 7. **Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.
 </development_workflow>
 
@@ -206,7 +206,7 @@ If you output this command, tell the user to look for the action button above th
 </app_commands>
 
 <app_lifecycle>
-Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or rebuild merely because files changed or as a routine verification step.
+Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or reinstall dependencies merely because files changed or as a routine verification step.
 
 Use \`restart_app\` only when:
 - The user explicitly asks to restart.
@@ -214,15 +214,15 @@ Use \`restart_app\` only when:
 - A process-boundary change requires a fresh server process, such as development-server configuration, startup scripts, environment variables, or server initialization code.
 - Logs or tool output explicitly say a restart is required.
 
-Use \`rebuild_app\` only when:
-- The user explicitly asks for a rebuild.
+Use \`reinstall_and_restart_app\` only when:
+- The user explicitly asks to reinstall dependencies.
 - \`node_modules\` is missing or incomplete.
 - Dependency installation, package resolution, the lockfile, or native package state is demonstrably broken or stale.
 - A diagnostic explicitly recommends reinstalling dependencies.
 
-Never rebuild for ordinary code errors, UI changes, configuration changes that only require restart, or as the first response to an unexplained failure.
+Never reinstall dependencies for ordinary code errors, UI changes, production build verification, configuration changes that only require restart, or as the first response to an unexplained failure.
 
-Prefer the least expensive available action. A rebuild already includes a restart, so never call both for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
+Prefer the least expensive available action. Reinstalling dependencies already includes a restart, so never call both lifecycle tools for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
 </app_lifecycle>
 
 <general_guidelines>
@@ -302,7 +302,7 @@ If \`search_replace\` fails twice in a row on the same edit (e.g., the target te
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.
 4. **Plan:** Build a coherent and grounded (based on the understanding in steps 1-3) plan for how you intend to resolve the user's task. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.
 5. **Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.
-6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.
+6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended. Treat \`run_build\` as an expensive final verification step that can take several minutes. Always use it when the user explicitly requests a production build. Otherwise, use it when the completed changes either create build-specific risk—such as package or lockfile changes, build configuration, production environment loading, framework routing or rendering behavior, or server/static generation—or materially change the app across multiple modules or layers, such as creating a new app, implementing a major feature, changing application architecture, or migrating a framework/runtime. Do not use it for routine isolated components, client-side logic, styling, copy, assets, preview troubleshooting, or merely because many files changed. Run it only after edits and type checks are complete. Call it once; retry only after fixing a cause indicated by the failed build.
 7. **Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.
 </development_workflow>
 
@@ -383,7 +383,7 @@ If you output this command, tell the user to look for the action button above th
 </app_commands>
 
 <app_lifecycle>
-Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or rebuild merely because files changed or as a routine verification step.
+Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or reinstall dependencies merely because files changed or as a routine verification step.
 
 Use \`restart_app\` only when:
 - The user explicitly asks to restart.
@@ -391,15 +391,15 @@ Use \`restart_app\` only when:
 - A process-boundary change requires a fresh server process, such as development-server configuration, startup scripts, environment variables, or server initialization code.
 - Logs or tool output explicitly say a restart is required.
 
-Use \`rebuild_app\` only when:
-- The user explicitly asks for a rebuild.
+Use \`reinstall_and_restart_app\` only when:
+- The user explicitly asks to reinstall dependencies.
 - \`node_modules\` is missing or incomplete.
 - Dependency installation, package resolution, the lockfile, or native package state is demonstrably broken or stale.
 - A diagnostic explicitly recommends reinstalling dependencies.
 
-Never rebuild for ordinary code errors, UI changes, configuration changes that only require restart, or as the first response to an unexplained failure.
+Never reinstall dependencies for ordinary code errors, UI changes, production build verification, configuration changes that only require restart, or as the first response to an unexplained failure.
 
-Prefer the least expensive available action. A rebuild already includes a restart, so never call both for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
+Prefer the least expensive available action. Reinstalling dependencies already includes a restart, so never call both lifecycle tools for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
 </app_lifecycle>
 
 <general_guidelines>
@@ -478,7 +478,7 @@ If \`search_replace\` fails twice in a row on the same edit (e.g., the target te
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.
 3. **Plan:** Build a coherent and grounded (based on the understanding in steps 1-2) plan for how you intend to resolve the user's task. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.
 4. **Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.
-5. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.
+5. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended. Treat \`run_build\` as an expensive final verification step that can take several minutes. Always use it when the user explicitly requests a production build. Otherwise, use it when the completed changes either create build-specific risk—such as package or lockfile changes, build configuration, production environment loading, framework routing or rendering behavior, or server/static generation—or materially change the app across multiple modules or layers, such as creating a new app, implementing a major feature, changing application architecture, or migrating a framework/runtime. Do not use it for routine isolated components, client-side logic, styling, copy, assets, preview troubleshooting, or merely because many files changed. Run it only after edits and type checks are complete. Call it once; retry only after fixing a cause indicated by the failed build.
 6. **Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.
 </development_workflow>
 
@@ -542,7 +542,7 @@ If you output this command, tell the user to look for the action button above th
 </app_commands>
 
 <app_lifecycle>
-Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or rebuild merely because files changed or as a routine verification step.
+Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or reinstall dependencies merely because files changed or as a routine verification step.
 
 Use \`restart_app\` only when:
 - The user explicitly asks to restart.
@@ -550,15 +550,15 @@ Use \`restart_app\` only when:
 - A process-boundary change requires a fresh server process, such as development-server configuration, startup scripts, environment variables, or server initialization code.
 - Logs or tool output explicitly say a restart is required.
 
-Use \`rebuild_app\` only when:
-- The user explicitly asks for a rebuild.
+Use \`reinstall_and_restart_app\` only when:
+- The user explicitly asks to reinstall dependencies.
 - \`node_modules\` is missing or incomplete.
 - Dependency installation, package resolution, the lockfile, or native package state is demonstrably broken or stale.
 - A diagnostic explicitly recommends reinstalling dependencies.
 
-Never rebuild for ordinary code errors, UI changes, configuration changes that only require restart, or as the first response to an unexplained failure.
+Never reinstall dependencies for ordinary code errors, UI changes, production build verification, configuration changes that only require restart, or as the first response to an unexplained failure.
 
-Prefer the least expensive available action. A rebuild already includes a restart, so never call both for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
+Prefer the least expensive available action. Reinstalling dependencies already includes a restart, so never call both lifecycle tools for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
 </app_lifecycle>
 
 <general_guidelines>
@@ -638,7 +638,7 @@ If \`search_replace\` fails twice in a row on the same edit (e.g., the target te
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.
 4. **Plan:** Build a coherent and grounded (based on the understanding in steps 1-3) plan for how you intend to resolve the user's task. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.
 5. **Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.
-6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.
+6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended. Treat \`run_build\` as an expensive final verification step that can take several minutes. Always use it when the user explicitly requests a production build. Otherwise, use it when the completed changes either create build-specific risk—such as package or lockfile changes, build configuration, production environment loading, framework routing or rendering behavior, or server/static generation—or materially change the app across multiple modules or layers, such as creating a new app, implementing a major feature, changing application architecture, or migrating a framework/runtime. Do not use it for routine isolated components, client-side logic, styling, copy, assets, preview troubleshooting, or merely because many files changed. Run it only after edits and type checks are complete. Call it once; retry only after fixing a cause indicated by the failed build.
 7. **Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.
 </development_workflow>
 
@@ -719,7 +719,7 @@ If you output this command, tell the user to look for the action button above th
 </app_commands>
 
 <app_lifecycle>
-Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or rebuild merely because files changed or as a routine verification step.
+Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or reinstall dependencies merely because files changed or as a routine verification step.
 
 Use \`restart_app\` only when:
 - The user explicitly asks to restart.
@@ -727,15 +727,15 @@ Use \`restart_app\` only when:
 - A process-boundary change requires a fresh server process, such as development-server configuration, startup scripts, environment variables, or server initialization code.
 - Logs or tool output explicitly say a restart is required.
 
-Use \`rebuild_app\` only when:
-- The user explicitly asks for a rebuild.
+Use \`reinstall_and_restart_app\` only when:
+- The user explicitly asks to reinstall dependencies.
 - \`node_modules\` is missing or incomplete.
 - Dependency installation, package resolution, the lockfile, or native package state is demonstrably broken or stale.
 - A diagnostic explicitly recommends reinstalling dependencies.
 
-Never rebuild for ordinary code errors, UI changes, configuration changes that only require restart, or as the first response to an unexplained failure.
+Never reinstall dependencies for ordinary code errors, UI changes, production build verification, configuration changes that only require restart, or as the first response to an unexplained failure.
 
-Prefer the least expensive available action. A rebuild already includes a restart, so never call both for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
+Prefer the least expensive available action. Reinstalling dependencies already includes a restart, so never call both lifecycle tools for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
 </app_lifecycle>
 
 <general_guidelines>
@@ -815,7 +815,7 @@ If \`search_replace\` fails twice in a row on the same edit (e.g., the target te
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.
 4. **Plan:** Build a coherent and grounded (based on the understanding in steps 1-3) plan for how you intend to resolve the user's task. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.
 5. **Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.
-6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.
+6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended. Treat \`run_build\` as an expensive final verification step that can take several minutes. Always use it when the user explicitly requests a production build. Otherwise, use it when the completed changes either create build-specific risk—such as package or lockfile changes, build configuration, production environment loading, framework routing or rendering behavior, or server/static generation—or materially change the app across multiple modules or layers, such as creating a new app, implementing a major feature, changing application architecture, or migrating a framework/runtime. Do not use it for routine isolated components, client-side logic, styling, copy, assets, preview troubleshooting, or merely because many files changed. Run it only after edits and type checks are complete. Call it once; retry only after fixing a cause indicated by the failed build.
 7. **Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.
 </development_workflow>
 
@@ -978,7 +978,7 @@ If you output this command, tell the user to look for the action button above th
 </app_commands>
 
 <app_lifecycle>
-Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or rebuild merely because files changed or as a routine verification step.
+Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or reinstall dependencies merely because files changed or as a routine verification step.
 
 Use \`restart_app\` only when:
 - The user explicitly asks to restart.
@@ -986,15 +986,15 @@ Use \`restart_app\` only when:
 - A process-boundary change requires a fresh server process, such as development-server configuration, startup scripts, environment variables, or server initialization code.
 - Logs or tool output explicitly say a restart is required.
 
-Use \`rebuild_app\` only when:
-- The user explicitly asks for a rebuild.
+Use \`reinstall_and_restart_app\` only when:
+- The user explicitly asks to reinstall dependencies.
 - \`node_modules\` is missing or incomplete.
 - Dependency installation, package resolution, the lockfile, or native package state is demonstrably broken or stale.
 - A diagnostic explicitly recommends reinstalling dependencies.
 
-Never rebuild for ordinary code errors, UI changes, configuration changes that only require restart, or as the first response to an unexplained failure.
+Never reinstall dependencies for ordinary code errors, UI changes, production build verification, configuration changes that only require restart, or as the first response to an unexplained failure.
 
-Prefer the least expensive available action. A rebuild already includes a restart, so never call both for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
+Prefer the least expensive available action. Reinstalling dependencies already includes a restart, so never call both lifecycle tools for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
 </app_lifecycle>
 
 <general_guidelines>
@@ -1070,7 +1070,7 @@ You have two tools for editing files. Choose based on the scope of your change:
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.
 4. **Plan:** Build a coherent and grounded (based on the understanding in steps 1-3) plan for how you intend to resolve the user's task. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.
 5. **Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.
-6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.
+6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended. Treat \`run_build\` as an expensive final verification step that can take several minutes. Always use it when the user explicitly requests a production build. Otherwise, use it when the completed changes either create build-specific risk—such as package or lockfile changes, build configuration, production environment loading, framework routing or rendering behavior, or server/static generation—or materially change the app across multiple modules or layers, such as creating a new app, implementing a major feature, changing application architecture, or migrating a framework/runtime. Do not use it for routine isolated components, client-side logic, styling, copy, assets, preview troubleshooting, or merely because many files changed. Run it only after edits and type checks are complete. Call it once; retry only after fixing a cause indicated by the failed build.
 7. **Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.
 </development_workflow>
 
@@ -1155,7 +1155,7 @@ If you output this command, tell the user to look for the action button above th
 </app_commands>
 
 <app_lifecycle>
-Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or rebuild merely because files changed or as a routine verification step.
+Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or reinstall dependencies merely because files changed or as a routine verification step.
 
 Use \`restart_app\` only when:
 - The user explicitly asks to restart.
@@ -1163,15 +1163,15 @@ Use \`restart_app\` only when:
 - A process-boundary change requires a fresh server process, such as development-server configuration, startup scripts, environment variables, or server initialization code.
 - Logs or tool output explicitly say a restart is required.
 
-Use \`rebuild_app\` only when:
-- The user explicitly asks for a rebuild.
+Use \`reinstall_and_restart_app\` only when:
+- The user explicitly asks to reinstall dependencies.
 - \`node_modules\` is missing or incomplete.
 - Dependency installation, package resolution, the lockfile, or native package state is demonstrably broken or stale.
 - A diagnostic explicitly recommends reinstalling dependencies.
 
-Never rebuild for ordinary code errors, UI changes, configuration changes that only require restart, or as the first response to an unexplained failure.
+Never reinstall dependencies for ordinary code errors, UI changes, production build verification, configuration changes that only require restart, or as the first response to an unexplained failure.
 
-Prefer the least expensive available action. A rebuild already includes a restart, so never call both for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
+Prefer the least expensive available action. Reinstalling dependencies already includes a restart, so never call both lifecycle tools for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
 </app_lifecycle>
 
 <general_guidelines>
@@ -1246,7 +1246,7 @@ You have two tools for editing files. Choose based on the scope of your change:
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.
 3. **Plan:** Build a coherent and grounded (based on the understanding in steps 1-2) plan for how you intend to resolve the user's task. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.
 4. **Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.
-5. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.
+5. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended. Treat \`run_build\` as an expensive final verification step that can take several minutes. Always use it when the user explicitly requests a production build. Otherwise, use it when the completed changes either create build-specific risk—such as package or lockfile changes, build configuration, production environment loading, framework routing or rendering behavior, or server/static generation—or materially change the app across multiple modules or layers, such as creating a new app, implementing a major feature, changing application architecture, or migrating a framework/runtime. Do not use it for routine isolated components, client-side logic, styling, copy, assets, preview troubleshooting, or merely because many files changed. Run it only after edits and type checks are complete. Call it once; retry only after fixing a cause indicated by the failed build.
 6. **Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.
 </development_workflow>
 
@@ -1301,7 +1301,7 @@ If you output this command, tell the user to look for the action button above th
 </app_commands>
 
 <app_lifecycle>
-Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or rebuild merely because files changed or as a routine verification step.
+Rely on hot reload for ordinary source, styling, and asset edits. Do not restart or reinstall dependencies merely because files changed or as a routine verification step.
 
 Use \`restart_app\` only when:
 - The user explicitly asks to restart.
@@ -1309,15 +1309,15 @@ Use \`restart_app\` only when:
 - A process-boundary change requires a fresh server process, such as development-server configuration, startup scripts, environment variables, or server initialization code.
 - Logs or tool output explicitly say a restart is required.
 
-Use \`rebuild_app\` only when:
-- The user explicitly asks for a rebuild.
+Use \`reinstall_and_restart_app\` only when:
+- The user explicitly asks to reinstall dependencies.
 - \`node_modules\` is missing or incomplete.
 - Dependency installation, package resolution, the lockfile, or native package state is demonstrably broken or stale.
 - A diagnostic explicitly recommends reinstalling dependencies.
 
-Never rebuild for ordinary code errors, UI changes, configuration changes that only require restart, or as the first response to an unexplained failure.
+Never reinstall dependencies for ordinary code errors, UI changes, production build verification, configuration changes that only require restart, or as the first response to an unexplained failure.
 
-Prefer the least expensive available action. A rebuild already includes a restart, so never call both for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
+Prefer the least expensive available action. Reinstalling dependencies already includes a restart, so never call both lifecycle tools for the same reason. Finish related edits before calling either tool, call it at most once for the same unchanged cause, and do not retry a failed lifecycle call without inspecting its error or logs.
 </app_lifecycle>
 
 <general_guidelines>
@@ -1393,7 +1393,7 @@ You have two tools for editing files. Choose based on the scope of your change:
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.
 4. **Plan:** Build a coherent and grounded (based on the understanding in steps 1-3) plan for how you intend to resolve the user's task. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.
 5. **Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.
-6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.
+6. **Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended. Treat \`run_build\` as an expensive final verification step that can take several minutes. Always use it when the user explicitly requests a production build. Otherwise, use it when the completed changes either create build-specific risk—such as package or lockfile changes, build configuration, production environment loading, framework routing or rendering behavior, or server/static generation—or materially change the app across multiple modules or layers, such as creating a new app, implementing a major feature, changing application architecture, or migrating a framework/runtime. Do not use it for routine isolated components, client-side logic, styling, copy, assets, preview troubleshooting, or merely because many files changed. Run it only after edits and type checks are complete. Call it once; retry only after fixing a cause indicated by the failed build.
 7. **Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.
 </development_workflow>
 

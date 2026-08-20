@@ -24,7 +24,7 @@ describe("local_agent_prompt", () => {
       "Rely on hot reload for ordinary source, styling, and asset edits",
     );
     expect(prompt).toContain(
-      "A rebuild already includes a restart, so never call both for the same reason",
+      "Reinstalling dependencies already includes a restart, so never call both lifecycle tools for the same reason",
     );
     expect(prompt).not.toContain(
       '<dyad-command type="restart"></dyad-command>',
@@ -197,18 +197,53 @@ describe("local_agent_prompt", () => {
     expectGitContextGuidance(prompt);
     expect(prompt).not.toContain("<app_lifecycle>");
     expect(prompt).not.toContain("restart_app");
-    expect(prompt).not.toContain("rebuild_app");
+    expect(prompt).not.toContain("reinstall_and_restart_app");
   });
 
   it("omits lifecycle tools that are unavailable", () => {
     const prompt = constructLocalAgentPrompt(undefined, undefined, {
       restartAppToolAvailable: false,
-      rebuildAppToolAvailable: false,
+      reinstallAndRestartAppToolAvailable: false,
     });
 
     expect(prompt).not.toContain("<app_lifecycle>");
     expect(prompt).not.toContain("restart_app");
-    expect(prompt).not.toContain("rebuild_app");
+    expect(prompt).not.toContain("reinstall_and_restart_app");
+  });
+
+  it("omits production-build guidance when run_build is unavailable", () => {
+    const prompt = constructLocalAgentPrompt(undefined, undefined, {
+      runBuildToolAvailable: false,
+    });
+
+    expect(prompt).not.toContain("`run_build`");
+  });
+
+  it("only orders run_build after verification tools available in the turn", () => {
+    const withoutOptionalVerification = constructLocalAgentPrompt(
+      undefined,
+      undefined,
+      {
+        testingEnabled: false,
+        preCommitHookAvailable: false,
+      },
+    );
+    const withOptionalVerification = constructLocalAgentPrompt(
+      undefined,
+      undefined,
+      {
+        testingEnabled: true,
+        preCommitHookAvailable: true,
+      },
+    );
+
+    expect(withoutOptionalVerification).toContain(
+      "Run it only after edits and type checks are complete.",
+    );
+    expect(withoutOptionalVerification).not.toContain("`run_pre_commit`");
+    expect(withOptionalVerification).toContain(
+      "Run it only after edits, type checks, targeted tests, and `run_pre_commit` are complete.",
+    );
   });
 
   it("agent mode system prompt with app blueprint disabled", () => {

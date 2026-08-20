@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { appRunActorService } from "@/ipc/services/app_run_actor_service";
-import { rebuildAppTool, restartAppTool } from "./app_lifecycle";
+import { reinstallAndRestartAppTool, restartAppTool } from "./app_lifecycle";
 import type { AgentContext } from "./types";
 
 vi.mock("@/ipc/services/app_run_actor_service", () => ({
@@ -53,18 +53,22 @@ describe("app lifecycle tools", () => {
     );
   });
 
-  it("declares rebuild as an approval-required runtime mutation", () => {
-    expect(rebuildAppTool.inputSchema.parse({})).toEqual({});
-    expect(rebuildAppTool.defaultConsent).toBe("ask");
-    expect(rebuildAppTool.modifiesState).toBe(true);
-    expect(rebuildAppTool.description).toContain(
+  it("declares dependency reinstall as an approval-required runtime mutation", () => {
+    expect(reinstallAndRestartAppTool.inputSchema.parse({})).toEqual({});
+    expect(reinstallAndRestartAppTool.defaultConsent).toBe("ask");
+    expect(reinstallAndRestartAppTool.modifiesState).toBe(true);
+    expect(reinstallAndRestartAppTool.shouldTrackMutation?.({}, "", ctx)).toBe(
+      true,
+    );
+    expect(reinstallAndRestartAppTool.description).toContain(
       "Never use for ordinary code errors",
     );
+    expect(reinstallAndRestartAppTool.description).not.toContain("Rebuild");
   });
 
-  it("rebuilds the current app after clearing stale logs", async () => {
-    await expect(rebuildAppTool.execute({}, ctx)).resolves.toBe(
-      "The app rebuilt and restarted successfully.",
+  it("reinstalls dependencies and restarts the current app", async () => {
+    await expect(reinstallAndRestartAppTool.execute({}, ctx)).resolves.toBe(
+      "Dependencies were reinstalled and the app restarted successfully.",
     );
 
     expect(appRunActorService.executeExternalLifecycle).toHaveBeenCalledWith({
@@ -74,18 +78,20 @@ describe("app lifecycle tools", () => {
       timeoutMs: 10 * 60 * 1_000,
     });
     expect(ctx.onXmlStream).toHaveBeenCalledWith(
-      '<dyad-status title="Rebuilding app"></dyad-status>',
+      '<dyad-status title="Reinstalling dependencies"></dyad-status>',
     );
     expect(ctx.onXmlComplete).toHaveBeenCalledWith(
-      '<dyad-status title="App rebuilt" state="finished"></dyad-status>',
+      '<dyad-status title="Dependencies reinstalled; app restarted" state="finished"></dyad-status>',
     );
   });
 
   it("does not render a duplicate completed preview", () => {
     expect(restartAppTool.buildXml?.({}, false)).toContain("Restarting app");
     expect(restartAppTool.buildXml?.({}, true)).toBeUndefined();
-    expect(rebuildAppTool.buildXml?.({}, false)).toContain("Rebuilding app");
-    expect(rebuildAppTool.buildXml?.({}, true)).toBeUndefined();
+    expect(reinstallAndRestartAppTool.buildXml?.({}, false)).toContain(
+      "Reinstalling dependencies",
+    );
+    expect(reinstallAndRestartAppTool.buildXml?.({}, true)).toBeUndefined();
   });
 
   it("does not start a lifecycle mutation after the turn is cancelled", async () => {

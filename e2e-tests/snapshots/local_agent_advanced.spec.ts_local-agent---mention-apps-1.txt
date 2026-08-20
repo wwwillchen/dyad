@@ -823,6 +823,17 @@
         "eager_input_streaming": true
       },
       {
+        "name": "run_build",
+        "description": "Run the app's production build as a selective, expensive verification step.\n\n- Use after build configuration, dependencies, framework routing, server/static-generation, environment loading, or substantial production-path changes, or when the user explicitly asks.\n- Do not use after routine small UI, styling, copy, or asset edits. Type checking is the normal verification step.\n- Finish related edits first and run once. A failed build may be retried only after making a relevant change.\n- The active preview stays running. Builds that could interfere with it are verified in an isolated workspace with clean dependencies.",
+        "input_schema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "eager_input_streaming": true
+      },
+      {
         "name": "restart_app",
         "description": "Restart the current app's development server without reinstalling dependencies. Use only when the user explicitly asks, the server is stopped/unresponsive/stale, a process-boundary change requires it (such as dev-server config, startup scripts, environment variables, or server initialization), or diagnostics explicitly require it. Do not use after ordinary source/style/asset edits or as routine verification. Finish related edits first and do not repeat it for the same unchanged cause.",
         "input_schema": {
@@ -834,8 +845,8 @@
         "eager_input_streaming": true
       },
       {
-        "name": "rebuild_app",
-        "description": "Rebuild the current app by deleting node_modules, reinstalling dependencies, and restarting the development server. Use only when the user explicitly asks, node_modules is missing/incomplete, dependency installation or package/lockfile/native-module state is demonstrably broken or stale, or diagnostics explicitly recommend reinstalling dependencies. Never use for ordinary code errors, UI changes, or configuration changes that only require a restart. A rebuild includes a restart: never call both for the same reason, and do not repeat it for the same unchanged cause.",
+        "name": "reinstall_and_restart_app",
+        "description": "Delete node_modules, reinstall dependencies, and restart the current app's development server. Use only when the user explicitly asks to reinstall dependencies, node_modules is missing/incomplete, dependency installation or package/lockfile/native-module state is demonstrably broken or stale, or diagnostics explicitly recommend it. Never use for ordinary code errors, UI changes, production build verification, or configuration changes that only require a restart. This operation includes a restart: never call both lifecycle tools for the same reason, and do not repeat it for the same unchanged cause.",
         "input_schema": {
           "$schema": "http://json-schema.org/draft-07/schema#",
           "type": "object",
