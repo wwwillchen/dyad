@@ -15,8 +15,50 @@ import type { SerializableChatTurnIntent } from "@/chat_stream/transport";
 
 type ChatTurnDatabase = Pick<
   BetterSQLite3Database<typeof schema>,
-  "transaction"
+  "select" | "transaction"
 >;
+
+export function isChatTurnAlreadyAccepted(
+  database: ChatTurnDatabase,
+  {
+    chatId,
+    chatTurnIntentId,
+    userInputRequestId,
+  }: Pick<
+    AcceptChatTurnInput,
+    "chatId" | "chatTurnIntentId" | "userInputRequestId"
+  >,
+): boolean {
+  if (
+    chatTurnIntentId &&
+    getAcceptedMessageId(chatTurnIntentId) !== undefined
+  ) {
+    return true;
+  }
+  if (!chatTurnIntentId && !userInputRequestId) {
+    return false;
+  }
+
+  return Boolean(
+    database
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.chatId, chatId),
+          or(
+            ...(chatTurnIntentId
+              ? [eq(messages.chatTurnIntentId, chatTurnIntentId)]
+              : []),
+            ...(userInputRequestId
+              ? [eq(messages.userInputRequestId, userInputRequestId)]
+              : []),
+          ),
+        ),
+      )
+      .get(),
+  );
+}
 
 export interface AcceptChatTurnInput {
   chatId: number;
@@ -27,6 +69,7 @@ export interface AcceptChatTurnInput {
   userInputRequestId?: string;
   chatTurnIntentId?: string;
   chatTurnIntent?: SerializableChatTurnIntent;
+  usingFreeAgentModeQuota?: boolean;
 }
 
 export interface AcceptedChatTurn {
@@ -60,6 +103,7 @@ export function acceptChatTurn(
       content: input.content,
       userInputRequestId: input.userInputRequestId,
       chatTurnIntentId: input.chatTurnIntentId,
+      usingFreeAgentModeQuota: input.usingFreeAgentModeQuota,
     });
     const insertedUserMessage = insert
       .onConflictDoNothing()

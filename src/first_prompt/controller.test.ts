@@ -56,6 +56,7 @@ function createHarness() {
     selectChat: vi.fn(),
     showSetupDialog: vi.fn(),
     clearEditingBuffer: vi.fn(),
+    preserveRejectedPrompt: vi.fn(),
     showError: vi.fn(),
   };
   const controller = new FirstPromptController({
@@ -184,6 +185,8 @@ describe("FirstPromptController", () => {
       appId: 1,
       chatId: 2,
       payload: { ...payload, chatMode: "local-agent" },
+      onAccepted: expect.any(Function),
+      onAcceptanceRejected: expect.any(Function),
     });
   });
 
@@ -219,6 +222,8 @@ describe("FirstPromptController", () => {
       appId: 1,
       chatId: 2,
       payload: editedPayload,
+      onAccepted: expect.any(Function),
+      onAcceptanceRejected: expect.any(Function),
     });
   });
 
@@ -258,6 +263,8 @@ describe("FirstPromptController", () => {
       payload: expect.objectContaining({
         selectedApp: { id: 41, name: "Existing app" },
       }),
+      onAccepted: expect.any(Function),
+      onAcceptanceRejected: expect.any(Function),
     });
   });
 
@@ -285,6 +292,8 @@ describe("FirstPromptController", () => {
       payload: expect.objectContaining({
         selectedApp: { id: 41, name: "Existing app" },
       }),
+      onAccepted: expect.any(Function),
+      onAcceptanceRejected: expect.any(Function),
     });
   });
 
@@ -316,19 +325,37 @@ describe("FirstPromptController", () => {
     await flushCommands();
 
     expect(harness.controller.getSnapshot().type).toBe("dispatching");
-    expect(harness.deps.clearEditingBuffer).toHaveBeenCalledTimes(1);
+    expect(harness.deps.clearEditingBuffer).not.toHaveBeenCalled();
     expect(harness.deps.openPreviewIfSetupRequired).toHaveBeenCalledWith(1);
-    expect(
-      (harness.deps.submitPrompt as ReturnType<typeof vi.fn>).mock
-        .invocationCallOrder[0],
-    ).toBeLessThan(
-      (harness.deps.clearEditingBuffer as ReturnType<typeof vi.fn>).mock
-        .invocationCallOrder[0],
+    const submittedRequest = (
+      harness.deps.submitPrompt as ReturnType<typeof vi.fn>
+    ).mock.calls[0][0];
+    submittedRequest.onAccepted();
+    expect(harness.deps.clearEditingBuffer).toHaveBeenCalledExactlyOnceWith(
+      payload,
     );
     expect(harness.clock.pendingTimerCount()).toBe(1);
     harness.clock.advanceBy(2_000);
     await flushCommands();
     expect(harness.controller.getSnapshot().type).toBe("idle");
+  });
+
+  it("preserves a rejected prompt in the created chat", async () => {
+    const harness = createHarness();
+    harness.controller.send({ type: "SUBMIT", payload });
+    harness.controller.send({ type: "PROVIDERS_LOADED", anySetup: true });
+    await flushCommands();
+
+    const submittedRequest = (
+      harness.deps.submitPrompt as ReturnType<typeof vi.fn>
+    ).mock.calls[0][0];
+    submittedRequest.onAcceptanceRejected("quota exceeded");
+
+    expect(harness.deps.preserveRejectedPrompt).toHaveBeenCalledExactlyOnceWith(
+      2,
+      payload,
+    );
+    expect(harness.deps.clearEditingBuffer).not.toHaveBeenCalled();
   });
 
   it("waits for both settle and a deferred preview decision", async () => {

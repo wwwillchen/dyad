@@ -41,16 +41,7 @@ export function DefaultChatModeSelector() {
 
   const isProEnabled = isDyadProEnabled(settings);
   const isDyadFreeSelected = isFreeProModel(settings.selectedModel);
-  const freeAgentQuotaAvailable = quotaStatus
-    ? !quotaStatus.isQuotaExceeded
-    : undefined;
-  const effectiveDefault = getEffectiveDefaultChatMode(
-    settings,
-    envVars,
-    freeAgentQuotaAvailable,
-  );
-  const showBasicAgentOption =
-    isProEnabled || freeAgentQuotaAvailable !== false;
+  const effectiveDefault = getEffectiveDefaultChatMode(settings, envVars);
 
   const handleDefaultChatModeChange = (value: ChatMode) => {
     if (isFreeProBuildModeCombination(settings.selectedModel, value)) {
@@ -92,20 +83,20 @@ export function DefaultChatModeSelector() {
           <SelectValue>{getModeDisplayName(effectiveDefault)}</SelectValue>
         </SelectTrigger>
         <SelectContent>
-          {showBasicAgentOption && (
-            <SelectItem value="local-agent">
-              <div className="flex flex-col items-start">
-                <span className="font-medium">
-                  {isProEnabled ? "Agent" : "Basic Agent"}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {isProEnabled
-                    ? "Better at bigger tasks"
+          <SelectItem value="local-agent">
+            <div className="flex flex-col items-start">
+              <span className="font-medium">
+                {isProEnabled ? "Agent" : "Basic Agent"}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {isProEnabled
+                  ? "Better at bigger tasks"
+                  : quotaStatus?.isQuotaExceeded
+                    ? "Daily limit reached; preference applies after reset"
                     : "Free tier (10 messages/day)"}
-                </span>
-              </div>
-            </SelectItem>
-          )}
+              </span>
+            </div>
+          </SelectItem>
           <SelectItem value="build" disabled={isDyadFreeSelected}>
             <div className="flex flex-col items-start">
               <span className="font-medium">Build</span>

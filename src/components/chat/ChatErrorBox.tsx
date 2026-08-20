@@ -8,6 +8,7 @@ import {
   ExternalLink as ExternalLinkIcon,
   CircleArrowUp,
   MessageSquarePlus,
+  ArrowRight,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -16,28 +17,32 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 
 export function ChatErrorBox({
   onDismiss,
   error,
   isDyadProEnabled,
   onStartNewChat,
+  onSwitchToBuildMode,
 }: {
   onDismiss: () => void;
   error: string;
   isDyadProEnabled: boolean;
   onStartNewChat?: () => void;
+  onSwitchToBuildMode?: () => void;
 }) {
   const fallbackPrefix = "Fallbacks=[{";
   const normalizedError = error.includes(fallbackPrefix)
     ? error.split(fallbackPrefix)[0]
     : error;
+  const freeAgentQuotaError = parseFreeAgentQuotaError(normalizedError);
   const isFreeModelQuotaError =
     normalizedError.includes("dyad_free_model_quota_exceeded") ||
     normalizedError.includes("FREE_MODEL_QUOTA_EXCEEDED") ||
     normalizedError.includes("Dyad Free has reached its daily limit.") ||
     normalizedError.includes("Dyad Free limit");
-  const { messagesLimit } = useFreeAgentQuota();
+  const { messagesLimit, resetTime } = useFreeAgentQuota();
   const {
     messagesLimit: freeModelMessagesLimit,
     resetTime: freeModelResetTime,
@@ -141,18 +146,43 @@ export function ChatErrorBox({
     error = normalizedError;
   }
   // Handle FREE_AGENT_QUOTA_EXCEEDED error (Basic Agent mode quota exceeded)
-  if (error.includes("FREE_AGENT_QUOTA_EXCEEDED")) {
+  if (freeAgentQuotaError) {
+    const authoritativeResetTime = freeAgentQuotaError.resetTime ?? resetTime;
+    const resetText = authoritativeResetTime
+      ? ` Your quota resets at ${new Intl.DateTimeFormat(undefined, {
+          hour: "numeric",
+          minute: "2-digit",
+          timeZoneName: "short",
+        }).format(new Date(authoritativeResetTime))}.`
+      : "";
+
     return (
       <ChatErrorContainer onDismiss={onDismiss}>
-        You have used all {messagesLimit} free Agent messages for today. Please
-        upgrade to Dyad Pro for unlimited access or switch to Build mode.
-        <div className="mt-2 space-y-2 space-x-2">
+        You have used all {messagesLimit} free Basic Agent messages for today.
+        {resetText} This message was not sent. Upgrade to Dyad Pro for unlimited
+        Agent access
+        {onSwitchToBuildMode
+          ? ", or switch this chat to Build mode and send it again."
+          : ". To use Build mode, first choose a model other than Dyad Free, then send it again."}
+        <div className="mt-2 flex flex-wrap gap-2">
           <ExternalLink
             href="https://dyad.sh/pro?utm_source=dyad-app&utm_medium=app&utm_campaign=free-agent-quota-exceeded"
             variant="primary"
           >
             Upgrade to Dyad Pro
           </ExternalLink>
+          {onSwitchToBuildMode && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onSwitchToBuildMode}
+              className="gap-1.5"
+            >
+              Switch to Build
+              <ArrowRight size={16} />
+            </Button>
+          )}
         </div>
       </ChatErrorContainer>
     );
@@ -218,6 +248,31 @@ export function ChatErrorBox({
       </div>
     </ChatErrorContainer>
   );
+}
+
+function parseFreeAgentQuotaError(
+  error: string,
+): { resetTime?: number | null } | null {
+  try {
+    const parsed: unknown = JSON.parse(error);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "type" in parsed &&
+      parsed.type === "FREE_AGENT_QUOTA_EXCEEDED"
+    ) {
+      const resetTime = "resetTime" in parsed ? parsed.resetTime : undefined;
+      return {
+        resetTime:
+          typeof resetTime === "number" && Number.isFinite(resetTime)
+            ? resetTime
+            : null,
+      };
+    }
+  } catch {
+    // Fall through to the legacy string marker check below.
+  }
+  return error.includes("FREE_AGENT_QUOTA_EXCEEDED") ? {} : null;
 }
 
 function ExternalLink({

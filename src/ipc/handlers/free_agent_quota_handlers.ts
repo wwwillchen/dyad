@@ -8,8 +8,13 @@ import { IS_TEST_BUILD } from "../utils/test_utils";
 import { registerTrustedIpcHandler } from "./trusted_handle";
 import { FREE_AGENT_QUOTA_LIMIT } from "@/lib/free_agent_quota_limit";
 import fetch from "node-fetch";
+import { withLock } from "../utils/lock_utils";
+import { shouldSimulateFreeAgentQuotaExceeded } from "../utils/free_agent_quota_fixture";
 
 const logger = log.scope("free_agent_quota_handlers");
+const FREE_AGENT_QUOTA_ADMISSION_LOCK = "free-agent-quota-admission";
+const pendingQuotaReservations = new Set<number>();
+let nextQuotaReservationId = 1;
 
 /** Timeout for server time fetch in milliseconds */
 const SERVER_TIME_TIMEOUT_MS = 5000;
@@ -64,6 +69,64 @@ async function getServerTime(): Promise<number> {
 
 export { FREE_AGENT_QUOTA_LIMIT };
 
+export type FreeAgentQuotaReservationResult =
+  | { kind: "reserved"; reservationId: number }
+  | {
+      kind: "quota-exceeded";
+      quotaStatus: Awaited<ReturnType<typeof getFreeAgentQuotaStatus>>;
+    };
+
+/**
+ * Reserves one app-wide Basic Agent quota slot before a turn mutates durable
+ * chat or attachment state. Pending reservations count alongside persisted
+ * quota messages so different chats and windows cannot claim the same slot.
+ */
+export function reserveFreeAgentQuotaSlot(): Promise<FreeAgentQuotaReservationResult> {
+  return withLock(FREE_AGENT_QUOTA_ADMISSION_LOCK, async () => {
+    const quotaStatus = await getFreeAgentQuotaStatus();
+    const messagesUsed =
+      quotaStatus.messagesUsed + pendingQuotaReservations.size;
+    if (messagesUsed >= quotaStatus.messagesLimit) {
+      return {
+        kind: "quota-exceeded",
+        quotaStatus: {
+          ...quotaStatus,
+          messagesUsed,
+          isQuotaExceeded: true,
+        },
+      };
+    }
+
+    const reservationId = nextQuotaReservationId++;
+    pendingQuotaReservations.add(reservationId);
+    return { kind: "reserved", reservationId };
+  });
+}
+
+/**
+ * Replaces a pending slot with its durable message mark while admission is
+ * locked, so another reservation never counts both representations.
+ */
+export function commitFreeAgentQuotaSlot<T>(
+  reservationId: number,
+  commit: () => T,
+): Promise<T> {
+  return withLock(FREE_AGENT_QUOTA_ADMISSION_LOCK, async () => {
+    const result = commit();
+    pendingQuotaReservations.delete(reservationId);
+    return result;
+  });
+}
+
+/** Releases a pending slot when admission or preparation does not complete. */
+export function releaseFreeAgentQuotaSlot(
+  reservationId: number,
+): Promise<void> {
+  return withLock(FREE_AGENT_QUOTA_ADMISSION_LOCK, async () => {
+    pendingQuotaReservations.delete(reservationId);
+  });
+}
+
 /**
  * Duration of the quota window in milliseconds (23 hours).
  * We use 23 hours instead of 24 to provide a fudge factor since the client
@@ -103,22 +166,6 @@ export function registerFreeAgentQuotaHandlers() {
 }
 
 /**
- * Marks a message as using the free agent quota.
- * This should be called BEFORE starting the agent stream to prevent race conditions.
- * If the stream fails, call unmarkMessageAsUsingFreeAgentQuota to refund the quota.
- */
-export async function markMessageAsUsingFreeAgentQuota(
-  messageId: number,
-): Promise<void> {
-  await db
-    .update(messages)
-    .set({ usingFreeAgentModeQuota: true })
-    .where(eq(messages.id, messageId));
-
-  logger.log(`Marked message ${messageId} as using free agent quota`);
-}
-
-/**
  * Unmarks a message as using the free agent quota (refunds quota).
  * This should be called when an agent stream fails or is aborted to avoid
  * penalizing users for unsuccessful requests.
@@ -142,6 +189,18 @@ export async function unmarkMessageAsUsingFreeAgentQuota(
  * since the oldest message was sent (not a rolling window).
  */
 export async function getFreeAgentQuotaStatus() {
+  if (shouldSimulateFreeAgentQuotaExceeded()) {
+    const now = Date.now();
+    return {
+      messagesUsed: FREE_AGENT_QUOTA_LIMIT,
+      messagesLimit: FREE_AGENT_QUOTA_LIMIT,
+      isQuotaExceeded: true,
+      windowStartTime: now,
+      resetTime: now + QUOTA_WINDOW_MS,
+      hoursUntilReset: Math.ceil(QUOTA_WINDOW_MS / (60 * 60 * 1000)),
+    };
+  }
+
   // Get all messages with usingFreeAgentModeQuota = true, ordered by creation time
   const quotaMessages = await db
     .select({

@@ -142,11 +142,15 @@ import {
   normalizeStoredChatMode,
   resolveChatModeForTurn,
 } from "./chat_mode_resolution";
-import { acceptChatTurn } from "./chat_turn_acceptance";
+import {
+  acceptChatTurn,
+  isChatTurnAlreadyAccepted,
+} from "./chat_turn_acceptance";
 import { withChatQueueLock } from "@/chat_stream/queue_lock";
 import {
-  getFreeAgentQuotaStatus,
-  markMessageAsUsingFreeAgentQuota,
+  commitFreeAgentQuotaSlot,
+  releaseFreeAgentQuotaSlot,
+  reserveFreeAgentQuotaSlot,
   unmarkMessageAsUsingFreeAgentQuota,
 } from "./free_agent_quota_handlers";
 import { AI_STREAMING_ERROR_MESSAGE_PREFIX } from "@/shared/texts";
@@ -899,6 +903,8 @@ export function registerChatStreamHandlers() {
     let finishedNaturally = false;
     let replayedAcceptedFollowUp = false;
     let mutatedPersistedChat = false;
+    let freeAgentQuotaReservationId: number | null = null;
+    let reservedFreeAgentQuotaMessageId: number | null = null;
     // Expose a promise that resolves once this handler fully unwinds (see the
     // `finally` block) so `cancelStream` can await in-flight tool/file writes.
     let resolveCompletion: () => void = () => {};
@@ -1035,6 +1041,48 @@ export function registerChatStreamHandlers() {
       // guess until the next stream replaces it. The latest stream wins, and the
       // value is cleared on clean exit.
       setSentinelActiveChat(req.chatId);
+
+      const baseSettings = readSettings();
+      let selectedModel = chat.modelSelection
+        ? await normalizeModelSelection(chat.modelSelection)
+        : await resolveDefaultModelSelection(baseSettings);
+      let { settings: storedSettings, mode: selectedChatMode } =
+        await resolveChatModeForTurn({
+          storedChatMode: chat.chatMode,
+          requestedChatMode: req.requestedChatMode,
+          settings: { ...baseSettings, selectedModel },
+        });
+      assertChatModeCompatibleWithModel(storedSettings, selectedChatMode);
+
+      // Reserve quota before redo or attachment persistence. The reservation
+      // is converted to a durable message mark only after turn acceptance.
+      let isBasicAgentModeRequest = isBasicAgentMode({
+        ...storedSettings,
+        selectedChatMode,
+      });
+      const isAcceptedReplay = isChatTurnAlreadyAccepted(db, {
+        chatId: req.chatId,
+        chatTurnIntentId: req.intentId,
+        userInputRequestId: req.userInputRequestId,
+      });
+      if (isBasicAgentModeRequest && !isAcceptedReplay) {
+        const quotaReservation = await reserveFreeAgentQuotaSlot();
+        if (quotaReservation.kind === "quota-exceeded") {
+          const { quotaStatus } = quotaReservation;
+          safeSend(event.sender, "chat:response:error", {
+            chatId: req.chatId,
+            invocationRef: req.invocationRef,
+            streamId: req.streamId,
+            error: JSON.stringify({
+              type: "FREE_AGENT_QUOTA_EXCEEDED",
+              hoursUntilReset: quotaStatus.hoursUntilReset,
+              resetTime: quotaStatus.resetTime,
+            }),
+          } satisfies ChatStreamErrorPayload);
+          return req.chatId;
+        }
+        freeAgentQuotaReservationId = quotaReservation.reservationId;
+      }
 
       // Handle redo option: remove the most recent messages if needed
       if (req.redo) {
@@ -1367,40 +1415,111 @@ ${componentSnippet}
       const defaultAiUserPrompt =
         userPrompt + (attachmentInfo ? attachmentInfo : "");
 
-      const baseSettings = readSettings();
-      let selectedModel = chat.modelSelection
-        ? await normalizeModelSelection(chat.modelSelection)
-        : await resolveDefaultModelSelection(baseSettings);
-      let {
-        settings: storedSettings,
-        mode: selectedChatMode,
-        fallbackReason: chatModeFallbackReason,
-      } = await resolveChatModeForTurn({
-        storedChatMode: chat.chatMode,
-        requestedChatMode: req.requestedChatMode,
-        settings: { ...baseSettings, selectedModel },
-      });
-      assertChatModeCompatibleWithModel(storedSettings, selectedChatMode);
+      const acceptTurn = () =>
+        withChatQueueLock(req.chatId, async () => {
+          const latestChat = db
+            .select({
+              chatMode: chats.chatMode,
+              modelSelection: chats.modelSelection,
+            })
+            .from(chats)
+            .where(eq(chats.id, req.chatId))
+            .get();
+          if (!latestChat) {
+            throw new DyadError(
+              `Chat not found: ${req.chatId}`,
+              DyadErrorKind.NotFound,
+            );
+          }
+
+          selectedModel = latestChat.modelSelection
+            ? await normalizeModelSelection(latestChat.modelSelection)
+            : selectedModel;
+          const latestResolution = await resolveChatModeForTurn({
+            storedChatMode: latestChat.chatMode,
+            requestedChatMode:
+              req.requestedChatMode ??
+              normalizeStoredChatMode(latestChat.chatMode),
+            settings: { ...baseSettings, selectedModel },
+          });
+          ({ settings: storedSettings, mode: selectedChatMode } =
+            latestResolution);
+          assertChatModeCompatibleWithModel(storedSettings, selectedChatMode);
+          isBasicAgentModeRequest = isBasicAgentMode({
+            ...storedSettings,
+            selectedChatMode,
+          });
+
+          if (
+            isBasicAgentModeRequest &&
+            freeAgentQuotaReservationId === null &&
+            !isAcceptedReplay
+          ) {
+            const quotaReservation = await reserveFreeAgentQuotaSlot();
+            if (quotaReservation.kind === "quota-exceeded") {
+              const { quotaStatus } = quotaReservation;
+              safeSend(event.sender, "chat:response:error", {
+                chatId: req.chatId,
+                invocationRef: req.invocationRef,
+                streamId: req.streamId,
+                error: JSON.stringify({
+                  type: "FREE_AGENT_QUOTA_EXCEEDED",
+                  hoursUntilReset: quotaStatus.hoursUntilReset,
+                  resetTime: quotaStatus.resetTime,
+                }),
+              } satisfies ChatStreamErrorPayload);
+              return null;
+            }
+            freeAgentQuotaReservationId = quotaReservation.reservationId;
+          } else if (
+            !isBasicAgentModeRequest &&
+            freeAgentQuotaReservationId !== null
+          ) {
+            await releaseFreeAgentQuotaSlot(freeAgentQuotaReservationId);
+            freeAgentQuotaReservationId = null;
+          }
+
+          const persistAcceptedTurn = () =>
+            acceptChatTurn(db, {
+              chatId: req.chatId,
+              storedChatMode: latestChat.chatMode,
+              selectedChatMode,
+              selectedModel,
+              content:
+                implementPlanDisplayPrompt ??
+                displayUserPrompt ??
+                defaultAiUserPrompt,
+              userInputRequestId: req.userInputRequestId,
+              chatTurnIntentId: req.intentId,
+              chatTurnIntent: executionObserver(req)?.intent,
+              usingFreeAgentModeQuota: freeAgentQuotaReservationId !== null,
+            });
+          if (freeAgentQuotaReservationId === null) {
+            return persistAcceptedTurn();
+          }
+
+          const reservationId = freeAgentQuotaReservationId;
+          const acceptedTurn = await commitFreeAgentQuotaSlot(
+            reservationId,
+            persistAcceptedTurn,
+          );
+          freeAgentQuotaReservationId = null;
+          if (acceptedTurn.userMessageId !== null) {
+            reservedFreeAgentQuotaMessageId = acceptedTurn.userMessageId;
+          }
+          return acceptedTurn;
+        });
+
+      const acceptedTurn = await acceptTurn();
+      if (acceptedTurn === null) {
+        return req.chatId;
+      }
+      mutatedPersistedChat = true;
 
       // Accept the user message and latch an implicit chat's first mode in one
       // synchronous transaction. This keeps the idempotent message insert and
       // the mode latch atomic. The conditional update also arbitrates
       // concurrent first turns; a loser reloads and uses the winner below.
-      const acceptedTurn = await withChatQueueLock(req.chatId, () =>
-        acceptChatTurn(db, {
-          chatId: req.chatId,
-          storedChatMode: chat.chatMode,
-          selectedChatMode,
-          selectedModel,
-          content:
-            implementPlanDisplayPrompt ??
-            displayUserPrompt ??
-            defaultAiUserPrompt,
-          userInputRequestId: req.userInputRequestId,
-          chatTurnIntentId: req.intentId,
-          chatTurnIntent: executionObserver(req)?.intent,
-        }),
-      );
       mutatedPersistedChat = true;
       if (acceptedTurn.userMessageId !== null) {
         executionObserver(req)?.onAccepted?.(acceptedTurn.userMessageId);
@@ -1442,11 +1561,8 @@ ${componentSnippet}
           normalizeStoredChatMode(acceptedTurn.authoritativeChatMode),
         settings: storedSettings,
       });
-      ({
-        settings: storedSettings,
-        mode: selectedChatMode,
-        fallbackReason: chatModeFallbackReason,
-      } = authoritativeResolution);
+      ({ settings: storedSettings, mode: selectedChatMode } =
+        authoritativeResolution);
       assertChatModeCompatibleWithModel(storedSettings, selectedChatMode);
 
       const userMessageId = acceptedTurn.userMessageId;
@@ -1462,6 +1578,16 @@ ${componentSnippet}
         ...storedSettings,
         selectedChatMode,
       };
+      isBasicAgentModeRequest = isBasicAgentMode(settings);
+      if (
+        !isBasicAgentModeRequest &&
+        reservedFreeAgentQuotaMessageId !== null
+      ) {
+        await unmarkMessageAsUsingFreeAgentQuota(
+          reservedFreeAgentQuotaMessageId,
+        );
+        reservedFreeAgentQuotaMessageId = null;
+      }
       const freeModelMode = isFreeProModel(settings.selectedModel);
       const hasImageAttachments = storedAttachments.some((attachment) =>
         attachment.mimeType.startsWith("image/"),
@@ -1486,7 +1612,6 @@ ${componentSnippet}
         invocationRef: req.invocationRef,
         streamId: req.streamId,
         effectiveChatMode: selectedChatMode,
-        chatModeFallbackReason,
       } satisfies ChatStreamChunkPayload);
       // Only Dyad Pro requests have request ids.
       if (settings.enableDyadPro) {
@@ -2307,56 +2432,26 @@ This conversation includes one or more image attachments. When the user uploads 
         // injects a `<system-reminder>` into the user's latest message telling
         // the agent which `app_name` values are valid.
         if (isLocalAgentMode) {
-          // Check quota for Basic Agent mode (non-Pro users)
-          const isBasicAgentModeRequest = isBasicAgentMode(settings);
-          if (isBasicAgentModeRequest) {
-            const quotaStatus = await getFreeAgentQuotaStatus();
-            if (quotaStatus.isQuotaExceeded) {
-              safeSend(event.sender, "chat:response:error", {
-                chatId: req.chatId,
-                invocationRef: req.invocationRef,
-                streamId: req.streamId,
-                error: JSON.stringify({
-                  type: "FREE_AGENT_QUOTA_EXCEEDED",
-                  hoursUntilReset: quotaStatus.hoursUntilReset,
-                  resetTime: quotaStatus.resetTime,
-                }),
-              } satisfies ChatStreamErrorPayload);
-              return;
-            }
-          }
-
-          // Mark the user message as using quota BEFORE starting the stream
-          // to prevent race conditions with parallel requests
-          if (isBasicAgentModeRequest && userMessageId) {
-            await markMessageAsUsingFreeAgentQuota(userMessageId);
-          }
-
-          let streamSuccess = false;
-          try {
-            streamSuccess = await handleLocalAgentStream(
-              event,
-              req,
-              abortController,
-              {
-                placeholderMessageId: placeholderAssistantMessage.id,
-                systemPrompt,
-                dyadRequestId: dyadRequestId ?? "[no-request-id]",
-                messageOverride: isSummarizeIntent ? chatMessages : undefined,
-                settingsOverride: settings,
-                modelSelectionOverride: selectedModel,
-                freeModelMode,
-                preCommitHookAvailable,
-                referencedApps: referencedAppsForAgent,
-                currentTurnHasOnDiskAttachment:
-                  hasScriptReadableAttachment(storedAttachments),
-              },
-            );
-          } finally {
-            // If the stream failed, was aborted, or threw, refund the quota
-            if (isBasicAgentModeRequest && userMessageId && !streamSuccess) {
-              await unmarkMessageAsUsingFreeAgentQuota(userMessageId);
-            }
+          const streamSuccess = await handleLocalAgentStream(
+            event,
+            req,
+            abortController,
+            {
+              placeholderMessageId: placeholderAssistantMessage.id,
+              systemPrompt,
+              dyadRequestId: dyadRequestId ?? "[no-request-id]",
+              messageOverride: isSummarizeIntent ? chatMessages : undefined,
+              settingsOverride: settings,
+              modelSelectionOverride: selectedModel,
+              freeModelMode,
+              preCommitHookAvailable,
+              referencedApps: referencedAppsForAgent,
+              currentTurnHasOnDiskAttachment:
+                hasScriptReadableAttachment(storedAttachments),
+            },
+          );
+          if (streamSuccess) {
+            reservedFreeAgentQuotaMessageId = null;
           }
 
           finishedNaturally = streamSuccess;
@@ -2699,6 +2794,22 @@ This conversation includes one or more image attachments. When the user uploads 
 
       return "error";
     } finally {
+      if (freeAgentQuotaReservationId !== null) {
+        try {
+          await releaseFreeAgentQuotaSlot(freeAgentQuotaReservationId);
+        } catch (error) {
+          logger.error("Failed to release pending Basic Agent quota", error);
+        }
+      }
+      if (reservedFreeAgentQuotaMessageId !== null) {
+        try {
+          await unmarkMessageAsUsingFreeAgentQuota(
+            reservedFreeAgentQuotaMessageId,
+          );
+        } catch (error) {
+          logger.error("Failed to refund reserved Basic Agent quota", error);
+        }
+      }
       if (mutatedPersistedChat) {
         queryInvalidationBus.publish(
           [{ family: "chats" }, { family: "chat", chatId: req.chatId }],

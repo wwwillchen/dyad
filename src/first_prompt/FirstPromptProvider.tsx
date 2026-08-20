@@ -24,10 +24,10 @@ import { useSelectChat } from "@/hooks/useSelectChat";
 import { useLanguageModelProviders } from "@/hooks/useLanguageModelProviders";
 import { useOpenPreviewIfSetupRequired } from "@/hooks/useOpenPreviewIfSetupRequired";
 import { queryKeys } from "@/lib/queryKeys";
-import { useFreeAgentQuota } from "@/hooks/useFreeAgentQuota";
 import { showError } from "@/lib/toast";
 import {
   attachmentsAtom,
+  chatInputValuesByIdAtom,
   homeChatInputValueAtom,
   homeSelectedAppAtom,
 } from "@/atoms/chatAtoms";
@@ -60,6 +60,10 @@ import {
 import type { FirstPromptEvent, FirstPromptPayload } from "./state";
 import { resolveFirstPromptDefaultChatMode } from "./provider_resume";
 import type { UserSettings } from "@/lib/schemas";
+import {
+  mergeRejectedPromptIntoChatDraft,
+  removeSubmittedFirstPromptAttachments,
+} from "./editing_buffer";
 
 export interface FirstPromptChatStream {
   submit(request: {
@@ -68,6 +72,8 @@ export interface FirstPromptChatStream {
     appId: number;
     attachments: FirstPromptPayload["attachments"];
     requestedChatMode?: FirstPromptPayload["chatMode"] | null;
+    onAccepted: () => void;
+    onAcceptanceRejected: (reason: string) => void;
   }): void;
 }
 
@@ -100,7 +106,6 @@ export function FirstPromptProvider({
   const { t } = useTranslation("home");
   const posthog = usePostHog();
   const { settings, envVars } = useSettings();
-  const { quotaStatus } = useFreeAgentQuota();
   const { refreshApps } = useLoadApps();
   const { selectChat } = useSelectChat();
   const openPreviewIfSetupRequired = useOpenPreviewIfSetupRequired();
@@ -160,13 +165,15 @@ export function FirstPromptProvider({
       }
       return opened;
     },
-    submitPrompt({ appId, chatId, payload }) {
+    submitPrompt({ appId, chatId, payload, onAccepted, onAcceptanceRejected }) {
       chatStream.submit({
         prompt: payload.prompt,
         chatId,
         appId,
         attachments: payload.attachments,
         requestedChatMode: getRequestedChatModeForFirstPrompt(payload),
+        onAccepted,
+        onAcceptanceRejected,
       });
       posthog.capture("home:chat-submit", {
         existingApp: payload.selectedApp !== undefined,
@@ -192,13 +199,28 @@ export function FirstPromptProvider({
       posthog.capture("home:ai-setup-dialog-open");
       setIsSetupDialogOpen(true);
     },
-    clearEditingBuffer() {
-      // Clear submitted prompt text from the home composer.
-      store.set(homeChatInputValueAtom, "");
-      // Clear submitted attachments from the home composer.
-      store.set(attachmentsAtom, []);
-      // Clear the submitted app selection from the home composer.
-      store.set(homeSelectedAppAtom, null);
+    clearEditingBuffer(payload) {
+      // Acceptance may arrive after the user has started another draft. Clear
+      // each submitted field only while it still matches that exact snapshot.
+      if (store.get(homeChatInputValueAtom) === payload.prompt) {
+        store.set(homeChatInputValueAtom, "");
+      }
+      const currentAttachments = store.get(attachmentsAtom);
+      store.set(
+        attachmentsAtom,
+        removeSubmittedFirstPromptAttachments(
+          currentAttachments,
+          payload.attachments,
+        ),
+      );
+      if (store.get(homeSelectedAppAtom)?.id === payload.selectedApp?.id) {
+        store.set(homeSelectedAppAtom, null);
+      }
+    },
+    preserveRejectedPrompt(chatId, payload) {
+      store.set(chatInputValuesByIdAtom, (current) =>
+        mergeRejectedPromptIntoChatDraft(current, chatId, payload.prompt),
+      );
     },
     showError(message, failure) {
       const key =
@@ -232,12 +254,8 @@ export function FirstPromptProvider({
   useManagerLifecycle(controller);
   useManagerPagehideDisposal(controller);
   const snapshot = useControllerSnapshot(controller);
-  const providerResumeInputsRef = useRef({
-    settings,
-    envVars,
-    quotaStatus,
-  });
-  providerResumeInputsRef.current = { settings, envVars, quotaStatus };
+  const providerResumeInputsRef = useRef({ settings, envVars });
+  providerResumeInputsRef.current = { settings, envVars };
   const providerResumeAttemptRef = useRef<object | null>(null);
   const resumeAfterProviderConfigured = useCallback(
     (settingsOverride?: UserSettings) => {
@@ -254,11 +272,9 @@ export function FirstPromptProvider({
         try {
           const resolvedSettings = settingsOverride ?? inputs.settings;
           const defaultChatMode = resolvedSettings
-            ? await resolveFirstPromptDefaultChatMode({
+            ? resolveFirstPromptDefaultChatMode({
                 settings: resolvedSettings,
                 envVars: inputs.envVars,
-                quotaStatus: inputs.quotaStatus,
-                queryClient,
               })
             : undefined;
           if (

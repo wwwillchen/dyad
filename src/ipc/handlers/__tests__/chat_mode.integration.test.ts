@@ -14,6 +14,8 @@
 //     the payload then omits the codebase-priming user turn and nothing is
 //     committed.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 import { screen, waitFor } from "@testing-library/react";
 import { eq } from "drizzle-orm";
@@ -25,6 +27,14 @@ import {
 import { h } from "@/testing/hybrid.setup";
 import { chats, messages } from "@/db/schema";
 import { readSettings, writeSettings } from "@/main/settings";
+import { FREE_AGENT_QUOTA_LIMIT } from "@/lib/free_agent_quota_limit";
+import { withChatQueueLock } from "@/chat_stream/queue_lock";
+import {
+  commitFreeAgentQuotaSlot,
+  releaseFreeAgentQuotaSlot,
+  reserveFreeAgentQuotaSlot,
+  type FreeAgentQuotaReservationResult,
+} from "@/ipc/handlers/free_agent_quota_handlers";
 
 function errorEvents(harness: HybridChatHarness) {
   return harness.bridge.sentEvents.filter(
@@ -217,6 +227,295 @@ describe("chat mode (integration)", () => {
       writeSettings(originalSettings);
     }
   }, 60_000);
+
+  it("rechecks Basic Agent quota when the stored mode changes before acceptance", async () => {
+    const originalSettings = readSettings();
+    await harness.db
+      .update(messages)
+      .set({ usingFreeAgentModeQuota: false })
+      .where(eq(messages.usingFreeAgentModeQuota, true));
+    const seedChatId = await harness.createChat();
+    const switchingChatId = await harness.createChat();
+    await harness.db
+      .update(chats)
+      .set({ chatMode: "build" })
+      .where(eq(chats.id, switchingChatId));
+    await harness.db.insert(messages).values(
+      Array.from({ length: FREE_AGENT_QUOTA_LIMIT }, (_, index) => ({
+        chatId: seedChatId,
+        role: "user" as const,
+        content: `mode-race quota message ${index + 1}`,
+        usingFreeAgentModeQuota: true,
+      })),
+    );
+    writeSettings({
+      enableDyadPro: false,
+      selectedChatMode: "build",
+      defaultChatMode: "build",
+    });
+
+    let releaseGate: () => void = () => undefined;
+    let markGateAcquired: () => void = () => undefined;
+    const gateAcquired = new Promise<void>((resolve) => {
+      markGateAcquired = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const heldLock = withChatQueueLock(switchingChatId, async () => {
+      markGateAcquired();
+      await gate;
+    });
+    await gateAcquired;
+
+    try {
+      const stream = harness.streamChat("must honor the new agent mode", {
+        chatId: switchingChatId,
+        requestedChatMode: null,
+        userInputRequestId: "mode-changed-before-acceptance",
+      });
+      const modeUpdate = withChatQueueLock(switchingChatId, () =>
+        harness.db
+          .update(chats)
+          .set({ chatMode: "local-agent" })
+          .where(eq(chats.id, switchingChatId)),
+      );
+
+      // Let the stream resolve its initial Build mode and queue its final
+      // acceptance behind the already-queued mode update.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      releaseGate();
+      await heldLock;
+      await modeUpdate;
+      const result = await stream;
+
+      expect(result.eventsFor("chat:response:error")).toHaveLength(1);
+      expect(result.eventsFor("chat:response:error")[0].payload).toMatchObject({
+        error: expect.stringContaining("FREE_AGENT_QUOTA_EXCEEDED"),
+      });
+      const rejectedMessage = await harness.db.query.messages.findFirst({
+        where: (messages, { and, eq }) =>
+          and(
+            eq(messages.chatId, switchingChatId),
+            eq(messages.userInputRequestId, "mode-changed-before-acceptance"),
+          ),
+      });
+      expect(rejectedMessage).toBeUndefined();
+    } finally {
+      releaseGate();
+      await heldLock;
+      writeSettings(originalSettings);
+      await harness.db
+        .update(messages)
+        .set({ usingFreeAgentModeQuota: false })
+        .where(eq(messages.usingFreeAgentModeQuota, true));
+    }
+  }, 60_000);
+
+  it("rejects exhausted Basic Agent quota before accepting the turn", async () => {
+    const originalSettings = readSettings();
+    const quotaChatId = await harness.createChat();
+    await harness.db
+      .update(chats)
+      .set({ chatMode: "local-agent" })
+      .where(eq(chats.id, quotaChatId));
+    await harness.db.insert(messages).values(
+      Array.from({ length: FREE_AGENT_QUOTA_LIMIT }, (_, index) => ({
+        chatId: quotaChatId,
+        role: "user" as const,
+        content: `quota message ${index + 1}`,
+        usingFreeAgentModeQuota: true,
+        ...(index === 0
+          ? { userInputRequestId: "accepted-before-exhaustion" }
+          : {}),
+      })),
+    );
+    writeSettings({
+      enableDyadPro: false,
+      selectedChatMode: "local-agent",
+      defaultChatMode: "local-agent",
+    });
+
+    try {
+      const mediaDir = path.join(harness.appDir, ".dyad", "media");
+      const mediaFilesBefore = await fs
+        .readdir(mediaDir)
+        .catch((): string[] => []);
+      const result = await harness.streamChat("must not be accepted", {
+        chatId: quotaChatId,
+        requestedChatMode: "local-agent",
+        userInputRequestId: "exhausted-basic-agent",
+        attachments: [
+          {
+            name: "rejected-quota-attachment.txt",
+            type: "text/plain",
+            data: "data:text/plain;base64,bXVzdCBub3QgYmUgcGVyc2lzdGVk",
+            attachmentType: "chat-context",
+          },
+        ],
+      });
+
+      const errorEvents = result.eventsFor("chat:response:error");
+      expect(errorEvents).toHaveLength(1);
+      expect(errorEvents[0].payload).toMatchObject({
+        error: expect.stringContaining("FREE_AGENT_QUOTA_EXCEEDED"),
+      });
+      expect(
+        result
+          .eventsFor("chat:response:chunk")
+          .some(({ payload }) =>
+            JSON.stringify(payload).includes("acceptedUserInputRequestId"),
+          ),
+      ).toBe(false);
+
+      const persistedMessages = await harness.db.query.messages.findMany({
+        where: eq(messages.chatId, quotaChatId),
+      });
+      expect(persistedMessages).toHaveLength(FREE_AGENT_QUOTA_LIMIT);
+      expect(
+        persistedMessages.some(
+          ({ content }) => content === "must not be accepted",
+        ),
+      ).toBe(false);
+      expect(
+        persistedMessages.some(
+          ({ role, content }) => role === "assistant" && content === "",
+        ),
+      ).toBe(false);
+      expect(await fs.readdir(mediaDir).catch((): string[] => [])).toEqual(
+        mediaFilesBefore,
+      );
+
+      const replay = await harness.streamChat("quota message 1", {
+        chatId: quotaChatId,
+        requestedChatMode: "local-agent",
+        userInputRequestId: "accepted-before-exhaustion",
+      });
+      expect(replay.eventsFor("chat:response:error")).toHaveLength(0);
+      expect(replay.eventsFor("chat:response:end")).toHaveLength(1);
+      const messagesAfterReplay = await harness.db.query.messages.findMany({
+        where: eq(messages.chatId, quotaChatId),
+      });
+      expect(messagesAfterReplay).toHaveLength(FREE_AGENT_QUOTA_LIMIT);
+    } finally {
+      writeSettings(originalSettings);
+    }
+  }, 60_000);
+
+  it("atomically reserves the final Basic Agent quota slot across chats", async () => {
+    const originalSettings = readSettings();
+    await harness.db
+      .update(messages)
+      .set({ usingFreeAgentModeQuota: false })
+      .where(eq(messages.usingFreeAgentModeQuota, true));
+
+    const seedChatId = await harness.createChat();
+    const firstChatId = await harness.createChat();
+    const secondChatId = await harness.createChat();
+    await harness.db
+      .update(chats)
+      .set({ chatMode: "local-agent" })
+      .where(eq(chats.id, firstChatId));
+    await harness.db
+      .update(chats)
+      .set({ chatMode: "local-agent" })
+      .where(eq(chats.id, secondChatId));
+    await harness.db.insert(messages).values(
+      Array.from({ length: FREE_AGENT_QUOTA_LIMIT - 1 }, (_, index) => ({
+        chatId: seedChatId,
+        role: "user" as const,
+        content: `reserved quota message ${index + 1}`,
+        usingFreeAgentModeQuota: true,
+      })),
+    );
+    writeSettings({
+      enableDyadPro: false,
+      selectedChatMode: "local-agent",
+      defaultChatMode: "local-agent",
+    });
+
+    try {
+      const results = await Promise.all([
+        harness.streamChat("tc=local-agent/simple-response first contender", {
+          chatId: firstChatId,
+          requestedChatMode: "local-agent",
+          userInputRequestId: "first-quota-contender",
+        }),
+        harness.streamChat("tc=local-agent/simple-response second contender", {
+          chatId: secondChatId,
+          requestedChatMode: "local-agent",
+          userInputRequestId: "second-quota-contender",
+        }),
+      ]);
+
+      expect(
+        results.filter(
+          (result) => result.eventsFor("chat:response:error").length === 1,
+        ),
+      ).toHaveLength(1);
+      expect(
+        results.filter(
+          (result) => result.eventsFor("chat:response:end").length === 1,
+        ),
+      ).toHaveLength(1);
+
+      const quotaMessages = await harness.db.query.messages.findMany({
+        where: eq(messages.usingFreeAgentModeQuota, true),
+      });
+      expect(quotaMessages).toHaveLength(FREE_AGENT_QUOTA_LIMIT);
+      expect(
+        quotaMessages.filter(({ content }) => content.includes("contender")),
+      ).toHaveLength(1);
+    } finally {
+      await harness.db
+        .update(messages)
+        .set({ usingFreeAgentModeQuota: false })
+        .where(eq(messages.usingFreeAgentModeQuota, true));
+      writeSettings(originalSettings);
+    }
+  }, 60_000);
+
+  it("swaps a pending quota reservation for its durable mark atomically", async () => {
+    await harness.db
+      .update(messages)
+      .set({ usingFreeAgentModeQuota: false })
+      .where(eq(messages.usingFreeAgentModeQuota, true));
+    const quotaChatId = await harness.createChat();
+    await harness.db.insert(messages).values(
+      Array.from({ length: FREE_AGENT_QUOTA_LIMIT - 2 }, (_, index) => ({
+        chatId: quotaChatId,
+        role: "user" as const,
+        content: `atomic commit quota message ${index + 1}`,
+        usingFreeAgentModeQuota: true,
+      })),
+    );
+
+    const firstReservation = await reserveFreeAgentQuotaSlot();
+    expect(firstReservation.kind).toBe("reserved");
+    if (firstReservation.kind !== "reserved") return;
+
+    let secondReservationPromise:
+      | Promise<FreeAgentQuotaReservationResult>
+      | undefined;
+    await commitFreeAgentQuotaSlot(firstReservation.reservationId, () => {
+      harness.db
+        .insert(messages)
+        .values({
+          chatId: quotaChatId,
+          role: "user",
+          content: "durable replacement for pending reservation",
+          usingFreeAgentModeQuota: true,
+        })
+        .run();
+      secondReservationPromise = reserveFreeAgentQuotaSlot();
+    });
+
+    const secondReservation = await secondReservationPromise;
+    expect(secondReservation?.kind).toBe("reserved");
+    if (secondReservation?.kind === "reserved") {
+      await releaseFreeAgentQuotaSlot(secondReservation.reservationId);
+    }
+  });
 
   it("lets main resolve an implicit Google-only first turn", async () => {
     writeSettings({

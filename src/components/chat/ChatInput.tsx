@@ -109,6 +109,7 @@ import { showError as showErrorToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useVoiceToText } from "@/hooks/useVoiceToText";
 import { isDyadProEnabled, isLocalAgentBackedMode } from "@/lib/schemas";
+import { isFreeProModel } from "@/lib/freeProModel";
 import { ReferencedAppsBar } from "./ReferencedAppsBar";
 import { useChatMode } from "@/hooks/useChatMode";
 import { useOpenPreviewIfSetupRequired } from "@/hooks/useOpenPreviewIfSetupRequired";
@@ -147,9 +148,11 @@ export function ChatInput({ chatId }: { chatId?: number }) {
   const {
     chat: activeChat,
     selectedMode: chatMode,
-    effectiveMode,
+    selectedMode,
     storedChatMode,
+    selectedModel,
     isLoading: isChatModeLoading,
+    setChatMode,
   } = useChatMode(chatId);
   const appId = useAtomValue(selectedAppIdAtom);
   const { refreshVersions } = useVersions(appId);
@@ -183,6 +186,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
   const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<
     string | null
   >(null);
+  const isAwaitingTurnAcceptanceRef = useRef(false);
   const messages = useChatMessages(chatId);
   const setMessagesById = useSetAtom(chatMessagesByIdAtom);
   const setIsPreviewOpen = useSetAtom(isPreviewOpenAtom);
@@ -262,6 +266,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     handleDragLeave,
     handleDrop,
     clearAttachments,
+    clearSubmittedAttachments,
     replaceAttachments,
     handlePaste,
     confirmPendingFiles,
@@ -280,7 +285,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
 
   const lastMessage = messages.at(-1);
   const disableSendButton =
-    effectiveMode !== "local-agent" &&
+    selectedMode !== "local-agent" &&
     lastMessage?.role === "assistant" &&
     !lastMessage.approvalState &&
     !!proposal &&
@@ -508,7 +513,8 @@ export function ChatInput({ chatId }: { chatId?: number }) {
         attachments.length === 0 &&
         !hasSuccessfulImageJobs) ||
       !chatId ||
-      pendingFiles
+      pendingFiles ||
+      isAwaitingTurnAcceptanceRef.current
     ) {
       return;
     }
@@ -532,18 +538,19 @@ export function ChatInput({ chatId }: { chatId?: number }) {
       return;
     }
 
-    // Dismiss image jobs that were auto-added
-    if (visibleSuccessfulImageJobs.length > 0) {
-      setDismissedImageJobIds((prev) => {
-        const next = new Set(prev);
-        for (const job of visibleSuccessfulImageJobs) {
-          next.add(job.id);
-        }
+    const currentInput = promptWithImages;
+    const submittedInputValue = inputValue;
+    const submittedImageJobIds = visibleSuccessfulImageJobs.map(
+      (job) => job.id,
+    );
+    const dismissSubmittedImageJobs = () => {
+      if (submittedImageJobIds.length === 0) return;
+      setDismissedImageJobIds((previous) => {
+        const next = new Set(previous);
+        for (const jobId of submittedImageJobIds) next.add(jobId);
         return next;
       });
-    }
-
-    const currentInput = promptWithImages;
+    };
 
     // Use all selected components for multi-component editing
     const componentsToSend =
@@ -558,6 +565,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
         attachments,
         selectedComponents: componentsToSend,
       });
+      dismissSubmittedImageJobs();
       resetEditingState();
       return;
     }
@@ -575,17 +583,44 @@ export function ChatInput({ chatId }: { chatId?: number }) {
         // Only clear input, attachments, and components on successful queue
         clearComposerAfterSubmit();
         clearAttachments();
+        dismissSubmittedImageJobs();
       }
       // If queue failed, leave input/attachments intact for the user
       return;
     }
 
-    // Not streaming - send immediately
-    // Clear input and components before sending
-    clearComposerAfterSubmit();
-
-    // Send message with attachments and clear them after sending
+    // Not streaming - send immediately. Keep the submitted payload in the
+    // composer until main confirms durable acceptance so admission errors
+    // (including exhausted Basic Agent quota) never discard the user's work.
     void openPreviewIfSetupRequired(appId);
+    let didClearAcceptedPayload = false;
+    const clearAcceptedPayload = () => {
+      if (didClearAcceptedPayload) return;
+      didClearAcceptedPayload = true;
+      setInputValue((current) =>
+        current === submittedInputValue ? "" : current,
+      );
+      const currentComponents = store.get(selectedComponentsPreviewAtom);
+      if (
+        currentComponents.length === componentsToSend.length &&
+        currentComponents.every(
+          (component, index) => component === componentsToSend[index],
+        )
+      ) {
+        setSelectedComponents([]);
+        sendPreviewIframeEvent({ type: "PICKER_DEACTIVATED" });
+        setVisualEditingSelectedComponent(null);
+        if (previewIframeRef?.contentWindow) {
+          previewIframeRef.contentWindow.postMessage(
+            { type: "clear-dyad-component-overlays" },
+            "*",
+          );
+        }
+      }
+      clearSubmittedAttachments(attachments);
+      dismissSubmittedImageJobs();
+    };
+    isAwaitingTurnAcceptanceRef.current = true;
     await streamMessage({
       prompt: currentInput,
       chatId,
@@ -593,8 +628,18 @@ export function ChatInput({ chatId }: { chatId?: number }) {
       redo: false,
       selectedComponents: componentsToSend,
       requestedChatMode: isChatModeLoading ? null : storedChatMode,
+      onAccepted: () => {
+        isAwaitingTurnAcceptanceRef.current = false;
+        clearAcceptedPayload();
+      },
+      onAcceptanceRejected: () => {
+        isAwaitingTurnAcceptanceRef.current = false;
+      },
+      onSettled: ({ queued }) => {
+        isAwaitingTurnAcceptanceRef.current = false;
+        if (queued) clearAcceptedPayload();
+      },
     });
-    clearAttachments();
     posthog.capture("chat:submit", { chatMode });
   };
 
@@ -724,6 +769,15 @@ export function ChatInput({ chatId }: { chatId?: number }) {
           error={error}
           isDyadProEnabled={isProEnabled}
           onStartNewChat={handleNewChat}
+          onSwitchToBuildMode={
+            isFreeProModel(selectedModel)
+              ? undefined
+              : () => {
+                  void setChatMode("build")
+                    .then(dismissError)
+                    .catch(() => {});
+                }
+          }
         />
       )}
       {/* Display loading or error state for proposal */}
@@ -818,8 +872,8 @@ export function ChatInput({ chatId }: { chatId?: number }) {
           {!pendingToolConsent &&
             proposal &&
             proposalResult?.chatId === chatId &&
-            effectiveMode !== "ask" &&
-            effectiveMode !== "local-agent" && (
+            selectedMode !== "ask" &&
+            selectedMode !== "local-agent" && (
               <ChatInputActions
                 proposal={proposal}
                 onApprove={handleApprove}
@@ -884,7 +938,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
           {/* Apps referenced with @app: that stay readable for this chat */}
           <ReferencedAppsBar
             chatId={chatId}
-            isEnabled={isLocalAgentBackedMode(effectiveMode)}
+            isEnabled={isLocalAgentBackedMode(selectedMode)}
             isStreaming={isStreaming}
           />
 
