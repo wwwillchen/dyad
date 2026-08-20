@@ -20,7 +20,7 @@ export const addIntegrationTool: ToolDefinition<
 > = {
   name: "add_integration",
   description:
-    "Prompt the user to choose and set up a database provider for the app. Do NOT set the provider parameter unless the user explicitly names a specific provider (e.g. 'Supabase' or 'Neon') in their message. The tool blocks until the user finishes the setup inside the chat and clicks Continue, then returns; you should then proceed with the next step.",
+    "Prompt the user to choose and set up a database provider for the app. Do NOT set the provider parameter unless the user explicitly names a specific provider (e.g. 'Supabase' or 'Neon') in their message. The tool blocks until the user finishes the setup and clicks Continue or chooses to skip it, then returns; you should then proceed with the next step.",
   inputSchema: addIntegrationSchema,
   defaultConsent: "always",
   modifiesState: true,
@@ -29,7 +29,9 @@ export const addIntegrationTool: ToolDefinition<
   getConsentPreview: () => "Add database integration",
 
   shouldTrackMutation: (_args, result) =>
-    !result.startsWith("The user dismissed the integration setup"),
+    !result.startsWith("The user dismissed the integration setup") &&
+    (!result.startsWith("The user skipped the integration setup") ||
+      result.includes("Git-visible workspace")),
   shouldTrackFileMutation: (_args, result) =>
     result.includes("Git-visible workspace files changed during setup.") ||
     result.includes(
@@ -37,10 +39,14 @@ export const addIntegrationTool: ToolDefinition<
     ),
 
   buildXml: (args, _isComplete) => {
+    // Persist the interactive card before execute() parks so reloads and
+    // cross-window tab transfers can reconstruct the pending request. A
+    // terminal outcome is appended after settlement; the renderer hides this
+    // pending card once its request is no longer live.
     if (args.provider && args.provider !== "none") {
-      return `<dyad-add-integration provider="${escapeXmlAttr(args.provider)}"></dyad-add-integration>`;
+      return `<dyad-add-integration provider="${escapeXmlAttr(args.provider)}" outcome="pending"></dyad-add-integration>`;
     }
-    return `<dyad-add-integration></dyad-add-integration>`;
+    return `<dyad-add-integration outcome="pending"></dyad-add-integration>`;
   },
 
   execute: async (args, ctx: AgentContext) => {
@@ -76,9 +82,11 @@ export const addIntegrationTool: ToolDefinition<
 
     if (
       result?.kind !== "integration" ||
-      !result.completed ||
-      !result.provider
+      (result.completed && !result.provider)
     ) {
+      ctx.onXmlComplete(
+        `<dyad-add-integration outcome="dismissed"></dyad-add-integration>`,
+      );
       return "The user dismissed the integration setup without completing it. Ask them how they'd like to proceed.";
     }
 
@@ -105,6 +113,21 @@ export const addIntegrationTool: ToolDefinition<
       : gitVisibleFilesChanged
         ? " Git-visible workspace files changed during setup."
         : "";
+    if (!result.completed && result.provider === null) {
+      ctx.onXmlComplete(
+        `<dyad-add-integration outcome="skipped"></dyad-add-integration>`,
+      );
+      return `The user skipped the integration setup.${mutationNote} Continue the original task without Supabase or Neon, and do not prompt for a database integration again in this continuation.`;
+    }
+    if (!result.completed || !result.provider) {
+      ctx.onXmlComplete(
+        `<dyad-add-integration outcome="dismissed"></dyad-add-integration>`,
+      );
+      return "The user dismissed the integration setup without completing it. Ask them how they'd like to proceed.";
+    }
+    ctx.onXmlComplete(
+      `<dyad-add-integration provider="${escapeXmlAttr(result.provider)}" outcome="completed"></dyad-add-integration>`,
+    );
     return `User completed the ${result.provider} integration.${mutationNote} You can now continue with the next step.`;
   },
 };

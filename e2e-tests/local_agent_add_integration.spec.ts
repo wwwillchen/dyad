@@ -18,6 +18,8 @@ testSkipIfWindows(
   async ({ po }) => {
     await po.setUpDyadPro({ localAgent: true });
     await po.importApp("minimal");
+    await po.chatActions.waitForChatCompletion({ timeout: Timeout.LONG });
+    await po.chatActions.clickNewChat();
     await po.chatActions.selectLocalAgentMode();
 
     // The tool parks the turn on a user-input request rather than finishing the
@@ -35,7 +37,16 @@ testSkipIfWindows(
     const supabaseRadio = messages.getByRole("radio", { name: /Supabase/ });
     await supabaseRadio.click();
     await expect(supabaseRadio).toHaveAttribute("aria-checked", "true");
-    await messages.getByRole("button", { name: "Next" }).click();
+    await expect(
+      messages.getByText("Recommended", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      messages.getByText("You can add a database later."),
+    ).toBeVisible();
+    await messages
+      .getByRole("button", { name: "Continue with Supabase" })
+      .click();
+    await expect(messages.getByTestId("integration-skip-button")).toBeHidden();
 
     // Both Continue buttons — the Configure panel's and the chat card's mirror —
     // stay disabled until the connector actually links a project.
@@ -72,5 +83,97 @@ testSkipIfWindows(
     await expect(
       messages.getByText("Supabase integration complete"),
     ).toBeVisible({ timeout: Timeout.MEDIUM });
+  },
+);
+
+testSkipIfWindows(
+  "local-agent - skipping database integration resumes without a provider",
+  async ({ po }) => {
+    await po.setUpDyadPro({ localAgent: true });
+    await po.importApp("minimal");
+    await po.chatActions.waitForChatCompletion({ timeout: Timeout.LONG });
+    await po.chatActions.clickNewChat();
+    await po.chatActions.selectLocalAgentMode();
+
+    await po.sendPrompt("tc=local-agent/add-integration", {
+      skipWaitForCompletion: true,
+    });
+
+    const messages = po.page.getByTestId("messages-list");
+    await expect(
+      messages.getByText("Let's connect a database first."),
+    ).toBeVisible({ timeout: Timeout.LONG });
+
+    // Entering Configure does not begin a provider mutation by itself. Back
+    // returns to the choice card with the opt-out still available.
+    await messages.getByRole("radio", { name: /Supabase/ }).click();
+    await messages
+      .getByRole("button", { name: "Continue with Supabase" })
+      .click();
+    await messages.getByRole("button", { name: "Back" }).click();
+    await expect(messages.getByTestId("integration-skip-button")).toBeEnabled({
+      timeout: Timeout.MEDIUM,
+    });
+
+    // The pending card is persisted before the tool parks, so switching chats
+    // and back cannot strand the user without its controls.
+    const pendingChatId = new URL(po.page.url()).searchParams.get("id");
+    expect(pendingChatId).not.toBeNull();
+    await po.chatActions.clickNewChat();
+    await po.page
+      .getByTestId(`chat-tab-${pendingChatId}`)
+      .locator("button")
+      .first()
+      .click();
+    await expect(messages.getByTestId("integration-skip-button")).toBeEnabled({
+      timeout: Timeout.LONG,
+    });
+
+    const completedAssistantMessages = messages.getByTestId(
+      "copy-message-button",
+    );
+    const assistantCountBeforeSkip = await completedAssistantMessages.count();
+    const skipButton = messages.getByTestId("integration-skip-button");
+    await expect(skipButton).toBeEnabled({ timeout: Timeout.MEDIUM });
+    await skipButton.click();
+
+    await expect(
+      messages.getByText("We don't want to use Supabase or Neon right now"),
+    ).toBeVisible({ timeout: Timeout.LONG });
+    await expect(messages.getByText("Integration skipped")).toBeVisible({
+      timeout: Timeout.MEDIUM,
+    });
+    await expect(
+      messages.getByText("No database integration was added."),
+    ).toBeVisible();
+    await expect(
+      po.page.getByTestId("integration-setup-continue-button"),
+    ).toBeHidden();
+    await expect(po.page.getByTestId("preview-mode-button")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    // A new completed assistant message proves that the synthetic user message
+    // resumed the agent turn. This is tied to the fresh chat above, rather than
+    // the global Retry footer left by the import-time conversation.
+    await expect
+      .poll(() => completedAssistantMessages.count(), {
+        timeout: Timeout.LONG,
+      })
+      .toBeGreaterThan(assistantCountBeforeSkip);
+
+    // The tool persists its terminal card outcome, so replaying the chat does
+    // not turn the skipped card back into a stale provider chooser.
+    const skippedChatId = new URL(po.page.url()).searchParams.get("id");
+    expect(skippedChatId).not.toBeNull();
+    await po.chatActions.clickNewChat();
+    await po.page
+      .getByTestId(`chat-tab-${skippedChatId}`)
+      .locator("button")
+      .first()
+      .click();
+    await expect(
+      po.page.getByTestId("messages-list").getByText("Integration skipped"),
+    ).toBeVisible({ timeout: Timeout.LONG });
   },
 );

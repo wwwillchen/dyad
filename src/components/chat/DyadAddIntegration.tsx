@@ -27,11 +27,13 @@ import { ipc } from "@/ipc/types";
 interface DyadAddIntegrationProps {
   children: React.ReactNode;
   provider?: "neon" | "supabase";
+  outcome?: "pending" | "skipped" | "completed" | "dismissed";
 }
 
 export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
   children,
   provider: requestedProvider,
+  outcome,
 }) => {
   const { t } = useTranslation("home");
   const appId = useAtomValue(selectedAppIdAtom);
@@ -58,9 +60,7 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
     "neon" | "supabase" | null
   >(null);
   // True after the user clicks Next: the chat card collapses to a "finish in
-  // the right panel" message with a Back button. Local-only — if the user
-  // navigates between chats and returns, they restart from selection (which
-  // is harmless: their previous choice is still pre-selected).
+  // the right panel" message with a Back button.
   const [inPanelMode, setInPanelMode] = useState(false);
 
   const providerOptions = [
@@ -146,10 +146,14 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
   };
 
   const completedProvider = getCompletedIntegrationProvider(app);
+  const displayedCompletedProvider =
+    outcome === "completed" && requestedProvider
+      ? requestedProvider
+      : completedProvider;
   const completedProviderName =
-    completedProvider === "supabase"
+    displayedCompletedProvider === "supabase"
       ? t("integrations.databaseSetup.providers.supabase.name")
-      : completedProvider === "neon"
+      : displayedCompletedProvider === "neon"
         ? t("integrations.databaseSetup.providers.neon.name")
         : null;
 
@@ -186,9 +190,13 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
 
   const {
     canContinue,
+    canSkip,
     isSubmitting: isContinueSubmitting,
     handleContinue,
+    handleSkip,
   } = useIntegrationContinue();
+
+  const handleSkipClick = () => void handleSkip();
 
   const handleBackClick = () => {
     setInPanelMode(false);
@@ -207,9 +215,29 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
     }
   };
 
-  // Final completed view: no active pending request and the app has a linked
-  // provider. This covers historical replays of completed chats too.
-  if (completedProvider && !pendingIntegration) {
+  // A durable tool outcome describes what happened in this conversation and
+  // must win over the app's provider state today.
+  if (outcome === "skipped") {
+    return (
+      <DyadCard accentColor="slate" state="finished">
+        <DyadCardHeader icon={<Database size={15} />} accentColor="slate">
+          <DyadBadge color="slate">
+            {t("integrations.databaseSetup.integrationSkipped")}
+          </DyadBadge>
+          <span className="text-sm font-medium text-foreground">
+            {t("integrations.databaseSetup.skippedDescription")}
+          </span>
+        </DyadCardHeader>
+      </DyadCard>
+    );
+  }
+
+  // Final completed view: either the terminal tool outcome recorded it, or a
+  // legacy card without an outcome can derive it from the current app state.
+  if (
+    outcome === "completed" ||
+    (outcome === undefined && completedProvider && !pendingIntegration)
+  ) {
     return (
       <DyadCard accentColor="green" state="finished">
         <DyadCardHeader icon={<CheckCircle2 size={15} />} accentColor="green">
@@ -239,6 +267,11 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
       </DyadCard>
     );
   }
+
+  // Once the durable pending card settles, its appended terminal card owns the
+  // historical presentation. Dismissed requests have no terminal UI.
+  if (!pendingIntegration && (outcome === "pending" || outcome === "dismissed"))
+    return null;
 
   // If there is no pending request for this chat and no completion, this is a
   // stale/historical render — show the radios in a read-only display state with
@@ -321,68 +354,111 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
                 const disableSwitch =
                   !isInteractive || availableProviders.length === 1;
                 return (
-                  <button
+                  <div
                     key={option.id}
-                    type="button"
-                    role="radio"
-                    tabIndex={
-                      isSelected || (!effectiveSelectedProvider && index === 0)
-                        ? 0
-                        : -1
-                    }
-                    onClick={() => {
-                      if (disableSwitch) return;
-                      setUserSelectedProvider(option.id);
-                    }}
-                    aria-checked={isSelected}
-                    aria-disabled={disableSwitch}
-                    className={`flex flex-col items-start gap-2 rounded-lg border-2 p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 ${
+                    className={`relative rounded-lg border-2 transition-colors ${
                       isSelected
                         ? "border-blue-500 bg-blue-50/50 dark:bg-blue-950/30"
                         : `border-border ${disableSwitch ? "" : "hover:border-blue-400"}`
-                    } ${disableSwitch ? "cursor-default" : "cursor-pointer"}`}
+                    }`}
                   >
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-semibold text-foreground">
-                        {option.name}
-                      </span>
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation();
+                    <button
+                      type="button"
+                      role="radio"
+                      tabIndex={
+                        isSelected ||
+                        (!effectiveSelectedProvider && index === 0)
+                          ? 0
+                          : -1
+                      }
+                      onClick={() => {
+                        if (disableSwitch) return;
+                        setUserSelectedProvider(option.id);
+                      }}
+                      aria-checked={isSelected}
+                      aria-disabled={disableSwitch}
+                      className={`flex h-full w-full flex-col items-start gap-2 rounded-md p-3 pr-10 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 ${disableSwitch ? "cursor-default" : "cursor-pointer"}`}
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-foreground">
+                          {option.name}
+                        </span>
+                        {option.id === "supabase" && (
+                          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/60 dark:text-blue-200">
+                            {t("integrations.databaseSetup.recommended")}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground leading-snug">
+                        {option.description}
+                      </p>
+                    </button>
+                    <a
+                      href={option.url}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (isInteractive) {
                           ipc.system.openExternalUrl(option.url);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            ipc.system.openExternalUrl(option.url);
-                          }
-                        }}
-                        tabIndex={0}
-                        className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded"
-                        role="link"
-                        aria-label={`Visit ${option.name} website`}
-                      >
-                        <ExternalLink size={12} />
-                      </span>
-                    </div>
-                    <p className="text-xs text-muted-foreground leading-snug">
-                      {option.description}
-                    </p>
-                  </button>
+                        }
+                      }}
+                      aria-disabled={!isInteractive}
+                      tabIndex={isInteractive ? 0 : -1}
+                      className={`absolute right-3 top-3 rounded text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${isInteractive ? "hover:text-foreground" : "pointer-events-none"}`}
+                      aria-label={t(
+                        "integrations.databaseSetup.visitProviderWebsite",
+                        { provider: option.name },
+                      )}
+                    >
+                      <ExternalLink size={12} />
+                    </a>
+                  </div>
                 );
               })}
             </div>
 
             {isInteractive && (
-              <Button
-                onClick={handleNextClick}
-                disabled={!effectiveSelectedProvider}
-                className="w-full mt-3"
-                size="sm"
-              >
-                {t("integrations.databaseSetup.next")}
-              </Button>
+              <div className="mt-3 flex flex-col-reverse gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                {canSkip && (
+                  <div className="min-w-0">
+                    <Button
+                      onClick={handleSkipClick}
+                      disabled={isContinueSubmitting}
+                      variant="ghost"
+                      className="-ml-3"
+                      size="sm"
+                      data-testid="integration-skip-button"
+                    >
+                      {isContinueSubmitting ? (
+                        <>
+                          <Loader2 size={14} className="animate-spin" />
+                          {t("integrations.databaseSetup.skipping")}
+                        </>
+                      ) : (
+                        t("integrations.databaseSetup.skipForNow")
+                      )}
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      {t("integrations.databaseSetup.skipReassurance")}
+                    </p>
+                  </div>
+                )}
+                <Button
+                  onClick={handleNextClick}
+                  disabled={!effectiveSelectedProvider}
+                  className="w-full sm:w-auto"
+                  size="sm"
+                >
+                  {t("integrations.databaseSetup.continueWithProvider", {
+                    provider:
+                      effectiveSelectedProvider === "supabase"
+                        ? t(
+                            "integrations.databaseSetup.providers.supabase.name",
+                          )
+                        : t("integrations.databaseSetup.providers.neon.name"),
+                  })}
+                  <ArrowRight size={14} />
+                </Button>
+              </div>
             )}
           </>
         )}
