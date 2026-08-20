@@ -4,7 +4,7 @@ import { expect } from "@playwright/test";
 /**
  * E2E test for Basic Agent mode quota (free users).
  *
- * Basic Agent mode is available to non-Pro users with a 10-message-per-window limit.
+ * Basic Agent mode is available to non-Pro users with a 20-message-per-window limit.
  * This test verifies mode availability, quota tracking, quota errors, and mode switching.
  */
 
@@ -24,9 +24,9 @@ testSkipIfWindows(
       po.page.getByRole("option", { name: /Agent v2/ }),
     ).not.toBeVisible();
 
-    // 2. Verify quota display is present (may not be 10/10 if AI_RULES.md generation consumed quota)
+    // 2. Verify quota display is present (may not be 20/20 if AI_RULES.md generation consumed quota)
     await expect(
-      po.page.getByRole("option", { name: /Basic Agent.*\d+\/10 remaining/ }),
+      po.page.getByRole("option", { name: /Basic Agent.*\d+\/20 remaining/ }),
     ).toBeVisible();
     await po.page.keyboard.press("Escape");
 
@@ -36,8 +36,8 @@ testSkipIfWindows(
       "Basic Agent",
     );
 
-    // 4. Send 10 messages to exhaust quota (this will exhaust quota even if some was already used)
-    for (let i = 0; i < 10; i++) {
+    // 4. Send 20 messages to exhaust quota (this will exhaust quota even if some was already used)
+    for (let i = 0; i < 20; i++) {
       await po.sendPrompt(`tc=local-agent/simple-response message ${i + 1}`);
       await po.chatActions.waitForChatCompletion();
     }
@@ -47,7 +47,7 @@ testSkipIfWindows(
       timeout: Timeout.MEDIUM,
     });
     await expect(po.page.getByTestId("free-agent-quota-banner")).toContainText(
-      "You have used all 10 messages for the free Agent mode today",
+      "You have used all 20 messages for the free Agent mode today",
     );
     await expect(
       po.page.getByRole("button", { name: "Upgrade to Dyad Pro" }),
@@ -56,15 +56,15 @@ testSkipIfWindows(
       po.page.getByRole("button", { name: "Switch to Build mode" }),
     ).toBeVisible();
 
-    // 6. An 11th message stays in Basic Agent and surfaces the quota error
+    // 6. A 21st message stays in Basic Agent and surfaces the quota error
     // instead of silently running through Build mode.
-    await po.sendPrompt("tc=local-agent/simple-response message 11");
+    await po.sendPrompt("tc=local-agent/simple-response message 21");
     const quotaError = po.page.getByTestId("chat-error-box");
     await expect(quotaError).toBeVisible({
       timeout: Timeout.MEDIUM,
     });
     await expect(quotaError).toContainText(
-      "You have used all 10 free Basic Agent messages for today",
+      "You have used all 20 free Basic Agent messages for today",
     );
     await expect(quotaError).toContainText("Your quota resets at");
     await expect(quotaError.getByText("Upgrade to Dyad Pro")).toBeVisible();
@@ -77,12 +77,12 @@ testSkipIfWindows(
     await expect(
       po.page
         .getByTestId("messages-list")
-        .getByText("tc=local-agent/simple-response message 11", {
+        .getByText("tc=local-agent/simple-response message 21", {
           exact: true,
         }),
     ).toHaveCount(0);
     await expect(po.chatActions.getChatInput()).toContainText(
-      "tc=local-agent/simple-response message 11",
+      "tc=local-agent/simple-response message 21",
     );
 
     // 7. Switch through the error box. This changes mode and dismisses the
@@ -98,12 +98,12 @@ testSkipIfWindows(
     await expect(
       po.page
         .getByTestId("messages-list")
-        .getByText("tc=local-agent/simple-response message 11", {
+        .getByText("tc=local-agent/simple-response message 21", {
           exact: true,
         }),
     ).toHaveCount(0);
     await expect(po.chatActions.getChatInput()).toContainText(
-      "tc=local-agent/simple-response message 11",
+      "tc=local-agent/simple-response message 21",
     );
 
     // 8. Verify the user can explicitly send a later message in Build mode.
@@ -136,8 +136,8 @@ testSkipIfWindows(
     const basicAgentOption = po.page.getByRole("option", {
       name: /Basic Agent/,
     });
-    await expect(basicAgentOption).toContainText(/\/10 remaining/);
-    await expect(basicAgentOption).not.toContainText("10/10");
+    await expect(basicAgentOption).toContainText(/\/20 remaining/);
+    await expect(basicAgentOption).not.toContainText("20/20");
     await po.page.keyboard.press("Escape");
 
     // 3. Simulate 25 hours passing by calling the test-only IPC handler
@@ -160,10 +160,10 @@ testSkipIfWindows(
       timeout: Timeout.MEDIUM,
     });
 
-    // 5. Verify quota has reset to 10/10 remaining
+    // 5. Verify quota has reset to 20/20 remaining
     await po.page.getByTestId("chat-mode-selector").click();
     await expect(
-      po.page.getByRole("option", { name: /Basic Agent.*10\/10 remaining/ }),
+      po.page.getByRole("option", { name: /Basic Agent.*20\/20 remaining/ }),
     ).toBeVisible();
     await po.page.keyboard.press("Escape");
 
