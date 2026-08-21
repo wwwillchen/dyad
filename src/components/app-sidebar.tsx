@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useSidebar } from "@/components/ui/sidebar"; // import useSidebar hook
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
@@ -39,8 +39,11 @@ import {
   type AppSidebarItemTitle,
   getSelectedSidebarPanel,
   isSidebarItemActive,
+  shouldExpandSidebarForHover,
   shouldShowSelectedAppChatList,
 } from "./app-sidebar-state";
+
+const SIDEBAR_COLLAPSE_DELAY_MS = 300;
 
 // Menu items.
 const items = [
@@ -154,6 +157,8 @@ export function AppSidebar() {
   const [hoverState, setHoverState] =
     useState<AppSidebarHoverState>("no-hover");
   const expandedByHover = useRef(false);
+  const isPointerOverSidebar = useRef(false);
+  const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const setHelpDialog = useSetAtom(helpDialogAtom);
   const [isDropdownOpen] = useAtom(dropdownOpenAtom);
   const selectedAppId = useAtomValue(selectedAppIdAtom);
@@ -161,10 +166,33 @@ export function AppSidebar() {
   const setSelectedChatId = useSetAtom(selectedChatIdAtom);
   const navigate = useNavigate();
 
+  const cancelPendingCollapse = useCallback(() => {
+    if (collapseTimer.current !== null) {
+      clearTimeout(collapseTimer.current);
+      collapseTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => cancelPendingCollapse, [cancelPendingCollapse]);
+
   useEffect(() => {
-    if (hoverState.startsWith("start-hover") && state === "collapsed") {
+    if (
+      shouldExpandSidebarForHover({
+        hoverState,
+        sidebarState: state,
+        isPointerOverSidebar: isPointerOverSidebar.current,
+      })
+    ) {
       expandedByHover.current = true;
       toggleSidebar();
+    } else if (
+      hoverState.startsWith("start-hover") &&
+      state === "collapsed" &&
+      !isPointerOverSidebar.current
+    ) {
+      cancelPendingCollapse();
+      expandedByHover.current = false;
+      setHoverState("no-hover");
     }
     if (
       hoverState === "clear-hover" &&
@@ -176,7 +204,14 @@ export function AppSidebar() {
       expandedByHover.current = false;
       setHoverState("no-hover");
     }
-  }, [hoverState, toggleSidebar, state, setHoverState, isDropdownOpen]);
+  }, [
+    hoverState,
+    toggleSidebar,
+    state,
+    setHoverState,
+    isDropdownOpen,
+    cancelPendingCollapse,
+  ]);
 
   const routerState = useRouterState();
   const selectedItem = getSelectedSidebarPanel({
@@ -200,9 +235,21 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       className="shadow-lg"
+      onMouseEnter={() => {
+        isPointerOverSidebar.current = true;
+        cancelPendingCollapse();
+        setHoverState((current) =>
+          current === "clear-hover" ? "no-hover" : current,
+        );
+      }}
       onMouseLeave={() => {
+        isPointerOverSidebar.current = false;
         if (!isDropdownOpen) {
-          setHoverState("clear-hover");
+          cancelPendingCollapse();
+          collapseTimer.current = setTimeout(() => {
+            collapseTimer.current = null;
+            setHoverState("clear-hover");
+          }, SIDEBAR_COLLAPSE_DELAY_MS);
         }
       }}
     >
