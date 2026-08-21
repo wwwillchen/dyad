@@ -89,6 +89,8 @@ export interface AgentContext {
   sharedServerModulePaths: string[];
   /** Function deploys skipped because a shared module had already changed. */
   pendingFunctionDeploys: string[];
+  /** Remote function deletions deferred until root-owned finalization. */
+  pendingFunctionDeletes?: string[];
   /** Preserve remote Supabase functions that are absent from local files. */
   skipPruneEdgeFunctions?: boolean;
   chatSummary?: string;
@@ -133,12 +135,14 @@ export interface AgentContext {
   subagentThreadId?: string;
   /** Persona for a child tool invocation. Root turns leave this undefined. */
   subagentPersona?: "explorer" | "reviewer" | "implementer";
-  /** Explicit relative path prefixes an Implementer may mutate. */
+  /** Advisory path focus projected into an Implementer's assignment; not enforced at runtime. */
   subagentPathScope?: string[];
   /** Child threads spawned by this root turn, joined before deploy/commit. */
   spawnedSubagentThreadIds?: string[];
   /** Implementer children that must finish before root deploy/commit. */
   spawnedImplementerThreadIds?: string[];
+  /** Successfully cancelled Implementers whose preserved edits need a warning. */
+  cancelledImplementerNames?: string[];
   /** Explorer reports already returned directly to the root as tool results. */
   deliveredExplorerThreadIds?: string[];
   /**
@@ -150,6 +154,8 @@ export interface AgentContext {
   onSharedServerModuleChange?: (relativePath: string) => void;
   /** Propagates child function deploy work to the root turn. */
   onDeferredFunctionDeploy?: (functionName: string) => void;
+  /** Propagates child function deletion work to the root turn. */
+  onDeferredFunctionDelete?: (functionName: string) => void;
   /** Turn-scoped schema gates for root orchestration tools. */
   canUseExplorerSubagent?: boolean;
   /** True when settings or the selected Auto Sidekick model enables it. */

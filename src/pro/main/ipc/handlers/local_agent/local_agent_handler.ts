@@ -437,6 +437,24 @@ function isAttachmentAccessToolCall(toolName: string, input: unknown): boolean {
 /**
  * Handle a chat stream in local-agent mode
  */
+export function buildImplementerOutcomeNotices(
+  partialImplementerNames: string[],
+  cancelledImplementerNames: string[],
+): string[] {
+  const notices: string[] = [];
+  if (partialImplementerNames.length > 0) {
+    notices.push(
+      `<dyad-status title="Implementer step limit" state="warning">${escapeXmlContent(`Stopped after the model-step budget: ${partialImplementerNames.join(", ")}. Partial changes were preserved; the root agent remains responsible for reviewing the final diff and choosing appropriate verification.`)}</dyad-status>`,
+    );
+  }
+  if (cancelledImplementerNames.length > 0) {
+    notices.push(
+      `<dyad-status title="Implementer cancelled" state="warning">${escapeXmlContent(`Cancelled before completion: ${cancelledImplementerNames.join(", ")}. Partial changes may have been preserved; the root agent remains responsible for reviewing the final diff and choosing appropriate verification.`)}</dyad-status>`,
+    );
+  }
+  return notices;
+}
+
 export async function handleLocalAgentStream(
   event: IpcMainInvokeEvent,
   req: ChatStreamParams,
@@ -749,6 +767,7 @@ export async function handleLocalAgentStream(
   let persistedTodos: Todo[] = [];
   const spawnedSubagentThreadIds: string[] = [];
   const spawnedImplementerThreadIds: string[] = [];
+  const cancelledImplementerNames: string[] = [];
   const deliveredExplorerThreadIds: string[] = [];
   const synthesizedExplorerThreadIds = new Set<string>();
   let rootFinalizationActive = false;
@@ -802,9 +821,11 @@ export async function handleLocalAgentStream(
       isSharedModulesChanged: false,
       sharedServerModulePaths: [],
       pendingFunctionDeploys: [],
+      pendingFunctionDeletes: [],
       skipPruneEdgeFunctions: settings.skipPruneEdgeFunctions ?? false,
       spawnedSubagentThreadIds,
       spawnedImplementerThreadIds,
+      cancelledImplementerNames,
       deliveredExplorerThreadIds,
       todos: persistedTodos,
       dyadRequestId,
@@ -1849,6 +1870,7 @@ export async function handleLocalAgentStream(
     }
 
     const implementerThreadIds = ctx.spawnedImplementerThreadIds ?? [];
+    const partialImplementerNames: string[] = [];
     if (abortController.signal.aborted) {
       await Promise.allSettled(
         spawnedSubagentThreadIds.map((threadId) =>
@@ -1874,6 +1896,11 @@ export async function handleLocalAgentStream(
           DyadErrorKind.Precondition,
         );
       }
+      partialImplementerNames.push(
+        ...implementers
+          .filter((thread) => thread.status === "partial")
+          .map((thread) => thread.taskName),
+      );
     }
 
     // Handle cancellation paths where stream processing exits cleanly after abort.
@@ -1901,6 +1928,17 @@ export async function handleLocalAgentStream(
     // the message's `content` column, so anything appended only to fullResponse
     // would be invisible to subsequent agent turns.
     const postTurnXmlParts: string[] = [];
+
+    const implementerOutcomeNotices = buildImplementerOutcomeNotices(
+      partialImplementerNames,
+      cancelledImplementerNames,
+    );
+    if (implementerOutcomeNotices.length > 0) {
+      postTurnXmlParts.push(...implementerOutcomeNotices);
+      fullResponse += `\n\n${implementerOutcomeNotices.join("\n\n")}`;
+      await updateResponseInDb(placeholderMessageId, fullResponse);
+      sendChunk(fullResponse);
+    }
 
     // Check if we hit the step limit and append a notice to the response
     if (totalStepsExecuted >= maxToolCallSteps) {

@@ -44,15 +44,21 @@ export const copyFileTool: ToolDefinition<z.infer<typeof copyFileSchema>> = {
       to: args.to,
       appId: ctx.appId,
       isSharedModulesChanged: ctx.isSharedModulesChanged,
+      allowDeploySideEffects: ctx.allowDeploySideEffects,
     });
 
     if (result.sharedModuleChanged) {
       ctx.isSharedModulesChanged = true;
       ctx.sharedServerModulePaths.push(args.to);
+      ctx.onSharedServerModuleChange?.(args.to);
     }
 
     if (result.skippedFunctionDeploy) {
-      ctx.pendingFunctionDeploys.push(result.skippedFunctionDeploy);
+      if (ctx.allowDeploySideEffects === false) {
+        ctx.onDeferredFunctionDeploy?.(result.skippedFunctionDeploy);
+      } else {
+        ctx.pendingFunctionDeploys.push(result.skippedFunctionDeploy);
+      }
     }
 
     queueCloudSandboxSnapshotSync({

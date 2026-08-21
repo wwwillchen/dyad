@@ -1,8 +1,10 @@
 import { z } from "zod";
 import type { ToolSet } from "ai";
+import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import type { SubagentThreadSummary } from "@/ipc/types";
+import { getErrorMessage } from "@/lib/errors";
 
-import { buildAgentToolSet } from "../tool_definitions";
+import { buildAgentToolSet, TOOL_DEFINITIONS } from "../tool_definitions";
 import {
   cancelSubagent,
   followupSubagent,
@@ -37,16 +39,18 @@ const baseSpawnShape = {
     .min(1)
     .max(100)
     .describe("A stable short name for this task"),
-  assignment: z
-    .string()
-    .min(1)
-    .max(20_000)
-    .describe("A bounded assignment and intended outcome"),
+  assignment: z.string().min(1).max(20_000).describe(
+    // Restating the form here puts the reminder at the moment the call is
+    // composed, which is where assignments lose their MUST HOLD content.
+    "The assignment. For implementer tasks use the form GOAL / MUST HOLD / OUT OF SCOPE / DONE WHEN, where MUST HOLD lists every project rule the change could touch (access, scoping, invariants) or explains why none apply.",
+  ),
   scope: z
     .array(z.string().min(1).max(500))
     .max(100)
     .default([])
-    .describe("Explicit relative paths or path prefixes in scope"),
+    .describe(
+      "Advisory relative paths or path prefixes expected to be in scope",
+    ),
 };
 
 const spawnFallbackSchema = z.object({
@@ -99,6 +103,12 @@ export function buildSubagentContext(
         ctx.pendingFunctionDeploys.push(functionName);
       }
     },
+    onDeferredFunctionDelete: (functionName) => {
+      ctx.pendingFunctionDeletes ??= [];
+      if (!ctx.pendingFunctionDeletes.includes(functionName)) {
+        ctx.pendingFunctionDeletes.push(functionName);
+      }
+    },
     canUseExplorerSubagent: false,
     canUseImplementerSubagent: false,
     canUseAdvancedSubagentTools: false,
@@ -116,19 +126,79 @@ export function buildSubagentContext(
   };
 }
 
-function buildSubagentToolSet(params: SubagentToolContextParams): ToolSet {
+/**
+ * Child capabilities are explicit and fail closed: adding a new root tool does
+ * not silently grant it to every sub-agent. This intentionally excludes MCP
+ * discovery/execution, sandbox scripts, nested agents/history explorers, and
+ * root-owned provider or application configuration side effects.
+ */
+const SUBAGENT_ALLOWED_TOOL_NAMES = [
+  "read_file",
+  "list_files",
+  "grep",
+  "code_search",
+  "search_chats",
+  "read_chat",
+  "explore_code",
+  "write_file",
+  "search_replace",
+  "copy_file",
+  "delete_file",
+  "rename_file",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_show_commit",
+  "git_show_file",
+  "git_restore_file",
+  "get_supabase_project_info",
+  "get_neon_project_info",
+  "get_database_table_schema",
+  "read_logs",
+  "run_type_checks",
+  "run_build",
+  "run_tests",
+  "restart_app",
+  "read_guide",
+  "web_search",
+  "web_crawl",
+  "web_fetch",
+] as const;
+const SUBAGENT_ALLOWED_TOOLS = new Set<string>(SUBAGENT_ALLOWED_TOOL_NAMES);
+
+export function validateSubagentAllowedToolNames(
+  allowedNames: readonly string[],
+  registeredTools: readonly Pick<ToolDefinition, "name">[],
+): void {
+  const registeredNames = new Set(registeredTools.map((tool) => tool.name));
+  const unknownNames = allowedNames.filter(
+    (name) => !registeredNames.has(name),
+  );
+  if (unknownNames.length > 0) {
+    throw new Error(
+      `Unknown sub-agent tool(s) in allowlist: ${unknownNames.join(", ")}`,
+    );
+  }
+}
+
+export function buildSubagentToolSet(
+  params: SubagentToolContextParams,
+): ToolSet {
+  validateSubagentAllowedToolNames(
+    SUBAGENT_ALLOWED_TOOL_NAMES,
+    TOOL_DEFINITIONS,
+  );
   const { ctx, persona } = params;
-  const allowlist =
-    persona === "explorer"
-      ? ["read_file", "list_files", "grep", "code_search", "explore_code"]
-      : ["read_file", "list_files", "grep", "write_file", "search_replace"];
   const childCtx = buildSubagentContext(params);
   const allTools = buildAgentToolSet(childCtx, {
     readOnly: persona === "explorer",
     enableAppBlueprint: ctx.enableAppBlueprint,
+    freeModelMode: ctx.freeModelMode,
   });
   return Object.fromEntries(
-    Object.entries(allTools).filter(([name]) => allowlist.includes(name)),
+    Object.entries(allTools).filter(([name]) =>
+      SUBAGENT_ALLOWED_TOOLS.has(name),
+    ),
   );
 }
 
@@ -203,7 +273,44 @@ export const spawnAgentTool: ToolDefinition<
         ctx.abortSignal,
       );
     } catch (error) {
-      await cancelSubagent(ctx.chatId, threadId).catch(() => {});
+      try {
+        await cancelSubagent(ctx.chatId, threadId);
+      } catch (cancellationError) {
+        // Keep the thread registered so the end-of-turn barrier remains
+        // fail-closed when cancellation itself did not complete.
+        throw new DyadError(
+          `The sub-agent wait failed: ${getErrorMessage(error)} Cancellation also failed: ${getErrorMessage(cancellationError)}`,
+          isDyadError(error)
+            ? error.kind
+            : isDyadError(cancellationError)
+              ? cancellationError.kind
+              : DyadErrorKind.Conflict,
+          { cause: new AggregateError([error, cancellationError]) },
+        );
+      }
+      // This tool has now taken responsibility for the thread: it cancelled it
+      // and is about to report the failure to the model, which can retry or work
+      // around it. Leaving the id in spawnedImplementerThreadIds would hand the
+      // end-of-turn join barrier a thread that is permanently "cancelled", and
+      // that barrier treats any non-completed Implementer as fatal — so a
+      // transient wait failure here would kill the whole turn at the very end,
+      // discarding milestones the agent had already finished by other means.
+      const implementers = ctx.spawnedImplementerThreadIds;
+      if (args.persona === "implementer") {
+        ctx.cancelledImplementerNames ??= [];
+        if (!ctx.cancelledImplementerNames.includes(args.task_name)) {
+          ctx.cancelledImplementerNames.push(args.task_name);
+        }
+      }
+      if (implementers) {
+        const at = implementers.indexOf(threadId);
+        if (at >= 0) implementers.splice(at, 1);
+      }
+      const spawned = ctx.spawnedSubagentThreadIds;
+      if (spawned) {
+        const at = spawned.indexOf(threadId);
+        if (at >= 0) spawned.splice(at, 1);
+      }
       throw error;
     }
     if (args.persona === "explorer") {
@@ -255,10 +362,14 @@ export const waitAgentsTool: ToolDefinition<z.infer<typeof threadIdsSchema>> = {
   requiresMutationLease: false,
   requiresBlueprintApproval: false,
   isEnabled: canUseAdvancedSubagentTools,
-  execute: async (args, ctx) =>
-    JSON.stringify(
-      await waitForSubagents(ctx.chatId, args.thread_ids, ctx.abortSignal),
-    ),
+  execute: async (args, ctx) => {
+    const summaries = await waitForSubagents(
+      ctx.chatId,
+      args.thread_ids,
+      ctx.abortSignal,
+    );
+    return JSON.stringify(summaries);
+  },
 };
 
 export const cancelAgentTool: ToolDefinition<{ thread_id: string }> = {
@@ -293,7 +404,12 @@ export const sendMessageTool: ToolDefinition<z.infer<typeof messageSchema>> = {
   requiresBlueprintApproval: false,
   isEnabled: canUseAdvancedSubagentTools,
   execute: async (args, ctx) => {
-    await sendSubagentMessage(ctx.chatId, args.thread_id, args.message);
+    await sendSubagentMessage(
+      ctx.chatId,
+      args.thread_id,
+      args.message,
+      ctx.abortSignal,
+    );
     return "Message queued durably.";
   },
 };

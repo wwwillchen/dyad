@@ -68,9 +68,11 @@ export const renameFileTool: ToolDefinition<z.infer<typeof renameFileSchema>> =
           ctx.isSharedModulesChanged = true;
           if (isSharedServerModule(fromOperationPath)) {
             ctx.sharedServerModulePaths.push(fromOperationPath);
+            ctx.onSharedServerModuleChange?.(fromOperationPath);
           }
           if (isSharedServerModule(toOperationPath)) {
             ctx.sharedServerModulePaths.push(toOperationPath);
+            ctx.onSharedServerModuleChange?.(toOperationPath);
           }
         }
 
@@ -94,24 +96,30 @@ export const renameFileTool: ToolDefinition<z.infer<typeof renameFileSchema>> =
         // Handle Supabase functions
         if (ctx.supabaseProjectId) {
           if (isServerFunction(fromOperationPath)) {
-            try {
-              await deleteSupabaseFunction({
-                supabaseProjectId: ctx.supabaseProjectId,
-                functionName: extractFunctionNameFromPath(fromOperationPath),
-                organizationSlug: ctx.supabaseOrganizationSlug ?? null,
-              });
-            } catch (error) {
-              logger.warn(
-                `Failed to delete old Supabase function: ${args.from}`,
-                error,
-              );
+            const functionName = extractFunctionNameFromPath(fromOperationPath);
+            if (ctx.allowDeploySideEffects === false) {
+              ctx.onDeferredFunctionDelete?.(functionName);
+            } else {
+              try {
+                await deleteSupabaseFunction({
+                  supabaseProjectId: ctx.supabaseProjectId,
+                  functionName,
+                  organizationSlug: ctx.supabaseOrganizationSlug ?? null,
+                });
+              } catch (error) {
+                logger.warn(
+                  `Failed to delete old Supabase function: ${args.from}`,
+                  error,
+                );
+              }
             }
           }
           if (isServerFunction(toOperationPath)) {
-            if (!ctx.isSharedModulesChanged) {
+            const functionName = extractFunctionNameFromPath(toOperationPath);
+            if (ctx.allowDeploySideEffects === false) {
+              ctx.onDeferredFunctionDeploy?.(functionName);
+            } else if (!ctx.isSharedModulesChanged) {
               try {
-                const functionName =
-                  extractFunctionNameFromPath(toOperationPath);
                 await deploySupabaseFunction({
                   supabaseProjectId: ctx.supabaseProjectId,
                   functionName,
@@ -123,9 +131,7 @@ export const renameFileTool: ToolDefinition<z.infer<typeof renameFileSchema>> =
               }
             } else {
               try {
-                ctx.pendingFunctionDeploys.push(
-                  extractFunctionNameFromPath(toOperationPath),
-                );
+                ctx.pendingFunctionDeploys.push(functionName);
               } catch (error) {
                 logger.warn(
                   `File renamed, but failed to identify Supabase function name: ${args.to}`,

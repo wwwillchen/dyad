@@ -7,6 +7,7 @@ import {
   buildReboundReviewState,
   buildBoundedModelHistory,
   buildExplorerFollowupAssignment,
+  buildSubagentAssignment,
   emitSubagentUpdate,
   isAcceptableImplementerJoinStatus,
   isReusableReviewStatus,
@@ -14,11 +15,15 @@ import {
   isTerminalSubagentStatus,
   isWaitCompleteStatus,
   prepareSubagentStepMessages,
+  raceWithAbort,
   reviewFollowupAvailability,
   setSubagentEventTarget,
+  shouldDrainMutationOnAbort,
   SUBAGENT_NONTERMINAL_STATUSES,
   waitForAbortableDelay,
+  withFinalizationAdmission,
 } from "./subagent_manager";
+import { withMutationAdmission } from "./mutation_lease";
 
 describe("sub-agent manager status policy", () => {
   it("rejects immediately when a delay receives an already-aborted signal", async () => {
@@ -143,8 +148,71 @@ describe("sub-agent manager status policy", () => {
     });
   });
 
-  it("requires an Implementer to complete before root finalization", () => {
+  it("raceWithAbort rejects on abort even when the awaited chain never settles", async () => {
+    // The regression this guards: a sub-agent tool execute that ignores the
+    // abort signal left runModel's aggregation pending forever, so runThread's
+    // finally (lease release, entitlement-watcher cleanup) never ran and the
+    // orphaned writer lease blocked every later finalization for the app.
+    const never = new Promise<string>(() => {});
+    const controller = new AbortController();
+    const raced = raceWithAbort(never, controller.signal);
+    controller.abort();
+    await expect(raced).rejects.toThrow("aborted");
+  });
+
+  it("raceWithAbort is transparent when the promise settles first", async () => {
+    const controller = new AbortController();
+    await expect(
+      raceWithAbort(Promise.resolve("done"), controller.signal),
+    ).resolves.toBe("done");
+    await expect(
+      raceWithAbort(Promise.reject(new Error("boom")), controller.signal),
+    ).rejects.toThrow("boom");
+    // no signal at all -> the same promise
+    await expect(raceWithAbort(Promise.resolve(7), undefined)).resolves.toBe(7);
+  });
+
+  it("observes the original promise when cancellation is already active", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      raceWithAbort(
+        Promise.reject(new Error("late failure")),
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ kind: "user_cancelled" });
+  });
+
+  it("waits for the active mutation boundary before rejecting on abort", async () => {
+    const controller = new AbortController();
+    let finishDrain!: () => void;
+    const drain = new Promise<void>((resolve) => {
+      finishDrain = resolve;
+    });
+    const raced = raceWithAbort(
+      new Promise<string>(() => {}),
+      controller.signal,
+      () => drain,
+    );
+
+    controller.abort();
+    let settled = false;
+    void raced.catch(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    finishDrain();
+    await expect(raced).rejects.toThrow("aborted");
+  });
+
+  it("blocks root finalization on Implementer failure but not on a step budget", () => {
     expect(isAcceptableImplementerJoinStatus("completed")).toBe(true);
+    // "partial" = ran out of model steps, with its report already persisted.
+    // A budget outcome must not destroy the root agent's whole turn.
+    expect(isAcceptableImplementerJoinStatus("partial")).toBe(true);
     expect(isAcceptableImplementerJoinStatus("cancelled")).toBe(false);
     expect(isAcceptableImplementerJoinStatus("failed")).toBe(false);
     expect(isAcceptableImplementerJoinStatus("entitlement_revoked")).toBe(
@@ -181,6 +249,67 @@ describe("sub-agent manager status policy", () => {
       { role: "assistant", content: "Option two uses callbacks." },
       { role: "user", content: "Address queued messages in order" },
     ]);
+  });
+
+  it("renders normalized Implementer scope into every assignment", () => {
+    expect(
+      buildSubagentAssignment("implementer", "Fix authentication", [
+        "src/auth",
+        "src/session.ts",
+      ]),
+    ).toBe(
+      "Fix authentication\n\nEXPECTED FILE FOCUS (advisory; cross it when correctness requires):\n- src/auth\n- src/session.ts",
+    );
+    expect(
+      buildSubagentAssignment("explorer", "Trace authentication", ["src/auth"]),
+    ).toBe("Trace authentication");
+    expect(
+      buildSubagentAssignment("implementer", "Fix authentication", []),
+    ).toBe("Fix authentication");
+  });
+
+  it("drains mutations on Implementer cancellation only", () => {
+    expect(shouldDrainMutationOnAbort("implementer")).toBe(true);
+    expect(shouldDrainMutationOnAbort("reviewer")).toBe(false);
+    expect(shouldDrainMutationOnAbort("explorer")).toBe(false);
+  });
+
+  it("aborts finalization while it is queued behind mutation admission", async () => {
+    const appId = 91_001;
+    let releaseMutation!: () => void;
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const mutation = withMutationAdmission(
+      appId,
+      () =>
+        new Promise<void>((resolve) => {
+          releaseMutation = resolve;
+          markEntered();
+        }),
+    );
+    await entered;
+
+    const controller = new AbortController();
+    let admitted = false;
+    const finalization = withFinalizationAdmission({
+      appId,
+      abortSignal: controller.signal,
+      deadlineAt: Date.now() + 10_000,
+      operation: async () => {
+        admitted = true;
+      },
+    });
+    controller.abort();
+
+    await expect(finalization).rejects.toMatchObject({
+      kind: "user_cancelled",
+    });
+    releaseMutation();
+    await mutation;
+    await Promise.resolve();
+    expect(admitted).toBe(false);
   });
 
   it("projects durable Explorer history and queued root messages into follow-ups", () => {

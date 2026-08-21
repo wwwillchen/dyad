@@ -39,10 +39,16 @@ import { buildReviewTarget, type ReviewTarget } from "./review_target";
 import {
   acquireMutationLease,
   beginAppFinalization,
+  describeMutationBlock,
   endAppFinalization,
+  hasActiveMutationTool,
   hasMutationLease,
+  normalizeMutationScope,
+  quarantineActiveMutationTool,
   releaseMutationLease,
+  waitForMutationToolDrain,
   withMutationAdmission,
+  withMutationAdmissionUntil,
 } from "./mutation_lease";
 import {
   parseReviewResult,
@@ -68,9 +74,131 @@ const MAX_ACTIVITY_XML_CHARS = 200_000;
 const MAX_ACTIVITY_OUTPUT_CHARS = 200_000;
 const MAX_MODEL_HISTORY_CHARS = 100_000;
 const AUTO_REVIEW_BARRIER_MAX_WAIT_MS = 10 * 60 * 1000;
-const ROOT_FINALIZATION_MAX_WAIT_MS = 10 * 60 * 1000;
-const REVIEW_WRITER_MAX_WAIT_MS = 10 * 60 * 1000;
+const ROOT_FINALIZATION_MAX_WAIT_MS = 20 * 60 * 1000;
+const REVIEW_WRITER_MAX_WAIT_MS = ROOT_FINALIZATION_MAX_WAIT_MS;
+const SAFE_ABORT_DRAIN_MAX_WAIT_MS = 30 * 1000;
+const SAFE_ABORT_BARRIER_MAX_WAIT_MS = 31 * 1000;
 const SUBAGENT_MAX_STEPS = 50;
+/**
+ * The Implementer is the only persona that both writes code and verifies it —
+ * it can run type checks, restart the app and read its logs, and fix what it
+ * finds. Each of those is a model step, so a verify/fix/re-verify loop costs
+ * several steps a read-only Explorer or Reviewer never spends. 50 was sized for a
+ * sub-agent that could only edit files; keeping it there caps the Implementer
+ * mid-verification, which is the one place a partial result is most misleading.
+ */
+const IMPLEMENTER_MAX_STEPS = 100;
+
+async function waitForSafeAbortDrain(
+  waitForSafeAbort?: () => Promise<void>,
+): Promise<void> {
+  if (!waitForSafeAbort) return;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      waitForSafeAbort(),
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, SAFE_ABORT_BARRIER_MAX_WAIT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function drainActiveMutationOrQuarantine(appId: number): Promise<void> {
+  const didDrain = await waitForMutationToolDrain(
+    appId,
+    SAFE_ABORT_DRAIN_MAX_WAIT_MS,
+  );
+  if (!didDrain) quarantineActiveMutationTool(appId);
+}
+
+export async function withFinalizationAdmission<T>(params: {
+  appId: number;
+  abortSignal?: AbortSignal;
+  deadlineAt: number;
+  operation: () => Promise<T>;
+}): Promise<T> {
+  try {
+    return await withMutationAdmissionUntil(params);
+  } catch (error) {
+    // Preserve finalization-specific cancellation/timeout diagnostics while
+    // still allowing quarantine and other admission failures through.
+    assertFinalizationWaitActive(
+      params.abortSignal,
+      params.deadlineAt,
+      params.appId,
+    );
+    throw error;
+  }
+}
+
+function maxStepsFor(persona: SubagentPersona): number {
+  return persona === "implementer" ? IMPLEMENTER_MAX_STEPS : SUBAGENT_MAX_STEPS;
+}
+
+/**
+ * Resolve with `promise`, or reject after `signal` aborts and the optional
+ * safety barrier settles. The barrier lets a writable caller drain an atomic
+ * mutation before cancellation unwinds its lease. The listener is removed on
+ * settle so the signal does not retain the promise.
+ */
+export function raceWithAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+  waitForSafeAbort?: () => Promise<void>,
+): Promise<T> {
+  if (!signal) return promise;
+  const drain = () => waitForSafeAbortDrain(waitForSafeAbort);
+  if (signal.aborted) {
+    // The caller is no longer awaiting the original promise, so attach a
+    // rejection handler before returning the cancellation result.
+    void promise.catch(() => {});
+    return drain().then(() => {
+      throw new DyadError(
+        "Sub-agent run aborted.",
+        DyadErrorKind.UserCancelled,
+      );
+    });
+  }
+  return new Promise<T>((resolve, reject) => {
+    let aborted = false;
+    let settled = false;
+    const finish = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      complete();
+    };
+    const onAbort = () => {
+      aborted = true;
+      void drain().then(
+        () => {
+          finish(() =>
+            reject(
+              new DyadError(
+                "Sub-agent run aborted.",
+                DyadErrorKind.UserCancelled,
+              ),
+            ),
+          );
+        },
+        (error) => finish(() => reject(error)),
+      );
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (!aborted) finish(() => resolve(value));
+      },
+      (error) => {
+        if (!aborted) finish(() => reject(error));
+      },
+    );
+  });
+}
+
 const logger = log.scope("subagent_manager");
 
 const abortControllers = new Map<string, AbortController>();
@@ -350,19 +478,29 @@ export async function spawnModelSubagent(params: {
   }
   await preflightPersonaModel(params.persona);
 
+  const normalizedScope = params.scope.map(normalizeMutationScope);
+  const initialAssignment = buildSubagentAssignment(
+    params.persona,
+    params.assignment,
+    normalizedScope,
+  );
   const threadId = crypto.randomUUID();
   const thread = await subagentDisposalRegistry.withAdmission(
     params.ctx.chatId,
     async () => {
       const reserved =
         params.persona !== "implementer" ||
-        (await withMutationAdmission(params.ctx.appId, async () =>
-          acquireMutationLease({
-            appId: params.ctx.appId,
-            threadId,
-            scope: params.scope,
-          }),
-        ));
+        (await withMutationAdmissionUntil({
+          appId: params.ctx.appId,
+          abortSignal: params.ctx.abortSignal,
+          deadlineAt: Date.now() + ROOT_FINALIZATION_MAX_WAIT_MS,
+          operation: async () =>
+            acquireMutationLease({
+              appId: params.ctx.appId,
+              threadId,
+              scope: normalizedScope,
+            }),
+        }));
       if (!reserved) {
         throw new DyadError(
           "Another Implementer is already editing this app.",
@@ -375,10 +513,10 @@ export async function spawnModelSubagent(params: {
           chatId: params.ctx.chatId,
           persona: params.persona,
           taskName: params.taskName,
-          assignment: params.assignment,
+          assignment: initialAssignment,
           invocationSource: "model",
           contextJson: {
-            scope: params.scope,
+            scope: normalizedScope,
             sourceMessageId: params.ctx.messageId,
           },
         });
@@ -391,17 +529,21 @@ export async function spawnModelSubagent(params: {
               runThread(
                 thread.id,
                 params.ctx.appId,
-                assignment,
+                buildSubagentAssignment(
+                  params.persona,
+                  assignment,
+                  normalizedScope,
+                ),
                 params.ctx,
                 (abortSignal) =>
                   params.buildTools({
                     threadId: thread.id,
                     persona: params.persona,
                     taskName: params.taskName,
-                    scope: params.scope,
+                    scope: normalizedScope,
                     abortSignal,
                   }),
-                params.scope,
+                normalizedScope,
               ),
           });
         followupRunners.set(thread.id, run);
@@ -562,10 +704,12 @@ export async function cancelSubagent(
       with: { app: true },
     });
     if (chat?.app) {
-      // Cancellation is not terminal until an already-entered atomic mutation
-      // leaves admission. The wrapper's abort check prevents queued mutations
-      // from entering after this drain.
-      await withMutationAdmission(chat.app.id, async () => {});
+      // Give an already-entered mutation a bounded opportunity to leave
+      // admission before making cancellation terminal. If it ignores the
+      // signal, quarantine its reservation so queued/new writers and root
+      // finalization remain blocked until the operation really settles.
+      await drainActiveMutationOrQuarantine(chat.app.id);
+      releaseMutationLease(chat.app.id, threadId);
     }
   }
   await finishThread(threadId, "cancelled", null, "Cancelled by user.");
@@ -952,10 +1096,11 @@ export async function sendSubagentMessage(
   chatId: number,
   threadId: string,
   content: string,
+  abortSignal?: AbortSignal,
 ): Promise<void> {
   assertPro();
   return subagentDisposalRegistry.withAdmission(chatId, () =>
-    sendSubagentMessageAdmitted(chatId, threadId, content),
+    sendSubagentMessageAdmitted(chatId, threadId, content, abortSignal),
   );
 }
 
@@ -963,6 +1108,7 @@ async function sendSubagentMessageAdmitted(
   chatId: number,
   threadId: string,
   content: string,
+  abortSignal?: AbortSignal,
 ): Promise<void> {
   const thread = await getOwnedThread(chatId, threadId);
   const append = async () => {
@@ -978,7 +1124,12 @@ async function sendSubagentMessageAdmitted(
   };
   if (thread.persona === "implementer") {
     const appId = await getThreadAppId(thread.chatId);
-    await withMutationAdmission(appId, append);
+    await withMutationAdmissionUntil({
+      appId,
+      abortSignal,
+      deadlineAt: Date.now() + ROOT_FINALIZATION_MAX_WAIT_MS,
+      operation: append,
+    });
   } else {
     await append();
   }
@@ -1127,7 +1278,12 @@ async function followupSubagentAdmitted(
     }
   };
   if (thread.persona === "implementer") {
-    await withMutationAdmission(currentTurn!.ctx.appId, appendAndSchedule);
+    await withMutationAdmissionUntil({
+      appId: currentTurn!.ctx.appId,
+      abortSignal: currentTurn!.ctx.abortSignal,
+      deadlineAt: Date.now() + ROOT_FINALIZATION_MAX_WAIT_MS,
+      operation: appendAndSchedule,
+    });
   } else {
     await appendAndSchedule();
   }
@@ -1203,39 +1359,53 @@ export async function waitForSubagentsAndBeginFinalization(
 ): Promise<SubagentThreadSummary[]> {
   const deadlineAt = Date.now() + ROOT_FINALIZATION_MAX_WAIT_MS;
   while (true) {
-    assertFinalizationWaitActive(abortSignal, deadlineAt);
+    assertFinalizationWaitActive(abortSignal, deadlineAt, appId);
     const summaries =
       threadIds.length > 0
-        ? await waitForSubagents(chatId, threadIds, abortSignal)
+        ? await waitForSubagents(
+            chatId,
+            threadIds,
+            abortSignal,
+            Math.max(1, deadlineAt - Date.now()),
+          )
         : [];
-    const finalized = await withMutationAdmission(appId, async () => {
-      assertFinalizationWaitActive(abortSignal, deadlineAt);
-      const pending =
-        threadIds.length === 0
-          ? []
-          : await db.query.agentMessages.findMany({
-              where: and(
-                inArray(agentMessages.threadId, [...new Set(threadIds)]),
-                eq(agentMessages.consumed, false),
-                eq(agentMessages.role, "root"),
-              ),
-            });
-      const pendingIds = new Set(pending.map((message) => message.threadId));
-      const rows = await Promise.all(
-        [...new Set(threadIds)].map((id) => getOwnedThread(chatId, id)),
-      );
-      if (
-        !rows.every((row) =>
-          isSubagentJoinReady(
-            row.status,
-            pendingIds.has(row.id),
-            followupRunners.has(row.id),
-          ),
-        )
-      ) {
-        return false;
-      }
-      return beginAppFinalization(appId);
+    if (hasActiveMutationTool(appId)) {
+      await waitForAbortableDelay(250, abortSignal);
+      continue;
+    }
+    const finalized = await withFinalizationAdmission({
+      appId,
+      abortSignal,
+      deadlineAt,
+      operation: async () => {
+        assertFinalizationWaitActive(abortSignal, deadlineAt, appId);
+        const pending =
+          threadIds.length === 0
+            ? []
+            : await db.query.agentMessages.findMany({
+                where: and(
+                  inArray(agentMessages.threadId, [...new Set(threadIds)]),
+                  eq(agentMessages.consumed, false),
+                  eq(agentMessages.role, "root"),
+                ),
+              });
+        const pendingIds = new Set(pending.map((message) => message.threadId));
+        const rows = await Promise.all(
+          [...new Set(threadIds)].map((id) => getOwnedThread(chatId, id)),
+        );
+        if (
+          !rows.every((row) =>
+            isSubagentJoinReady(
+              row.status,
+              pendingIds.has(row.id),
+              followupRunners.has(row.id),
+            ),
+          )
+        ) {
+          return false;
+        }
+        return beginAppFinalization(appId);
+      },
     });
     if (finalized) return summaries;
     await waitForAbortableDelay(250, abortSignal);
@@ -1245,6 +1415,7 @@ export async function waitForSubagentsAndBeginFinalization(
 function assertFinalizationWaitActive(
   abortSignal: AbortSignal | undefined,
   deadlineAt: number,
+  appId?: number,
 ): void {
   if (abortSignal?.aborted) {
     throw new DyadError(
@@ -1253,8 +1424,14 @@ function assertFinalizationWaitActive(
     );
   }
   if (Date.now() >= deadlineAt) {
+    // Name the blocker: a held lease was previously indistinguishable from a
+    // concurrent finalization, which cost a full forensic investigation the
+    // one time it happened. describeMutationBlock reads module state only.
+    const blocker = appId != null ? describeMutationBlock(appId) : null;
     throw new DyadError(
-      "Timed out waiting to finalize the app. Another app operation may still be active.",
+      `Timed out waiting to finalize the app. ${
+        blocker ?? "Another app operation may still be active."
+      }`,
       DyadErrorKind.Conflict,
     );
   }
@@ -1264,8 +1441,21 @@ export async function endRootFinalization(appId: number): Promise<void> {
   endAppFinalization(appId);
 }
 
+/**
+ * "partial" means the sub-agent ran out of model steps (or an Explorer fell back
+ * to a deterministic report) — it is a budget outcome, not a failure. The work it
+ * did is kept: `appendAssistantMessage` writes the report before `finishThread`
+ * records the status, so the root agent has something to act on either way.
+ *
+ * The root agent already handles its OWN step limit this way: it appends a
+ * `<dyad-step-limit>` notice and finishes the turn (see local_agent_handler).
+ * Treating the same condition in a sub-agent as fatal threw away the parent's
+ * entire turn — including work unrelated to the sub-agent — over a budget the
+ * caller never set. Genuine failures still surface as "failed"/"cancelled" and
+ * are still rejected here.
+ */
 export function isAcceptableImplementerJoinStatus(status: string): boolean {
-  return status === "completed";
+  return status === "completed" || status === "partial";
 }
 
 async function runThread(
@@ -1369,7 +1559,7 @@ async function runThread(
       result.hitStepLimit || usedExplorerFallback ? "partial" : "completed",
       { report: durableResult },
       result.hitStepLimit
-        ? `Sub-agent stopped after ${SUBAGENT_MAX_STEPS} model steps.`
+        ? `Sub-agent stopped after ${maxStepsFor(thread.persona)} model steps.`
         : usedExplorerFallback
           ? "Explorer returned a deterministic report from observed evidence."
           : null,
@@ -1426,7 +1616,7 @@ async function runReview(
   const entitlementWatcher = watchEntitlement(threadId, controller);
   const writerDeadlineAt = Date.now() + REVIEW_WRITER_MAX_WAIT_MS;
   try {
-    while (hasMutationLease(appId)) {
+    while (hasMutationLease(appId) || hasActiveMutationTool(appId)) {
       if (Date.now() >= writerDeadlineAt) {
         throw new DyadError(
           "Timed out waiting for the app writer before starting review.",
@@ -1546,14 +1736,26 @@ async function runModel(params: {
     onError: ({ error }) => {
       streamError ??= error;
     },
-    stopWhen: stepCountIs(SUBAGENT_MAX_STEPS),
+    stopWhen: stepCountIs(maxStepsFor(params.persona)),
     abortSignal: params.abortSignal,
   });
-  const [text, usage, steps] = await Promise.all([
-    result.text,
-    result.totalUsage,
-    result.steps,
-  ]);
+  // Race the aggregation against the abort signal. streamText forwards the
+  // signal to the model request, but a tool execute that ignores it leaves
+  // these promises pending forever — and runThread's finally (lease release,
+  // entitlement-watcher cleanup) never runs. The rejection is swallowed by
+  // runThread's aborted-signal check. An already-entered mutation that ignores
+  // cancellation remains quarantined from other writers and finalization until
+  // it actually settles.
+  const [text, usage, steps] = await raceWithAbort(
+    Promise.all([result.text, result.totalUsage, result.steps]),
+    params.abortSignal,
+    // Give an entered mutation a bounded opportunity to drain. If it ignores
+    // cancellation, quarantine it so other writers and finalization remain tied
+    // to the real operation lifetime even after this model chain unwinds.
+    shouldDrainMutationOnAbort(params.persona)
+      ? () => drainActiveMutationOrQuarantine(params.appId)
+      : undefined,
+  );
   if (streamError) throw streamError;
   if (claimedRootMessageIds.size > 0) {
     await db
@@ -1571,7 +1773,7 @@ async function runModel(params: {
   });
   return {
     text,
-    hitStepLimit: steps.length >= SUBAGENT_MAX_STEPS,
+    hitStepLimit: steps.length >= maxStepsFor(params.persona),
   };
 }
 
@@ -1707,11 +1909,26 @@ export function buildBoundedModelHistory(params: {
   return history;
 }
 
+export function buildSubagentAssignment(
+  persona: SubagentPersona,
+  assignment: string,
+  scope: string[],
+): string {
+  if (persona !== "implementer" || scope.length === 0) return assignment;
+  return `${assignment}\n\nEXPECTED FILE FOCUS (advisory; cross it when correctness requires):\n${scope
+    .map((path) => `- ${path}`)
+    .join("\n")}`;
+}
+
+export function shouldDrainMutationOnAbort(persona: SubagentPersona): boolean {
+  return persona === "implementer";
+}
+
 function systemPrompt(persona: SubagentPersona): string {
   if (persona === "reviewer")
     return "You are Dyad Reviewer. Be independent, concise, evidence-based, and read-only.";
   if (persona === "implementer")
-    return "You are Dyad Implementer. Complete only the bounded assignment using only provided tools and assigned paths. Report changed files and unresolved issues.";
+    return "You are Dyad Implementer. Complete the focused assignment using only provided tools. Treat assigned paths as the expected focus, but cross them when correctness requires it and report every changed file and unresolved issue.";
   return "You are Dyad Explorer. Investigate read-only, cite files and evidence, and return a concise report with confidence and recommended next action.";
 }
 
@@ -2244,7 +2461,16 @@ async function startPendingFollowup(
         const lifecycle = await applyThreadLifecycle(thread, {
           type: "QUEUE_FOLLOWUP",
         });
-        if (lifecycle !== "applied") return;
+        if (lifecycle !== "applied") {
+          // Latent leak fixed: this return previously kept the acquired lease
+          // — release lived only in the catch, and run() (whose runThread
+          // finally would release) was never started. Unreachable without the
+          // advanced sub-agent tools, but a silent forever-lease when hit.
+          if (acquiredAppId !== null) {
+            releaseMutationLease(acquiredAppId, threadId);
+          }
+          return;
+        }
         run("Continue by addressing the queued root messages in order.");
         acquiredAppId = null;
       } catch (error) {

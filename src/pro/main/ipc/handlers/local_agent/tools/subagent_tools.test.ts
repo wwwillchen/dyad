@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 const subagentManagerMocks = vi.hoisted(() => ({
   cancelSubagent: vi.fn(async () => {}),
-  followupSubagent: vi.fn(async () => "explorer" as const),
+  followupSubagent: vi.fn(async () => "explorer" as "explorer" | "implementer"),
   listSubagents: vi.fn(async () => []),
   sendSubagentMessage: vi.fn(async () => {}),
   spawnModelSubagent: vi.fn(async () => "explorer-1"),
@@ -97,6 +98,28 @@ describe("spawn_agent schema", () => {
     expect(root.workspaceMutated).toBe(true);
   });
 
+  it("queues child function deletions for root finalization", () => {
+    const root = {
+      sharedServerModulePaths: [],
+      pendingFunctionDeploys: [],
+      pendingFunctionDeletes: [],
+      referencedApps: new Map(),
+      fileEditTracker: { attemptsByFile: new Map() },
+    } as unknown as AgentContext;
+    const child = buildSubagentContext({
+      ctx: root,
+      threadId: "implementer-1",
+      persona: "implementer",
+      taskName: "Remove old function",
+      scope: ["supabase/functions/old"],
+      abortSignal: new AbortController().signal,
+    });
+
+    child.onDeferredFunctionDelete?.("old");
+
+    expect(root.pendingFunctionDeletes).toEqual(["old"]);
+  });
+
   it("blocks Explorer spawning until its report is returned", async () => {
     subagentManagerMocks.waitForSubagents.mockResolvedValueOnce([
       {
@@ -169,6 +192,106 @@ describe("spawn_agent schema", () => {
     expect(subagentManagerMocks.cancelSubagent).toHaveBeenCalledWith(
       7,
       "explorer-1",
+    );
+  });
+
+  it("unregisters an Implementer it cancelled, so the join barrier ignores it", async () => {
+    subagentManagerMocks.spawnModelSubagent.mockResolvedValueOnce(
+      "implementer-1",
+    );
+    const waitError = new Error("Timed out waiting for sub-agents to finish.");
+    subagentManagerMocks.waitForSubagents.mockRejectedValueOnce(waitError);
+    const ctx = {
+      chatId: 7,
+      abortSignal: new AbortController().signal,
+      onXmlComplete: vi.fn(),
+      spawnedSubagentThreadIds: [],
+      spawnedImplementerThreadIds: [],
+    } as unknown as AgentContext;
+
+    await expect(
+      spawnAgentTool.execute(
+        {
+          persona: "implementer",
+          task_name: "Fix the activity feed",
+          assignment: "Repair the activity feed query",
+          scope: ["src/app"],
+        },
+        ctx,
+      ),
+    ).rejects.toBe(waitError);
+
+    expect(subagentManagerMocks.cancelSubagent).toHaveBeenCalledWith(
+      7,
+      "implementer-1",
+    );
+    // The thread is now permanently "cancelled". Leaving it registered would
+    // make waitForSubagentsAndBeginFinalization fail the entire turn at the end,
+    // even though the model was told about the failure and could recover.
+    expect(ctx.spawnedImplementerThreadIds).toEqual([]);
+    expect(ctx.spawnedSubagentThreadIds).toEqual([]);
+    expect(ctx.cancelledImplementerNames).toEqual(["Fix the activity feed"]);
+  });
+
+  it("keeps an Implementer registered when cancellation fails", async () => {
+    subagentManagerMocks.spawnModelSubagent.mockResolvedValueOnce(
+      "implementer-1",
+    );
+    subagentManagerMocks.waitForSubagents.mockRejectedValueOnce(
+      new DyadError("wait failed", DyadErrorKind.UserCancelled),
+    );
+    subagentManagerMocks.cancelSubagent.mockRejectedValueOnce(
+      new Error("cancel failed"),
+    );
+    const ctx = {
+      chatId: 7,
+      abortSignal: new AbortController().signal,
+      onXmlComplete: vi.fn(),
+      spawnedSubagentThreadIds: [],
+      spawnedImplementerThreadIds: [],
+    } as unknown as AgentContext;
+
+    const result = spawnAgentTool.execute(
+      {
+        persona: "implementer",
+        task_name: "Fix the activity feed",
+        assignment: "Repair the activity feed query",
+        scope: ["src/app"],
+      },
+      ctx,
+    );
+    await expect(result).rejects.toMatchObject({
+      kind: DyadErrorKind.UserCancelled,
+      message:
+        "The sub-agent wait failed: wait failed Cancellation also failed: cancel failed",
+    });
+
+    expect(ctx.spawnedImplementerThreadIds).toEqual(["implementer-1"]);
+    expect(ctx.spawnedSubagentThreadIds).toEqual(["implementer-1"]);
+  });
+
+  it("binds queued messages to the root turn's abort signal", async () => {
+    const abortSignal = new AbortController().signal;
+    const ctx = {
+      chatId: 7,
+      abortSignal,
+    } as unknown as AgentContext;
+
+    await expect(
+      sendMessageTool.execute(
+        {
+          thread_id: "implementer-1",
+          message: "Also preserve the session invariant.",
+        },
+        ctx,
+      ),
+    ).resolves.toBe("Message queued durably.");
+
+    expect(subagentManagerMocks.sendSubagentMessage).toHaveBeenCalledWith(
+      7,
+      "implementer-1",
+      "Also preserve the session invariant.",
+      abortSignal,
     );
   });
 

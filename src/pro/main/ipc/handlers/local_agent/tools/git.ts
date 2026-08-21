@@ -482,6 +482,7 @@ export const gitRestoreFileTool: ToolDefinition<
     if (isSharedServerModule(operationPath)) {
       ctx.isSharedModulesChanged = true;
       ctx.sharedServerModulePaths.push(operationPath);
+      ctx.onSharedServerModuleChange?.(operationPath);
     }
     queueCloudSandboxSnapshotSync({
       appId: ctx.appId,
@@ -495,7 +496,9 @@ export const gitRestoreFileTool: ToolDefinition<
       } catch {
         return successMessage;
       }
-      if (ctx.isSharedModulesChanged) {
+      if (ctx.allowDeploySideEffects === false) {
+        ctx.onDeferredFunctionDeploy?.(functionName);
+      } else if (ctx.isSharedModulesChanged) {
         ctx.pendingFunctionDeploys.push(functionName);
       } else {
         try {

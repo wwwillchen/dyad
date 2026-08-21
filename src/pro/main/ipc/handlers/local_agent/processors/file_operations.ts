@@ -10,6 +10,7 @@ import {
 } from "@/ipc/utils/git_utils";
 import {
   deployAffectedSupabaseFunctions,
+  supabaseFunctionEntryExists,
   type SupabaseDeployProgress,
 } from "../../../../../../supabase_admin/supabase_utils";
 import { readSettings } from "../../../../../../main/settings";
@@ -19,6 +20,7 @@ import {
   type AgentContext,
 } from "../tools/types";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { deleteSupabaseFunction } from "@/supabase_admin/supabase_management_client";
 
 const logger = log.scope("file_operations");
 
@@ -26,6 +28,40 @@ export interface FileOperationResult {
   success: boolean;
   error?: string;
   warning?: string;
+}
+
+export { supabaseFunctionEntryExists } from "../../../../../../supabase_admin/supabase_utils";
+
+export function isSupabaseFunctionNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "response" in error &&
+    (error as { response?: { status?: unknown } }).response?.status === 404
+  );
+}
+
+export async function reconcileDeferredFunctionOperations(params: {
+  pendingDeploys: string[];
+  pendingDeletes: string[];
+  functionExists: (functionName: string) => boolean | Promise<boolean>;
+}): Promise<{ deploys: string[]; deletes: string[] }> {
+  const deploys = new Set<string>();
+  const deletes = new Set<string>();
+  const affectedFunctions = new Set([
+    ...params.pendingDeploys,
+    ...params.pendingDeletes,
+  ]);
+  for (const functionName of affectedFunctions) {
+    if (await params.functionExists(functionName)) {
+      // The final local function exists, so deploy its final contents.
+      deploys.add(functionName);
+    } else {
+      // The final local function is absent, so do not deploy a stale version.
+      deletes.add(functionName);
+    }
+  }
+  return { deploys: [...deploys], deletes: [...deletes] };
 }
 
 function renderSupabaseDeployStatus(progress: SupabaseDeployProgress): string {
@@ -68,41 +104,93 @@ export async function deployAllFunctionsIfNeeded(
     | "isSharedModulesChanged"
     | "sharedServerModulePaths"
     | "pendingFunctionDeploys"
+    | "pendingFunctionDeletes"
     | "onXmlStream"
     | "onXmlComplete"
   >,
 ): Promise<FileOperationResult> {
   if (
     !ctx.supabaseProjectId ||
-    (!ctx.isSharedModulesChanged && ctx.pendingFunctionDeploys.length === 0)
+    (!ctx.isSharedModulesChanged &&
+      ctx.pendingFunctionDeploys.length === 0 &&
+      (ctx.pendingFunctionDeletes?.length ?? 0) === 0)
   ) {
     return { success: true };
   }
 
   try {
-    const settings = readSettings();
-    const deployErrors = await deployAffectedSupabaseFunctions({
-      appPath: ctx.appPath,
-      supabaseProjectId: ctx.supabaseProjectId,
-      supabaseOrganizationSlug: ctx.supabaseOrganizationSlug ?? null,
-      skipPruneEdgeFunctions: settings.skipPruneEdgeFunctions ?? false,
-      sharedModulesChanged: ctx.isSharedModulesChanged,
-      changedSharedModulePaths: ctx.sharedServerModulePaths,
-      pendingFunctionDeploys: ctx.pendingFunctionDeploys,
-      onProgress: (progress: SupabaseDeployProgress) => {
-        const statusXml = renderSupabaseDeployStatus(progress);
-        if (progress.phase === "finished" || progress.phase === "failed") {
-          ctx.onXmlComplete(statusXml);
-        } else {
-          ctx.onXmlStream(statusXml);
-        }
-      },
+    const deferred = await reconcileDeferredFunctionOperations({
+      pendingDeploys: ctx.pendingFunctionDeploys,
+      pendingDeletes: ctx.pendingFunctionDeletes ?? [],
+      functionExists: (functionName) =>
+        supabaseFunctionEntryExists(ctx.appPath, functionName),
     });
+    const settings = readSettings();
+    const preservedDeletes = settings.skipPruneEdgeFunctions
+      ? deferred.deletes
+      : [];
+    const deleteErrors: string[] = [];
+    for (const functionName of settings.skipPruneEdgeFunctions
+      ? []
+      : deferred.deletes) {
+      try {
+        await deleteSupabaseFunction({
+          supabaseProjectId: ctx.supabaseProjectId,
+          functionName,
+          organizationSlug: ctx.supabaseOrganizationSlug ?? null,
+        });
+      } catch (error) {
+        // Deferred queues can contain a function that was created and removed
+        // before root finalization, or one another path already removed.
+        if (isSupabaseFunctionNotFoundError(error)) continue;
+        deleteErrors.push(`${functionName}: ${error}`);
+      }
+    }
+    let deployErrors: string[] = [];
+    if (ctx.isSharedModulesChanged || deferred.deploys.length > 0) {
+      deployErrors = await deployAffectedSupabaseFunctions({
+        appPath: ctx.appPath,
+        supabaseProjectId: ctx.supabaseProjectId,
+        supabaseOrganizationSlug: ctx.supabaseOrganizationSlug ?? null,
+        skipPruneEdgeFunctions: settings.skipPruneEdgeFunctions ?? false,
+        sharedModulesChanged: ctx.isSharedModulesChanged,
+        changedSharedModulePaths: ctx.sharedServerModulePaths,
+        pendingFunctionDeploys: deferred.deploys,
+        onProgress: (progress: SupabaseDeployProgress) => {
+          const statusXml = renderSupabaseDeployStatus(progress);
+          if (progress.phase === "finished" || progress.phase === "failed") {
+            ctx.onXmlComplete(statusXml);
+          } else {
+            ctx.onXmlStream(statusXml);
+          }
+        },
+      });
+    }
 
-    if (deployErrors.length > 0) {
+    if (
+      preservedDeletes.length > 0 ||
+      deleteErrors.length > 0 ||
+      deployErrors.length > 0
+    ) {
+      const warnings: string[] = [];
+      if (preservedDeletes.length > 0) {
+        warnings.push(
+          `Kept remote Supabase function(s) ${preservedDeletes.join(", ")} because "Keep extra Supabase edge functions" is enabled.`,
+        );
+      }
+      if (deleteErrors.length > 0 || deployErrors.length > 0) {
+        warnings.push(
+          deleteErrors.length === 0
+            ? `Some Supabase functions failed to deploy: ${deployErrors.join(", ")}`
+            : `Some Supabase function operations failed: ${[
+                ...deleteErrors.map((error) => `delete ${error}`),
+                ...deployErrors,
+              ].join(", ")}`,
+        );
+      }
       return {
         success: true,
-        warning: `Some Supabase functions failed to deploy: ${deployErrors.join(", ")}`,
+        warning: warnings.join(" "),
       };
     }
 

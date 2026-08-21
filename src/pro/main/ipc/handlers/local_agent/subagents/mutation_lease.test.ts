@@ -1,38 +1,47 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { AgentContext } from "../tools/types";
 import {
   acquireMutationLease,
-  assertImplementerPathAllowed,
   assertMutationLease,
   beginAppFinalization,
+  describeMutationBlock,
   endAppFinalization,
-  normalizeMutationScope,
+  quarantineActiveMutationTool,
   releaseMutationLease,
+  waitForMutationToolDrain,
   withMutationAdmission,
+  withMutationAdmissionUntil,
   withMutationToolAdmission,
 } from "./mutation_lease";
 
 describe("sub-agent mutation lease", () => {
+  let nextAppId = 70_000;
+  let appId: number;
+
+  beforeEach(() => {
+    appId = nextAppId++;
+  });
+
   afterEach(() => {
-    releaseMutationLease(7, "implementer-1");
-    endAppFinalization(7);
+    releaseMutationLease(appId, "implementer-1");
+    endAppFinalization(appId);
   });
 
   it("blocks root mutations while an Implementer holds the app lease", () => {
     expect(
       acquireMutationLease({
-        appId: 7,
+        appId,
         threadId: "implementer-1",
         scope: ["src/components"],
       }),
     ).toBe(true);
-    expect(() => assertMutationLease({ appId: 7 } as AgentContext)).toThrow(
+    expect(() => assertMutationLease({ appId } as AgentContext)).toThrow(
       /Another agent is currently editing/,
     );
     expect(() =>
       assertMutationLease({
-        appId: 7,
+        appId,
         subagentThreadId: "implementer-1",
       } as AgentContext),
     ).not.toThrow();
@@ -41,14 +50,14 @@ describe("sub-agent mutation lease", () => {
   it("allows only one Implementer reservation per app", () => {
     expect(
       acquireMutationLease({
-        appId: 7,
+        appId,
         threadId: "implementer-1",
         scope: ["src/first"],
       }),
     ).toBe(true);
     expect(
       acquireMutationLease({
-        appId: 7,
+        appId,
         threadId: "implementer-2",
         scope: ["src/second"],
       }),
@@ -60,13 +69,13 @@ describe("sub-agent mutation lease", () => {
     const rootFinished = new Promise<void>((resolve) => {
       releaseRoot = resolve;
     });
-    const rootMutation = withMutationAdmission(7, () => rootFinished);
+    const rootMutation = withMutationAdmission(appId, () => rootFinished);
     await Promise.resolve();
 
     let implementerAdmitted = false;
-    const implementerAdmission = withMutationAdmission(7, async () => {
+    const implementerAdmission = withMutationAdmission(appId, async () => {
       implementerAdmitted = acquireMutationLease({
-        appId: 7,
+        appId,
         threadId: "implementer-1",
         scope: ["src"],
       });
@@ -79,45 +88,12 @@ describe("sub-agent mutation lease", () => {
     expect(implementerAdmitted).toBe(true);
   });
 
-  it("enforces the Implementer's explicit path scope", () => {
-    const ctx = {
-      subagentPersona: "implementer",
-      subagentPathScope: ["src/components"],
-    } as AgentContext;
-    expect(() =>
-      assertImplementerPathAllowed(ctx, "src/components/Card.tsx"),
-    ).not.toThrow();
-    expect(() =>
-      assertImplementerPathAllowed(ctx, "src/server/secrets.ts"),
-    ).toThrow(/assigned paths/);
-  });
-
-  it("uses the pre-normalized Implementer path scope", () => {
-    const ctx = {
-      subagentPersona: "implementer",
-      subagentPathScope: ["src/components"],
-    } as AgentContext;
-
-    expect(() =>
-      assertImplementerPathAllowed(ctx, "src\\components\\Card.tsx"),
-    ).not.toThrow();
-    expect(ctx.subagentPathScope).toEqual(["src/components"]);
-  });
-
   it.each(["", ".", "./", "/", "..", "../src"])(
     "rejects %j as an app-root or escaping Implementer scope",
     (rootScope) => {
-      const ctx = {
-        subagentPersona: "implementer",
-        subagentPathScope: [normalizeMutationScope(rootScope)],
-      } as AgentContext;
-
-      expect(() =>
-        assertImplementerPathAllowed(ctx, "src/components/Card.tsx"),
-      ).toThrow(/assigned paths/);
       expect(() =>
         acquireMutationLease({
-          appId: 7,
+          appId,
           threadId: "implementer-1",
           scope: [rootScope],
         }),
@@ -156,17 +132,17 @@ describe("sub-agent mutation lease", () => {
   });
 
   it("blocks normal mutation tools while the root finalizes", () => {
-    expect(beginAppFinalization(7)).toBe(true);
-    expect(() => assertMutationLease({ appId: 7 } as AgentContext)).toThrow(
+    expect(beginAppFinalization(appId)).toBe(true);
+    expect(() => assertMutationLease({ appId } as AgentContext)).toThrow(
       /currently being finalized/,
     );
   });
 
   it("waits for root finalization before admitting a mutation tool", async () => {
-    expect(beginAppFinalization(7)).toBe(true);
+    expect(beginAppFinalization(appId)).toBe(true);
     let ran = false;
     const mutation = withMutationToolAdmission(
-      { appId: 7 } as AgentContext,
+      { appId } as AgentContext,
       async () => {
         ran = true;
       },
@@ -174,7 +150,7 @@ describe("sub-agent mutation lease", () => {
     await Promise.resolve();
     expect(ran).toBe(false);
 
-    endAppFinalization(7);
+    endAppFinalization(appId);
     await mutation;
     expect(ran).toBe(true);
   });
@@ -189,5 +165,153 @@ describe("sub-agent mutation lease", () => {
     ).toBe(true);
     expect(beginAppFinalization(9)).toBe(false);
     releaseMutationLease(9, "implementer");
+  });
+
+  it("does not begin root finalization while a mutation tool is still active", async () => {
+    let finishMutation!: () => void;
+    const mutation = withMutationToolAdmission(
+      { appId } as AgentContext,
+      () =>
+        new Promise<void>((resolve) => {
+          finishMutation = resolve;
+        }),
+    );
+    await Promise.resolve();
+
+    expect(beginAppFinalization(appId)).toBe(false);
+    expect(describeMutationBlock(appId)).toContain("mutation tool");
+
+    finishMutation();
+    await mutation;
+    expect(beginAppFinalization(appId)).toBe(true);
+  });
+
+  it("serializes ordinary parallel mutation tools", async () => {
+    let finishFirst!: () => void;
+    const order: string[] = [];
+    const first = withMutationToolAdmission(
+      { appId } as AgentContext,
+      () =>
+        new Promise<void>((resolve) => {
+          order.push("first-started");
+          finishFirst = () => {
+            order.push("first-finished");
+            resolve();
+          };
+        }),
+    );
+    const second = withMutationToolAdmission(
+      { appId } as AgentContext,
+      async () => {
+        order.push("second-started");
+      },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(order).toEqual(["first-started"]);
+    finishFirst();
+    await Promise.all([first, second]);
+    expect(order).toEqual([
+      "first-started",
+      "first-finished",
+      "second-started",
+    ]);
+  });
+
+  it("rejects queued admission when an active mutation is quarantined", async () => {
+    let finishMutation!: () => void;
+    const mutation = withMutationToolAdmission(
+      { appId } as AgentContext,
+      () =>
+        new Promise<void>((resolve) => {
+          finishMutation = resolve;
+        }),
+    );
+    await Promise.resolve();
+
+    let admitted = false;
+    const waiting = withMutationAdmissionUntil({
+      appId,
+      deadlineAt: Date.now() + 10_000,
+      operation: async () => {
+        admitted = true;
+      },
+    });
+    expect(quarantineActiveMutationTool(appId)).toBe(true);
+
+    await expect(waiting).rejects.toThrow(/cancelled mutation tool/);
+    expect(admitted).toBe(false);
+    finishMutation();
+    await mutation;
+    await Promise.resolve();
+    expect(admitted).toBe(false);
+  });
+
+  it("does not run an admission callback after its wait is cancelled", async () => {
+    let finishMutation!: () => void;
+    const mutation = withMutationToolAdmission(
+      { appId } as AgentContext,
+      () =>
+        new Promise<void>((resolve) => {
+          finishMutation = resolve;
+        }),
+    );
+    await Promise.resolve();
+
+    const controller = new AbortController();
+    let admitted = false;
+    const waiting = withMutationAdmissionUntil({
+      appId,
+      abortSignal: controller.signal,
+      deadlineAt: Date.now() + 10_000,
+      operation: async () => {
+        admitted = true;
+      },
+    });
+    controller.abort();
+
+    await expect(waiting).rejects.toMatchObject({ kind: "user_cancelled" });
+    finishMutation();
+    await mutation;
+    await Promise.resolve();
+    expect(admitted).toBe(false);
+  });
+
+  it("times out a drain without leaving a polling loop", async () => {
+    let finishMutation!: () => void;
+    const mutation = withMutationToolAdmission(
+      { appId } as AgentContext,
+      () =>
+        new Promise<void>((resolve) => {
+          finishMutation = resolve;
+        }),
+    );
+    await Promise.resolve();
+
+    await expect(waitForMutationToolDrain(appId, 1)).resolves.toBe(false);
+    finishMutation();
+    await mutation;
+    await expect(waitForMutationToolDrain(appId, 1)).resolves.toBe(true);
+  });
+
+  it("names the blocking holder so a stuck finalization is attributable", () => {
+    // A held lease was once completely silent — the finalization timeout said
+    // only "another app operation may still be active", and attributing it to
+    // a hung Implementer's orphaned lease took a full forensic pass.
+    expect(describeMutationBlock(11)).toBeNull();
+    acquireMutationLease({
+      appId: 11,
+      threadId: "impl-11",
+      scope: ["src/app"],
+    });
+    expect(describeMutationBlock(11)).toContain("impl-11");
+    expect(describeMutationBlock(11)).toContain("src/app");
+    releaseMutationLease(11, "impl-11");
+
+    expect(beginAppFinalization(11)).toBe(true);
+    expect(describeMutationBlock(11)).toContain("finalization");
+    endAppFinalization(11);
+    expect(describeMutationBlock(11)).toBeNull();
   });
 });
