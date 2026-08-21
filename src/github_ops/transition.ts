@@ -12,6 +12,7 @@ import type {
   GithubOpsState,
   GithubOpsTransitionResult,
 } from "./state";
+import { truncateGithubOpsErrorMessage } from "./error_message";
 
 const PUSH_NORMAL: GithubOperation = { type: "push", mode: "normal" };
 
@@ -187,10 +188,11 @@ function operationFailed(
     return ignore(state, "stale-op");
   }
 
-  const failureMessage =
+  const failureMessage = truncateGithubOpsErrorMessage(
     state.banner?.kind === "success"
       ? `${state.banner.message} The follow-up operation failed: ${failure.message}`
-      : failure.message;
+      : failure.message,
+  );
   const banner: GithubOpsBanner = {
     kind: "error",
     ...(failure.code ? { code: failure.code } : {}),
@@ -229,17 +231,21 @@ function operationFailed(
     return {
       kind: "applied",
       state: { type: "idle", banner },
-      commands: [
-        { type: "notify", kind: "error", message: failure.message },
-        { type: "probe-git-state" },
-      ],
+      commands: [{ type: "probe-git-state" }],
     };
   }
 
   return {
     kind: "applied",
     state: { type: "idle", banner },
-    commands: [{ type: "notify", kind: "error", message: failure.message }],
+    commands: [
+      "create-branch",
+      "rename-branch",
+      "merge",
+      "delete-branch",
+    ].includes(op.type)
+      ? [{ type: "notify", kind: "error", message: failure.message }]
+      : [],
   };
 }
 
@@ -286,15 +292,7 @@ function conflictsReceived(
         return {
           kind: "applied",
           state: { type: "idle", banner: state.banner },
-          commands: state.banner
-            ? [
-                {
-                  type: "notify",
-                  kind: "error",
-                  message: state.banner.message,
-                },
-              ]
-            : [],
+          commands: [],
         };
       }
       return enterConflicted(files, state.op, true);

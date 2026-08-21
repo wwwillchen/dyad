@@ -15,6 +15,7 @@ import {
   githubOpsDefinition,
 } from "@/ipc/services/github_ops_definition";
 import { githubOpsClientDefinition } from "./client_definition";
+import { MAX_GITHUB_OPS_VERIFICATION_ERROR_LENGTH } from "./error_message";
 import type { GithubOpsIgnoreReason } from "./state";
 import {
   githubOpsKey,
@@ -38,6 +39,7 @@ const database = vi.hoisted(() => ({
 }));
 const invalidations = vi.hoisted(() => ({ publish: vi.fn() }));
 const presentation = vi.hoisted(() => ({
+  dismissError: vi.fn(),
   forget: vi.fn(),
   recordInitiator: vi.fn(),
   showError: vi.fn(),
@@ -145,6 +147,7 @@ describe("main-hosted github_ops actor", () => {
     service.assertAcceptingOperations.mockReset();
     database.findFirst.mockReset();
     invalidations.publish.mockReset();
+    presentation.dismissError.mockReset();
     presentation.forget.mockReset();
     presentation.recordInitiator.mockReset();
     presentation.showError.mockReset();
@@ -432,9 +435,10 @@ describe("main-hosted github_ops actor", () => {
   });
 
   it("makes a failed conflict-file verification retryable", async () => {
-    service.getConflicts.mockRejectedValueOnce(
-      new Error("temporary conflict probe failure"),
+    const verboseProbeFailure = "x".repeat(
+      MAX_GITHUB_OPS_VERIFICATION_ERROR_LENGTH + 500,
     );
+    service.getConflicts.mockRejectedValueOnce(new Error(verboseProbeFailure));
     const { actorA, host } = createHarness();
     await actorA.resync();
     const local: GithubOpsHostedActor = host.ensure(
@@ -460,12 +464,22 @@ describe("main-hosted github_ops actor", () => {
     await flush();
 
     expect(service.getConflicts).toHaveBeenCalledOnce();
-    expect(actorA.getSnapshot().state).toMatchObject({
+    const failedSnapshot = actorA.getSnapshot();
+    expect(failedSnapshot.state).toMatchObject({
       type: "conflicted",
       resolution: "verification-failed",
       resolutionChatId: 42,
-      verificationError: "temporary conflict probe failure",
     });
+    expect(
+      failedSnapshot.state.type === "conflicted"
+        ? failedSnapshot.state.verificationError
+        : undefined,
+    ).toHaveLength(MAX_GITHUB_OPS_VERIFICATION_ERROR_LENGTH);
+    expect(
+      failedSnapshot.state.type === "conflicted"
+        ? failedSnapshot.state.verificationError
+        : undefined,
+    ).toMatch(/\n… \[GitHub error output truncated\]$/);
     expect(presentation.showError).not.toHaveBeenCalled();
 
     await actorA.dispatch({ type: "RETRY_CONFLICT_VERIFICATION" });
@@ -673,6 +687,30 @@ describe("main-hosted github_ops actor", () => {
       7,
       undefined,
       "temporary repository refresh failure",
+      "git-state",
+    );
+  });
+
+  it("preserves detailed generic probe failures beyond the verification-event bound", async () => {
+    const detailedMessage = Array.from(
+      { length: 80 },
+      (_, index) => `repository refresh detail ${index}`,
+    ).join("\n");
+    service.getGitState.mockRejectedValueOnce(new Error(detailedMessage));
+    const { actorA } = createHarness();
+    await actorA.resync();
+
+    await actorA.dispatch({ type: "RECONCILE_REQUESTED" });
+    await flush();
+
+    expect(detailedMessage.length).toBeGreaterThan(
+      MAX_GITHUB_OPS_VERIFICATION_ERROR_LENGTH,
+    );
+    expect(presentation.showError).toHaveBeenCalledExactlyOnceWith(
+      7,
+      undefined,
+      detailedMessage,
+      "git-state",
     );
   });
 
@@ -722,7 +760,7 @@ describe("main-hosted github_ops actor", () => {
     expect(disposed).toBe(true);
   });
 
-  it("does not project repository paths from Git failures", async () => {
+  it("redacts repository paths while preserving Git failure details", async () => {
     service.run.mockRejectedValue(
       new Error(
         "fatal: Unable to create '/Users/alice/apps/demo/.git/index.lock'",
@@ -740,7 +778,7 @@ describe("main-hosted github_ops actor", () => {
         type: "idle",
         banner: {
           kind: "error",
-          message: "GitHub operation failed",
+          message: "fatal: Unable to create '[redacted path]'",
         },
       }),
     );

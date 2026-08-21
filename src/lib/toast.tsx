@@ -4,6 +4,8 @@ import React from "react";
 import { CustomErrorToast } from "../components/CustomErrorToast";
 import { InputRequestToast } from "../components/InputRequestToast";
 
+const toastGenerations = new Map<string | number, number>();
+
 /**
  * Toast utility functions for consistent notifications across the app
  */
@@ -23,6 +25,8 @@ export const showSuccess = (message: string) => {
 export const showError = (
   message: any,
   options?: {
+    persist?: boolean;
+    toastId?: string | number;
     action?: {
       label: string;
       onClick: () => void;
@@ -31,6 +35,14 @@ export const showError = (
 ) => {
   const errorMessage = message.toString();
   console.error(message);
+  const explicitToastId = options?.toastId;
+  const generation =
+    explicitToastId === undefined
+      ? undefined
+      : (toastGenerations.get(explicitToastId) ?? 0) + 1;
+  if (explicitToastId !== undefined && generation !== undefined) {
+    toastGenerations.set(explicitToastId, generation);
+  }
 
   const onCopy = (toastId: string | number) => {
     navigator.clipboard.writeText(errorMessage);
@@ -51,6 +63,12 @@ export const showError = (
 
     // After 2 seconds, revert the toast back to the original state
     setTimeout(() => {
+      if (
+        explicitToastId !== undefined &&
+        toastGenerations.get(explicitToastId) !== generation
+      ) {
+        return;
+      }
       toast.custom(
         (t) => (
           <CustomErrorToast
@@ -76,10 +94,18 @@ export const showError = (
         action={options?.action}
       />
     ),
-    { duration: options?.action ? Infinity : 8_000 },
+    {
+      duration: options?.action || options?.persist ? Infinity : 8_000,
+      ...(options?.toastId === undefined ? {} : { id: options.toastId }),
+    },
   );
 
   return toastId;
+};
+
+export const dismissToast = (toastId: string | number) => {
+  toastGenerations.set(toastId, (toastGenerations.get(toastId) ?? 0) + 1);
+  toast.dismiss(toastId);
 };
 
 /**

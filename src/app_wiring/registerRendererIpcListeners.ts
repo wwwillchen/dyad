@@ -11,7 +11,7 @@ import type { StreamEvent } from "@/chat_stream/renderer_facade";
 import { ipc as defaultIpc, type ChatResponseChunk } from "@/ipc/types";
 import { applyStreamingPatch } from "@/lib/applyStreamingPatch";
 import { queryKeys } from "@/lib/queryKeys";
-import { showError } from "@/lib/toast";
+import { dismissToast, showError } from "@/lib/toast";
 import { getUserInputReadModel } from "@/user_input/read_model";
 import { RendererQueryInvalidationConsumer } from "@/window_infrastructure/renderer_query_invalidation";
 import type {
@@ -286,20 +286,30 @@ export function registerRendererIpcListeners({
   );
 
   unsubscribes.push(
-    ipcClient.events.misc.onErrorToast(({ message, action }) => {
-      showError(message, {
-        action: action
-          ? {
-              label: action.label,
-              onClick: () => {
-                ipcClient.system.openExternalUrl(action.url);
-              },
-            }
-          : undefined,
-      });
-    }),
+    ipcClient.events.misc.onErrorToast(
+      ({ message, action, persist, toastId }) => {
+        showError(message, {
+          persist,
+          toastId,
+          action: action
+            ? {
+                label: action.label,
+                onClick: () => {
+                  ipcClient.system.openExternalUrl(action.url);
+                },
+              }
+            : undefined,
+        });
+      },
+    ),
   );
   void ipcClient.misc.rendererErrorToastReady(undefined);
+
+  unsubscribes.push(
+    ipcClient.events.misc.onDismissToast(({ toastId }) => {
+      dismissToast(toastId);
+    }),
+  );
 
   unsubscribes.push(
     ipcClient.events.agent.onTodosUpdate((payload) => {

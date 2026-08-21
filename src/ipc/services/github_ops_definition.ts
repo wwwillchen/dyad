@@ -10,6 +10,10 @@ import { REMOTE_MACHINE_PROTOCOL_VERSION } from "@/distributed_machines/remote_p
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 import { ignore } from "@/state_machines/types";
+import {
+  MAX_GITHUB_OPS_VERIFICATION_ERROR_LENGTH,
+  truncateGithubOpsErrorMessage,
+} from "@/github_ops/error_message";
 import type { GithubOpsCommand } from "@/github_ops/state";
 import { INITIAL_GITHUB_OPS_STATE } from "@/github_ops/state";
 import { transition } from "@/github_ops/transition";
@@ -194,6 +198,7 @@ function createCommandRunner(
     message: string,
     operationId: string | undefined,
     verificationAttempt: number | undefined,
+    toastScope: "git-state" | "conflicts",
   ) => {
     const state = context.getSnapshot().state;
     if (state.type === "conflicted" && state.resolution === "checking") {
@@ -204,7 +209,10 @@ function createCommandRunner(
         emit({
           type: "CONFLICT_VERIFICATION_FAILED",
           verificationAttempt,
-          message,
+          message: truncateGithubOpsErrorMessage(
+            message,
+            MAX_GITHUB_OPS_VERIFICATION_ERROR_LENGTH,
+          ),
         });
       }
       return;
@@ -213,6 +221,7 @@ function createCommandRunner(
       context.key.appId,
       operationId,
       message,
+      toastScope,
     );
   };
 
@@ -238,13 +247,14 @@ function createCommandRunner(
         gitStateProbeGeneration += 1;
         conflictProbeGeneration += 1;
         void githubOpsService.run(appId, command.op).then(
-          () =>
+          () => {
             emit({
               type: "OP_SUCCEEDED",
               op: command.op,
               invocationRef,
-            }),
-          (error) =>
+            });
+          },
+          (error) => {
             emit({
               type: "OP_FAILED",
               op: command.op,
@@ -257,7 +267,9 @@ function createCommandRunner(
                 kind: githubOpsFailureKind(error),
                 message: errorMessage(error, "GitHub operation failed"),
               },
-            }),
+            });
+            githubOpsPresentationService.forget(invocationRef.operationId);
+          },
         );
         return;
       }
@@ -272,6 +284,7 @@ function createCommandRunner(
         void githubOpsService.getGitState(appId).then(
           (state) => {
             if (generation === gitStateProbeGeneration) {
+              githubOpsPresentationService.dismissError(appId, "git-state");
               emit({
                 type: "GIT_STATE",
                 ...state,
@@ -286,6 +299,7 @@ function createCommandRunner(
               errorMessage(error, "Could not refresh the repository state"),
               invocationRef?.operationId,
               command.verificationAttempt,
+              "git-state",
             );
           },
         );
@@ -302,6 +316,7 @@ function createCommandRunner(
         void githubOpsService.getConflicts(appId).then(
           (files) => {
             if (generation === conflictProbeGeneration) {
+              githubOpsPresentationService.dismissError(appId, "conflicts");
               emit({
                 type: "CONFLICTS",
                 files,
@@ -319,6 +334,7 @@ function createCommandRunner(
               ),
               invocationRef?.operationId,
               command.verificationAttempt,
+              "conflicts",
             );
             if (command.settleOnError) {
               emit({ type: "CONFLICTS", files: [] });
@@ -346,8 +362,8 @@ function createCommandRunner(
             invocationRef?.operationId,
             command.message,
           );
-          githubOpsPresentationService.forget(invocationRef?.operationId);
         }
+        githubOpsPresentationService.forget(invocationRef?.operationId);
         return;
       case "start-conflict-resolution":
         // Renderer presentation starts only after the applied dispatch receipt.

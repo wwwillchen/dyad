@@ -15,6 +15,8 @@ import {
   type GithubOpsState,
 } from "./state";
 import { transition } from "./transition";
+import { MAX_GITHUB_OPS_ERROR_MESSAGE_LENGTH } from "./error_message";
+import { GithubOpsRemoteSnapshotSchema } from "./transport";
 
 const REPRESENTATIVE_OPS: readonly GithubOperation[] = [
   { type: "push", mode: "normal" },
@@ -315,10 +317,7 @@ describe("github_ops transition", () => {
         type: "idle",
         banner: { kind: "error", message: "git failed" },
       });
-      expect(commandsOf(failed)).toEqual([
-        { type: "notify", kind: "error", message: "git failed" },
-        { type: "probe-git-state" },
-      ]);
+      expect(commandsOf(failed)).toEqual([{ type: "probe-git-state" }]);
 
       const reconciled = transition(failed.state, {
         type: "GIT_STATE",
@@ -808,13 +807,28 @@ describe("github_ops transition", () => {
     const failedPush = transition(runningPush, {
       type: "OP_FAILED",
       op: { type: "push", mode: "normal" },
-      failure: { kind: "unknown", message: "push rejected" },
+      failure: {
+        kind: "unknown",
+        message: `push rejected ${"x".repeat(MAX_GITHUB_OPS_ERROR_MESSAGE_LENGTH)}`,
+      },
     });
     expect(failedPush.state.banner).toMatchObject({
       kind: "error",
       message: expect.stringContaining("created and linked"),
     });
     expect(failedPush.state.banner?.message).toContain("push rejected");
+    expect(failedPush.state.banner?.message).toHaveLength(
+      MAX_GITHUB_OPS_ERROR_MESSAGE_LENGTH,
+    );
+    expect(
+      GithubOpsRemoteSnapshotSchema.safeParse({
+        appId: 7,
+        revision: 1,
+        state: failedPush.state,
+        activeInvocationRef: null,
+        conflictResolutionClaimed: false,
+      }).success,
+    ).toBe(true);
   });
 
   it("reports rebase success only after its composite push completes", () => {
@@ -856,6 +870,46 @@ describe("github_ops transition", () => {
     expect(commandsOf(completed)).toEqual([
       { type: "invalidate-branches" },
       { type: "refresh-app" },
+    ]);
+  });
+
+  it("renders operation failures through the banner without a duplicate toast", () => {
+    const push = { type: "push", mode: "normal" } as const;
+    const running = transition(INITIAL_GITHUB_OPS_STATE, {
+      type: "OP_REQUESTED",
+      op: push,
+    }).state;
+    const failed = transition(running, {
+      type: "OP_FAILED",
+      op: push,
+      failure: { kind: "unknown", message: "push failed" },
+    });
+
+    expect(failed.state.banner).toMatchObject({
+      kind: "error",
+      message: "push failed",
+    });
+    expect(commandsOf(failed)).toEqual([]);
+  });
+
+  it.each([
+    { type: "create-branch", name: "feature", thenSwitch: false } as const,
+    { type: "rename-branch", oldBranch: "old", newBranch: "new" } as const,
+    { type: "merge", branch: "feature" } as const,
+    { type: "delete-branch", branch: "old" } as const,
+  ])("keeps modal branch-operation failures visible for $type", (op) => {
+    const running = transition(INITIAL_GITHUB_OPS_STATE, {
+      type: "OP_REQUESTED",
+      op,
+    }).state;
+    const failed = transition(running, {
+      type: "OP_FAILED",
+      op,
+      failure: { kind: "unknown", message: "branch operation failed" },
+    });
+
+    expect(commandsOf(failed)).toEqual([
+      { type: "notify", kind: "error", message: "branch operation failed" },
     ]);
   });
 });
