@@ -45,6 +45,22 @@ export function getHoverSidebarPanel(
   return null;
 }
 
+export function shouldExpandSidebarForHover({
+  hoverState,
+  sidebarState,
+  isPointerOverSidebar,
+}: {
+  hoverState: AppSidebarHoverState;
+  sidebarState: "expanded" | "collapsed";
+  isPointerOverSidebar: boolean;
+}) {
+  return (
+    isPointerOverSidebar &&
+    sidebarState === "collapsed" &&
+    hoverState.startsWith("start-hover")
+  );
+}
+
 export function getSelectedSidebarPanel({
   hoverState,
   sidebarState,

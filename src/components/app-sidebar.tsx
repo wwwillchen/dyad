@@ -39,6 +39,7 @@ import {
   type AppSidebarItemTitle,
   getSelectedSidebarPanel,
   isSidebarItemActive,
+  shouldExpandSidebarForHover,
   shouldShowSelectedAppChatList,
 } from "./app-sidebar-state";
 
@@ -156,6 +157,7 @@ export function AppSidebar() {
   const [hoverState, setHoverState] =
     useState<AppSidebarHoverState>("no-hover");
   const expandedByHover = useRef(false);
+  const isPointerOverSidebar = useRef(false);
   const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const setHelpDialog = useSetAtom(helpDialogAtom);
   const [isDropdownOpen] = useAtom(dropdownOpenAtom);
@@ -174,9 +176,23 @@ export function AppSidebar() {
   useEffect(() => cancelPendingCollapse, [cancelPendingCollapse]);
 
   useEffect(() => {
-    if (hoverState.startsWith("start-hover") && state === "collapsed") {
+    if (
+      shouldExpandSidebarForHover({
+        hoverState,
+        sidebarState: state,
+        isPointerOverSidebar: isPointerOverSidebar.current,
+      })
+    ) {
       expandedByHover.current = true;
       toggleSidebar();
+    } else if (
+      hoverState.startsWith("start-hover") &&
+      state === "collapsed" &&
+      !isPointerOverSidebar.current
+    ) {
+      cancelPendingCollapse();
+      expandedByHover.current = false;
+      setHoverState("no-hover");
     }
     if (
       hoverState === "clear-hover" &&
@@ -188,7 +204,14 @@ export function AppSidebar() {
       expandedByHover.current = false;
       setHoverState("no-hover");
     }
-  }, [hoverState, toggleSidebar, state, setHoverState, isDropdownOpen]);
+  }, [
+    hoverState,
+    toggleSidebar,
+    state,
+    setHoverState,
+    isDropdownOpen,
+    cancelPendingCollapse,
+  ]);
 
   const routerState = useRouterState();
   const selectedItem = getSelectedSidebarPanel({
@@ -213,12 +236,14 @@ export function AppSidebar() {
       collapsible="icon"
       className="shadow-lg"
       onMouseEnter={() => {
+        isPointerOverSidebar.current = true;
         cancelPendingCollapse();
         setHoverState((current) =>
           current === "clear-hover" ? "no-hover" : current,
         );
       }}
       onMouseLeave={() => {
+        isPointerOverSidebar.current = false;
         if (!isDropdownOpen) {
           cancelPendingCollapse();
           collapseTimer.current = setTimeout(() => {

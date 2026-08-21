@@ -3,6 +3,7 @@ import {
   getRouteSidebarPanel,
   getSelectedSidebarPanel,
   isSidebarItemActive,
+  shouldExpandSidebarForHover,
   shouldShowSelectedAppChatList,
 } from "@/components/app-sidebar-state";
 
@@ -29,6 +30,23 @@ describe("app sidebar state", () => {
         pathname: "/apps",
       }),
     ).toBe("Apps");
+  });
+
+  it("does not restore a hover expansion after the pointer leaves", () => {
+    expect(
+      shouldExpandSidebarForHover({
+        hoverState: "start-hover:app",
+        sidebarState: "collapsed",
+        isPointerOverSidebar: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldExpandSidebarForHover({
+        hoverState: "start-hover:app",
+        sidebarState: "collapsed",
+        isPointerOverSidebar: false,
+      }),
+    ).toBe(false);
   });
 
   it("shows the selected app chat list only inside Apps with an app selected", () => {
