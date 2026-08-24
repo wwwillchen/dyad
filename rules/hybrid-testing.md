@@ -159,10 +159,10 @@ Use `path.normalize()` when the code preserves a rooted path such as `/tmp/...`;
 `path.resolve()` adds the runner's current drive on Windows and is only correct
 when production code also resolves the path to an absolute drive-qualified one.
 
-For asynchronous Git actions driven through the renderer, file existence can
-change before the underlying Git subprocess finishes. Wait for the expected
-branch and a clean `git status --porcelain` before making follow-up mutations or
-ending the test.
+For asynchronous Git actions driven through the renderer, file existence and
+chat end events can precede Local Agent Git finalization. Before direct Git
+mutations, retry decisions, or test completion, wait for the expected branch,
+an absent `.git/index.lock`, and a clean `git status --porcelain`.
 
 The fake GitHub server records push events when it parses the receive-pack
 request, before `git-receive-pack` finishes. Use them as evidence of a push
