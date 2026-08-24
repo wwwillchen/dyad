@@ -36,9 +36,12 @@ import {
 } from "../services/app_operation_coordinator";
 import { updateAppGithubRepo, ensureCleanWorkspace } from "./github_handlers";
 import { createTypedHandler } from "./base";
-import { githubContracts, gitContracts } from "../types/github";
+import { githubContracts, gitContracts, gitEvents } from "../types/github";
 import { ensureDyadGitignored } from "./gitignoreUtils";
+import { safeSend } from "../utils/safe_sender";
 import type {
+  CancelCommitParams,
+  CommitChangesParams,
   GitBranchAppIdParams,
   CreateGitBranchParams,
   GitBranchParams,
@@ -49,6 +52,15 @@ import type {
 } from "../types/github";
 
 const logger = log.scope("git_branch_handlers");
+
+interface ActiveCommitOperation {
+  appId: number;
+  controller: AbortController;
+  cancellable: boolean;
+  senderId: number;
+}
+
+const activeCommitOperations = new Map<string, ActiveCommitOperation>();
 
 export async function handleAbortMerge(
   event: IpcMainInvokeEvent,
@@ -417,13 +429,111 @@ async function withAppGitOp<T>(
 }
 
 async function handleCommitChanges(
-  _event: IpcMainInvokeEvent,
-  { appId, message }: { appId: number; message: string },
+  event: IpcMainInvokeEvent,
+  { appId, message, operationId }: CommitChangesParams,
 ): Promise<string> {
-  return withAppGitOp(appId, "commit", async (appPath) => {
-    await ensureDyadGitignored(appPath);
-    return gitService.stageAllAndCommit({ path: appPath, message });
+  if (activeCommitOperations.has(operationId)) {
+    throw new DyadError(
+      "A commit operation with this identifier is already active.",
+      DyadErrorKind.Conflict,
+    );
+  }
+
+  const controller = new AbortController();
+  const abortWhenSenderIsDestroyed = () => controller.abort();
+  event.sender.once?.("destroyed", abortWhenSenderIsDestroyed);
+  if (event.sender.isDestroyed?.()) {
+    controller.abort();
+  }
+  activeCommitOperations.set(operationId, {
+    appId,
+    controller,
+    cancellable: true,
+    senderId: event.sender.id,
   });
+  let admitted = false;
+  try {
+    const commit = withAppGitOp(appId, "commit", async (appPath) => {
+      admitted = true;
+      if (controller.signal.aborted) {
+        throw GitStateError(
+          "The commit was cancelled.",
+          GIT_ERROR_CODES.COMMIT_CANCELLED,
+        );
+      }
+      await ensureDyadGitignored(appPath);
+      return gitService.stageAllAndCommitWithPreCommit({
+        path: appPath,
+        message,
+        signal: controller.signal,
+        onProgress: (phase) => {
+          if (phase === "committing") {
+            const active = activeCommitOperations.get(operationId);
+            if (active?.controller === controller) {
+              active.cancellable = false;
+            }
+          }
+          safeSend(event.sender, gitEvents.commitProgress.channel, {
+            appId,
+            operationId,
+            phase,
+          });
+        },
+      });
+    });
+
+    // Admission can sit in the coordinator queue for as long as whatever else
+    // holds the app's `repository` claim runs, and that queue has no timeout.
+    // A cancel that lands while the commit is still queued has to settle this
+    // invoke now: the renderer's `isCommitting` only clears when it does, so
+    // otherwise the dialog stays stuck on a disabled "Cancelling..." until the
+    // blocker releases. The queued admission still happens eventually, but its
+    // callback sees the aborted signal and commits nothing.
+    const cancelledBeforeAdmission = new Promise<never>((_resolve, reject) => {
+      const rejectAsCancelled = () => {
+        if (admitted) return;
+        reject(
+          GitStateError(
+            "The commit was cancelled.",
+            GIT_ERROR_CODES.COMMIT_CANCELLED,
+          ),
+        );
+      };
+      if (controller.signal.aborted) {
+        rejectAsCancelled();
+        return;
+      }
+      controller.signal.addEventListener("abort", rejectAsCancelled, {
+        once: true,
+      });
+    });
+    // Losing the race below leaves `commit` rejecting with nobody attached, so
+    // keep that rejection observed.
+    void commit.catch(() => {});
+    return await Promise.race([commit, cancelledBeforeAdmission]);
+  } finally {
+    event.sender.removeListener?.("destroyed", abortWhenSenderIsDestroyed);
+    const active = activeCommitOperations.get(operationId);
+    if (active?.controller === controller) {
+      activeCommitOperations.delete(operationId);
+    }
+  }
+}
+
+async function handleCancelCommit(
+  event: IpcMainInvokeEvent,
+  { appId, operationId }: CancelCommitParams,
+): Promise<boolean> {
+  const active = activeCommitOperations.get(operationId);
+  if (
+    active?.appId !== appId ||
+    active.senderId !== event.sender.id ||
+    !active.cancellable
+  ) {
+    return false;
+  }
+  active.controller.abort();
+  return true;
 }
 
 async function handleDiscardChanges(
@@ -499,5 +609,6 @@ export function registerGithubBranchHandlers() {
     handleGetUncommittedFileDiff,
   );
   createTypedHandler(gitContracts.commitChanges, handleCommitChanges);
+  createTypedHandler(gitContracts.cancelCommit, handleCancelCommit);
   createTypedHandler(gitContracts.discardChanges, handleDiscardChanges);
 }

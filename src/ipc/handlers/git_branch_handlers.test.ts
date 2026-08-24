@@ -1,9 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { IpcMainInvokeEvent } from "electron";
+import { EventEmitter } from "node:events";
 
+// Keyed by contract channel rather than registration order: positional lookup
+// silently repoints at the wrong handler the moment another one is registered,
+// and a signature-compatible mismatch still passes.
 const registeredHandlers = vi.hoisted(
-  () => [] as Array<(event: any, input: any) => Promise<unknown>>,
+  () => new Map<string, (event: any, input: any) => Promise<unknown>>(),
 );
+const gitServiceMocks = vi.hoisted(() => ({
+  stageAllAndCommitWithPreCommit: vi.fn(),
+}));
+
+vi.mock("@/ipc/services/git_service", () => ({
+  gitService: gitServiceMocks,
+}));
+
+vi.mock("@/ipc/handlers/gitignoreUtils", () => ({
+  ensureDyadGitignored: vi.fn(),
+}));
 
 vi.mock("@/ipc/utils/git_utils", () => ({
   gitListBranches: vi.fn(),
@@ -17,8 +32,10 @@ vi.mock("@/ipc/utils/git_utils", () => ({
   gitMerge: vi.fn(),
   gitCurrentBranch: vi.fn(),
   gitRenameBranch: vi.fn(),
-  GitStateError: vi.fn(),
-  GIT_ERROR_CODES: {},
+  GitStateError: vi.fn((message: string, code: string) =>
+    Object.assign(new Error(message), { code }),
+  ),
+  GIT_ERROR_CODES: { COMMIT_CANCELLED: "COMMIT_CANCELLED" },
   isGitMergeInProgress: vi.fn(),
   isGitRebaseInProgress: vi.fn(),
   getGitUncommittedFilesWithStatus: vi.fn(),
@@ -70,17 +87,29 @@ vi.mock("@/ipc/handlers/github_handlers", () => ({
 vi.mock("@/ipc/handlers/base", () => ({
   createTypedHandler: vi.fn(
     (
-      _contract: unknown,
+      contract: { channel: string },
       handler: (event: any, input: any) => Promise<unknown>,
     ) => {
-      registeredHandlers.push(handler);
+      registeredHandlers.set(contract.channel, handler);
     },
   ),
 }));
 
 vi.mock("@/ipc/types/github", () => ({
-  githubContracts: {},
-  gitContracts: {},
+  githubContracts: {
+    listLocalBranches: { channel: "github:list-local-branches" },
+    listRemoteBranches: { channel: "github:list-remote-branches" },
+  },
+  gitContracts: {
+    getUncommittedFiles: { channel: "git:get-uncommitted-files" },
+    getUncommittedFileDiff: { channel: "git:get-uncommitted-file-diff" },
+    commitChanges: { channel: "git:commit-changes" },
+    cancelCommit: { channel: "git:cancel-commit" },
+    discardChanges: { channel: "git:discard-changes" },
+  },
+  gitEvents: {
+    commitProgress: { channel: "git:commit-progress" },
+  },
 }));
 
 vi.mock("@/main/settings", () => ({
@@ -97,10 +126,19 @@ import {
   gitDeleteBranch,
 } from "@/ipc/utils/git_utils";
 import { db } from "@/db";
+import { gitContracts, gitEvents } from "@/ipc/types/github";
 import { createAppOperationHandler } from "@/ipc/utils/app_mutation_lock";
 import { reserveRecordingStart } from "@/ipc/services/recording_registry";
 
-const mockEvent = {} as IpcMainInvokeEvent;
+function handlerFor(channel: string) {
+  const handler = registeredHandlers.get(channel);
+  if (!handler) {
+    throw new Error(`No handler registered for channel "${channel}"`);
+  }
+  return handler;
+}
+
+const mockEvent = { sender: { id: 99 } } as IpcMainInvokeEvent;
 
 const mockApp = {
   id: 1,
@@ -161,13 +199,13 @@ describe("whole-operation app mutation locks", () => {
 describe("recording admission", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    registeredHandlers.length = 0;
+    registeredHandlers.clear();
     registerGithubBranchHandlers();
   });
 
   it("refuses commit and discard while a recording owns the app", async () => {
-    const commit = registeredHandlers.at(-2)!;
-    const discard = registeredHandlers.at(-1)!;
+    const commit = handlerFor(gitContracts.commitChanges.channel);
+    const discard = handlerFor(gitContracts.discardChanges.channel);
     const reservation = reserveRecordingStart(1);
     expect(reservation).not.toBeNull();
 
@@ -182,6 +220,203 @@ describe("recording admission", () => {
     } finally {
       reservation?.release();
     }
+  });
+});
+
+describe("commit progress", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    registeredHandlers.clear();
+    vi.mocked(db.query.apps.findFirst).mockResolvedValue(mockApp as any);
+    gitServiceMocks.stageAllAndCommitWithPreCommit.mockImplementation(
+      async ({ onProgress }) => {
+        onProgress("staging");
+        onProgress("pre-commit");
+        onProgress("committing");
+        return "commit-hash";
+      },
+    );
+    registerGithubBranchHandlers();
+  });
+
+  it("emits correlated phases to the renderer that started the commit", async () => {
+    const send = vi.fn();
+    const commit = handlerFor(gitContracts.commitChanges.channel);
+
+    await expect(
+      commit(
+        {
+          sender: {
+            id: 99,
+            isDestroyed: () => false,
+            isCrashed: () => false,
+            send,
+          },
+        },
+        { appId: 1, message: "Save work", operationId: "commit:123" },
+      ),
+    ).resolves.toBe("commit-hash");
+
+    expect(send.mock.calls).toEqual([
+      [
+        gitEvents.commitProgress.channel,
+        { appId: 1, operationId: "commit:123", phase: "staging" },
+      ],
+      [
+        gitEvents.commitProgress.channel,
+        { appId: 1, operationId: "commit:123", phase: "pre-commit" },
+      ],
+      [
+        gitEvents.commitProgress.channel,
+        { appId: 1, operationId: "commit:123", phase: "committing" },
+      ],
+    ]);
+  });
+
+  it("aborts only the matching commit owned by the requesting renderer", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    gitServiceMocks.stageAllAndCommitWithPreCommit.mockImplementationOnce(
+      async ({ signal, onProgress }) => {
+        receivedSignal = signal;
+        onProgress("pre-commit");
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+        return "unreachable";
+      },
+    );
+    const commit = handlerFor(gitContracts.commitChanges.channel);
+    const cancel = handlerFor(gitContracts.cancelCommit.channel);
+    const sender = {
+      id: 99,
+      isDestroyed: () => false,
+      isCrashed: () => false,
+      send: vi.fn(),
+    };
+
+    const commitPromise = commit(
+      { sender },
+      { appId: 1, message: "Save work", operationId: "commit:cancel" },
+    );
+    await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+
+    await expect(
+      cancel(
+        { sender: { ...sender, id: 100 } },
+        { appId: 1, operationId: "commit:cancel" },
+      ),
+    ).resolves.toBe(false);
+    expect(receivedSignal?.aborted).toBe(false);
+
+    await expect(
+      cancel({ sender }, { appId: 1, operationId: "commit:cancel" }),
+    ).resolves.toBe(true);
+    expect(receivedSignal?.aborted).toBe(true);
+    await expect(commitPromise).rejects.toThrow("aborted");
+  });
+
+  it("classifies cancellation while the commit is queued", async () => {
+    let releaseBlocker!: () => void;
+    const blocker = createAppOperationHandler(
+      "test-blocker",
+      ["repository"],
+      () =>
+        new Promise<void>((resolve) => {
+          releaseBlocker = resolve;
+        }),
+    );
+    const blockerPromise = blocker({}, { appId: 1 });
+    await vi.waitFor(() => expect(releaseBlocker).toBeDefined());
+    const commit = handlerFor(gitContracts.commitChanges.channel);
+    const cancel = handlerFor(gitContracts.cancelCommit.channel);
+    const sender = {
+      id: 99,
+      isDestroyed: () => false,
+      isCrashed: () => false,
+      send: vi.fn(),
+    };
+    const commitPromise = commit(
+      { sender },
+      { appId: 1, message: "Save work", operationId: "commit:queued" },
+    );
+
+    await expect(
+      cancel({ sender }, { appId: 1, operationId: "commit:queued" }),
+    ).resolves.toBe(true);
+    // Settles without waiting for the blocker, so the dialog is not stuck on a
+    // disabled "Cancelling..." for as long as the blocking operation runs.
+    await expect(commitPromise).rejects.toMatchObject({
+      code: "COMMIT_CANCELLED",
+    });
+
+    releaseBlocker();
+    await blockerPromise;
+    expect(
+      gitServiceMocks.stageAllAndCommitWithPreCommit,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("rejects cancellation once the irreversible commit phase begins", async () => {
+    let finishCommit!: () => void;
+    gitServiceMocks.stageAllAndCommitWithPreCommit.mockImplementationOnce(
+      async ({ onProgress }) => {
+        onProgress("committing");
+        await new Promise<void>((resolve) => {
+          finishCommit = resolve;
+        });
+        return "commit-hash";
+      },
+    );
+    const commit = handlerFor(gitContracts.commitChanges.channel);
+    const cancel = handlerFor(gitContracts.cancelCommit.channel);
+    const sender = {
+      id: 99,
+      isDestroyed: () => false,
+      isCrashed: () => false,
+      send: vi.fn(),
+    };
+    const commitPromise = commit(
+      { sender },
+      { appId: 1, message: "Save work", operationId: "commit:finishing" },
+    );
+    await vi.waitFor(() => expect(finishCommit).toBeDefined());
+
+    await expect(
+      cancel({ sender }, { appId: 1, operationId: "commit:finishing" }),
+    ).resolves.toBe(false);
+    finishCommit();
+    await expect(commitPromise).resolves.toBe("commit-hash");
+  });
+
+  it("aborts an operation when its initiating renderer is destroyed", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    gitServiceMocks.stageAllAndCommitWithPreCommit.mockImplementationOnce(
+      async ({ signal }) => {
+        receivedSignal = signal;
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+        return "unreachable";
+      },
+    );
+    const commit = handlerFor(gitContracts.commitChanges.channel);
+    const sender = Object.assign(new EventEmitter(), {
+      id: 99,
+      isDestroyed: () => false,
+      isCrashed: () => false,
+      send: vi.fn(),
+    });
+
+    const commitPromise = commit(
+      { sender },
+      { appId: 1, message: "Save work", operationId: "commit:destroyed" },
+    );
+    await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+
+    sender.emit("destroyed");
+
+    expect(receivedSignal?.aborted).toBe(true);
+    await expect(commitPromise).rejects.toThrow("aborted");
   });
 });
 
