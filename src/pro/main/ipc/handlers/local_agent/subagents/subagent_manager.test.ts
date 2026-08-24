@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   buildAllExcludedReviewResult,
+  assertSubagentFollowupAllowed,
   buildRemediationPrompt,
   buildReboundReviewState,
   buildBoundedModelHistory,
@@ -23,7 +24,6 @@ import {
   waitForAbortableDelay,
   withFinalizationAdmission,
 } from "./subagent_manager";
-import { withMutationAdmission } from "./mutation_lease";
 
 describe("sub-agent manager status policy", () => {
   it("rejects immediately when a delay receives an already-aborted signal", async () => {
@@ -42,10 +42,18 @@ describe("sub-agent manager status policy", () => {
     expect(SUBAGENT_NONTERMINAL_STATUSES).toEqual([
       "queued",
       "running",
+      "stopping",
       "waiting_for_writer",
       "auto_fix_countdown",
       "fixing_findings",
     ]);
+  });
+
+  it("rejects follow-ups while cancellation is still draining", () => {
+    expect(() => assertSubagentFollowupAllowed("stopping")).toThrow(
+      /still stopping/,
+    );
+    expect(() => assertSubagentFollowupAllowed("cancelled")).not.toThrow();
   });
 
   it("only reuses active or successfully completed same-hash reviews", () => {
@@ -274,41 +282,20 @@ describe("sub-agent manager status policy", () => {
     expect(shouldDrainMutationOnAbort("explorer")).toBe(false);
   });
 
-  it("aborts finalization while it is queued behind mutation admission", async () => {
-    const appId = 91_001;
-    let releaseMutation!: () => void;
-    let markEntered!: () => void;
-    const entered = new Promise<void>((resolve) => {
-      markEntered = resolve;
-    });
-    const mutation = withMutationAdmission(
-      appId,
-      () =>
-        new Promise<void>((resolve) => {
-          releaseMutation = resolve;
-          markEntered();
-        }),
-    );
-    await entered;
-
+  it("rejects finalization when its owning root is already cancelled", async () => {
     const controller = new AbortController();
+    controller.abort();
     let admitted = false;
     const finalization = withFinalizationAdmission({
-      appId,
       abortSignal: controller.signal,
       deadlineAt: Date.now() + 10_000,
       operation: async () => {
         admitted = true;
       },
     });
-    controller.abort();
-
     await expect(finalization).rejects.toMatchObject({
       kind: "user_cancelled",
     });
-    releaseMutation();
-    await mutation;
-    await Promise.resolve();
     expect(admitted).toBe(false);
   });
 
