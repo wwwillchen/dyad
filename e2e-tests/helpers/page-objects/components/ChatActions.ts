@@ -247,14 +247,19 @@ export class ChatActions {
       plan: /Chat mode: Plan/,
     };
     const storedMode = mode === "basic-agent" ? "local-agent" : mode;
+    let selectionDispatched = false;
 
     await expect(async () => {
       const selectedMode = await trigger.getAttribute("aria-label");
-      if (!selectedName[mode].test(selectedMode ?? "")) {
+      if (
+        !selectionDispatched ||
+        !selectedName[mode].test(selectedMode ?? "")
+      ) {
         await trigger.click({ timeout: 1_000 });
         await this.page
           .getByRole("option", { name: new RegExp(optionName) })
           .click({ timeout: 1_000 });
+        selectionDispatched = true;
       }
 
       await expect(trigger).toHaveAttribute("aria-label", selectedName[mode], {
