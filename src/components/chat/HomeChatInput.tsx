@@ -17,7 +17,7 @@ import {
 import { useSettings } from "@/hooks/useSettings";
 import { homeChatInputValueAtom, homeSelectedAppAtom } from "@/atoms/chatAtoms";
 import { useAtom } from "jotai";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useStreamChat } from "@/hooks/useStreamChat";
 import { useAttachments } from "@/hooks/useAttachments";
 import { AttachmentsList } from "./AttachmentsList";
@@ -69,14 +69,8 @@ export function HomeChatInput({
   });
 
   const [appSearchOpen, setAppSearchOpen] = useState(false);
-  const { apps } = useLoadApps();
-
-  // Clear selected app when the experiment flag is disabled
-  useEffect(() => {
-    if (!settings?.enableSelectAppFromHomeChatInput) {
-      setSelectedApp(null);
-    }
-  }, [settings?.enableSelectAppFromHomeChatInput, setSelectedApp]);
+  const { apps, loading: appsLoading } = useLoadApps();
+  const canSelectApp = !appsLoading && apps.length > 0;
 
   const typingText = useTypingPlaceholder([
     "an ecommerce store...",
@@ -290,7 +284,7 @@ export function HomeChatInput({
           <div className="px-2 flex items-center justify-between pb-0.5 pt-0.5">
             <div className="flex items-center">
               <ChatInputControls showContextFilesPicker={false} />
-              {settings?.enableSelectAppFromHomeChatInput && (
+              {canSelectApp && (
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -346,7 +340,7 @@ export function HomeChatInput({
         </div>
       </div>
 
-      {appSearchOpen && (
+      {appSearchOpen && canSelectApp && (
         <AppSearchDialog
           open={appSearchOpen}
           onOpenChange={setAppSearchOpen}
