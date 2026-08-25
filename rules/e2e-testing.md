@@ -23,6 +23,12 @@ through Playwright, launch `npm start -- -- --remote-debugging-port=9222` and
 attach with `chromium.connectOverCDP("http://127.0.0.1:9222")`. The first `--`
 belongs to npm and the second makes Forge pass the Chromium flag to Electron;
 if the attachment fails with loopback `EPERM` in a sandbox, rerun it outside.
+Use this only for deliberate one-off manual validation: the CDP port is
+unauthenticated to local processes, and the development profile can expose real
+provider credentials, chat/app data, and billable API access. Close the app as
+soon as validation finishes. For reproducible automation, prefer the packaged
+E2E setup and isolate `--user-data-dir`, `XDG_CONFIG_HOME`, and
+`GIT_CONFIG_GLOBAL` as described below.
 
 Keep each keyboard shortcut owned by one active listener. Duplicate global and
 feature-scoped listeners can make modifier guards or cleanup appear ineffective;
