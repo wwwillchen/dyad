@@ -161,6 +161,7 @@ import {
 } from "../utils/versioned_codebase_context";
 import { getAiMessagesJsonIfWithinLimit } from "../utils/ai_messages_utils";
 import { readSettings, setSentinelActiveChat } from "@/main/settings";
+import { recordAppSizeForSession } from "@/main/last_session_store";
 import {
   buildLocalAgentAttachmentInfo,
   getInlineImageMimeType,
@@ -1707,6 +1708,14 @@ ${componentSnippet}
         const { formattedOutput: codebaseInfo, files } = await extractCodebase({
           appPath,
           chatContext,
+          // Recorded as soon as the file list is known rather than after the
+          // extract is built, so a turn that dies reading a large codebase
+          // still reports the size it died on.
+          onSizeStats: (sizeStats) =>
+            recordAppSizeForSession({
+              appId: updatedChat.app.id,
+              ...sizeStats,
+            }),
         });
 
         // For smart context and selected components, we will mark the selected components' files as focused.

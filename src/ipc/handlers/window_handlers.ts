@@ -4,6 +4,8 @@ import { platform } from "os";
 import { createTypedHandler } from "./base";
 import { systemContracts } from "../types/system";
 import { getInitialLoadIsFirstSession } from "@/main/settings";
+import { getPreviousSessionAppSize } from "@/main/last_session_store";
+import { AppSizeTelemetrySchema } from "@/shared/app_size_telemetry";
 
 const logger = log.scope("window-handlers");
 
@@ -61,8 +63,16 @@ export function registerWindowHandlers() {
   createTypedHandler(
     systemContracts.getInitialLoadTelemetryContext,
     async () => {
+      const previous = getPreviousSessionAppSize();
+      // Narrowed by the schema rather than copied field by field, so a wrong
+      // field cannot creep in. The app id identifies an app on this machine
+      // only and nothing in the renderer uses it, so it does not cross.
+      const narrowed = previous
+        ? AppSizeTelemetrySchema.safeParse(previous)
+        : null;
       return {
         isFirstSession: getInitialLoadIsFirstSession(),
+        previousSessionAppSize: narrowed?.success ? narrowed.data : null,
       };
     },
   );

@@ -136,6 +136,30 @@ describe("getInitialLoadTelemetryProperties", () => {
       runtimeMode2: "host",
     });
   });
+
+  it("carries the previous session's app size as the crash-rate denominator", () => {
+    const properties = getInitialLoadTelemetryProperties({
+      settings: makeSettings({}),
+      appVersion: "1.1.0",
+      platform: null,
+      isFirstSession: false,
+      previousSessionAppSize: {
+        fileCount: 310,
+        totalBytes: 2_000_000,
+        maxFileCount: 310,
+        maxTotalBytes: 2_000_000,
+        distinctApps: 1,
+      },
+    });
+
+    expect(properties).toMatchObject({
+      prev_session_app_file_count: 310,
+      prev_session_app_bytes: 2_000_000,
+      prev_session_max_app_file_count: 310,
+      prev_session_max_app_bytes: 2_000_000,
+      prev_session_distinct_apps: 1,
+    });
+  });
 });
 
 describe("getSettingsPersonTelemetryProperties", () => {
