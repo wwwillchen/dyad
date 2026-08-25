@@ -27,8 +27,8 @@ import {
 describe("local_agent_prompt", () => {
   const expectGitContextGuidance = (prompt: string) => {
     expect(prompt).toContain("<git_context>");
-    expect(prompt).toContain("<dyad-git-context>");
-    expect(prompt).toContain('source_commit="..." no_commit="true"');
+    expect(prompt).toContain("Dyad may add Git provenance to a user message");
+    expect(prompt).not.toContain("<dyad-git-context>");
   };
 
   it("keeps Supabase safety invariants in the disconnected root prompt", () => {

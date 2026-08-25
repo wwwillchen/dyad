@@ -15,11 +15,11 @@ message: [{"type":"tool_result","tool_use_id":"[[TOOL_CALL_0]]","content":"File 
 
 ===
 role: assistant
-message: [{"type":"text","text":"END OF COMPACTED TURN."},{"type":"text","text":"<dyad-git-context source_commit=\\"[[GIT_COMMIT]]\\" no_commit=\\"true\\"></dyad-git-context>"}]
+message: [{"type":"text","text":"END OF COMPACTED TURN."}]
 
 ===
 role: user
-message: [{"type":"text","text":"[dump] hi"}]"
+message: [{"type":"text","text":"[dump] hi\\n\\n<system-reminder>Previous assistant message created no commit. Repository commit before that message: [[GIT_COMMIT]].</system-reminder>"}]"
 `;
 
 exports[`context compaction (integration) > compaction triggers and shows summary > compaction-post-summary-transcript 1`] = `
@@ -33,9 +33,9 @@ message: [{"type":"text","text":"tc=local-agent/simple-response"}]
 
 ===
 role: assistant
-message: [{"type":"text","text":"Hello! I understand your request. This is a simple response from the Basic Agent mode."},{"type":"text","text":"<dyad-git-context source_commit=\\"[[GIT_COMMIT]]\\" no_commit=\\"true\\"></dyad-git-context>"}]
+message: [{"type":"text","text":"Hello! I understand your request. This is a simple response from the Basic Agent mode."}]
 
 ===
 role: user
-message: [{"type":"text","text":"[dump] hi"}]"
+message: [{"type":"text","text":"[dump] hi\\n\\n<system-reminder>Previous assistant message created no commit. Repository commit before that message: [[GIT_COMMIT]].</system-reminder>"}]"
 `;
