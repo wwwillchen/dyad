@@ -242,31 +242,33 @@ function buildPreExecutionToolErrorStatus(
   return `<dyad-status title="${escapeXmlAttr(`Tool "${toolName}" failed`)}" state="error">\n${escapeXmlContent(message)}\n</dyad-status>`;
 }
 
-function appendGitContext(
+function appendGitReminderToUserMessage(
   parsed: ModelMessage[],
-  annotation: string,
-): ModelMessage[] {
-  const finalMessage = parsed.at(-1);
-  if (finalMessage?.role !== "assistant") {
-    return [...parsed, { role: "assistant", content: annotation }];
+  reminder: string,
+): ModelMessage[] | null {
+  const userMessageIndex = parsed.findIndex(
+    (message) =>
+      message.role === "user" &&
+      (typeof message.content === "string" || Array.isArray(message.content)),
+  );
+  if (userMessageIndex === -1) {
+    return null;
   }
 
-  if (
-    typeof finalMessage.content !== "string" &&
-    !Array.isArray(finalMessage.content)
-  ) {
-    return [...parsed, { role: "assistant", content: annotation }];
+  const userMessage = parsed[userMessageIndex];
+  if (userMessage.role !== "user") {
+    return null;
   }
-
   const content =
-    typeof finalMessage.content === "string"
-      ? [
-          { type: "text" as const, text: finalMessage.content },
-          { type: "text" as const, text: annotation },
-        ]
-      : [...finalMessage.content, { type: "text" as const, text: annotation }];
+    typeof userMessage.content === "string"
+      ? `${userMessage.content}\n\n${reminder}`
+      : [...userMessage.content, { type: "text" as const, text: reminder }];
 
-  return [...parsed.slice(0, -1), { ...finalMessage, content }];
+  return [
+    ...parsed.slice(0, userMessageIndex),
+    { ...userMessage, content },
+    ...parsed.slice(userMessageIndex + 1),
+  ];
 }
 
 export function buildChatMessageHistory(
@@ -327,18 +329,37 @@ export function buildChatMessageHistory(
     .filter((msg) => !excludedIds?.has(msg.id))
     .filter((msg) => msg.content || msg.aiMessagesJson);
 
-  return filtered.flatMap((msg) => {
-    const parsed = parseAiMessagesJson(msg);
-    if (msg.role !== "assistant") {
-      return parsed;
+  const history: ModelMessage[] = [];
+  let pendingReminder: string | null = null;
+
+  for (const msg of filtered) {
+    let parsed = parseAiMessagesJson(msg);
+    if (pendingReminder) {
+      const withReminders = appendGitReminderToUserMessage(
+        parsed,
+        pendingReminder,
+      );
+      if (withReminders) {
+        parsed = withReminders;
+        pendingReminder = null;
+      }
     }
-    const annotation = msg.commitHash
-      ? `<dyad-git-context commit="${escapeXmlAttr(msg.commitHash)}"></dyad-git-context>`
+    history.push(...parsed);
+
+    if (msg.role !== "assistant") {
+      continue;
+    }
+    const reminder = msg.commitHash
+      ? `<system-reminder>Previous assistant message created commit: ${escapeXmlContent(msg.commitHash)}.</system-reminder>`
       : msg.sourceCommitHash
-        ? `<dyad-git-context source_commit="${escapeXmlAttr(msg.sourceCommitHash)}" no_commit="true"></dyad-git-context>`
+        ? `<system-reminder>Previous assistant message created no commit. Repository commit before that message: ${escapeXmlContent(msg.sourceCommitHash)}.</system-reminder>`
         : null;
-    return annotation ? appendGitContext(parsed, annotation) : parsed;
-  });
+    if (reminder) {
+      pendingReminder = reminder;
+    }
+  }
+
+  return history;
 }
 
 /**
