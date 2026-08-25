@@ -4,6 +4,7 @@ const GIT_CONTEXT_TAG_MARKERS = [
   "<dyad-git-context",
   "</dyad-git-context",
 ] as const;
+const MAX_TAG_MARKUP_LENGTH = 256;
 
 /**
  * Removes internal Git-context tag markup without exposing partial tags while
@@ -32,6 +33,10 @@ export class GitContextEchoSanitizer {
 
       const tagEndIndex = this.pending.indexOf(">");
       if (tagEndIndex === -1) {
+        if (this.pending.length > MAX_TAG_MARKUP_LENGTH) {
+          output += this.pending;
+          this.pending = "";
+        }
         break;
       }
       this.pending = this.pending.slice(tagEndIndex + 1);
@@ -43,10 +48,7 @@ export class GitContextEchoSanitizer {
   finish(): string {
     const pending = this.pending;
     this.pending = "";
-    return startsWithMarker(pending) ||
-      startsWithDistinctivePartialMarker(pending)
-      ? ""
-      : pending;
+    return startsWithDistinctivePartialMarker(pending) ? "" : pending;
   }
 }
 
@@ -58,32 +60,53 @@ export function stripGitContextEchoes(text: string): string {
 export function stripGitContextEchoesFromAssistantMessages(
   messages: ModelMessage[],
 ): ModelMessage[] {
-  return messages.map((message) => {
+  return messages.flatMap((message) => {
     if (message.role !== "assistant") {
-      return message;
+      return [message];
     }
 
     if (typeof message.content === "string") {
-      return {
-        ...message,
-        content: stripGitContextEchoes(message.content),
-      };
+      const content = stripGitContextEchoes(message.content);
+      return content.length > 0 ? [{ ...message, content }] : [];
     }
 
-    const content = message.content.map((part) => {
-      if (part.type !== "text") {
-        return part;
+    const sanitizer = new GitContextEchoSanitizer();
+    const sanitizedTextByIndex = new Map<number, string>();
+    let lastSanitizedPartIndex = -1;
+
+    message.content.forEach((part, index) => {
+      if (part.type === "text" || part.type === "reasoning") {
+        sanitizedTextByIndex.set(index, sanitizer.push(part.text));
+        lastSanitizedPartIndex = index;
       }
-      const text = stripGitContextEchoes(part.text);
-      return { ...part, text };
     });
 
-    return { ...message, content };
+    if (lastSanitizedPartIndex !== -1) {
+      const trailingText = sanitizer.finish();
+      sanitizedTextByIndex.set(
+        lastSanitizedPartIndex,
+        (sanitizedTextByIndex.get(lastSanitizedPartIndex) ?? "") + trailingText,
+      );
+    }
+
+    const content: typeof message.content = [];
+    message.content.forEach((part, index) => {
+      if (part.type !== "text" && part.type !== "reasoning") {
+        content.push(part);
+        return;
+      }
+      const text = sanitizedTextByIndex.get(index) ?? "";
+      if (text.length > 0) {
+        content.push({ ...part, text });
+      }
+    });
+
+    return content.length > 0 ? [{ ...message, content } as ModelMessage] : [];
   });
 }
 
 function findNextMarkerIndex(text: string): number {
-  const normalized = text.toLowerCase();
+  const normalized = foldAsciiCase(text);
   let earliest = -1;
   for (const marker of GIT_CONTEXT_TAG_MARKERS) {
     let searchFrom = 0;
@@ -105,7 +128,7 @@ function findNextMarkerIndex(text: string): number {
 }
 
 function getPotentialMarkerSuffixLength(text: string): number {
-  const normalized = text.toLowerCase();
+  const normalized = foldAsciiCase(text);
   const maxLength = Math.min(
     normalized.length,
     Math.max(...GIT_CONTEXT_TAG_MARKERS.map((marker) => marker.length - 1)),
@@ -120,21 +143,20 @@ function getPotentialMarkerSuffixLength(text: string): number {
   return 0;
 }
 
-function startsWithMarker(text: string): boolean {
-  const normalized = text.toLowerCase();
-  return GIT_CONTEXT_TAG_MARKERS.some(
-    (marker) =>
-      normalized.startsWith(marker) && isTagBoundary(normalized[marker.length]),
-  );
-}
-
 function startsWithDistinctivePartialMarker(text: string): boolean {
-  const normalized = text.toLowerCase();
+  const normalized = foldAsciiCase(text);
   const minimumDistinctivePrefix = "<dyad-git-";
   return (
     normalized.length >= minimumDistinctivePrefix.length &&
-    GIT_CONTEXT_TAG_MARKERS.some((marker) => marker.startsWith(normalized))
+    GIT_CONTEXT_TAG_MARKERS.some(
+      (marker) =>
+        normalized.length < marker.length && marker.startsWith(normalized),
+    )
   );
+}
+
+function foldAsciiCase(text: string): string {
+  return text.replace(/[A-Z]/g, (character) => character.toLowerCase());
 }
 
 function isTagBoundary(character: string | undefined): boolean {

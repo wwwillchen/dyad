@@ -2780,6 +2780,75 @@ describe("handleLocalAgentStream", () => {
       expect(finalContent).toContain("Here is my answer.");
     });
 
+    it("sanitizes reasoning and flushes buffered text before reasoning starts", async () => {
+      const { event, getMessagesByChannel } = createFakeEvent();
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat();
+      const echoedTag =
+        '<dyad-git-context commit="hallucinated"></dyad-git-context>';
+      mockStreamResult = {
+        fullStream: (async function* () {
+          yield { type: "text-delta", text: "Comparison <d" };
+          yield { type: "reasoning-start" };
+          yield {
+            type: "reasoning-delta",
+            text: "Consider.<dyad-git-con",
+          };
+          yield {
+            type: "reasoning-delta",
+            text: 'text commit="hallucinated"></dyad-git-context>',
+          };
+          yield { type: "reasoning-end" };
+          yield { type: "text-delta", text: "Answer" };
+        })(),
+        response: Promise.resolve({
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                { type: "reasoning", text: `Consider.${echoedTag}` },
+                { type: "text", text: "Answer" },
+              ],
+            },
+          ],
+        }),
+        steps: Promise.resolve([]),
+      };
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      const contentUpdates = dbOperations.updates.filter(
+        (update) => update.data.content !== undefined,
+      );
+      expect(contentUpdates.at(-1)?.data.content).toBe(
+        "Comparison <d<think>Consider.</think>\nAnswer",
+      );
+      expect(
+        getMessagesByChannel("chat:response:chunk")
+          .map((message) => JSON.stringify(message.args[0]))
+          .join("\n"),
+      ).not.toContain("dyad-git-context");
+
+      const aiMessagesUpdate = dbOperations.updates.find(
+        (update) => update.data.aiMessagesJson !== undefined,
+      );
+      expect(JSON.stringify(aiMessagesUpdate?.data.aiMessagesJson)).toContain(
+        "Consider.",
+      );
+      expect(
+        JSON.stringify(aiMessagesUpdate?.data.aiMessagesJson),
+      ).not.toContain("dyad-git-context");
+    });
+
     it("should close thinking block when transitioning to text", async () => {
       // Arrange
       const { event } = createFakeEvent();

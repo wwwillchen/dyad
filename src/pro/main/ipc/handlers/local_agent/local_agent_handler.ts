@@ -1446,7 +1446,8 @@ export async function handleLocalAgentStream(
 
           let inThinkingBlock = false;
           let streamErrorFromIteration: unknown;
-          const gitContextEchoSanitizer = new GitContextEchoSanitizer();
+          const gitContextTextSanitizer = new GitContextEchoSanitizer();
+          const gitContextReasoningSanitizer = new GitContextEchoSanitizer();
 
           try {
             for await (const part of fullStream) {
@@ -1460,6 +1461,29 @@ export async function handleLocalAgentStream(
 
               let chunk = "";
               let clearStreamingPreviewAfterChunk = false;
+
+              if (part.type !== "text-delta") {
+                const bufferedText = gitContextTextSanitizer.finish();
+                if (bufferedText.length > 0) {
+                  passProducedChatText = true;
+                  fullResponse += bufferedText;
+                  maybeCaptureRetryReplayText(
+                    activeRetryReplayEvents,
+                    bufferedText,
+                  );
+                  await updateResponseInDb(placeholderMessageId, fullResponse);
+                  sendChunk(fullResponse);
+                }
+              }
+
+              if (part.type !== "reasoning-delta") {
+                const bufferedReasoning = gitContextReasoningSanitizer.finish();
+                if (bufferedReasoning.length > 0) {
+                  fullResponse += bufferedReasoning;
+                  await updateResponseInDb(placeholderMessageId, fullResponse);
+                  sendChunk(fullResponse);
+                }
+              }
 
               // Handle thinking block transitions
               if (
@@ -1489,7 +1513,7 @@ export async function handleLocalAgentStream(
 
                 case "text-delta":
                   {
-                    const sanitizedText = gitContextEchoSanitizer.push(
+                    const sanitizedText = gitContextTextSanitizer.push(
                       part.text,
                     );
                     if (sanitizedText.length > 0) {
@@ -1515,7 +1539,7 @@ export async function handleLocalAgentStream(
                     chunk = "<think>";
                     inThinkingBlock = true;
                   }
-                  chunk += part.text;
+                  chunk += gitContextReasoningSanitizer.push(part.text);
                   break;
 
                 case "reasoning-end":
@@ -1659,11 +1683,18 @@ export async function handleLocalAgentStream(
             }
           }
 
-          const trailingText = gitContextEchoSanitizer.finish();
+          const trailingText = gitContextTextSanitizer.finish();
           if (trailingText.length > 0) {
             passProducedChatText = true;
             fullResponse += trailingText;
             maybeCaptureRetryReplayText(activeRetryReplayEvents, trailingText);
+            await updateResponseInDb(placeholderMessageId, fullResponse);
+            sendChunk(fullResponse);
+          }
+
+          const trailingReasoning = gitContextReasoningSanitizer.finish();
+          if (trailingReasoning.length > 0) {
+            fullResponse += trailingReasoning;
             await updateResponseInDb(placeholderMessageId, fullResponse);
             sendChunk(fullResponse);
           }
