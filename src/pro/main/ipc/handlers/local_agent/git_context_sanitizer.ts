@@ -97,6 +97,13 @@ export function stripGitContextEchoesFromAssistantMessages(
       }
       const text = sanitizedTextByIndex.get(index) ?? "";
       if (text.length > 0) {
+        if (
+          part.type === "reasoning" &&
+          text !== part.text &&
+          part.providerOptions
+        ) {
+          return;
+        }
         content.push({ ...part, text });
       }
     });
@@ -150,7 +157,7 @@ function startsWithDistinctivePartialMarker(text: string): boolean {
     normalized.length >= minimumDistinctivePrefix.length &&
     GIT_CONTEXT_TAG_MARKERS.some(
       (marker) =>
-        normalized.length < marker.length && marker.startsWith(normalized),
+        normalized.length <= marker.length && marker.startsWith(normalized),
     )
   );
 }

@@ -59,6 +59,10 @@ describe("GitContextEchoSanitizer", () => {
     const shortPrefixSanitizer = new GitContextEchoSanitizer();
     expect(shortPrefixSanitizer.push("Done.<dyad-git")).toBe("Done.");
     expect(shortPrefixSanitizer.finish()).toBe("");
+
+    const exactMarkerSanitizer = new GitContextEchoSanitizer();
+    expect(exactMarkerSanitizer.push("Done.<dyad-git-context")).toBe("Done.");
+    expect(exactMarkerSanitizer.finish()).toBe("");
   });
 
   it("removes echoes from assistant message text only", () => {
@@ -151,6 +155,33 @@ describe("GitContextEchoSanitizer", () => {
             input: {},
           },
         ],
+      },
+    ]);
+  });
+
+  it("drops modified reasoning parts with provider-bound metadata", () => {
+    const tag = '<dyad-git-context commit="fake"></dyad-git-context>';
+
+    expect(
+      stripGitContextEchoesFromAssistantMessages([
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "reasoning",
+              text: `Signed thought.${tag}`,
+              providerOptions: {
+                anthropic: { signature: "signed-original-reasoning" },
+              },
+            },
+            { type: "text", text: "Answer" },
+          ],
+        },
+      ]),
+    ).toEqual([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Answer" }],
       },
     ]);
   });
