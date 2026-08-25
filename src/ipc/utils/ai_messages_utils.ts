@@ -16,8 +16,13 @@ const MAX_TOOL_CALL_ID_LENGTH = 64;
 
 export function shouldNormalizeToolCallIdsForOpenAIResponses(
   selectedProviderId: string,
+  selectedModelName: string,
 ): boolean {
-  return selectedProviderId === "openai" || selectedProviderId === "azure";
+  return (
+    selectedProviderId === "openai" ||
+    selectedProviderId === "azure" ||
+    (selectedProviderId === "auto" && selectedModelName === "value")
+  );
 }
 
 function normalizeToolCallId(toolCallId: string): string {

@@ -806,14 +806,36 @@ describe("parseAiMessagesJson", () => {
 
 describe("shouldNormalizeToolCallIdsForOpenAIResponses", () => {
   it.each([
-    ["openai", true],
-    ["azure", true],
-    ["google", false],
-    ["auto", false],
-  ])("returns %s for provider %s", (providerId, expected) => {
-    expect(shouldNormalizeToolCallIdsForOpenAIResponses(providerId)).toBe(
-      expected,
-    );
+    ["openai", "gpt-5.6-luna", true],
+    ["azure", "gpt-5", true],
+    ["auto", "value", true],
+    ["auto", "auto", false],
+    ["google", "gemini-3.7-flash", false],
+  ])(
+    "returns $2 for provider $0 and model $1",
+    (providerId, modelName, expected) => {
+      expect(
+        shouldNormalizeToolCallIdsForOpenAIResponses(providerId, modelName),
+      ).toBe(expected);
+    },
+  );
+
+  it("returns the original array when every tool-call ID is compatible", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-compatible",
+            toolName: "read_file",
+            input: { path: "README.md" },
+          },
+        ],
+      },
+    ];
+
+    expect(normalizeToolCallIdsForOpenAIResponses(messages)).toBe(messages);
   });
 });
 

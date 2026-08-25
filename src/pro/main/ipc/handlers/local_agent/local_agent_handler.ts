@@ -790,7 +790,10 @@ export async function handleLocalAgentStream(
     const normalizeToolCallIdsForTarget = <T extends ModelMessage>(
       messages: T[],
     ): T[] =>
-      shouldNormalizeToolCallIdsForOpenAIResponses(selectedModel.provider)
+      shouldNormalizeToolCallIdsForOpenAIResponses(
+        selectedModel.provider,
+        selectedModel.name,
+      )
         ? normalizeToolCallIdsForOpenAIResponses(messages)
         : messages;
 

@@ -684,6 +684,78 @@ describe("handleLocalAgentStream", () => {
     mockRequireMcpToolConsent.mockResolvedValue({ approved: true });
   });
 
+  describe("provider-scoped tool-call ID normalization", () => {
+    it("normalizes matching oversized IDs in prepareStep for OpenAI Responses", async () => {
+      const { event } = createFakeEvent();
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat({
+        modelSelection: {
+          provider: "openai",
+          name: "gpt-5.6-luna",
+          effortLevel: "medium",
+        },
+      });
+      const oversizedToolCallId = `call_123__thought__${"x".repeat(350)}`;
+      let preparedMessages: ModelMessage[] = [];
+
+      mockStreamTextImpl = (options) => ({
+        fullStream: (async function* () {
+          const stepMessages: ModelMessage[] = [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolCallId: oversizedToolCallId,
+                  toolName: "read_file",
+                  input: { path: "README.md" },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              content: [
+                {
+                  type: "tool-result",
+                  toolCallId: oversizedToolCallId,
+                  toolName: "read_file",
+                  output: { type: "text", value: "README contents" },
+                },
+              ],
+            },
+          ];
+          const prepared = await options.prepareStep?.({
+            messages: stepMessages,
+            stepNumber: 1,
+            steps: [],
+            model: {},
+            experimental_context: undefined,
+          });
+          preparedMessages = prepared?.messages ?? stepMessages;
+          yield { type: "text-delta", text: "done" };
+        })(),
+        response: Promise.resolve({ messages: [] }),
+        steps: Promise.resolve([]),
+      });
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+
+      const toolCallId = (preparedMessages[0].content as any[])[0].toolCallId;
+      const toolResultId = (preparedMessages[1].content as any[])[0].toolCallId;
+      expect(toolCallId).toHaveLength(64);
+      expect(toolResultId).toBe(toolCallId);
+    });
+  });
+
   describe("MCP result limits", () => {
     it("bounds direct MCP tool output before it reaches XML or model history", async () => {
       const { event } = createFakeEvent();
