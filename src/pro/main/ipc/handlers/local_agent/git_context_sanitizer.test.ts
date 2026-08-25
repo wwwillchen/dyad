@@ -55,6 +55,10 @@ describe("GitContextEchoSanitizer", () => {
 
     expect(sanitizer.push("Done.<dyad-git-con")).toBe("Done.");
     expect(sanitizer.finish()).toBe("");
+
+    const shortPrefixSanitizer = new GitContextEchoSanitizer();
+    expect(shortPrefixSanitizer.push("Done.<dyad-git")).toBe("Done.");
+    expect(shortPrefixSanitizer.finish()).toBe("");
   });
 
   it("removes echoes from assistant message text only", () => {

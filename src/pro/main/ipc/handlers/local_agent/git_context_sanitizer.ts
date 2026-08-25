@@ -145,7 +145,7 @@ function getPotentialMarkerSuffixLength(text: string): number {
 
 function startsWithDistinctivePartialMarker(text: string): boolean {
   const normalized = foldAsciiCase(text);
-  const minimumDistinctivePrefix = "<dyad-git-";
+  const minimumDistinctivePrefix = "<dyad-git";
   return (
     normalized.length >= minimumDistinctivePrefix.length &&
     GIT_CONTEXT_TAG_MARKERS.some(
