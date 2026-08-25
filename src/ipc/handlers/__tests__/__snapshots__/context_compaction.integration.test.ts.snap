@@ -3,7 +3,7 @@
 exports[`context compaction (integration) > compaction can run mid-turn > compaction-mid-turn-transcript 1`] = `
 "===
 role: user
-message: [{"type":"text","text":"tc=local-agent/compaction-mid-turn"}]
+message: [{"type":"text","text":"tc=local-agent/compaction-mid-turn\\n\\n<system-reminder>Previous assistant message created no commit. Repository commit before that message: [[GIT_COMMIT]].</system-reminder>"}]
 
 ===
 role: assistant
@@ -29,7 +29,7 @@ message: [{"type":"text","text":"<dyad-compaction title=\\"Conversation compacte
 
 ===
 role: user
-message: [{"type":"text","text":"tc=local-agent/simple-response"}]
+message: [{"type":"text","text":"tc=local-agent/simple-response\\n\\n<system-reminder>Previous assistant message created commit: [[GIT_COMMIT]].</system-reminder>"}]
 
 ===
 role: assistant

@@ -759,6 +759,172 @@ describe("buildChatMessageHistory Git context", () => {
     ]);
   });
 
+  it("carries Git provenance across a compaction boundary", () => {
+    const history = buildChatMessageHistory([
+      {
+        id: 1,
+        role: "user",
+        content: "Earlier request",
+        aiMessagesJson: null,
+        sourceCommitHash: null,
+        commitHash: null,
+        isCompactionSummary: false,
+        createdAt: new Date("2025-01-01T00:00:00Z"),
+      },
+      {
+        id: 2,
+        role: "assistant",
+        content: "Earlier response",
+        aiMessagesJson: null,
+        sourceCommitHash: "source-before-earlier-response",
+        commitHash: "commit-from-earlier-response",
+        isCompactionSummary: false,
+        createdAt: new Date("2025-01-01T00:00:01Z"),
+      },
+      {
+        id: 5,
+        role: "assistant",
+        content: "Compacted conversation",
+        aiMessagesJson: null,
+        sourceCommitHash: null,
+        commitHash: null,
+        isCompactionSummary: true,
+        createdAt: new Date("2025-01-01T00:00:02Z"),
+      },
+      {
+        id: 3,
+        role: "user",
+        content: "Current request",
+        aiMessagesJson: null,
+        sourceCommitHash: null,
+        commitHash: null,
+        isCompactionSummary: false,
+        createdAt: new Date("2025-01-01T00:00:03Z"),
+      },
+      {
+        id: 4,
+        role: "assistant",
+        content: "",
+        aiMessagesJson: null,
+        sourceCommitHash: "source-before-current-response",
+        commitHash: null,
+        isCompactionSummary: false,
+        createdAt: new Date("2025-01-01T00:00:04Z"),
+      },
+    ]);
+
+    expect(history).toEqual([
+      { role: "assistant", content: "Compacted conversation" },
+      {
+        role: "user",
+        content:
+          "Current request\n\n<system-reminder>Previous assistant message created commit: commit-from-earlier-response.</system-reminder>",
+      },
+    ]);
+  });
+
+  it("clears a pending reminder when a later assistant turn has no provenance", () => {
+    const history = buildChatMessageHistory([
+      {
+        id: 1,
+        role: "assistant",
+        content: "Committed response",
+        aiMessagesJson: null,
+        sourceCommitHash: null,
+        commitHash: "older-commit",
+        isCompactionSummary: false,
+        createdAt,
+      },
+      {
+        id: 2,
+        role: "assistant",
+        content: "Later response without provenance",
+        aiMessagesJson: null,
+        sourceCommitHash: null,
+        commitHash: null,
+        isCompactionSummary: false,
+        createdAt,
+      },
+      {
+        id: 3,
+        role: "user",
+        content: "Continue.",
+        aiMessagesJson: null,
+        sourceCommitHash: null,
+        commitHash: null,
+        isCompactionSummary: false,
+        createdAt,
+      },
+    ]);
+
+    expect(history.at(-1)).toEqual({ role: "user", content: "Continue." });
+  });
+
+  it("only adds a reminder to a user database row", () => {
+    const history = buildChatMessageHistory([
+      {
+        id: 1,
+        role: "assistant",
+        content: "Committed response",
+        aiMessagesJson: null,
+        sourceCommitHash: null,
+        commitHash: "final-hash",
+        isCompactionSummary: false,
+        createdAt,
+      },
+      {
+        id: 2,
+        role: "assistant",
+        content: "Compacted conversation",
+        aiMessagesJson: [
+          { role: "user", content: "Legacy nested user message" },
+        ],
+        sourceCommitHash: null,
+        commitHash: null,
+        isCompactionSummary: true,
+        createdAt,
+      },
+      {
+        id: 3,
+        role: "user",
+        content: "Actual next user turn",
+        aiMessagesJson: null,
+        sourceCommitHash: null,
+        commitHash: null,
+        isCompactionSummary: false,
+        createdAt,
+      },
+    ]);
+
+    expect(history).toEqual([
+      { role: "user", content: "Legacy nested user message" },
+      {
+        role: "user",
+        content:
+          "Actual next user turn\n\n<system-reminder>Previous assistant message created commit: final-hash.</system-reminder>",
+      },
+    ]);
+  });
+
+  it("does not create a synthetic user message when history ends on an assistant", () => {
+    const history = buildChatMessageHistory([
+      {
+        id: 1,
+        role: "assistant",
+        content: "Committed response",
+        aiMessagesJson: null,
+        sourceCommitHash: null,
+        commitHash: "final-hash",
+        isCompactionSummary: false,
+        createdAt,
+      },
+    ]);
+
+    expect(history).toEqual([
+      { role: "assistant", content: "Committed response" },
+    ]);
+  });
+
   it("does not persist reminders into aiMessagesJson", () => {
     const aiMessagesJson: AiMessagesJsonV6 = {
       sdkVersion: "ai@v6",

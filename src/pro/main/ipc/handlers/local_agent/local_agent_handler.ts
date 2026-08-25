@@ -246,11 +246,17 @@ function appendGitReminderToUserMessage(
   parsed: ModelMessage[],
   reminder: string,
 ): ModelMessage[] | null {
-  const userMessageIndex = parsed.findIndex(
-    (message) =>
+  let userMessageIndex = -1;
+  for (let index = parsed.length - 1; index >= 0; index--) {
+    const message = parsed[index];
+    if (
       message.role === "user" &&
-      (typeof message.content === "string" || Array.isArray(message.content)),
-  );
+      (typeof message.content === "string" || Array.isArray(message.content))
+    ) {
+      userMessageIndex = index;
+      break;
+    }
+  }
   if (userMessageIndex === -1) {
     return null;
   }
@@ -269,6 +275,18 @@ function appendGitReminderToUserMessage(
     { ...userMessage, content },
     ...parsed.slice(userMessageIndex + 1),
   ];
+}
+
+function buildGitReminder(
+  message:
+    | Pick<DbMessageForParsing, "commitHash" | "sourceCommitHash">
+    | undefined,
+): string | null {
+  return message?.commitHash
+    ? `<system-reminder>Previous assistant message created commit: ${escapeXmlContent(message.commitHash)}.</system-reminder>`
+    : message?.sourceCommitHash
+      ? `<system-reminder>Previous assistant message created no commit. Repository commit before that message: ${escapeXmlContent(message.sourceCommitHash)}.</system-reminder>`
+      : null;
 }
 
 export function buildChatMessageHistory(
@@ -330,11 +348,31 @@ export function buildChatMessageHistory(
     .filter((msg) => msg.content || msg.aiMessagesJson);
 
   const history: ModelMessage[] = [];
-  let pendingReminder: string | null = null;
+  const retainedMessageIds = new Set(relevantMessages.map(({ id }) => id));
+  const firstRetainedUserId = relevantMessages
+    .filter(({ role }) => role === "user")
+    .reduce<number | null>(
+      (lowestId, { id }) =>
+        lowestId === null || id < lowestId ? id : lowestId,
+      null,
+    );
+  const precedingAssistant =
+    firstRetainedUserId === null
+      ? undefined
+      : chatMessages
+          .filter(
+            (message) =>
+              message.role === "assistant" &&
+              !message.isCompactionSummary &&
+              message.id < firstRetainedUserId &&
+              !retainedMessageIds.has(message.id),
+          )
+          .sort((a, b) => b.id - a.id)[0];
+  let pendingReminder = buildGitReminder(precedingAssistant);
 
   for (const msg of filtered) {
     let parsed = parseAiMessagesJson(msg);
-    if (pendingReminder) {
+    if (pendingReminder && msg.role === "user") {
       const withReminders = appendGitReminderToUserMessage(
         parsed,
         pendingReminder,
@@ -349,13 +387,8 @@ export function buildChatMessageHistory(
     if (msg.role !== "assistant") {
       continue;
     }
-    const reminder = msg.commitHash
-      ? `<system-reminder>Previous assistant message created commit: ${escapeXmlContent(msg.commitHash)}.</system-reminder>`
-      : msg.sourceCommitHash
-        ? `<system-reminder>Previous assistant message created no commit. Repository commit before that message: ${escapeXmlContent(msg.sourceCommitHash)}.</system-reminder>`
-        : null;
-    if (reminder) {
-      pendingReminder = reminder;
+    if (!msg.isCompactionSummary) {
+      pendingReminder = buildGitReminder(msg);
     }
   }
 
