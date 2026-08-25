@@ -114,8 +114,10 @@ import { deleteTodos, loadTodos, saveTodos } from "./todo_persistence";
 import { ensureDyadGitignored } from "@/ipc/handlers/gitignoreUtils";
 import { TOOL_DEFINITIONS } from "./tool_definitions";
 import {
+  normalizeToolCallIdsForOpenAIResponses,
   parseAiMessagesJson,
   sanitizeToolCallTranscript,
+  shouldNormalizeToolCallIdsForOpenAIResponses,
   type DbMessageForParsing,
 } from "@/ipc/utils/ai_messages_utils";
 import {
@@ -785,6 +787,12 @@ export async function handleLocalAgentStream(
       settings,
       selectedModel,
     );
+    const normalizeToolCallIdsForTarget = <T extends ModelMessage>(
+      messages: T[],
+    ): T[] =>
+      shouldNormalizeToolCallIdsForOpenAIResponses(selectedModel.provider)
+        ? normalizeToolCallIdsForOpenAIResponses(messages)
+        : messages;
 
     // Load persisted todos from a previous turn (if any)
     persistedTodos = await loadTodos(appPath, chat.id);
@@ -1150,8 +1158,9 @@ export async function handleLocalAgentStream(
               buildTerminatedRetryContinuationInstruction(),
             ]
           : currentMessageHistory;
-        const sanitizedAttemptMessages =
-          sanitizeToolCallTranscript(attemptMessages);
+        const sanitizedAttemptMessages = normalizeToolCallIdsForTarget(
+          sanitizeToolCallTranscript(attemptMessages),
+        );
         const attemptToolInputIds = new Set<string>();
         const invalidToolCallIds = new Set<string>();
         const rejectedToolCallIds = new Set<string>();
@@ -1332,6 +1341,16 @@ export async function handleLocalAgentStream(
                 result = {
                   ...(result ?? stepOptions),
                   messages: normalizedStep.messages,
+                };
+              }
+
+              const targetMessages = result?.messages ?? stepOptions.messages;
+              const normalizedTargetMessages =
+                normalizeToolCallIdsForTarget(targetMessages);
+              if (normalizedTargetMessages !== targetMessages) {
+                result = {
+                  ...(result ?? stepOptions),
+                  messages: normalizedTargetMessages,
                 };
               }
 

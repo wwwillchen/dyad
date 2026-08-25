@@ -14,6 +14,12 @@ const PROVIDER_KEYS_WITH_ITEM_ID = ["openai", "azure"] as const;
 /** OpenAI Responses API limit for `call_id` values. */
 const MAX_TOOL_CALL_ID_LENGTH = 64;
 
+export function shouldNormalizeToolCallIdsForOpenAIResponses(
+  selectedProviderId: string,
+): boolean {
+  return selectedProviderId === "openai" || selectedProviderId === "azure";
+}
+
 function normalizeToolCallId(toolCallId: string): string {
   if (toolCallId.length <= MAX_TOOL_CALL_ID_LENGTH) {
     return toolCallId;
@@ -22,6 +28,51 @@ function normalizeToolCallId(toolCallId: string): string {
   const prefix = "call_";
   const digest = createHash("sha256").update(toolCallId).digest("hex");
   return `${prefix}${digest.slice(0, MAX_TOOL_CALL_ID_LENGTH - prefix.length)}`;
+}
+
+/**
+ * OpenAI Responses rejects call IDs longer than 64 characters. Keep this
+ * target-specific: Gemini thought signatures can be encoded in otherwise
+ * oversized tool-call IDs and must survive Gemini continuations unchanged.
+ */
+export function normalizeToolCallIdsForOpenAIResponses<T extends ModelMessage>(
+  messages: T[],
+): T[] {
+  let didModifyMessages = false;
+  const normalizedMessages = messages.map((message) => {
+    if (!Array.isArray(message.content)) {
+      return message;
+    }
+
+    let didModifyMessage = false;
+    const content = message.content.map((part) => {
+      if (
+        typeof part !== "object" ||
+        part === null ||
+        !("toolCallId" in part) ||
+        typeof part.toolCallId !== "string"
+      ) {
+        return part;
+      }
+
+      const toolCallId = normalizeToolCallId(part.toolCallId);
+      if (toolCallId === part.toolCallId) {
+        return part;
+      }
+
+      didModifyMessage = true;
+      return { ...part, toolCallId };
+    });
+
+    if (!didModifyMessage) {
+      return message;
+    }
+
+    didModifyMessages = true;
+    return { ...message, content } as T;
+  });
+
+  return didModifyMessages ? normalizedMessages : messages;
 }
 
 /**
@@ -66,7 +117,6 @@ function stripItemIdFromPart(part: Record<string, unknown>): boolean {
  * 1. Strip itemId from provider metadata (prevents "Item with id not found" errors)
  * 2. Filter orphaned reasoning parts (prevents "reasoning without following item" errors)
  * 3. Ensure tool-call input is always a valid object (prevents LiteLLM sending empty string as input when converting OpenAI→Anthropic format)
- * 4. Normalize oversized tool-call IDs (prevents OpenAI Responses API `call_id` length errors)
  *
  * When messages contain `providerMetadata.openai.itemId` values, the AI SDK converts
  * these to `item_reference` payloads. If OpenAI has expired those items, this causes
@@ -108,14 +158,6 @@ export function cleanMessage<T extends ModelMessage>(message: T): T {
     // Strip itemId from provider metadata
     if (stripItemIdFromPart(part)) {
       didModify = true;
-    }
-
-    if (typeof part.toolCallId === "string") {
-      const normalizedToolCallId = normalizeToolCallId(part.toolCallId);
-      if (normalizedToolCallId !== part.toolCallId) {
-        part.toolCallId = normalizedToolCallId;
-        didModify = true;
-      }
     }
 
     // Ensure tool-call input is always a valid object (prevents LiteLLM

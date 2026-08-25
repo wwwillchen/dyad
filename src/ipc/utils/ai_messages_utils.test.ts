@@ -3,7 +3,9 @@ import {
   parseAiMessagesJson,
   getAiMessagesJsonIfWithinLimit,
   MAX_AI_MESSAGES_SIZE,
+  normalizeToolCallIdsForOpenAIResponses,
   sanitizeToolCallTranscript,
+  shouldNormalizeToolCallIdsForOpenAIResponses,
   type DbMessageForParsing,
 } from "@/ipc/utils/ai_messages_utils";
 import { AI_MESSAGES_SDK_VERSION } from "@/db/schema";
@@ -290,7 +292,7 @@ describe("parseAiMessagesJson", () => {
       expect(part.providerOptions).toBeUndefined();
     });
 
-    it("should normalize oversized tool-call IDs consistently", () => {
+    it("should preserve Gemini thought signatures until targeting OpenAI Responses", () => {
       const oversizedToolCallId = `call_123__thought__${"x".repeat(350)}`;
       const msg: DbMessageForParsing = {
         id: 22,
@@ -326,8 +328,15 @@ describe("parseAiMessagesJson", () => {
       };
 
       const result = parseAiMessagesJson(msg);
-      const toolCallId = (result[0].content as any[])[0].toolCallId;
-      const toolResultId = (result[1].content as any[])[0].toolCallId;
+      const parsedToolCallId = (result[0].content as any[])[0].toolCallId;
+      const parsedToolResultId = (result[1].content as any[])[0].toolCallId;
+
+      expect(parsedToolCallId).toBe(oversizedToolCallId);
+      expect(parsedToolResultId).toBe(oversizedToolCallId);
+
+      const normalized = normalizeToolCallIdsForOpenAIResponses(result);
+      const toolCallId = (normalized[0].content as any[])[0].toolCallId;
+      const toolResultId = (normalized[1].content as any[])[0].toolCallId;
 
       expect(toolCallId).toHaveLength(64);
       expect(toolCallId).toMatch(/^call_[0-9a-f]{59}$/);
@@ -792,6 +801,19 @@ describe("parseAiMessagesJson", () => {
       const result = parseAiMessagesJson(msg);
       expect(result).toEqual([]);
     });
+  });
+});
+
+describe("shouldNormalizeToolCallIdsForOpenAIResponses", () => {
+  it.each([
+    ["openai", true],
+    ["azure", true],
+    ["google", false],
+    ["auto", false],
+  ])("returns %s for provider %s", (providerId, expected) => {
+    expect(shouldNormalizeToolCallIdsForOpenAIResponses(providerId)).toBe(
+      expected,
+    );
   });
 });
 
