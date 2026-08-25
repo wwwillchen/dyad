@@ -18,6 +18,12 @@ coverage, opt into `macos_native_lifecycle.spec.ts` with
 multiple packaged Dyad instances are running. Post Command-Q directly to the
 Electron PID so another process cannot receive it.
 
+To drive the existing development profile (including its configured providers)
+through Playwright, launch `npm start -- -- --remote-debugging-port=9222` and
+attach with `chromium.connectOverCDP("http://127.0.0.1:9222")`. The first `--`
+belongs to npm and the second makes Forge pass the Chromium flag to Electron;
+if the attachment fails with loopback `EPERM` in a sandbox, rerun it outside.
+
 Keep each keyboard shortcut owned by one active listener. Duplicate global and
 feature-scoped listeners can make modifier guards or cleanup appear ineffective;
 packaged Electron E2E should exercise the chord with focus in every supported

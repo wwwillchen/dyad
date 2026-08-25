@@ -290,6 +290,50 @@ describe("parseAiMessagesJson", () => {
       expect(part.providerOptions).toBeUndefined();
     });
 
+    it("should normalize oversized tool-call IDs consistently", () => {
+      const oversizedToolCallId = `call_123__thought__${"x".repeat(350)}`;
+      const msg: DbMessageForParsing = {
+        id: 22,
+        role: "assistant",
+        content: "fallback",
+        aiMessagesJson: {
+          sdkVersion: AI_MESSAGES_SDK_VERSION,
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolCallId: oversizedToolCallId,
+                  toolName: "set_chat_summary",
+                  input: { summary: "Read README.md" },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              content: [
+                {
+                  type: "tool-result",
+                  toolCallId: oversizedToolCallId,
+                  toolName: "set_chat_summary",
+                  output: { type: "text", value: "Summary updated" },
+                },
+              ],
+            },
+          ] as ModelMessage[],
+        },
+      };
+
+      const result = parseAiMessagesJson(msg);
+      const toolCallId = (result[0].content as any[])[0].toolCallId;
+      const toolResultId = (result[1].content as any[])[0].toolCallId;
+
+      expect(toolCallId).toHaveLength(64);
+      expect(toolCallId).toMatch(/^call_[0-9a-f]{59}$/);
+      expect(toolResultId).toBe(toolCallId);
+    });
+
     it("should sanitize tool-call with empty string input to empty object", () => {
       const msg: DbMessageForParsing = {
         id: 30,
