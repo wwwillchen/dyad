@@ -807,7 +807,7 @@ describe("parseAiMessagesJson", () => {
 describe("shouldNormalizeToolCallIdsForOpenAIResponses", () => {
   it.each([
     ["openai", "gpt-5.6-luna", true],
-    ["azure", "gpt-5", true],
+    ["azure", "gpt-5", false],
     ["auto", "value", true],
     ["auto", "auto", true],
     ["google", "gemini-3.7-flash", false],

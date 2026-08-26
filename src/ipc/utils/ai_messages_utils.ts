@@ -20,7 +20,6 @@ export function shouldNormalizeToolCallIdsForOpenAIResponses(
   selectedModelName: string,
 ): boolean {
   return (
-    selectedProviderId === "azure" ||
     // Auto normally starts with OpenAI Responses. Prefer keeping that common
     // path working across provider switches; a rare same-turn fallback to
     // Gemini may lose its encoded thought signature after normalization.
