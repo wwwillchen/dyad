@@ -693,6 +693,12 @@ describe("handleLocalAgentStream", () => {
         shouldNormalize: true,
       },
       {
+        label: "normalizes IDs for the OpenAI-first Auto model",
+        provider: "auto",
+        name: "auto",
+        shouldNormalize: true,
+      },
+      {
         label: "preserves Gemini thought-signature IDs",
         provider: "google",
         name: "gemini-3.7-flash",

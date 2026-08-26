@@ -809,10 +809,7 @@ describe("shouldNormalizeToolCallIdsForOpenAIResponses", () => {
     ["openai", "gpt-5.6-luna", true],
     ["azure", "gpt-5", true],
     ["auto", "value", true],
-    // auto/auto is a mixed-provider fallback. Normalizing for its OpenAI
-    // candidate would corrupt signed IDs if the same turn falls through to
-    // Gemini, so candidate-specific rewriting must wait for fallback support.
-    ["auto", "auto", false],
+    ["auto", "auto", true],
     ["google", "gemini-3.7-flash", false],
   ])(
     "returns $2 for provider $0 and model $1",
