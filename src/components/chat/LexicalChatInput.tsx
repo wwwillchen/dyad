@@ -27,10 +27,11 @@ import { forwardRef } from "react";
 import { useAtomValue } from "jotai";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import {
-  APP_MENTION_NAME_PATTERN,
+  findKnownAppMentions,
+  formatKnownAppMentionsForDisplay,
   formatKnownAppMentionsForPrompt,
   MENTION_REGEX,
-  parseAppMentions,
+  parseKnownAppMentions,
   splitAppMentionTrailingDots,
 } from "@/shared/parse_mention_apps";
 import { useLoadApp } from "@/hooks/useLoadApp";
@@ -187,16 +188,24 @@ function EditableStatePlugin({ editable }: { editable: boolean }) {
 function ExternalValueSyncPlugin({
   value,
   promptsById,
+  appNames,
 }: {
   value: string;
   promptsById: Record<number, string>;
+  appNames: string[];
 }) {
   const [editor] = useLexicalComposerContext();
 
   useEffect(() => {
     // Derive the display text that should appear in the editor (@Name) from the
     // internal value representation (@app:Name)
-    let displayText = (value || "").replace(MENTION_REGEX, "@$1");
+    let displayText = formatKnownAppMentionsForDisplay(value || "", appNames);
+    // Preserve legacy no-space tokens recalled after their app was renamed.
+    MENTION_REGEX.lastIndex = 0;
+    displayText = displayText.replace(MENTION_REGEX, (_match, candidate) => {
+      const { appName, trailingDots } = splitAppMentionTrailingDots(candidate);
+      return appName ? `@${appName}${trailingDots}` : _match;
+    });
     displayText = displayText.replace(/@prompt:(\d+)/g, (_m, idStr) => {
       const id = Number(idStr);
       const title = promptsById[id];
@@ -224,45 +233,87 @@ function ExternalValueSyncPlugin({
 
       const paragraph = $createParagraphNode();
 
-      // Build nodes from internal value, turning @app:Name, @prompt:<id>, @file:<path>, and @media:<ref> into mention nodes
+      // Build nodes from internal value, turning @app:Name, @prompt:<id>,
+      // @file:<path>, and @media:<ref> into mention nodes.
+      type ExternalMention = {
+        start: number;
+        end: number;
+        type: "app" | "prompt" | "file" | "media";
+        value: string;
+      };
+      const knownAppMentions = findKnownAppMentions(value, appNames);
+      const mentions: ExternalMention[] = knownAppMentions.map((match) => ({
+        start: match.start,
+        end: match.end,
+        type: "app",
+        value: value.slice(match.start + "@app:".length, match.end),
+      }));
+
+      // Rehydrate unmatched legacy tokens. Current known-name spans win, so
+      // this fallback cannot split a spaced or dotted app mention.
+      MENTION_REGEX.lastIndex = 0;
+      let legacyMatch: RegExpExecArray | null;
+      while ((legacyMatch = MENTION_REGEX.exec(value)) !== null) {
+        const legacyStart = legacyMatch.index;
+        if (
+          knownAppMentions.some(
+            (known) => legacyStart >= known.start && legacyStart < known.end,
+          )
+        ) {
+          continue;
+        }
+        const { appName } = splitAppMentionTrailingDots(legacyMatch[1]);
+        if (!appName) {
+          continue;
+        }
+        mentions.push({
+          start: legacyStart,
+          end: legacyStart + "@app:".length + appName.length,
+          type: "app",
+          value: appName,
+        });
+      }
+
+      const otherMentionRegex = /@prompt:(\d+)|@file:([^\s]+)|@media:([^\s]+)/g;
       let lastIndex = 0;
       let match: RegExpExecArray | null;
-      const combined = new RegExp(
-        `@app:(${APP_MENTION_NAME_PATTERN})|@prompt:(\\d+)|@file:([^\\s]+)|@media:([^\\s]+)`,
-        "g",
-      );
-      while ((match = combined.exec(value)) !== null) {
-        const start = match.index;
-        const full = match[0];
-        if (start > lastIndex) {
-          const textBefore = value.slice(lastIndex, start);
+      while ((match = otherMentionRegex.exec(value)) !== null) {
+        const type = match[1] ? "prompt" : match[2] ? "file" : "media";
+        mentions.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          type,
+          value: match[1] ?? match[2] ?? match[3],
+        });
+      }
+      mentions.sort((a, b) => a.start - b.start);
+
+      for (const mention of mentions) {
+        if (mention.start < lastIndex) {
+          continue;
+        }
+        if (mention.start > lastIndex) {
+          const textBefore = value.slice(lastIndex, mention.start);
           if (textBefore) paragraph.append($createTextNode(textBefore));
         }
-        if (match[1]) {
-          const { appName, trailingDots } = splitAppMentionTrailingDots(
-            match[1],
-          );
-          paragraph.append($createBeautifulMentionNode("@", appName));
-          if (trailingDots) {
-            paragraph.append($createTextNode(trailingDots));
-          }
-        } else if (match[2]) {
-          const id = Number(match[2]);
+        if (mention.type === "app") {
+          paragraph.append($createBeautifulMentionNode("@", mention.value));
+        } else if (mention.type === "prompt") {
+          const id = Number(mention.value);
           const title = promptsById[id] || `prompt:${id}`;
           paragraph.append($createBeautifulMentionNode("@", title));
-        } else if (match[3]) {
-          const filePath = match[3];
-          paragraph.append($createBeautifulMentionNode("@", filePath));
-        } else if (match[4]) {
+        } else if (mention.type === "file") {
+          paragraph.append($createBeautifulMentionNode("@", mention.value));
+        } else {
           let mediaRef: string;
           try {
-            mediaRef = decodeURIComponent(match[4]);
+            mediaRef = decodeURIComponent(mention.value);
           } catch {
-            mediaRef = match[4];
+            mediaRef = mention.value;
           }
           paragraph.append($createBeautifulMentionNode("@", mediaRef));
         }
-        lastIndex = start + full.length;
+        lastIndex = mention.end;
       }
       if (lastIndex < value.length) {
         const trailing = value.slice(lastIndex);
@@ -276,7 +327,7 @@ function ExternalValueSyncPlugin({
       root.append(paragraph);
       paragraph.selectEnd();
     });
-  }, [editor, value, promptsById]);
+  }, [appNames, editor, value, promptsById]);
 
   return null;
 }
@@ -315,6 +366,10 @@ export function LexicalChatInput({
   const selectedAppId = useAtomValue(selectedAppIdAtom);
   const { app } = useLoadApp(selectedAppId);
   const appFiles = app?.files;
+  const appNames = React.useMemo(
+    () => (apps ?? []).map((candidate) => candidate.name),
+    [apps],
+  );
 
   // Prepare mention items - convert apps to mention format
   const mentionItems = React.useMemo(() => {
@@ -352,7 +407,7 @@ export function LexicalChatInput({
     const currentAppName = currentApp?.name;
 
     // Parse already mentioned apps from current input value
-    const alreadyMentioned = parseAppMentions(value);
+    const alreadyMentioned = parseKnownAppMentions(value, appNames);
 
     // Filter out current app and already mentioned apps
     const filteredApps = apps.filter((app) => {
@@ -399,6 +454,7 @@ export function LexicalChatInput({
     return result;
   }, [
     apps,
+    appNames,
     selectedAppId,
     value,
     excludeCurrentApp,
@@ -468,7 +524,6 @@ export function LexicalChatInput({
           }
 
           // Transform @AppName mentions to @app:AppName format
-          const appNames = (apps ?? []).map((app) => app.name);
           textContent = formatKnownAppMentionsForPrompt(textContent, appNames);
           // Convert @PromptTitle to @prompt:<id>
           const map = new Map((prompts || []).map((p) => [p.title, p.id]));
@@ -490,7 +545,7 @@ export function LexicalChatInput({
         onChange(textContent);
       });
     },
-    [onChange, apps, prompts, appFiles, mediaApps, selectedAppId],
+    [onChange, appNames, prompts, appFiles, mediaApps, selectedAppId],
   );
 
   return (
@@ -528,6 +583,7 @@ export function LexicalChatInput({
         />
         <ExternalValueSyncPlugin
           value={value}
+          appNames={appNames}
           promptsById={Object.fromEntries(
             (prompts || []).map((p) => [p.id, p.title]),
           )}
