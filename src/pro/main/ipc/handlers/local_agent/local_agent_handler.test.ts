@@ -685,13 +685,26 @@ describe("handleLocalAgentStream", () => {
   });
 
   describe("provider-scoped tool-call ID normalization", () => {
-    it("normalizes matching oversized IDs in prepareStep for OpenAI Responses", async () => {
+    it.each([
+      {
+        label: "normalizes OpenAI Responses IDs",
+        provider: "openai",
+        name: "gpt-5.6-luna",
+        shouldNormalize: true,
+      },
+      {
+        label: "preserves Gemini thought-signature IDs",
+        provider: "google",
+        name: "gemini-3.7-flash",
+        shouldNormalize: false,
+      },
+    ])("$label in prepareStep", async ({ provider, name, shouldNormalize }) => {
       const { event } = createFakeEvent();
       mockSettings = buildTestSettings({ enableDyadPro: true });
       mockChatData = buildTestChat({
         modelSelection: {
-          provider: "openai",
-          name: "gpt-5.6-luna",
+          provider,
+          name,
           effortLevel: "medium",
         },
       });
@@ -751,7 +764,11 @@ describe("handleLocalAgentStream", () => {
 
       const toolCallId = (preparedMessages[0].content as any[])[0].toolCallId;
       const toolResultId = (preparedMessages[1].content as any[])[0].toolCallId;
-      expect(toolCallId).toHaveLength(64);
+      if (shouldNormalize) {
+        expect(toolCallId).toHaveLength(64);
+      } else {
+        expect(toolCallId).toBe(oversizedToolCallId);
+      }
       expect(toolResultId).toBe(toolCallId);
     });
   });
