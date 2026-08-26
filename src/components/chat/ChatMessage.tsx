@@ -53,6 +53,8 @@ import {
   getVisibleMessageApprovalState,
   shouldShowMessageFooter,
 } from "./messageApprovalStatus";
+import { ChatMessageAnnotationLayer } from "./ChatMessageAnnotationLayer";
+import { isChatMessageAnnotatable } from "./chatAnnotationEligibility";
 
 /** Extract <dyad-attachment> tags from message content and return parsed attachment data. */
 function extractAttachments(content: string): {
@@ -129,6 +131,7 @@ const ChatMessage = ({
   const selectedChatId = useAtomValue(selectedChatIdAtom);
   const hasPreviewForChat = useChatStreamHasPreview(selectedChatId);
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
+  const assistantContentRef = useRef<HTMLDivElement>(null);
   const hasStreamingPreview =
     message.role === "assistant" &&
     isLastMessage &&
@@ -344,6 +347,9 @@ const ChatMessage = ({
               </div>
             ) : (
               <div
+                ref={
+                  message.role === "assistant" ? assistantContentRef : undefined
+                }
                 className="prose dark:prose-invert prose-headings:mb-2 prose-p:my-1 prose-pre:my-0 max-w-none break-words text-[15px]"
                 suppressHydrationWarning
               >
@@ -363,6 +369,19 @@ const ChatMessage = ({
                 )}
               </div>
             )}
+            {selectedChatId != null &&
+              isChatMessageAnnotatable({
+                role: message.role,
+                isLastMessage,
+                isCancelled,
+                isStreaming,
+              }) && (
+                <ChatMessageAnnotationLayer
+                  containerRef={assistantContentRef}
+                  chatId={selectedChatId}
+                  messageId={message.id}
+                />
+              )}
             {showMessageFooter ? (
               <div
                 className={`mt-2 flex items-center ${
