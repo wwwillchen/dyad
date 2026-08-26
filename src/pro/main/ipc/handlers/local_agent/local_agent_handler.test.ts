@@ -263,11 +263,15 @@ vi.mock("ai", async () => {
 });
 
 vi.mock("@/ipc/utils/get_model_client", () => ({
-  getModelClient: vi.fn(async () => ({
+  getModelClient: vi.fn(async (selectedModel) => ({
     modelClient: {
       model: { id: "test-model" },
       builtinProviderId: "openai",
     },
+    runtimeModel:
+      selectedModel.name === "auto-sidekick"
+        ? { ...selectedModel, name: "auto" }
+        : selectedModel,
   })),
 }));
 
@@ -699,84 +703,111 @@ describe("handleLocalAgentStream", () => {
         shouldNormalize: true,
       },
       {
+        label: "normalizes Auto Sidekick IDs after runtime resolution",
+        provider: "auto",
+        name: "auto-sidekick",
+        runtime: { provider: "auto", name: "auto" },
+        shouldNormalize: true,
+      },
+      {
+        label: "preserves IDs when Auto resolves directly to Gemini",
+        provider: "auto",
+        name: "auto",
+        runtime: { provider: "google", name: "gemini-3.7-flash" },
+        shouldNormalize: false,
+      },
+      {
         label: "preserves Gemini thought-signature IDs",
         provider: "google",
         name: "gemini-3.7-flash",
         shouldNormalize: false,
       },
-    ])("$label in prepareStep", async ({ provider, name, shouldNormalize }) => {
-      const { event } = createFakeEvent();
-      mockSettings = buildTestSettings({ enableDyadPro: true });
-      mockChatData = buildTestChat({
-        modelSelection: {
-          provider,
-          name,
-          effortLevel: "medium",
-        },
-      });
-      const oversizedToolCallId = `call_123__thought__${"x".repeat(350)}`;
-      let preparedMessages: ModelMessage[] = [];
+    ])(
+      "$label in prepareStep",
+      async ({ provider, name, runtime, shouldNormalize }) => {
+        const runtimeModel = runtime ?? { provider, name };
+        const { event } = createFakeEvent();
+        mockSettings = buildTestSettings({ enableDyadPro: true });
+        mockChatData = buildTestChat({
+          modelSelection: {
+            provider,
+            name,
+            effortLevel: "medium",
+          },
+        });
+        const oversizedToolCallId = `call_123__thought__${"x".repeat(350)}`;
+        let preparedMessages: ModelMessage[] = [];
 
-      mockStreamTextImpl = (options) => ({
-        fullStream: (async function* () {
-          const stepMessages: ModelMessage[] = [
-            {
-              role: "assistant",
-              content: [
-                {
-                  type: "tool-call",
-                  toolCallId: oversizedToolCallId,
-                  toolName: "read_file",
-                  input: { path: "README.md" },
-                },
-              ],
-            },
-            {
-              role: "tool",
-              content: [
-                {
-                  type: "tool-result",
-                  toolCallId: oversizedToolCallId,
-                  toolName: "read_file",
-                  output: { type: "text", value: "README contents" },
-                },
-              ],
-            },
-          ];
-          const prepared = await options.prepareStep?.({
-            messages: stepMessages,
-            stepNumber: 1,
-            steps: [],
-            model: {},
-            experimental_context: undefined,
-          });
-          preparedMessages = prepared?.messages ?? stepMessages;
-          yield { type: "text-delta", text: "done" };
-        })(),
-        response: Promise.resolve({ messages: [] }),
-        steps: Promise.resolve([]),
-      });
+        vi.mocked(getModelClient).mockResolvedValueOnce({
+          modelClient: {
+            model: { id: "test-model" } as never,
+            builtinProviderId: runtimeModel.provider,
+          },
+          runtimeModel,
+        });
 
-      await handleLocalAgentStream(
-        event,
-        { chatId: 1, prompt: "test" },
-        new AbortController(),
-        {
-          placeholderMessageId: 10,
-          systemPrompt: "You are helpful",
-          dyadRequestId,
-        },
-      );
+        mockStreamTextImpl = (options) => ({
+          fullStream: (async function* () {
+            const stepMessages: ModelMessage[] = [
+              {
+                role: "assistant",
+                content: [
+                  {
+                    type: "tool-call",
+                    toolCallId: oversizedToolCallId,
+                    toolName: "read_file",
+                    input: { path: "README.md" },
+                  },
+                ],
+              },
+              {
+                role: "tool",
+                content: [
+                  {
+                    type: "tool-result",
+                    toolCallId: oversizedToolCallId,
+                    toolName: "read_file",
+                    output: { type: "text", value: "README contents" },
+                  },
+                ],
+              },
+            ];
+            const prepared = await options.prepareStep?.({
+              messages: stepMessages,
+              stepNumber: 1,
+              steps: [],
+              model: {},
+              experimental_context: undefined,
+            });
+            preparedMessages = prepared?.messages ?? stepMessages;
+            yield { type: "text-delta", text: "done" };
+          })(),
+          response: Promise.resolve({ messages: [] }),
+          steps: Promise.resolve([]),
+        });
 
-      const toolCallId = (preparedMessages[0].content as any[])[0].toolCallId;
-      const toolResultId = (preparedMessages[1].content as any[])[0].toolCallId;
-      if (shouldNormalize) {
-        expect(toolCallId).toHaveLength(64);
-      } else {
-        expect(toolCallId).toBe(oversizedToolCallId);
-      }
-      expect(toolResultId).toBe(toolCallId);
-    });
+        await handleLocalAgentStream(
+          event,
+          { chatId: 1, prompt: "test" },
+          new AbortController(),
+          {
+            placeholderMessageId: 10,
+            systemPrompt: "You are helpful",
+            dyadRequestId,
+          },
+        );
+
+        const toolCallId = (preparedMessages[0].content as any[])[0].toolCallId;
+        const toolResultId = (preparedMessages[1].content as any[])[0]
+          .toolCallId;
+        if (shouldNormalize) {
+          expect(toolCallId).toHaveLength(64);
+        } else {
+          expect(toolCallId).toBe(oversizedToolCallId);
+        }
+        expect(toolResultId).toBe(toolCallId);
+      },
+    );
   });
 
   describe("MCP result limits", () => {

@@ -73,17 +73,20 @@ export interface ModelClient {
   reasoningEffortProviderId?: string;
 }
 
+export interface ModelClientResult {
+  modelClient: ModelClient;
+  runtimeModel: LargeLanguageModel;
+  isEngineEnabled?: boolean;
+  isSmartContextEnabled?: boolean;
+}
+
 const logger = log.scope("getModelClient");
 export async function getModelClient(
   selectedModel: LargeLanguageModel,
   settings: UserSettings,
   modelSelectionOverride?: ModelSelection,
   // files?: File[],
-): Promise<{
-  modelClient: ModelClient;
-  isEngineEnabled?: boolean;
-  isSmartContextEnabled?: boolean;
-}> {
+): Promise<ModelClientResult> {
   const selectedModelSelection =
     modelSelectionOverride ??
     (await resolveModelSelection({
@@ -167,6 +170,7 @@ export async function getModelClient(
 
       return {
         modelClient: proModelClient,
+        runtimeModel: model,
         isEngineEnabled: true,
         isSmartContextEnabled: enableSmartFilesContext,
       };
@@ -203,6 +207,7 @@ export async function getModelClient(
           }),
           builtinProviderId: "openrouter",
         },
+        runtimeModel: model,
         isEngineEnabled: false,
       };
     }
@@ -238,6 +243,10 @@ export async function getModelClient(
               settings,
               providerConfig: providerInfo,
             }),
+            runtimeModel: {
+              provider: resolvedModel.providerId,
+              name: resolvedModel.apiName,
+            },
             isEngineEnabled: false,
           };
         }
@@ -256,7 +265,10 @@ export async function getModelClient(
       "No API keys available for any model supported by the 'auto' provider.",
     );
   }
-  return getRegularModelClient(model, settings, providerConfig);
+  return {
+    ...getRegularModelClient(model, settings, providerConfig),
+    runtimeModel: model,
+  };
 }
 
 function getOpenRouterAutoFallbackModelClient({

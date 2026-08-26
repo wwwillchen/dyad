@@ -782,7 +782,7 @@ export async function handleLocalAgentStream(
 
   try {
     // Get model client
-    const { modelClient } = await getModelClient(
+    const { modelClient, runtimeModel } = await getModelClient(
       settings.selectedModel,
       settings,
       selectedModel,
@@ -791,8 +791,8 @@ export async function handleLocalAgentStream(
       messages: T[],
     ): T[] =>
       shouldNormalizeToolCallIdsForOpenAIResponses(
-        selectedModel.provider,
-        selectedModel.name,
+        runtimeModel.provider,
+        runtimeModel.name,
       )
         ? normalizeToolCallIdsForOpenAIResponses(messages)
         : messages;
