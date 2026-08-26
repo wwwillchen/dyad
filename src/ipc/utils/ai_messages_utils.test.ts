@@ -3,7 +3,9 @@ import {
   parseAiMessagesJson,
   getAiMessagesJsonIfWithinLimit,
   MAX_AI_MESSAGES_SIZE,
+  normalizeToolCallIdsForOpenAIResponses,
   sanitizeToolCallTranscript,
+  shouldNormalizeToolCallIdsForOpenAIResponses,
   type DbMessageForParsing,
 } from "@/ipc/utils/ai_messages_utils";
 import { AI_MESSAGES_SDK_VERSION } from "@/db/schema";
@@ -288,6 +290,57 @@ describe("parseAiMessagesJson", () => {
       const part = (result[0].content as any[])[0];
       expect(part.toolCallId).toBe("call-123");
       expect(part.providerOptions).toBeUndefined();
+    });
+
+    it("should preserve Gemini thought signatures until targeting OpenAI Responses", () => {
+      const oversizedToolCallId = `call_123__thought__${"x".repeat(350)}`;
+      const msg: DbMessageForParsing = {
+        id: 22,
+        role: "assistant",
+        content: "fallback",
+        aiMessagesJson: {
+          sdkVersion: AI_MESSAGES_SDK_VERSION,
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolCallId: oversizedToolCallId,
+                  toolName: "set_chat_summary",
+                  input: { summary: "Read README.md" },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              content: [
+                {
+                  type: "tool-result",
+                  toolCallId: oversizedToolCallId,
+                  toolName: "set_chat_summary",
+                  output: { type: "text", value: "Summary updated" },
+                },
+              ],
+            },
+          ] as ModelMessage[],
+        },
+      };
+
+      const result = parseAiMessagesJson(msg);
+      const parsedToolCallId = (result[0].content as any[])[0].toolCallId;
+      const parsedToolResultId = (result[1].content as any[])[0].toolCallId;
+
+      expect(parsedToolCallId).toBe(oversizedToolCallId);
+      expect(parsedToolResultId).toBe(oversizedToolCallId);
+
+      const normalized = normalizeToolCallIdsForOpenAIResponses(result);
+      const toolCallId = (normalized[0].content as any[])[0].toolCallId;
+      const toolResultId = (normalized[1].content as any[])[0].toolCallId;
+
+      expect(toolCallId).toHaveLength(64);
+      expect(toolCallId).toMatch(/^call_[0-9a-f]{59}$/);
+      expect(toolResultId).toBe(toolCallId);
     });
 
     it("should sanitize tool-call with empty string input to empty object", () => {
@@ -748,6 +801,41 @@ describe("parseAiMessagesJson", () => {
       const result = parseAiMessagesJson(msg);
       expect(result).toEqual([]);
     });
+  });
+});
+
+describe("shouldNormalizeToolCallIdsForOpenAIResponses", () => {
+  it.each([
+    ["openai", "gpt-5.6-luna", true],
+    ["azure", "gpt-5", false],
+    ["auto", "value", true],
+    ["auto", "auto", true],
+    ["google", "gemini-3.7-flash", false],
+  ])(
+    "returns $2 for provider $0 and model $1",
+    (providerId, modelName, expected) => {
+      expect(
+        shouldNormalizeToolCallIdsForOpenAIResponses(providerId, modelName),
+      ).toBe(expected);
+    },
+  );
+
+  it("returns the original array when every tool-call ID is compatible", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-compatible",
+            toolName: "read_file",
+            input: { path: "README.md" },
+          },
+        ],
+      },
+    ];
+
+    expect(normalizeToolCallIdsForOpenAIResponses(messages)).toBe(messages);
   });
 });
 

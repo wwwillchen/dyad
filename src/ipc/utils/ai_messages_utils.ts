@@ -1,6 +1,8 @@
 import { AI_MESSAGES_SDK_VERSION, AiMessagesJsonV6 } from "@/db/schema";
 import type { ModelMessage } from "ai";
+import { createHash } from "node:crypto";
 import log from "electron-log";
+import { usesOpenAIResponsesApiInLocalAgent } from "./openai_responses_utils";
 
 const logger = log.scope("ai_messages_utils");
 
@@ -9,6 +11,80 @@ const logger = log.scope("ai_messages_utils");
  * server-side storage. These references become stale when items expire.
  */
 const PROVIDER_KEYS_WITH_ITEM_ID = ["openai", "azure"] as const;
+
+/** OpenAI Responses API limit for `call_id` values. */
+const MAX_TOOL_CALL_ID_LENGTH = 64;
+
+export function shouldNormalizeToolCallIdsForOpenAIResponses(
+  selectedProviderId: string,
+  selectedModelName: string,
+): boolean {
+  return (
+    // Auto normally starts with OpenAI Responses. Prefer keeping that common
+    // path working across provider switches; a rare same-turn fallback to
+    // Gemini may lose its encoded thought signature after normalization.
+    (selectedProviderId === "auto" && selectedModelName === "auto") ||
+    usesOpenAIResponsesApiInLocalAgent({
+      provider: selectedProviderId,
+      name: selectedModelName,
+    })
+  );
+}
+
+function normalizeToolCallId(toolCallId: string): string {
+  if (toolCallId.length <= MAX_TOOL_CALL_ID_LENGTH) {
+    return toolCallId;
+  }
+
+  const prefix = "call_";
+  const digest = createHash("sha256").update(toolCallId).digest("hex");
+  return `${prefix}${digest.slice(0, MAX_TOOL_CALL_ID_LENGTH - prefix.length)}`;
+}
+
+/**
+ * OpenAI Responses rejects call IDs longer than 64 characters. Keep this
+ * target-specific: Gemini thought signatures can be encoded in otherwise
+ * oversized tool-call IDs and must survive Gemini continuations unchanged.
+ */
+export function normalizeToolCallIdsForOpenAIResponses<T extends ModelMessage>(
+  messages: T[],
+): T[] {
+  let didModifyMessages = false;
+  const normalizedMessages = messages.map((message) => {
+    if (!Array.isArray(message.content)) {
+      return message;
+    }
+
+    let didModifyMessage = false;
+    const content = message.content.map((part) => {
+      if (
+        typeof part !== "object" ||
+        part === null ||
+        !("toolCallId" in part) ||
+        typeof part.toolCallId !== "string"
+      ) {
+        return part;
+      }
+
+      const toolCallId = normalizeToolCallId(part.toolCallId);
+      if (toolCallId === part.toolCallId) {
+        return part;
+      }
+
+      didModifyMessage = true;
+      return { ...part, toolCallId };
+    });
+
+    if (!didModifyMessage) {
+      return message;
+    }
+
+    didModifyMessages = true;
+    return { ...message, content } as T;
+  });
+
+  return didModifyMessages ? normalizedMessages : messages;
+}
 
 /**
  * Strip itemId from a content part's provider metadata.

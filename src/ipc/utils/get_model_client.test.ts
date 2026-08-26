@@ -123,7 +123,7 @@ describe("getModelClient", () => {
   });
 
   test("keeps the Anthropic gateway prefix for Dyad Engine auto-mode fallback models", async () => {
-    const { modelClient } = await getModelClient(
+    const { modelClient, runtimeModel } = await getModelClient(
       {
         provider: "auto",
         name: "auto",
@@ -152,10 +152,28 @@ describe("getModelClient", () => {
       "anthropic/claude-sonnet-4-20250514",
       "gemini/gemini-3.5-flash",
     ]);
+    expect(runtimeModel).toMatchObject({ provider: "auto", name: "auto" });
+  });
+
+  test("reports the provider selected by direct Auto routing", async () => {
+    const { runtimeModel } = await getModelClient(
+      { provider: "auto", name: "auto" },
+      {
+        enableDyadPro: false,
+        providerSettings: {
+          google: { apiKey: { value: "google-key" } },
+        },
+      } as unknown as UserSettings,
+    );
+
+    expect(runtimeModel).toMatchObject({
+      provider: "google",
+      name: "gemini-3.5-flash",
+    });
   });
 
   test("routes Auto Sidekick through the regular Agent Auto models", async () => {
-    const { modelClient } = await getModelClient(
+    const { modelClient, runtimeModel } = await getModelClient(
       {
         provider: "auto",
         name: "auto-sidekick",
@@ -184,6 +202,7 @@ describe("getModelClient", () => {
       "anthropic/claude-sonnet-4-20250514",
       "gemini/gemini-3.5-flash",
     ]);
+    expect(runtimeModel).toMatchObject({ provider: "auto", name: "auto" });
   });
 
   test("adds OpenRouter free as a regular auto fallback only outside Dyad Pro", async () => {
