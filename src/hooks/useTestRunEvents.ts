@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useSetAtom, useStore } from "jotai";
+import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   appendTestRunOutputAtom,
@@ -13,6 +13,9 @@ import {
 } from "@/atoms/testRuntimeAtoms";
 import { ipc } from "@/ipc/types";
 import { queryKeys } from "@/lib/queryKeys";
+import { previewModeAtom, selectedAppIdAtom } from "@/atoms/appAtoms";
+import { previewNativeViewAppIdAtom } from "@/atoms/previewAtoms";
+import { getActiveWindowSessionId } from "@/window_infrastructure/chat_tab_session_storage";
 
 const OUTPUT_FLUSH_INTERVAL_MS = 100;
 
@@ -41,6 +44,14 @@ export function useTestRunEvents() {
   const setRunState = useSetAtom(setTestRunStateForAppAtom);
   const setSpecs = useSetAtom(setTestSpecsForAppAtom);
   const store = useStore();
+  const setPreviewMode = useSetAtom(previewModeAtom);
+  const setPreviewNativeViewAppId = useSetAtom(previewNativeViewAppIdAtom);
+  const selectedAppId = useAtomValue(selectedAppIdAtom);
+  // Held in a ref so switching apps doesn't re-run the effect and resubscribe,
+  // which is what this hook exists to avoid (a terminal event could land in
+  // the gap).
+  const selectedAppIdRef = useRef(selectedAppId);
+  selectedAppIdRef.current = selectedAppId;
   const queryClient = useQueryClient();
   const activeRunByAppId = useRef(
     new Map<
@@ -116,6 +127,25 @@ export function useTestRunEvents() {
 
     const unsubscribeRunState = ipc.events.tests.onRunState((payload) => {
       const { appId, testFile, testLine } = payload;
+      if (payload.state === "preview-fallback") {
+        if (activeRunByAppId.current.get(appId)?.runId !== payload.runId) {
+          return;
+        }
+        // The run asked for the native preview and couldn't have it, so it is
+        // executing in a separate browser window. Handled for panel runs too
+        // (unlike "finished" below, which the panel applies itself): the panel
+        // switched to the native view optimistically on click, and leaving it
+        // up would show a dead "Test view" with Back/Reload/Restart all locked
+        // by a run happening somewhere the user can't see.
+        if (
+          payload.previewOwnerWindowSessionId === getActiveWindowSessionId()
+        ) {
+          setPreviewNativeViewAppId((current) =>
+            current === appId ? null : current,
+          );
+        }
+        return;
+      }
       if (payload.state === "started") {
         const activeRun = activeRunByAppId.current.get(appId);
         if (activeRun && payload.runId < activeRun.runId) {
@@ -138,6 +168,18 @@ export function useTestRunEvents() {
           startedAt,
         });
         discardPendingOutput(appId);
+        // Run state is broadcast to every window, but preview automation is
+        // attached to the invoking window's native view. App selection alone
+        // cannot identify that owner when two windows show the same app.
+        if (
+          payload.source === "agent" &&
+          payload.preview &&
+          payload.previewOwnerWindowSessionId === getActiveWindowSessionId() &&
+          payload.appId === selectedAppIdRef.current
+        ) {
+          setPreviewNativeViewAppId(payload.appId);
+          setPreviewMode("preview");
+        }
         applyStarted({
           appId,
           testFile,

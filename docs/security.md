@@ -23,3 +23,21 @@ That policy:
 
 When users configure scripts to always allow, this path policy remains the sole
 runtime guard. Keep it conservative when adding new host capabilities.
+
+## Preview test automation
+
+The "Run tests in preview panel" experiment does not enable Chromium's global
+remote-debugging switch. During a run, `src/main/preview_cdp_broker.ts` opens an
+ephemeral loopback endpoint protected by a random bearer token and attaches
+Electron's `webContents.debugger` directly to the isolated preview
+`WebContentsView`.
+
+The broker presents Playwright with a synthetic browser containing exactly one
+page. It rejects browser-global target discovery, target creation, arbitrary
+target attachment, and other CDP commands that could escape the selected
+preview. The endpoint closes and the debugger detaches when the run ends,
+aborts, or loses its preview target.
+
+Keep the broker deliberately incomplete. Adding a new `Browser.*`, `Target.*`,
+`SystemInfo.*`, tracing, storage, permission, or download command requires a
+security review proving it remains scoped to the preview's in-memory session.

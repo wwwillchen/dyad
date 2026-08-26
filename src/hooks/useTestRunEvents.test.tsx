@@ -11,6 +11,20 @@ import {
 } from "@/atoms/testRuntimeAtoms";
 import { useTestRunEvents } from "@/hooks/useTestRunEvents";
 import { queryKeys } from "@/lib/queryKeys";
+import { previewModeAtom, selectedAppIdAtom } from "@/atoms/appAtoms";
+import { previewNativeViewAppIdAtom } from "@/atoms/previewAtoms";
+import {
+  configureChatTabWindowSession,
+  getActiveWindowSessionId,
+} from "@/window_infrastructure/chat_tab_session_storage";
+import {
+  PRIMARY_WINDOW_SESSION_ID,
+  WindowSessionIdSchema,
+} from "@/window_infrastructure/types";
+
+const OTHER_WINDOW_SESSION_ID = WindowSessionIdSchema.parse(
+  "10000000-0000-4000-8000-000000000002",
+);
 
 const { outputListeners, runStateListeners, listAppTestsMock } = vi.hoisted(
   () => ({
@@ -76,6 +90,9 @@ describe("useTestRunEvents", () => {
     runStateListeners.clear();
     listAppTestsMock.mockReset();
     listAppTestsMock.mockResolvedValue({ specs: [] });
+    configureChatTabWindowSession(PRIMARY_WINDOW_SESSION_ID, {
+      mayMigrateLegacySession: false,
+    });
   });
 
   it("tracks panel-initiated lifecycle events for remounts and peer windows", () => {
@@ -88,6 +105,152 @@ describe("useTestRunEvents", () => {
 
     expect(store.get(testRunStateByAppIdAtom).get(1)?.phase).toBe("setup");
     expect(store.get(testRunStateByAppIdAtom).get(1)?.source).toBe("panel");
+  });
+
+  it("opens the native preview for an agent preview run", () => {
+    const { store, Wrapper } = makeWrapper();
+    store.set(selectedAppIdAtom, 1);
+    // Seeded away from the default so the previewMode assertion below can only
+    // pass if the hook actually switches back.
+    store.set(previewModeAtom, "code");
+    renderHook(() => useTestRunEvents(), { wrapper: Wrapper });
+
+    act(() => {
+      emitRunState({
+        appId: 1,
+        source: "agent",
+        state: "started",
+        preview: true,
+        previewOwnerWindowSessionId: getActiveWindowSessionId(),
+      });
+    });
+
+    expect(store.get(previewNativeViewAppIdAtom)).toBe(1);
+    expect(store.get(previewModeAtom)).toBe("preview");
+  });
+
+  it("leaves another window showing the same app out of an agent preview run", () => {
+    const { store, Wrapper } = makeWrapper();
+    store.set(selectedAppIdAtom, 1);
+    renderHook(() => useTestRunEvents(), { wrapper: Wrapper });
+
+    act(() => {
+      emitRunState({
+        appId: 1,
+        source: "agent",
+        state: "started",
+        preview: true,
+        previewOwnerWindowSessionId: OTHER_WINDOW_SESSION_ID,
+      });
+    });
+
+    expect(store.get(previewNativeViewAppIdAtom)).toBeNull();
+    expect(store.get(testRunStateByAppIdAtom).has(1)).toBe(true);
+  });
+
+  it("leaves a window showing a different app alone", () => {
+    // Run state is broadcast to every window, and each shows whichever app IT
+    // has selected. Taking over a window looking elsewhere would replace that
+    // app's preview with a native view nothing drives.
+    const { store, Wrapper } = makeWrapper();
+    store.set(selectedAppIdAtom, 2);
+    renderHook(() => useTestRunEvents(), { wrapper: Wrapper });
+
+    act(() => {
+      emitRunState({
+        appId: 1,
+        source: "agent",
+        state: "started",
+        preview: true,
+        previewOwnerWindowSessionId: getActiveWindowSessionId(),
+      });
+    });
+
+    expect(store.get(previewNativeViewAppIdAtom)).toBeNull();
+    // The run itself is still tracked — only the view switch is scoped.
+    expect(store.get(testRunStateByAppIdAtom).has(1)).toBe(true);
+  });
+
+  it("drops the native view when the run falls back to a browser", () => {
+    // Without this the user is left on a native "Test view" with every control
+    // locked by a run that is actually happening in a separate Playwright
+    // window. The only other signal is a warning line in the test output,
+    // which is collapsed by default.
+    const { store, Wrapper } = makeWrapper();
+    store.set(selectedAppIdAtom, 1);
+    store.set(previewNativeViewAppIdAtom, 1);
+    renderHook(() => useTestRunEvents(), { wrapper: Wrapper });
+
+    act(() => {
+      emitRunState({
+        appId: 1,
+        source: "panel",
+        state: "started",
+        preview: true,
+        previewOwnerWindowSessionId: getActiveWindowSessionId(),
+      });
+      emitRunState({
+        appId: 1,
+        source: "panel",
+        state: "preview-fallback",
+        preview: true,
+        previewOwnerWindowSessionId: getActiveWindowSessionId(),
+      });
+    });
+
+    expect(store.get(previewNativeViewAppIdAtom)).toBeNull();
+  });
+
+  it("leaves another window's native view up on a fallback", () => {
+    const { store, Wrapper } = makeWrapper();
+    store.set(selectedAppIdAtom, 1);
+    store.set(previewNativeViewAppIdAtom, 1);
+    renderHook(() => useTestRunEvents(), { wrapper: Wrapper });
+
+    act(() => {
+      emitRunState({
+        appId: 1,
+        source: "agent",
+        state: "started",
+        preview: true,
+        previewOwnerWindowSessionId: OTHER_WINDOW_SESSION_ID,
+      });
+      emitRunState({
+        appId: 1,
+        source: "agent",
+        state: "preview-fallback",
+        preview: true,
+        previewOwnerWindowSessionId: OTHER_WINDOW_SESSION_ID,
+      });
+    });
+
+    expect(store.get(previewNativeViewAppIdAtom)).toBe(1);
+  });
+
+  it("leaves a native view belonging to a different app alone on a fallback", () => {
+    const { store, Wrapper } = makeWrapper();
+    store.set(selectedAppIdAtom, 2);
+    store.set(previewNativeViewAppIdAtom, 2);
+    renderHook(() => useTestRunEvents(), { wrapper: Wrapper });
+
+    act(() => {
+      emitRunState({
+        appId: 1,
+        source: "agent",
+        state: "started",
+        preview: true,
+        previewOwnerWindowSessionId: getActiveWindowSessionId(),
+      });
+      emitRunState({
+        appId: 1,
+        source: "agent",
+        state: "preview-fallback",
+        preview: true,
+        previewOwnerWindowSessionId: getActiveWindowSessionId(),
+      });
+    });
+
+    expect(store.get(previewNativeViewAppIdAtom)).toBe(2);
   });
 
   it("stores streamed output at root scope", async () => {

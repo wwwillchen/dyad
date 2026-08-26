@@ -23,15 +23,14 @@ import {
   ChevronRight,
   Image as ImageIcon,
   Sparkles,
-  Eye,
-  EyeOff,
-  Zap,
   ShieldCheck,
   CircleDot,
   Code,
   Trash2,
+  Settings2,
 } from "lucide-react";
 import { previewModeAtom, selectedAppIdAtom } from "@/atoms/appAtoms";
+import { previewNativeViewAppIdAtom } from "@/atoms/previewAtoms";
 import { selectedChatIdAtom } from "@/atoms/chatAtoms";
 import { useCurrentAppUrl } from "@/hooks/useAppRun";
 import { selectedFileAtom } from "@/atoms/viewAtoms";
@@ -72,6 +71,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { AgentModeRequiredDialog } from "./AgentModeRequiredDialog";
 import { MigrateTestsBanner } from "./MigrateTestsBanner";
 import { queryKeys } from "@/lib/queryKeys";
@@ -210,17 +219,23 @@ function RunButton({
   onRun,
   disabled,
   label,
+  title,
 }: {
   onRun: () => void;
   disabled: boolean;
   label: string;
+  /** Overrides the default hint, e.g. to say why the button is disabled. */
+  title?: string;
 }) {
   return (
     <button
       onClick={onRun}
       disabled={disabled}
       aria-label={label}
-      title="During database-isolated runs, other app operations may wait until the run finishes."
+      title={
+        title ??
+        "During database-isolated runs, other app operations may wait until the run finishes."
+      }
       className={cn(
         "flex items-center gap-1 text-xs px-2 py-1 rounded-md transition-all cursor-pointer",
         "text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700",
@@ -352,6 +367,8 @@ interface TestCaseRowProps {
   status: TestStatus;
   result: TestCaseResult | undefined;
   disabled: boolean;
+  /** Explains a disabled Run button; the default hint applies when unset. */
+  runTitle?: string;
   /** Last child under its file — draws an "└" elbow instead of "├". */
   isLast: boolean;
   onRun: () => void;
@@ -366,6 +383,7 @@ function TestCaseRow({
   status,
   result,
   disabled,
+  runTitle,
   isLast,
   onRun,
   onOpenInEditor,
@@ -444,6 +462,7 @@ function TestCaseRow({
         <RunButton
           onRun={onRun}
           disabled={disabled}
+          title={runTitle}
           label={`Run test: ${testCase.title}`}
         />
         <OpenInEditorButton
@@ -480,6 +499,8 @@ interface FileRowProps {
   status: TestStatus;
   result: RuntimeTestResult | undefined;
   disabled: boolean;
+  /** Explains a disabled Run button; the default hint applies when unset. */
+  runTitle?: string;
   /**
    * Deleting mutates the spec on disk, so it's blocked while a run is in
    * flight — separate from `disabled`, which also covers "dev server down"
@@ -502,6 +523,7 @@ function FileRow({
   status,
   result,
   disabled,
+  runTitle,
   deleteDisabled,
   onRunFile,
   onRunCase,
@@ -585,6 +607,7 @@ function FileRow({
         <RunButton
           onRun={onRunFile}
           disabled={disabled}
+          title={runTitle}
           label={`Run all tests in: ${fileName}`}
         />
         <OpenInEditorButton
@@ -608,6 +631,7 @@ function FileRow({
               status={caseStatus(testCase)}
               result={caseResult(testCase)}
               disabled={disabled}
+              runTitle={runTitle}
               isLast={index === tests.length - 1}
               onRun={() => onRunCase(testCase.line)}
               onOpenInEditor={() => onOpenInEditor(testCase.line)}
@@ -631,6 +655,7 @@ export function TestsPanel() {
   const setSpecs = useSetAtom(setTestSpecsForAppAtom);
   const setRunState = useSetAtom(setTestRunStateForAppAtom);
   const setPreviewMode = useSetAtom(previewModeAtom);
+  const setPreviewNativeViewAppId = useSetAtom(previewNativeViewAppIdAtom);
   const setSelectedFile = useSetAtom(selectedFileAtom);
   const clearStagedDiff = useSetAtom(clearStagedDiffAtom);
   // For lazy, subscription-free reads of the streamed output (askAiToFix runs
@@ -692,6 +717,7 @@ export function TestsPanel() {
   const hasSupabaseIsolation = hasSupabase && !!app?.supabaseOrganizationSlug;
 
   const [outputOpen, setOutputOpen] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
   // Headed/parallel are persisted in user settings (not local state) so the
   // agent's run_tests tool honors the same choice the user makes here.
   // When enabled, runs open a visible browser window so the user can watch the
@@ -700,6 +726,10 @@ export function TestsPanel() {
   // When enabled, a file's independent tests run concurrently instead of
   // serially (Playwright `--fully-parallel` with multiple workers).
   const parallel = settings?.testParallel ?? false;
+  // When enabled, Playwright pauses between actions so the run can be followed
+  // by eye — most useful alongside headed mode, where there's something to
+  // watch.
+  const slowMo = settings?.testSlowMo ?? false;
 
   const devServerRunning = appUrl.appUrl !== null;
   // Owns the run's whole lifecycle, teardown included. Gates every action that
@@ -717,6 +747,16 @@ export function TestsPanel() {
   const isCleaningUp = runState.phase === "cleaning-up";
   const isRestoringApp =
     isCleaningUp && runState.isolation?.mode === "neon-branch";
+
+  // With the experiment enabled, "headed" means visible in Dyad's preview
+  // rather than in a separate Playwright browser window.
+  const previewRunEnabled = !!settings?.enableTestRunInPreview;
+  const runsInPreviewWebContentsView = previewRunEnabled && headed;
+  // Display only. The value SENT to the runner is the user's raw choice: main
+  // decides whether the preview actually gets the run, and a run that falls
+  // back to an ordinary browser should parallelize as asked.
+  const effectiveParallel = parallel && !runsInPreviewWebContentsView;
+
   const specsQuery = useQuery({
     queryKey: queryKeys.tests.list({ appId: selectedAppId }),
     queryFn: async () => {
@@ -849,6 +889,11 @@ export function TestsPanel() {
       if (selectedAppId == null) return;
       const appId = selectedAppId;
       const isSingleTest = file != null && line != null;
+      const preview = runsInPreviewWebContentsView;
+      if (preview) {
+        setPreviewNativeViewAppId(appId);
+        setPreviewMode("preview");
+      }
       const startedAt = Date.now();
 
       applyRunStarted({
@@ -865,9 +910,15 @@ export function TestsPanel() {
           testFile: file,
           testLine: line,
           headed,
-          // A single targeted test can't parallelize, so only opt in for
-          // file/all runs.
+          // A single targeted test can't parallelize. Preview runs share one
+          // browser surface and must stay serial too — but that is decided in
+          // main, which is the only side that knows whether the app's tsconfig
+          // let the run into the preview at all. Deciding it here would leave a
+          // run that fell back to an ordinary browser stuck serial for no
+          // reason, despite Parallel being on.
           parallel: parallel && !isSingleTest,
+          slowMo,
+          preview,
         });
         applyRunFinished({
           appId,
@@ -901,6 +952,10 @@ export function TestsPanel() {
       setRunState,
       headed,
       parallel,
+      slowMo,
+      runsInPreviewWebContentsView,
+      setPreviewMode,
+      setPreviewNativeViewAppId,
     ],
   );
 
@@ -1129,6 +1184,7 @@ export function TestsPanel() {
 
   const disableTesting = useCallback(() => {
     if (selectedAppId == null) return;
+    setOptionsOpen(false);
     setTestingEnabled({ appId: selectedAppId, enabled: false });
   }, [selectedAppId, setTestingEnabled]);
 
@@ -1273,75 +1329,134 @@ export function TestsPanel() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
+      <div
+        className="flex items-center gap-2 px-4 py-3 border-b border-border"
+        data-testid="tests-panel-header"
+      >
         <FlaskConical size={18} className="text-teal-600 dark:text-teal-400" />
         <h2 className="text-base font-semibold text-foreground">Tests</h2>
         <span className="px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 rounded">
           Experimental
         </span>
         <div className="flex-1" />
-        {testingEnabled && !isRunning && (
-          <button
-            onClick={disableTesting}
-            disabled={isTogglingTesting}
-            aria-label="Disable testing for this app"
-            className={cn(
-              "text-xs px-2 py-1 rounded-md text-muted-foreground hover:bg-gray-200 dark:hover:bg-gray-700 cursor-pointer",
-              isTogglingTesting && "opacity-40 cursor-not-allowed",
-            )}
-          >
-            Disable testing
-          </button>
-        )}
-        {testingEnabled && specs.length > 0 && (
-          <button
-            onClick={() => updateSettings({ testParallel: !parallel })}
-            disabled={isRunning}
-            aria-pressed={parallel}
-            title={
-              parallel
-                ? "Parallel: a file's tests run concurrently (faster, shared dev server)"
-                : "Serial: a file's tests run one at a time"
-            }
-            aria-label={
-              parallel ? "Switch to serial mode" : "Switch to parallel mode"
-            }
-            className={cn(
-              "flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md cursor-pointer transition-colors",
-              parallel
-                ? "bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300 hover:bg-teal-200 dark:hover:bg-teal-900/60"
-                : "text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700",
-              isRunning && "opacity-40 cursor-not-allowed",
-            )}
-          >
-            <Zap size={14} />
-            {parallel ? "Parallel" : "Serial"}
-          </button>
-        )}
-        {testingEnabled && specs.length > 0 && (
-          <button
-            onClick={() => updateSettings({ testHeaded: !headed })}
-            disabled={isRunning}
-            aria-pressed={headed}
-            title={
-              headed
-                ? "Headed: tests open a visible browser window"
-                : "Headless: tests run without a visible window"
-            }
-            aria-label={
-              headed ? "Switch to headless mode" : "Switch to headed mode"
-            }
-            className={cn(
-              "flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md cursor-pointer transition-colors",
-              headed
-                ? "bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300 hover:bg-teal-200 dark:hover:bg-teal-900/60"
-                : "text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700",
-              isRunning && "opacity-40 cursor-not-allowed",
-            )}
-          >
-            {headed ? <Eye size={14} /> : <EyeOff size={14} />}
-            {headed ? "Headed" : "Headless"}
-          </button>
+        {testingEnabled && (
+          <Dialog open={optionsOpen} onOpenChange={setOptionsOpen}>
+            <DialogTrigger
+              aria-label="Open test options"
+              data-testid="tests-options-button"
+              className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-gray-200 hover:text-foreground dark:hover:bg-gray-700"
+            >
+              <Settings2 size={14} />
+              Options
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Test options</DialogTitle>
+                <DialogDescription>
+                  Choose how your tests run. These settings also apply when the
+                  agent runs tests for you.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="divide-y divide-border rounded-lg border border-border">
+                <div className="flex items-center justify-between gap-4 p-3">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="test-option-parallel">
+                      Run in parallel
+                    </Label>
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      {runsInPreviewWebContentsView
+                        ? "Unavailable while tests run in the preview panel."
+                        : "Run independent tests in a file at the same time."}
+                    </p>
+                  </div>
+                  <Switch
+                    id="test-option-parallel"
+                    checked={effectiveParallel}
+                    disabled={isRunning || runsInPreviewWebContentsView}
+                    aria-label={
+                      effectiveParallel
+                        ? "Switch to serial mode"
+                        : "Switch to parallel mode"
+                    }
+                    onCheckedChange={(checked) =>
+                      updateSettings({ testParallel: checked })
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 p-3">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="test-option-headed">Show the browser</Label>
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      {previewRunEnabled
+                        ? "Watch tests run in the preview panel."
+                        : "Open a browser window while tests run."}
+                    </p>
+                  </div>
+                  <Switch
+                    id="test-option-headed"
+                    checked={headed}
+                    disabled={isRunning}
+                    aria-label={
+                      headed
+                        ? "Switch to headless mode"
+                        : "Switch to headed mode"
+                    }
+                    onCheckedChange={(checked) =>
+                      updateSettings({ testHeaded: checked })
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 p-3">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="test-option-slow-motion">Slow motion</Label>
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      {headed
+                        ? "Pause between actions so a visible run is easier to follow."
+                        : // The setting is global and is honored on headless
+                          // runs too, so say what that costs rather than
+                          // quietly dropping a toggle the user turned on.
+                          "Pauses between actions on every run. With “Show the browser” off there’s nothing to watch, so it only makes the run slower."}
+                    </p>
+                  </div>
+                  <Switch
+                    id="test-option-slow-motion"
+                    checked={slowMo}
+                    disabled={isRunning}
+                    aria-label={
+                      slowMo
+                        ? "Switch to normal speed"
+                        : "Switch to slow motion"
+                    }
+                    onCheckedChange={(checked) =>
+                      updateSettings({ testSlowMo: checked })
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 border-t border-border pt-4">
+                <div className="space-y-0.5">
+                  <p className="text-sm font-medium text-foreground">
+                    Testing for this app
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Hide the test tools until you enable them again.
+                  </p>
+                </div>
+                <button
+                  onClick={disableTesting}
+                  disabled={isRunning || isTogglingTesting}
+                  aria-label="Disable testing for this app"
+                  className="shrink-0 rounded-md px-3 py-1.5 text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Disable testing
+                </button>
+              </div>
+            </DialogContent>
+          </Dialog>
         )}
         {testingEnabled && !isRunning && (
           // The title sits on the wrapper, not the button: Chromium suppresses
@@ -1410,7 +1525,9 @@ export function TestsPanel() {
             <button
               onClick={() => runTests()}
               disabled={!devServerRunning}
-              title="During database-isolated runs, other app operations may wait until the run finishes."
+              title={
+                "During database-isolated runs, other app operations may wait until the run finishes."
+              }
               aria-label="Run all tests"
               className={cn(
                 "flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md cursor-pointer",

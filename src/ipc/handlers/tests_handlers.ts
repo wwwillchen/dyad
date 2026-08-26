@@ -1,9 +1,17 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { glob } from "glob";
 import log from "electron-log";
+import { BrowserWindow } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
+import { PreviewCdpBroker } from "@/main/preview_cdp_broker";
+import {
+  beginPreviewAutomation,
+  reservePreviewViewForAutomation,
+  waitForPreviewView,
+} from "@/main/preview_web_contents_view";
 import { eq } from "drizzle-orm";
 import { db } from "../../db";
 import { apps } from "../../db/schema";
@@ -19,6 +27,7 @@ import type {
   MigrateLegacyTestResult,
   RunAppTestsResult,
   TestCase,
+  TestCaseResult,
   TestIsolation,
   TestResult,
   TestsRunStatePayload,
@@ -38,17 +47,30 @@ import {
   readAppResource,
 } from "../services/app_operation_coordinator";
 import { broadcastToRegisteredWindows } from "@/ipc/utils/window_broadcast";
+import { windowRegistry } from "@/window_infrastructure/main/window_registry";
 import { spawnStreaming } from "../utils/spawn_streaming";
 import {
+  configSetsTimeout,
   ensurePlaywrightBootstrap,
   DYAD_CONFIG_FILENAME,
+  PREVIEW_CDP_ENDPOINT_ENV,
+  PREVIEW_CDP_TOKEN_ENV,
+  SLOW_MO_DELAY_MS,
+  SLOW_MO_TEST_TIMEOUT_MS,
   TEST_BASE_URL_ENV,
   TEST_RESULTS_JSON,
+  TEST_SLOW_MO_ENV,
 } from "../utils/playwright_bootstrap";
 import {
+  aggregateTestResults,
   parsePlaywrightReport,
   PLAYWRIGHT_REPORT_ERROR_FILE,
 } from "../utils/playwright_report";
+import {
+  exactDiscoveredTitleGrep,
+  parsePreviewTestDiscovery,
+  type DiscoveredPreviewTest,
+} from "../utils/playwright_discovery";
 import { parseTestCases } from "../utils/parse_test_cases";
 import { getPackageManagerCommandEnv } from "../utils/socket_firewall";
 import { queueCloudSandboxSnapshotSync } from "../utils/cloud_sandbox_provider";
@@ -60,6 +82,7 @@ import {
 import { readTestScreenshotDataUrl } from "../utils/test_screenshot";
 import { isRecordingActive } from "../services/recording_registry";
 import { readSettings } from "@/main/settings";
+import { resolveNodeModulePackageJsonPathSync } from "../../../shared/node_module_resolution";
 import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 
 const logger = log.scope("tests_handlers");
@@ -145,6 +168,14 @@ function parallelWorkerCount(): number {
   return Math.max(1, Math.min(cores - 1, 8));
 }
 
+/**
+ * How long the cosmetic post-batch rotation gets to load its replacement view.
+ * Deliberately independent of the run's own deadline: by then the results are
+ * final, so the only thing a shrinking budget can change is whether the user
+ * ends up looking at a clean page or the last test's.
+ */
+const PREVIEW_TEARDOWN_ROTATION_TIMEOUT_MS = 5_000;
+
 // In-flight runs keyed by appId. `controller` lets the Stop button cancel an
 // in-progress bootstrap or test run; `done` resolves once the whole
 // prepare → run → teardown lifecycle has finished, so a new run can wait for
@@ -204,7 +235,46 @@ function emitRunState(
   event: IpcMainInvokeEvent,
   payload: TestsRunStatePayload,
 ): void {
-  broadcastToRegisteredWindows(event.sender, "tests:run-state", payload);
+  // Stamped on any payload about a preview run, whatever its source: the
+  // native view belongs to the invoking window, so every window has to be able
+  // to tell whether a broadcast is about the view it is showing.
+  const emittedPayload = payload.preview
+    ? {
+        ...payload,
+        previewOwnerWindowSessionId: windowRegistry.ensureRegistered(
+          event.sender,
+        ),
+      }
+    : payload;
+  broadcastToRegisteredWindows(event.sender, "tests:run-state", emittedPayload);
+}
+
+export function buildPlaywrightCliInvocation(
+  cliPath: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[] } {
+  return {
+    // A bare `node` is resolved as `node.cmd` by the shared Windows command
+    // builder. Name the real executable so grep values remain direct argv and
+    // titles containing `%` or newlines never pass through cmd.exe.
+    command: platform === "win32" ? "node.exe" : "node",
+    args: [cliPath, ...args],
+  };
+}
+
+function playwrightCliInvocationForApp(
+  appPath: string,
+  args: string[],
+): { command: string; args: string[] } {
+  const packageJsonPath = resolveNodeModulePackageJsonPathSync(appPath, [
+    "@playwright",
+    "test",
+  ]);
+  return buildPlaywrightCliInvocation(
+    path.join(path.dirname(packageJsonPath), "cli.js"),
+    args,
+  );
 }
 
 export interface RunAppTestsCoreOptions {
@@ -233,6 +303,19 @@ export interface RunAppTestsCoreOptions {
    * file's independent tests run concurrently against the one dev server.
    */
   parallel?: boolean;
+  /**
+   * When true, Playwright pauses `SLOW_MO_DELAY_MS` between actions so the user
+   * can follow the run. Carried by an env var (Playwright has no CLI flag for
+   * it) that the generated config and the preview fixture shim both read, so it
+   * applies whether the run drives its own browser or the preview panel.
+   */
+  slowMo?: boolean;
+  /**
+   * Called when a preview run turns out not to be one after all (the shim
+   * couldn't be routed), so the caller can hand the preview view back instead
+   * of holding it frozen for a run happening in another window.
+   */
+  onPreviewFallback?: () => void;
   /** Aborts an in-flight bootstrap or run. */
   signal?: AbortSignal;
   /**
@@ -250,6 +333,381 @@ export interface RunAppTestsCoreOptions {
    * keys.
    */
   testEnv?: Record<string, string>;
+  /**
+   * Experimental: endpoint of the run-scoped preview CDP broker. When set, the
+   * generated fixture shim drives only the page already loaded in the preview
+   * panel's native view instead of launching a browser. Tests run sequentially
+   * in separate processes and fresh native views; `headed` has no additional
+   * meaning.
+   */
+  previewCdpEndpoint?: string;
+  /** Bearer token accepted by the run-scoped preview CDP broker. */
+  previewCdpToken?: string;
+  /** Replaces the native preview with a fresh session before/after tests. */
+  rotatePreviewView?: (timeoutMs?: number) => Promise<void>;
+}
+
+function appendRequestedTestTarget(
+  args: string[],
+  normalizedTestFile: string | undefined,
+  testLine: number | undefined,
+): void {
+  if (normalizedTestFile) {
+    const escapedFile = escapeRegExpForSelector(normalizedTestFile);
+    args.push(
+      testLine && Number.isInteger(testLine) && testLine > 0
+        ? `${escapedFile}:${testLine}`
+        : escapedFile,
+    );
+  } else {
+    args.push(`${E2E_TEST_DIR}/`);
+  }
+}
+
+function aggregatePreviewCases(
+  casesByFile: Map<string, TestCaseResult[]>,
+): TestResult[] {
+  return [...casesByFile.entries()]
+    .map(([file, tests]) => {
+      tests.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+      return aggregateTestResults(file, tests);
+    })
+    .sort((a, b) => a.file.localeCompare(b.file));
+}
+
+function timeoutInfraError(timeoutMs: number | undefined): {
+  message: string;
+} {
+  return {
+    message: `The test run exceeded the ${Math.round((timeoutMs ?? 0) / 60000)}-minute limit and was stopped before it could finish.`,
+  };
+}
+
+async function runPreviewTestBatch({
+  appId,
+  appPath,
+  baseUrl,
+  normalizedTestFile,
+  testLine,
+  grep,
+  slowMo,
+  signal,
+  timeoutMs,
+  emit,
+  testEnv,
+  previewEndpoint,
+  previewToken,
+  rotatePreviewView,
+  installed,
+}: {
+  appId: number;
+  appPath: string;
+  baseUrl: string;
+  normalizedTestFile: string | undefined;
+  testLine: number | undefined;
+  grep: string | undefined;
+  slowMo: boolean | undefined;
+  signal: AbortSignal | undefined;
+  timeoutMs: number | undefined;
+  emit: (chunk: string, phase: "setup" | "running") => void;
+  testEnv: Record<string, string> | undefined;
+  previewEndpoint: string;
+  previewToken: string;
+  rotatePreviewView: ((timeoutMs?: number) => Promise<void>) | undefined;
+  installed: boolean;
+}): Promise<RunAppTestsResult> {
+  const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+  const casesByFile = new Map<string, TestCaseResult[]>();
+  const resultsRoot = path.join(appPath, "test-results");
+  fs.mkdirSync(resultsRoot, { recursive: true });
+  for (const entry of fs.readdirSync(resultsRoot, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name.startsWith("dyad-preview-")) {
+      try {
+        fs.rmSync(path.join(resultsRoot, entry.name), {
+          recursive: true,
+          force: true,
+        });
+      } catch (error) {
+        logger.warn(`Failed to remove stale preview test artifacts: ${error}`);
+      }
+    }
+  }
+  const batchDir = path.join(resultsRoot, `dyad-preview-${randomUUID()}`);
+  fs.mkdirSync(batchDir, { recursive: true });
+
+  const remainingTimeout = (): number | undefined => {
+    if (deadline === undefined) return undefined;
+    return Math.max(0, deadline - Date.now());
+  };
+  const runnerEnv = (reportPath: string) =>
+    getPackageManagerCommandEnv({
+      ...process.env,
+      ...testEnv,
+      [TEST_BASE_URL_ENV]: baseUrl,
+      [PREVIEW_CDP_ENDPOINT_ENV]: previewEndpoint,
+      [PREVIEW_CDP_TOKEN_ENV]: previewToken,
+      PLAYWRIGHT_NO_COPY_PROMPT: "1",
+      ...(slowMo ? { [TEST_SLOW_MO_ENV]: String(SLOW_MO_DELAY_MS) } : {}),
+      PLAYWRIGHT_JSON_OUTPUT_NAME: reportPath,
+      CI: "true",
+    });
+
+  let result: RunAppTestsResult = { appId, results: [] };
+  try {
+    const discoveryReportPath = path.join(batchDir, "discovery.json");
+    const discoveryArgs = ["test", "--config", DYAD_CONFIG_FILENAME];
+    appendRequestedTestTarget(discoveryArgs, normalizedTestFile, testLine);
+    if (grep) discoveryArgs.push("-g", grep);
+    discoveryArgs.push("--list", "--reporter=json", "--trace=off");
+
+    const discoveryTimeout = remainingTimeout();
+    if (discoveryTimeout === 0) {
+      result.infraError = timeoutInfraError(timeoutMs);
+      return result;
+    }
+
+    let discoveryRun;
+    try {
+      discoveryRun = await spawnStreaming({
+        ...playwrightCliInvocationForApp(appPath, discoveryArgs),
+        cwd: appPath,
+        env: runnerEnv(discoveryReportPath),
+        signal,
+        timeoutMs: discoveryTimeout,
+        onOutput: (chunk) => emit(chunk, "setup"),
+      });
+    } catch (error) {
+      result.infraError = {
+        message: error instanceof Error ? error.message : String(error),
+      };
+      return result;
+    }
+
+    if (discoveryRun.aborted) {
+      result.infraError = { message: "Test run stopped." };
+      return result;
+    }
+    if (discoveryRun.timedOut) {
+      result.infraError = timeoutInfraError(timeoutMs);
+      return result;
+    }
+    if (!fs.existsSync(discoveryReportPath)) {
+      const tail = discoveryRun.stderr.trim() || discoveryRun.stdout.trim();
+      result.infraError = {
+        message:
+          tail.slice(-1500) ||
+          "Playwright couldn't discover the tests. Check the output for details.",
+      };
+      return result;
+    }
+
+    let discovered: DiscoveredPreviewTest[];
+    try {
+      const discovery = parsePreviewTestDiscovery(
+        JSON.parse(fs.readFileSync(discoveryReportPath, "utf8")),
+        appPath,
+      );
+      if (discovery.errors.length > 0) {
+        result.infraError = { message: discovery.errors.join("\n") };
+        return result;
+      }
+      discovered = discovery.tests;
+    } catch (error) {
+      result.infraError = {
+        message: `Failed to parse Playwright test discovery: ${error instanceof Error ? error.message : String(error)}`,
+      };
+      return result;
+    }
+
+    if (discovered.length === 0) {
+      if (testLine) {
+        result.infraError = {
+          message: `No test was found at line ${testLine} — it may have moved. Try running the whole file.`,
+        };
+      }
+      return result;
+    }
+
+    const runnable = discovered.filter((test) => !test.skipped);
+    for (const skipped of discovered.filter((test) => test.skipped)) {
+      const cases = casesByFile.get(skipped.file) ?? [];
+      cases.push({
+        title: skipped.title,
+        line: skipped.line,
+        status: "inconclusive",
+      });
+      casesByFile.set(skipped.file, cases);
+    }
+
+    for (let index = 0; index < runnable.length; index += 1) {
+      const target = runnable[index];
+      emit(
+        `\nRunning preview test ${index + 1}/${runnable.length}: ${target.fullTitle}\n`,
+        "running",
+      );
+
+      const rotationTimeout = remainingTimeout();
+      if (rotationTimeout === 0) {
+        result.infraError = timeoutInfraError(timeoutMs);
+        break;
+      }
+      try {
+        await rotatePreviewView?.(rotationTimeout);
+      } catch (error) {
+        result.infraError = {
+          message: `Couldn't prepare a fresh preview for ${target.fullTitle}: ${error instanceof Error ? error.message : String(error)}`,
+        };
+        break;
+      }
+
+      const invocationTimeout = remainingTimeout();
+      if (invocationTimeout === 0) {
+        result.infraError = timeoutInfraError(timeoutMs);
+        break;
+      }
+
+      const invocationDir = path.join(
+        batchDir,
+        String(index + 1).padStart(4, "0"),
+      );
+      const reportPath = path.join(invocationDir, "results.json");
+      const artifactsPath = path.join(invocationDir, "artifacts");
+      fs.mkdirSync(invocationDir, { recursive: true });
+
+      const args = ["test", "--config", DYAD_CONFIG_FILENAME];
+      args.push(
+        `${escapeRegExpForSelector(target.file)}:${target.line}`,
+        "-g",
+        exactDiscoveredTitleGrep(target.file, target.fullTitle),
+        "--reporter=list,json",
+        "--trace=off",
+        "--workers=1",
+        `--output=${artifactsPath}`,
+      );
+      if (slowMo && !configSetsTimeout(appPath)) {
+        args.push(`--timeout=${SLOW_MO_TEST_TIMEOUT_MS}`);
+      }
+
+      let run;
+      try {
+        run = await spawnStreaming({
+          ...playwrightCliInvocationForApp(appPath, args),
+          cwd: appPath,
+          env: runnerEnv(reportPath),
+          signal,
+          timeoutMs: invocationTimeout,
+          onOutput: (chunk) => emit(chunk, "running"),
+        });
+      } catch (error) {
+        result.infraError = {
+          message: error instanceof Error ? error.message : String(error),
+        };
+        break;
+      }
+
+      if (run.aborted) {
+        result.infraError = { message: "Test run stopped." };
+        break;
+      }
+      if (run.timedOut) {
+        result.infraError = timeoutInfraError(timeoutMs);
+        break;
+      }
+      if (!fs.existsSync(reportPath)) {
+        const tail = run.stderr.trim() || run.stdout.trim();
+        result.infraError = {
+          message:
+            tail.slice(-1500) ||
+            `Playwright didn't produce a report for ${target.fullTitle}.`,
+        };
+        break;
+      }
+
+      let parsed: TestResult[];
+      try {
+        parsed = parsePlaywrightReport(
+          JSON.parse(fs.readFileSync(reportPath, "utf8")),
+          appPath,
+        );
+      } catch (error) {
+        result.infraError = {
+          message: `Failed to parse the report for ${target.fullTitle}: ${error instanceof Error ? error.message : String(error)}`,
+        };
+        break;
+      }
+
+      const reportError = parsed.find(
+        (fileResult) => fileResult.file === PLAYWRIGHT_REPORT_ERROR_FILE,
+      );
+      if (reportError) {
+        result.infraError = {
+          message:
+            reportError.error ||
+            `Playwright reported a runner error for ${target.fullTitle}.`,
+        };
+        break;
+      }
+
+      const executedCases = parsed.flatMap((fileResult) =>
+        (fileResult.tests ?? []).map((test) => ({
+          file: fileResult.file,
+          test,
+        })),
+      );
+      if (executedCases.length !== 1) {
+        result.infraError = {
+          message: `Preview isolation expected exactly one test for ${target.fullTitle}, but Playwright reported ${executedCases.length}.`,
+        };
+        break;
+      }
+
+      const executed = executedCases[0];
+      const cases = casesByFile.get(executed.file) ?? [];
+      cases.push(executed.test);
+      casesByFile.set(executed.file, cases);
+    }
+  } finally {
+    try {
+      // Best-effort, and on a fixed budget rather than the batch's leftover
+      // time. This rotation is cosmetic — it hands the user a clean page after
+      // the run — and every test has already been executed and aggregated by
+      // the time it runs. Billing it against the remaining wall clock meant a
+      // batch that used most of its budget left the replacement view a few
+      // hundred milliseconds to load, and the timeout then reported a fully
+      // green run as an infrastructure failure, which an agent reads as
+      // inconclusive and spends a fix attempt on.
+      await rotatePreviewView?.(
+        signal?.aborted ? 1 : PREVIEW_TEARDOWN_ROTATION_TIMEOUT_MS,
+      );
+    } catch (error) {
+      logger.warn(
+        `Couldn't restore a clean preview after the test run: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    result.results = aggregatePreviewCases(casesByFile);
+  }
+
+  const passed = result.results.filter(
+    (entry) => entry.status === "passed",
+  ).length;
+  const failed = result.results.filter(
+    (entry) => entry.status === "failed",
+  ).length;
+  const inconclusive = result.results.filter(
+    (entry) => entry.status === "inconclusive",
+  ).length;
+  sendTelemetryEvent("e2e_tests_run", {
+    total: result.results.length,
+    passed,
+    failed,
+    inconclusive,
+    first_run: installed,
+    single_file: Boolean(normalizedTestFile),
+    parallel: false,
+    slow_mo: Boolean(slowMo),
+  });
+
+  return result;
 }
 
 /**
@@ -264,10 +722,15 @@ export async function runAppTestsCore({
   grep,
   headed,
   parallel,
+  slowMo,
+  onPreviewFallback,
   signal,
   timeoutMs,
   onOutput,
   testEnv,
+  previewCdpEndpoint,
+  previewCdpToken,
+  rotatePreviewView,
 }: RunAppTestsCoreOptions): Promise<RunAppTestsResult> {
   const app = await getApp(appId);
   const appPath = getDyadAppPath(app.path);
@@ -301,13 +764,26 @@ export async function runAppTestsCore({
 
   // 1. Lazy bootstrap (install Playwright + browser, write config), streamed.
   let installed = false;
+  // Cleared below when the shim can't be routed, because from that point on
+  // this is an ordinary browser run and every decision keyed on the endpoint
+  // (headed, parallel, the env var the shim reads) has to follow.
+  let previewEndpoint = previewCdpEndpoint;
   try {
     const result = await ensurePlaywrightBootstrap({
       appPath,
       signal,
       onOutput: (chunk) => emit(chunk, "setup"),
+      ensurePreviewShim: !!previewCdpEndpoint,
     });
     installed = result.installed;
+    if (previewEndpoint && !result.previewRouted) {
+      // The specs import the real @playwright/test and will launch their own
+      // browser. Keeping the endpoint would suppress `--headed` and leave the
+      // user watching an empty preview while an invisible browser runs — the
+      // opposite of the warning bootstrap just printed.
+      previewEndpoint = undefined;
+      onPreviewFallback?.();
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error(`Playwright bootstrap failed: ${message}`);
@@ -316,6 +792,34 @@ export async function runAppTestsCore({
 
   if (signal?.aborted) {
     return { appId, results: [], infraError: { message: "Test run stopped." } };
+  }
+
+  if (previewEndpoint && !previewCdpToken) {
+    return {
+      appId,
+      results: [],
+      infraError: { message: "Preview automation credentials are missing." },
+    };
+  }
+
+  if (previewEndpoint) {
+    return runPreviewTestBatch({
+      appId,
+      appPath,
+      baseUrl,
+      normalizedTestFile: normalizedTestFile ?? undefined,
+      testLine,
+      grep,
+      slowMo,
+      signal,
+      timeoutMs,
+      emit,
+      testEnv,
+      previewEndpoint,
+      previewToken: previewCdpToken!,
+      rotatePreviewView,
+      installed,
+    });
   }
 
   // 2. Run the tests. Use list reporter for live stdout + json for parsing.
@@ -336,20 +840,8 @@ export async function runAppTestsCore({
   // hardcode a baseURL, or may point at a different testDir. Ours is the only
   // one that honors DYAD_TEST_BASE_URL, so it's passed explicitly rather than
   // Dyad taking over the canonical config name.
-  const args = ["playwright", "test", "--config", DYAD_CONFIG_FILENAME];
-  if (normalizedTestFile) {
-    const escapedFile = escapeRegExpForSelector(normalizedTestFile);
-    const target =
-      testLine && Number.isInteger(testLine) && testLine > 0
-        ? `${escapedFile}:${testLine}`
-        : escapedFile;
-    args.push(target);
-  } else {
-    // Existing user configs can point at a different testDir. Dyad's panel only
-    // lists specs under e2e-tests/, so an all-run must target that directory
-    // explicitly instead of executing every spec the user's config knows about.
-    args.push(`${E2E_TEST_DIR}/`);
-  }
+  const args = ["test", "--config", DYAD_CONFIG_FILENAME];
+  appendRequestedTestTarget(args, normalizedTestFile ?? undefined, testLine);
   // `-g <regex>` narrows the run to the tests whose title matches (same as the
   // Playwright CLI). Passed as a separate array arg, never a shell string, so
   // the pattern can't be interpreted as a shell command or smuggle a flag.
@@ -361,26 +853,44 @@ export async function runAppTestsCore({
   // `playwright test` has no `--base-url` option.
   // `--headed` opens a visible browser window so the user can watch the run.
   // It overrides the headless default (and the CI=true env set below).
+  // Unconditional: a preview run returned above, so from here on this is always
+  // an ordinary browser run with a browser of its own to make headed.
   if (headed) {
     args.push("--headed");
   }
   // Override the generated config's serial defaults (`workers: 1`,
   // `fullyParallel: false`) so a file's independent tests run concurrently.
   // `--fully-parallel` is what parallelizes tests *within* a single file.
+  // Preview runs, which can only ever be sequential, returned above — so the
+  // caller's choice is honored as-is here, including on the fallback path where
+  // preview routing was refused and this became an ordinary browser run.
   if (parallel) {
     args.push("--fully-parallel", `--workers=${parallelWorkerCount()}`);
+  }
+  // Slow motion spends wall-clock time inside each test, which Playwright bills
+  // against its 30s per-test default — so a spec that's green at full speed
+  // could time out purely from the toggle. Raise the per-test ceiling so
+  // watching a run stays a pace change, not a source of spurious failures.
+  // Skipped when the config names a timeout: that one is the user's, and
+  // `--timeout` would override it in either direction — including down.
+  if (slowMo && !configSetsTimeout(appPath)) {
+    args.push(`--timeout=${SLOW_MO_TEST_TIMEOUT_MS}`);
   }
 
   let run;
   try {
     run = await spawnStreaming({
-      command: "npx",
-      args,
+      ...playwrightCliInvocationForApp(appPath, args),
       cwd: appPath,
       env: getPackageManagerCommandEnv({
         ...process.env,
         ...testEnv,
         [TEST_BASE_URL_ENV]: baseUrl,
+        // PREVIEW_CDP_ENDPOINT_ENV is deliberately not set here. A preview run
+        // returned above; leaving the variable unset is what keeps the
+        // generated fixture shim inert so this run launches its own browser.
+        // Left unset at full speed so the config's `|| 0` fallback applies.
+        ...(slowMo ? { [TEST_SLOW_MO_ENV]: String(SLOW_MO_DELAY_MS) } : {}),
         PLAYWRIGHT_JSON_OUTPUT_NAME: TEST_RESULTS_JSON,
         // Non-interactive: never try to open/serve an HTML report.
         CI: "true",
@@ -390,7 +900,7 @@ export async function runAppTestsCore({
       onOutput: (chunk) => emit(chunk, "running"),
     });
   } catch (error) {
-    // A spawn failure (e.g. npx missing from PATH) rejects rather than exiting
+    // A spawn failure (e.g. Node missing from PATH) rejects rather than exiting
     // non-zero. Surface it as a structured infra error in the Tests panel
     // instead of letting it bubble up as a generic IPC failure.
     const message = error instanceof Error ? error.message : String(error);
@@ -510,6 +1020,7 @@ export async function runAppTestsCore({
     first_run: installed,
     single_file: Boolean(testFile),
     parallel: Boolean(parallel),
+    slow_mo: Boolean(slowMo),
   });
 
   return { appId, results };
@@ -529,6 +1040,8 @@ export interface RunTestsWithIsolationOptions {
   grep?: string;
   headed?: boolean;
   parallel?: boolean;
+  /** Pauses between actions so the user can follow the run. */
+  slowMo?: boolean;
   timeoutMs?: number;
   /** Stamped onto `tests:run-state` so the panel ignores its own runs. */
   source: "panel" | "agent";
@@ -538,6 +1051,13 @@ export interface RunTestsWithIsolationOptions {
    * either can cancel the run.
    */
   externalSignal?: AbortSignal;
+  /**
+   * Experimental: run inside the preview panel's native view instead of a
+   * separate browser. Requires the `enableTestRunInPreview` experiment (which
+   * opens the CDP endpoint at boot) and the preview showing this app. The
+   * renderer opens that view for headed panel and agent runs.
+   */
+  preview?: boolean;
 }
 
 /**
@@ -557,9 +1077,11 @@ export async function runAppTestsWithIsolation({
   grep,
   headed,
   parallel,
+  slowMo,
   timeoutMs,
   source,
   externalSignal,
+  preview,
 }: RunTestsWithIsolationOptions): Promise<RunAppTestsResult> {
   const normalizedTestFile =
     testFile === undefined ? undefined : normalizeRunTestFile(testFile);
@@ -585,6 +1107,46 @@ export async function runAppTestsWithIsolation({
         message: "Stop the recording session before running tests.",
       },
     };
+  }
+
+  // Resolve the preview target before the expensive isolation setup too: a
+  // missing experiment flag or window is a dead end, and the user shouldn't pay
+  // for a Neon branch to find out.
+  let previewWindow: BrowserWindow | undefined;
+  // Set when the preview was asked for and refused before the run's output
+  // stream exists; reported through `emit` as soon as it does.
+  let previewFellBackToBrowser: string | undefined;
+  if (preview) {
+    previewWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    if (!previewWindow) {
+      return {
+        appId,
+        results: [],
+        infraError: { message: "Couldn't find the window to preview in." },
+      };
+    }
+  }
+
+  // Claim the view now, before isolation setup. The run doesn't take real
+  // ownership until beginPreviewAutomation() far below, and in between the
+  // Tests panel already shows the run as active: the "Tests running…" chip and
+  // the exit button both unmount the preview component, whose cleanup would
+  // otherwise destroy the very page this run is waiting to attach to.
+  let releasePreviewReservation: () => void = () => {};
+  if (previewWindow) {
+    const reservation = reservePreviewViewForAutomation(previewWindow, appId);
+    if (reservation === null) {
+      // Another app's run already owns this window's one native view. Both
+      // runs proceeding would navigate each other's page out from under them
+      // and fail both readiness checks — after each had paid for its own
+      // isolation setup. Take the ordinary browser instead: less to watch,
+      // but a real result, and the same fallback the missing-view path uses.
+      previewWindow = undefined;
+      previewFellBackToBrowser =
+        "another app's test run is using the preview panel";
+    } else {
+      releasePreviewReservation = reservation;
+    }
   }
 
   // Register this run's controller SYNCHRONOUSLY — before awaiting the prior
@@ -657,6 +1219,9 @@ export async function runAppTestsWithIsolation({
     testFile: normalizedTestFile ?? undefined,
     testLine,
     grep,
+    // What this run is, not what it requested. A refused preview has already
+    // cleared the endpoint and will emit a correlated fallback event below.
+    preview: previewWindow !== undefined,
   });
 
   // Install and announce the new owner before aborting the prior run. Its
@@ -677,6 +1242,25 @@ export async function runAppTestsWithIsolation({
 
   const emit = (chunk: string, phase: "setup" | "running") =>
     emitOutput(event, appId, runId, chunk, phase);
+
+  if (previewFellBackToBrowser) {
+    emit(
+      `The preview panel can't host this run (${previewFellBackToBrowser}); running the tests in a separate browser instead.\n`,
+      "setup",
+    );
+    // The renderer switched to the native view optimistically on click, so it
+    // has to be told to switch back before the run starts somewhere else.
+    emitRunState(event, {
+      appId,
+      runId,
+      source,
+      state: "preview-fallback",
+      preview: true,
+      testFile: normalizedTestFile ?? undefined,
+      testLine,
+      grep,
+    });
+  }
 
   let finalResult: RunAppTestsResult = { appId, results: [] };
   // Set by isolation teardown below when `.env.local` couldn't be put back. The
@@ -796,18 +1380,235 @@ export async function runAppTestsWithIsolation({
             };
           }
 
-          const result = await runAppTestsCore({
-            appId,
-            testFile: normalizedTestFile ?? undefined,
-            testLine,
-            grep,
-            headed,
-            parallel,
-            signal: controller.signal,
-            timeoutMs,
-            onOutput: emit,
-            testEnv: prepared.testCredentials,
-          });
+          // Isolation may have restarted the dev server, so only now is the
+          // preview guaranteed to be settled on the URL the run will target.
+          let previewBaseUrl: string | undefined;
+          if (previewWindow) {
+            previewBaseUrl = getRunningTestBaseUrl(appId) ?? undefined;
+            const ready = previewBaseUrl
+              ? await waitForPreviewView(previewWindow, {
+                  url: previewBaseUrl,
+                  // A panel run was just started by someone looking at the
+                  // preview, so waiting out a slow mount is worth it. An agent
+                  // run falls back instead of failing, and pays this wait on
+                  // every call while the user is elsewhere — inside the app lock,
+                  // holding up other operations — so it gives up sooner.
+                  ...(source === "agent" ? { timeoutMs: 5_000 } : {}),
+                  signal: controller.signal,
+                })
+              : ({ ok: false, reason: "the app isn't running" } as const);
+
+            if (!ready.ok) {
+              if ("aborted" in ready && ready.aborted) {
+                // Stop pressed during the wait. Reporting a preview problem
+                // here would blame the panel for the user's own decision.
+                return {
+                  appId,
+                  results: [],
+                  infraError: { message: "Test run stopped." },
+                  isolation: prepared.isolation,
+                };
+              }
+              if (source === "agent") {
+                // Nothing opened the native view — the user is looking at
+                // another app, another window, or a page with no preview at
+                // all. The agent can't put them back, so failing here would
+                // fail every run_tests call for as long as they stay there,
+                // taking the whole fix loop with it. Run the tests in an
+                // ordinary browser instead: less to watch, but a real result.
+                emit(
+                  `The preview panel isn't showing this app (${ready.reason}); running the tests in a separate browser instead.\n`,
+                  "setup",
+                );
+                previewWindow = undefined;
+                previewBaseUrl = undefined;
+                // Nothing is going to drive that view now, so stop holding it.
+                releasePreviewReservation();
+                // The renderer may already have switched to the native view on
+                // the "started" event; without this it stays there, locked, for
+                // a run happening in a browser window elsewhere.
+                emitRunState(event, {
+                  appId,
+                  runId,
+                  source,
+                  state: "preview-fallback",
+                  preview: true,
+                  testFile: normalizedTestFile ?? undefined,
+                  testLine,
+                  grep,
+                });
+              } else {
+                return {
+                  appId,
+                  results: [],
+                  infraError: {
+                    message: `The preview panel isn't showing this app (${ready.reason}). Run the tests from the Tests panel with Headed on and stay on the Preview tab, then try again.`,
+                  },
+                  isolation: prepared.isolation,
+                };
+              }
+            }
+          }
+
+          let previewViewClosed = false;
+          const automation = previewWindow
+            ? beginPreviewAutomation(previewWindow, {
+                onViewDestroyed: () => {
+                  previewViewClosed = true;
+                },
+              })
+            : null;
+
+          if (previewWindow && !automation) {
+            // The view went away between the wait above and this call. Running
+            // anyway would drive a page nothing is guarding: no destroyed-view
+            // notification, and `showPreviewView` would navigate it mid-run.
+            return {
+              appId,
+              results: [],
+              infraError: {
+                message:
+                  "The preview panel closed before the run could start. Open the Preview tab and try again.",
+              },
+              isolation: prepared.isolation,
+            };
+          }
+
+          let previewBroker: PreviewCdpBroker | undefined;
+          let previewCdpEndpoint: string | undefined;
+          let previewCdpToken: string | undefined;
+          if (automation) {
+            const target = automation.getWebContents();
+            if (!target) {
+              return {
+                appId,
+                results: [],
+                infraError: {
+                  message:
+                    "The preview panel closed before automation could attach. Open the Preview tab and try again.",
+                },
+                isolation: prepared.isolation,
+              };
+            }
+            try {
+              previewBroker = new PreviewCdpBroker();
+              await previewBroker.start();
+              await previewBroker.setTarget(target);
+              const connection = previewBroker.connectionInfo;
+              previewCdpEndpoint = connection.endpoint;
+              previewCdpToken = connection.token;
+            } catch (error) {
+              await previewBroker?.close().catch(() => {});
+              automation.end();
+              return {
+                appId,
+                results: [],
+                infraError: {
+                  message: `Couldn't attach automation to the preview: ${error instanceof Error ? error.message : String(error)}`,
+                },
+                isolation: prepared.isolation,
+              };
+            }
+          }
+
+          const automationWindow = previewWindow;
+          const automationBaseUrl = previewBaseUrl;
+          const rotatePreviewView =
+            automation && automationWindow && automationBaseUrl
+              ? async (remainingMs?: number) => {
+                  // Rotation destroys the current WebContentsView. Detach its
+                  // debugger first so the broker recognizes that loss as an
+                  // intentional handoff rather than an unexpected target
+                  // failure that should close the endpoint.
+                  previewBroker?.releaseTarget();
+                  const rotated = automation.rotate({
+                    url: automationBaseUrl,
+                  });
+                  if (!rotated.ok) {
+                    throw new Error(rotated.reason);
+                  }
+                  const ready = await waitForPreviewView(automationWindow, {
+                    url: automationBaseUrl,
+                    timeoutMs: Math.max(
+                      1,
+                      Math.min(remainingMs ?? 15_000, 15_000),
+                    ),
+                    signal: controller.signal,
+                  });
+                  if (!ready.ok) {
+                    throw new Error(ready.reason);
+                  }
+                  const replacement = automation.getWebContents();
+                  if (!replacement) {
+                    throw new Error("the rotated preview was destroyed");
+                  }
+                  await previewBroker?.setTarget(replacement);
+                }
+              : undefined;
+
+          let result: RunAppTestsResult;
+          try {
+            result = await runAppTestsCore({
+              appId,
+              testFile: normalizedTestFile ?? undefined,
+              testLine,
+              grep,
+              headed,
+              parallel,
+              slowMo,
+              signal: controller.signal,
+              timeoutMs,
+              onOutput: emit,
+              testEnv: prepared.testCredentials,
+              previewCdpEndpoint,
+              previewCdpToken,
+              rotatePreviewView,
+              // The run turned out to need its own browser, so stop holding
+              // the preview view frozen (no navigation, no hiding) for it.
+              onPreviewFallback: () => {
+                automation?.end();
+                // ...and tell the renderer, or the user is left staring at a
+                // native "Test view" with every control locked by the run
+                // while the tests actually execute in a separate Playwright
+                // window. The only other signal is a warning line in the test
+                // output, which is collapsed by default.
+                emitRunState(event, {
+                  appId,
+                  runId,
+                  source,
+                  state: "preview-fallback",
+                  preview: true,
+                  testFile: normalizedTestFile ?? undefined,
+                  testLine,
+                  grep,
+                });
+              },
+            });
+          } finally {
+            await previewBroker?.close().catch((error) => {
+              logger.warn(
+                `Failed to close preview automation broker: ${error}`,
+              );
+            });
+            automation?.end();
+          }
+
+          if (previewViewClosed) {
+            // The CDP target vanished mid-run. Losing it usually doesn't abort
+            // Playwright: it reports a screenful of "Target closed" test
+            // failures and exits with a perfectly parseable report, so gating
+            // this on `infraError` let the common case through as a wall of
+            // failures the user's app never caused. None of it is a verdict on
+            // the app, so it must not read as one — or count against the agent's
+            // fix budget.
+            result = {
+              ...result,
+              infraError: {
+                message:
+                  "The preview was closed while tests were running, so the run was interrupted.",
+              },
+            };
+          }
           return { ...result, isolation: prepared.isolation };
         } finally {
           // Always restore the app to its real database, even on the
@@ -861,6 +1662,10 @@ export async function runAppTestsWithIsolation({
           cause: error,
         });
   } finally {
+    // Before the finished event: the renderer drops the native view as soon as
+    // it sees the run go idle, and a still-standing claim would downgrade that
+    // teardown into an invisible view nobody owns.
+    releasePreviewReservation();
     if (externalSignal) {
       externalSignal.removeEventListener("abort", onExternalAbort);
     }

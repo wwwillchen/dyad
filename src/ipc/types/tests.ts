@@ -11,6 +11,7 @@ import {
   AssertionPlanItemSchema,
   MAX_PLAN_ITEMS,
 } from "../../lib/test_recorder/assertion_proposal";
+import { WindowSessionIdSchema } from "../../window_infrastructure/types";
 
 /** A UUID today; sized so a different id scheme doesn't have to revisit this. */
 const MAX_PROPOSAL_ID_LENGTH = 128;
@@ -143,6 +144,17 @@ export const RunAppTestsParamsSchema = z.object({
    * with many independent tests, at the cost of them sharing one dev server.
    */
   parallel: z.boolean().optional(),
+  /**
+   * When true, Playwright pauses between actions so a run can be followed by
+   * eye. Applies to browser runs and preview runs alike.
+   */
+  slowMo: z.boolean().optional(),
+  /**
+   * Experimental: drive the app inside the preview panel's native
+   * WebContentsView over CDP instead of launching a browser, so the user
+   * watches the run in place. Forces serial execution and ignores `headed`.
+   */
+  preview: z.boolean().optional(),
 });
 
 /**
@@ -436,8 +448,18 @@ export const TestsRunStatePayloadSchema = z.object({
    * dev-server restart, temporary branch/user delete) that no caller can
    * abort. Unlike `finished`, both are consumed for BOTH sources — the panel
    * writes its own start/finish state directly but cannot observe these two.
+   *
+   * "preview-fallback" is emitted mid-run when a run that asked for the native
+   * preview turned out to need an ordinary browser instead. It is not a
+   * terminal state: a "finished" still follows.
    */
-  state: z.enum(["started", "stopping", "cleaning-up", "finished"]),
+  state: z.enum([
+    "started",
+    "stopping",
+    "cleaning-up",
+    "preview-fallback",
+    "finished",
+  ]),
   /** Authoritative abort state, carried by progress events. */
   wasStopped: z.boolean().optional(),
   /** Single spec targeted, when set; absent = whole suite. */
@@ -446,6 +468,14 @@ export const TestsRunStatePayloadSchema = z.object({
   testLine: z.number().optional(),
   /** With testFile: regex passed to Playwright's --grep for a partial run. */
   grep: z.string().optional(),
+  /** Whether this run drives the native preview view. Present on "started". */
+  preview: z.boolean().optional(),
+  /**
+   * Window allowed to activate — and, on "preview-fallback", required to drop —
+   * its native preview for this run. Run state is broadcast, but preview
+   * automation remains owned by the invoking window.
+   */
+  previewOwnerWindowSessionId: WindowSessionIdSchema.optional(),
   /** Present only on "finished". */
   results: z.array(TestResultSchema).optional(),
   infraError: z.object({ message: z.string() }).optional(),

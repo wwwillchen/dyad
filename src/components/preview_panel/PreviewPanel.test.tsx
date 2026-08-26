@@ -19,10 +19,17 @@ const mocks = vi.hoisted(() => ({
   managedNodeSupported: true,
   nodeVersion: "v22.14.0",
   openExternalUrl: vi.fn(),
+  previewMode: "preview" as string,
   previewModeAtom: Symbol("previewModeAtom"),
   previewReloadToken: 0,
   recorderMountCount: 0,
   reloadRecorderPreview: null as (() => void) | null,
+  previewNativeViewAppIdAtom: Symbol("previewNativeViewAppIdAtom"),
+  previewNativeViewAppId: null as number | null,
+  currentTestRunStateAtom: Symbol("currentTestRunStateAtom"),
+  testRunPhase: "idle" as "idle" | "setup" | "running",
+  setPreviewMode: vi.fn(),
+  setPreviewNativeViewAppId: vi.fn(),
   refetchNodeStatus: vi.fn(),
   reloadEnvPath: vi.fn(),
   runApp: vi.fn(),
@@ -41,18 +48,41 @@ vi.mock("jotai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("jotai")>()),
   useAtomValue: (atom: symbol) => {
     if (atom === mocks.previewModeAtom) {
-      return "preview";
+      return mocks.previewMode;
     }
     if (atom === mocks.selectedAppIdAtom) {
       return mocks.selectedAppId;
     }
+    if (atom === mocks.previewNativeViewAppIdAtom) {
+      return mocks.previewNativeViewAppId;
+    }
+    if (atom === mocks.currentTestRunStateAtom) {
+      return { phase: mocks.testRunPhase };
+    }
     return undefined;
+  },
+  useSetAtom: (atom: symbol) => {
+    if (atom === mocks.previewModeAtom) {
+      return mocks.setPreviewMode;
+    }
+    if (atom === mocks.previewNativeViewAppIdAtom) {
+      return mocks.setPreviewNativeViewAppId;
+    }
+    return vi.fn();
   },
 }));
 
 vi.mock("../../atoms/appAtoms", () => ({
   previewModeAtom: mocks.previewModeAtom,
   selectedAppIdAtom: mocks.selectedAppIdAtom,
+}));
+
+vi.mock("@/atoms/previewAtoms", () => ({
+  previewNativeViewAppIdAtom: mocks.previewNativeViewAppIdAtom,
+}));
+
+vi.mock("@/atoms/testRuntimeAtoms", () => ({
+  currentTestRunStateAtom: mocks.currentTestRunStateAtom,
 }));
 
 vi.mock("@/preview_console/hooks", () => ({
@@ -172,6 +202,10 @@ vi.mock("./PreviewIframe", () => ({
   },
 }));
 
+vi.mock("./PreviewWebContentsView", () => ({
+  PreviewWebContentsView: () => <div>Preview native view</div>,
+}));
+
 vi.mock("./PreviewToolbar", () => ({
   PreviewToolbar: () => null,
 }));
@@ -249,6 +283,11 @@ describe("PreviewPanel", () => {
     mocks.runApp.mockResolvedValue(undefined);
     mocks.previewIframeMounted.mockReset();
     mocks.previewIframeUnmounted.mockReset();
+    mocks.previewMode = "preview";
+    mocks.previewNativeViewAppId = null;
+    mocks.testRunPhase = "idle";
+    mocks.setPreviewMode.mockReset();
+    mocks.setPreviewNativeViewAppId.mockReset();
     mocks.selectedAppId = 1;
     mocks.selectAppForPreview.mockReset();
     mocks.settings = {
@@ -306,6 +345,106 @@ describe("PreviewPanel", () => {
     expect(mocks.previewIframeMounted).toHaveBeenCalledTimes(3);
     expect(screen.getByTestId("preview-iframe").dataset.recorder).toBe("1");
     expect(mocks.recorderMountCount).toBe(1);
+  });
+
+  it("renders the native view while a test run drives it", () => {
+    mocks.previewNativeViewAppId = 1;
+    mocks.testRunPhase = "running";
+
+    render(<PreviewPanel />);
+
+    expect(screen.getByText("Preview native view")).toBeTruthy();
+    expect(screen.queryByText("Preview iframe")).toBeNull();
+    expect(mocks.setPreviewNativeViewAppId).not.toHaveBeenCalled();
+  });
+
+  it("keeps the iframe when no test run has requested the native view", () => {
+    render(<PreviewPanel />);
+
+    expect(screen.getByText("Preview iframe")).toBeTruthy();
+    expect(screen.queryByText("Preview native view")).toBeNull();
+  });
+
+  it("closes the native view and shows the Tests panel once the run finishes", () => {
+    mocks.previewNativeViewAppId = 1;
+    mocks.testRunPhase = "running";
+
+    const { rerender } = render(<PreviewPanel />);
+    expect(mocks.setPreviewNativeViewAppId).not.toHaveBeenCalled();
+
+    mocks.testRunPhase = "idle";
+    rerender(<PreviewPanel />);
+
+    expect(mocks.setPreviewNativeViewAppId).toHaveBeenCalledWith(null);
+    expect(mocks.setPreviewMode).toHaveBeenCalledWith("tests");
+  });
+
+  it("closes the native view without stealing the user's place when they left the preview", () => {
+    mocks.previewNativeViewAppId = 1;
+    mocks.previewMode = "code";
+
+    render(<PreviewPanel />);
+
+    expect(mocks.setPreviewNativeViewAppId).toHaveBeenCalledWith(null);
+    expect(mocks.setPreviewMode).not.toHaveBeenCalled();
+  });
+
+  it("keeps the iframe when another app's run owns the native view", () => {
+    // The window holds one native view and it belongs to the app whose run
+    // opened it. Without the owner check, selecting a second app mid-run would
+    // show that app the *other* app's live test page.
+    mocks.previewNativeViewAppId = 2;
+    mocks.selectedAppId = 1;
+    mocks.testRunPhase = "running";
+
+    render(<PreviewPanel />);
+
+    expect(screen.getByText("Preview iframe")).toBeTruthy();
+    expect(screen.queryByText("Preview native view")).toBeNull();
+  });
+
+  it("leaves another app's native view alone when this app's run state goes idle", () => {
+    // `testRunPhase` is the *selected* app's. Acting on it here would tear down
+    // a view a different app's run is still driving, and drag that app's
+    // preview to the Tests panel.
+    mocks.previewNativeViewAppId = 2;
+    mocks.selectedAppId = 1;
+    mocks.testRunPhase = "running";
+
+    const { rerender } = render(<PreviewPanel />);
+
+    mocks.testRunPhase = "idle";
+    rerender(<PreviewPanel />);
+
+    expect(mocks.setPreviewNativeViewAppId).not.toHaveBeenCalled();
+    expect(mocks.setPreviewMode).not.toHaveBeenCalled();
+  });
+
+  it("leaves an ordinary preview alone when a background test run finishes", () => {
+    mocks.testRunPhase = "running";
+
+    const { rerender } = render(<PreviewPanel />);
+    mocks.testRunPhase = "idle";
+    rerender(<PreviewPanel />);
+
+    expect(mocks.setPreviewNativeViewAppId).not.toHaveBeenCalled();
+    expect(mocks.setPreviewMode).not.toHaveBeenCalled();
+  });
+
+  it("still gates the native view behind the Node.js requirement", () => {
+    mocks.settings = {
+      disablePreviewNodeAutoInstall: true,
+    };
+    mocks.previewNativeViewAppId = 1;
+    mocks.testRunPhase = "running";
+    mocks.nodeVersion = "";
+
+    render(<PreviewPanel />);
+
+    expect(
+      screen.getByText("Install Node.js to see your preview"),
+    ).toBeTruthy();
+    expect(screen.queryByText("Preview native view")).toBeNull();
   });
 
   it("auto-starts managed Node install and skips running the app when Node.js is missing", async () => {

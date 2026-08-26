@@ -5,6 +5,8 @@ import {
   selectedAppIdAtom,
 } from "@/atoms/appAtoms";
 import { isChatPanelHiddenAtom, isPreviewOpenAtom } from "@/atoms/viewAtoms";
+import { previewNativeViewAppIdAtom } from "@/atoms/previewAtoms";
+import { usePreviewNativeOverlay } from "./usePreviewNativeOverlay";
 import { useCheckProblems } from "@/hooks/useCheckProblems";
 import {
   AlertTriangle,
@@ -201,6 +203,14 @@ export const PreviewToolbar = () => {
     isChatPanelHiddenAtom,
   );
   const selectedAppId = useAtomValue(selectedAppIdAtom);
+  const nativeViewAppId = useAtomValue(previewNativeViewAppIdAtom);
+  // Scoped to the selected app: a run belonging to a different app still owns
+  // the window's native view, and treating this toolbar as native would hide
+  // and screenshot that other app's view every time the overflow menu opens.
+  const useNativePreview =
+    nativeViewAppId !== null && nativeViewAppId === selectedAppId;
+  const syncNativeOverlay = usePreviewNativeOverlay("preview-toolbar-overflow");
+  const [isOverflowOpen, setIsOverflowOpen] = useState(false);
   const { state: previewState, send: sendPreviewEvent } =
     useVersionPreview(selectedAppId);
   const { versions } = useVersions(selectedAppId);
@@ -210,6 +220,17 @@ export const PreviewToolbar = () => {
     ? getVersionDisplayId(selectedVersionId, versions)
     : null;
   const { problemReport } = useCheckProblems(selectedAppId);
+
+  const handleOverflowOpenChange = (open: boolean) => {
+    setIsOverflowOpen(open);
+    // Send before React commits the menu so main can remove the native surface
+    // while the cached screenshot and dropdown are painted.
+    syncNativeOverlay(open && useNativePreview);
+  };
+
+  useEffect(() => {
+    syncNativeOverlay(isOverflowOpen && useNativePreview);
+  }, [isOverflowOpen, syncNativeOverlay, useNativePreview]);
 
   // When a version is selected, only the preview/diff panels are available.
   // Coerce a stale previewMode (e.g. "configure", "problems") to the preview
@@ -340,6 +361,12 @@ export const PreviewToolbar = () => {
         })
       : { visible: [...tabOrder], hidden: [] as ToolbarMode[] };
 
+  useEffect(() => {
+    if (hidden.length === 0 && isOverflowOpen) {
+      setIsOverflowOpen(false);
+    }
+  }, [hidden.length, isOverflowOpen]);
+
   const renderTab = (mode: ToolbarMode) => {
     const meta = modeMeta[mode];
     const isActive = previewMode === mode && isPreviewOpen;
@@ -400,7 +427,10 @@ export const PreviewToolbar = () => {
       >
         {visible.map((mode) => renderTab(mode))}
         {hidden.length > 0 && (
-          <DropdownMenu>
+          <DropdownMenu
+            open={isOverflowOpen}
+            onOpenChange={handleOverflowOpenChange}
+          >
             <Tooltip>
               <TooltipTrigger
                 render={

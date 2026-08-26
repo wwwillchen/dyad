@@ -22,6 +22,7 @@ import {
   MAX_RUNS_PER_TURN,
   MAX_ERROR_CHARS,
   RUN_TIMEOUT_MS,
+  SLOW_MO_RUN_TIMEOUT_MS,
   Classification,
   classify,
   completeStatus,
@@ -284,11 +285,15 @@ async function runSpec(
   ctx.onXmlStream(
     `<dyad-status title="${escapeXmlAttr(`Running ${label}`)}"></dyad-status>`,
   );
-  // Honor the headed/parallel modes the user picked in the Tests panel (both
-  // persisted in user settings, default headless + serial). A narrowed (grep)
-  // run usually targets one/few tests, so only opt into parallel for whole-file
-  // runs — mirrors the panel's `parallel && !isSingleTest` guard.
+  // Honor the modes the user picked in the Tests panel — including slow motion,
+  // so a user watching the agent's runs gets the same pace as their own. With
+  // the preview experiment enabled, headed mode drives Dyad's native preview
+  // view. A preview or narrowed run must stay serial.
   const settings = readSettings();
+  const preview =
+    (settings.enableTestRunInPreview ?? false) &&
+    (settings.testHeaded ?? false);
+  const slowMo = settings.testSlowMo ?? false;
   return runAppTestsWithIsolation({
     event: ctx.event,
     appId: ctx.appId,
@@ -296,9 +301,19 @@ async function runSpec(
     grep,
     source: "agent",
     headed: settings.testHeaded ?? false,
+    // Deliberately not gated on `preview`: the runner already drops
+    // `--fully-parallel` while the preview endpoint is live, and it clears that
+    // endpoint when a preview run falls back to an ordinary browser. Deciding
+    // it here instead would leave the fallback — a whole-file run in its own
+    // browser — stuck running serially for no reason.
     parallel: (settings.testParallel ?? false) && !grep,
+    slowMo,
+    preview,
     externalSignal: ctx.abortSignal,
-    timeoutMs: RUN_TIMEOUT_MS,
+    // A slowed run spends real time between actions, so it gets a budget to
+    // match — otherwise the toggle alone would turn a comfortable spec into an
+    // infra timeout the agent can't do anything about.
+    timeoutMs: slowMo ? SLOW_MO_RUN_TIMEOUT_MS : RUN_TIMEOUT_MS,
   });
 }
 

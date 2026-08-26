@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { Provider, createStore } from "jotai";
 import type { ReactNode } from "react";
@@ -12,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { previewModeAtom, selectedAppIdAtom } from "@/atoms/appAtoms";
 import { recordingStartRequestAtom } from "@/atoms/recorderAtoms";
+import { previewNativeViewAppIdAtom } from "@/atoms/previewAtoms";
 import {
   EMPTY_TEST_RUN_STATE,
   testRunStateByAppIdAtom,
@@ -31,6 +33,8 @@ const mocks = vi.hoisted(() => ({
   appUrl: "http://localhost:32100" as string | null,
   previewUrl: "http://localhost:32100/" as string | null,
   previewUrlSource: "dyad" as "none" | "dyad" | "app",
+  updateSettings: vi.fn(),
+  settings: {} as Record<string, unknown>,
 }));
 
 vi.mock("@/ipc/types", () => ({
@@ -56,7 +60,10 @@ vi.mock("@/hooks/useLoadApp", () => ({
 }));
 
 vi.mock("@/hooks/useSettings", () => ({
-  useSettings: () => ({ settings: {}, updateSettings: vi.fn() }),
+  useSettings: () => ({
+    settings: mocks.settings,
+    updateSettings: mocks.updateSettings,
+  }),
 }));
 
 vi.mock("@/hooks/useRunApp", () => ({
@@ -147,6 +154,198 @@ describe("TestsPanel", () => {
       committed: true,
       uncommittedReason: null,
     });
+    mocks.settings = {};
+  });
+
+  describe("headed runs in preview", () => {
+    const experimentOn = {
+      enableTestRunInPreview: true,
+    };
+
+    it("runs headed mode in the preview and brings the native view forward", async () => {
+      mocks.settings = { ...experimentOn, testHeaded: true };
+      mocks.runAppTests.mockResolvedValue({ appId: 1, results: [] });
+      const { store } = renderPanel();
+
+      const button = await screen.findByText("Run all");
+      await act(async () => {
+        fireEvent.click(button);
+      });
+
+      expect(store.get(previewNativeViewAppIdAtom)).toBe(1);
+      expect(store.get(previewModeAtom)).toBe("preview");
+      await waitFor(() => {
+        expect(mocks.runAppTests).toHaveBeenCalledWith(
+          expect.objectContaining({ appId: 1, preview: true, parallel: false }),
+        );
+      });
+    });
+
+    it("shows parallel as unavailable in the preview but still sends the user's choice", async () => {
+      mocks.settings = {
+        ...experimentOn,
+        testHeaded: true,
+        testParallel: true,
+      };
+      mocks.runAppTests.mockResolvedValue({ appId: 1, results: [] });
+      renderPanel();
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Open test options" }),
+      );
+      const parallelToggle = await screen.findByRole("switch", {
+        name: "Switch to parallel mode",
+      });
+      expect(parallelToggle.hasAttribute("data-disabled")).toBe(true);
+      expect(
+        screen.getByText("Unavailable while tests run in the preview panel."),
+      ).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+      const button = await screen.findByText("Run all");
+      await act(async () => {
+        fireEvent.click(button);
+      });
+
+      await waitFor(() => {
+        expect(mocks.runAppTests).toHaveBeenCalledWith(
+          // `parallel: true` on purpose. Preview runs are serialized in main,
+          // which is the only side that knows whether the app's tsconfig let
+          // this run into the preview at all. Sending `false` from here would
+          // leave a run that fell back to an ordinary browser stuck serial for
+          // no reason, despite Parallel being on.
+          expect.objectContaining({ preview: true, parallel: true }),
+        );
+      });
+    });
+
+    it("starts a preview run immediately", async () => {
+      mocks.settings = { ...experimentOn, testHeaded: true };
+      mocks.runAppTests.mockResolvedValue({ appId: 1, results: [] });
+      renderPanel();
+
+      const button = await screen.findByText("Run all");
+      expect(button.getAttribute("disabled")).toBeNull();
+      await act(async () => {
+        fireEvent.click(button);
+      });
+      await waitFor(() => {
+        expect(mocks.runAppTests).toHaveBeenCalledWith(
+          expect.objectContaining({ preview: true }),
+        );
+      });
+    });
+
+    it("leaves headless runs out of the preview", async () => {
+      mocks.settings = experimentOn;
+      mocks.runAppTests.mockResolvedValue({ appId: 1, results: [] });
+      renderPanel();
+
+      const runAll = await screen.findByText("Run all");
+      await act(async () => {
+        fireEvent.click(runAll);
+      });
+
+      await waitFor(() => {
+        expect(mocks.runAppTests).toHaveBeenCalledWith(
+          expect.objectContaining({ preview: false }),
+        );
+      });
+    });
+  });
+
+  describe("slow motion", () => {
+    it("defaults to full speed and persists the choice", async () => {
+      renderPanel();
+
+      // Persisted rather than local state, so the agent's run_tests tool runs
+      // at the pace the user picked here too.
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Open test options" }),
+      );
+      const toggle = await screen.findByRole("switch", {
+        name: "Switch to slow motion",
+      });
+      fireEvent.click(toggle);
+
+      expect(mocks.updateSettings).toHaveBeenCalledWith({ testSlowMo: true });
+    });
+
+    it("sends the chosen pace with the run", async () => {
+      mocks.settings = { testSlowMo: true };
+      mocks.runAppTests.mockResolvedValue({ appId: 1, results: [] });
+      renderPanel();
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Open test options" }),
+      );
+      expect(
+        screen.getByRole("switch", { name: "Switch to normal speed" }),
+      ).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+      const runAll = await screen.findByText("Run all");
+      await act(async () => {
+        fireEvent.click(runAll);
+      });
+
+      await waitFor(() => {
+        expect(mocks.runAppTests).toHaveBeenCalledWith(
+          expect.objectContaining({ slowMo: true }),
+        );
+      });
+    });
+  });
+
+  it("keeps only the primary actions in the header", async () => {
+    renderPanel();
+
+    await screen.findByRole("button", { name: "Run all tests" });
+    const header = await screen.findByTestId("tests-panel-header");
+    const headerButtons = within(header).getAllByRole("button");
+
+    expect(headerButtons).toHaveLength(3);
+    expect(
+      headerButtons.map((button) => button.getAttribute("aria-label")),
+    ).toEqual([
+      "Open test options",
+      "Record a test in the preview",
+      "Run all tests",
+    ]);
+    expect(
+      within(header).getByRole("button", {
+        name: "Record a test in the preview",
+      }),
+    ).toBeTruthy();
+    expect(
+      within(header).getByRole("button", { name: "Open test options" }),
+    ).toBeTruthy();
+    expect(
+      within(header).getByRole("button", { name: "Run all tests" }),
+    ).toBeTruthy();
+  });
+
+  it("moves secondary controls into the options dialog", async () => {
+    renderPanel();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Open test options" }),
+    );
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("Test options")).toBeTruthy();
+    expect(
+      screen.getByRole("switch", { name: "Switch to parallel mode" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("switch", { name: "Switch to headed mode" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("switch", { name: "Switch to slow motion" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Disable testing for this app" }),
+    ).toBeTruthy();
   });
 
   it("opens a spec file in the code editor", async () => {
