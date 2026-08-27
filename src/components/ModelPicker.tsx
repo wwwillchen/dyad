@@ -1172,6 +1172,35 @@ export function ModelPicker() {
     );
   };
 
+  const renderLocalModelsSubmenu = (testId: string) => (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger
+        className="w-full font-normal"
+        {...NAVIGATION_SUBMENU_HOVER_PROPS}
+      >
+        <span>Local models</span>
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="w-64" data-testid={testId}>
+        <DropdownMenuLabel>Local models</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {renderLocalProviderSubmenu({
+          providerId: "ollama",
+          label: "Ollama",
+          models: ollamaModels,
+          loading: ollamaLoading,
+          error: ollamaError,
+        })}
+        {renderLocalProviderSubmenu({
+          providerId: "lmstudio",
+          label: "LM Studio",
+          models: lmStudioModels,
+          loading: lmStudioLoading,
+          error: lmStudioError,
+        })}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+
   const cloudCatalogGroups = PRICE_TIERS.map((tier) => ({
     tier,
     entries: primaryModelEntries
@@ -1319,66 +1348,6 @@ export function ModelPicker() {
           {/* Non-trial users get a compact quick switcher. */}
           {!isTrial && (
             <>
-              {loading ? (
-                <div className="text-xs text-center py-2 text-muted-foreground">
-                  Loading models...
-                </div>
-              ) : (
-                <>
-                  {autoModels.length > 0 && (
-                    <>
-                      {autoModels.map((model) =>
-                        renderCloudModelItem({
-                          providerId: "auto",
-                          model,
-                          showPrice: false,
-                        }),
-                      )}
-                      <DropdownMenuSeparator />
-                    </>
-                  )}
-
-                  {recentModelEntries.length > 0 && (
-                    <>
-                      <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        Recent
-                      </DropdownMenuLabel>
-                      {recentModelEntries.map((entry) => {
-                        if (entry.type === "cloud") {
-                          return renderCloudModelItem({
-                            providerId: entry.providerId,
-                            model: entry.model,
-                          });
-                        }
-                        if (entry.type === "local") {
-                          return renderLocalModelItem(
-                            entry.providerId,
-                            entry.model,
-                          );
-                        }
-                        return (
-                          <DropdownMenuItem
-                            key={`${entry.providerId}-${entry.modelName}-loading`}
-                            disabled
-                            aria-label={`${entry.modelName}. Loading local model`}
-                            className="py-1.5"
-                          >
-                            <ProviderIcon providerId={entry.providerId} />
-                            <span className="min-w-0 truncate text-[13px]">
-                              {entry.modelName}
-                            </span>
-                            <span className="ml-auto text-xs text-muted-foreground">
-                              Loading...
-                            </span>
-                          </DropdownMenuItem>
-                        );
-                      })}
-                      <DropdownMenuSeparator />
-                    </>
-                  )}
-                </>
-              )}
-
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger
                   className="w-full font-normal"
@@ -1391,36 +1360,6 @@ export function ModelPicker() {
                   data-testid="more-models-submenu"
                 >
                   <DropdownMenuLabel>All models</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger
-                      className="w-full font-normal"
-                      {...NAVIGATION_SUBMENU_HOVER_PROPS}
-                    >
-                      <span>Local models</span>
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent
-                      className="w-64"
-                      data-testid="local-models-submenu"
-                    >
-                      <DropdownMenuLabel>Local models</DropdownMenuLabel>
-                      <DropdownMenuSeparator />
-                      {renderLocalProviderSubmenu({
-                        providerId: "ollama",
-                        label: "Ollama",
-                        models: ollamaModels,
-                        loading: ollamaLoading,
-                        error: ollamaError,
-                      })}
-                      {renderLocalProviderSubmenu({
-                        providerId: "lmstudio",
-                        label: "LM Studio",
-                        models: lmStudioModels,
-                        loading: lmStudioLoading,
-                        error: lmStudioError,
-                      })}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
                   <DropdownMenuSeparator />
                   {loading ? (
                     <div className="text-xs text-center py-2 text-muted-foreground">
@@ -1487,6 +1426,69 @@ export function ModelPicker() {
                   )}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+
+              {renderLocalModelsSubmenu("local-models-submenu")}
+
+              {loading ? (
+                <div className="text-xs text-center py-2 text-muted-foreground">
+                  Loading models...
+                </div>
+              ) : (
+                <>
+                  {autoModels.length > 0 && (
+                    <>
+                      {autoModels.map((model) =>
+                        renderCloudModelItem({
+                          providerId: "auto",
+                          model,
+                          showPrice: false,
+                        }),
+                      )}
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
+
+                  {recentModelEntries.length > 0 && (
+                    <>
+                      <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        Recent
+                      </DropdownMenuLabel>
+                      {recentModelEntries.map((entry) => {
+                        if (entry.type === "cloud") {
+                          return renderCloudModelItem({
+                            providerId: entry.providerId,
+                            model: entry.model,
+                            showProvider: true,
+                          });
+                        }
+                        if (entry.type === "local") {
+                          return renderLocalModelItem(
+                            entry.providerId,
+                            entry.model,
+                          );
+                        }
+                        return (
+                          <DropdownMenuItem
+                            key={`${entry.providerId}-${entry.modelName}-loading`}
+                            disabled
+                            aria-label={`${entry.modelName}. Loading local model`}
+                            className="py-1.5"
+                          >
+                            <ProviderIcon providerId={entry.providerId} />
+                            <span className="min-w-0 truncate text-[13px]">
+                              {entry.modelName}
+                            </span>
+                            <span className="ml-auto text-xs text-muted-foreground">
+                              Loading...
+                            </span>
+                          </DropdownMenuItem>
+                        );
+                      })}
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
+                </>
+              )}
             </>
           )}
 

@@ -515,7 +515,7 @@ describe("ModelPicker", () => {
     };
   });
 
-  it("keeps the root menu focused on Dyad choices and All models", () => {
+  it("keeps the root menu focused on quick choices and catalog entry points", () => {
     render(<ModelPicker />);
 
     expect(screen.getByText("Auto Sidekick")).toBeTruthy();
@@ -524,7 +524,7 @@ describe("ModelPicker", () => {
     ).toContain("New");
     expect(screen.queryByText("GPT 5")).toBeNull();
     expect(screen.queryByText("Premium")).toBeNull();
-    expect(screen.queryByText("Local models")).toBeNull();
+    expect(screen.getByText("Local models")).toBeTruthy();
     expect(screen.queryByText("Free (OpenRouter)")).toBeNull();
     expect(screen.getByText("Dyad Free")).toBeTruthy();
     expect(screen.getByText("2/5 left")).toBeTruthy();
@@ -536,6 +536,26 @@ describe("ModelPicker", () => {
         ?.getAttribute("aria-label"),
     ).toContain("2/5 left. Data sharing");
     expect(screen.getByText("All models")).toBeTruthy();
+  });
+
+  it("keeps All models stationary while the cloud catalog loads", () => {
+    mocks.catalogLoading = true;
+    const { rerender } = render(<ModelPicker />);
+    const allModelsTrigger = screen.getByText("All models").closest("button");
+
+    mocks.catalogLoading = false;
+    rerender(<ModelPicker />);
+
+    expect(screen.getByText("All models").closest("button")).toBe(
+      allModelsTrigger,
+    );
+    expect(
+      allModelsTrigger?.compareDocumentPosition(
+        document.querySelector(
+          '[data-model-provider="auto"][data-model-name="auto"]',
+        )!,
+      ) ?? 0,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   it("shows up to five persisted specific models in a Recent section", () => {
@@ -553,6 +573,9 @@ describe("ModelPicker", () => {
     expect(screen.getByText("Recent")).toBeTruthy();
     expect(screen.getByText("GPT 5")).toBeTruthy();
     expect(screen.getByText("Claude Sonnet 4.5")).toBeTruthy();
+    const gptRow = screen.getByText("GPT 5").closest("button")!;
+    expect(within(gptRow).getByText("OpenAI")).toBeTruthy();
+    expect(gptRow.getAttribute("aria-label")).toContain("GPT 5. OpenAI");
     expect(screen.getAllByText("Auto Sidekick")).toHaveLength(1);
   });
 
@@ -1053,10 +1076,10 @@ describe("ModelPicker", () => {
 
     render(<ModelPicker />);
 
-    // Index 0 is the top-level auto "Free (OpenRouter)" row (never locked);
-    // index 1 is the OpenRouter submenu's free model.
     fireEvent.click(
-      screen.getAllByText("Free (OpenRouter)")[1].closest("button")!,
+      document.querySelector(
+        '[data-model-provider="openrouter"][data-model-name="openrouter/free"]',
+      )!,
     );
 
     expect(mocks.posthogCapture).toHaveBeenCalledWith(

@@ -29,12 +29,7 @@ export class ModelPicker {
 
   private async clickMenuItemIfVisible(name: string, exact = true) {
     const item = this.getMenuItem(name, exact);
-    if (
-      await item
-        .waitFor({ state: "visible", timeout: 1_000 })
-        .then(() => true)
-        .catch(() => false)
-    ) {
+    if (await item.isVisible()) {
       await item.click();
       return true;
     }
@@ -81,43 +76,23 @@ export class ModelPicker {
   async selectModel({ provider, model }: { provider: string; model: string }) {
     await this.page.getByTestId("model-picker").click();
     const directModel = this.getModelItem(provider, model);
-    if (
-      await directModel
-        .waitFor({ state: "visible", timeout: 1_000 })
-        .then(() => true)
-        .catch(() => false)
-    ) {
+    if (await directModel.isVisible()) {
       await this.selectVisibleModel(directModel, model);
       return;
     }
     const directEffortModel = this.getEffortModelItem(model);
-    if (
-      await directEffortModel
-        .waitFor({ state: "visible", timeout: 1_000 })
-        .then(() => true)
-        .catch(() => false)
-    ) {
+    if (await directEffortModel.isVisible()) {
       await this.selectVisibleModel(directEffortModel, model);
       return;
     }
 
     if (!(await this.clickMenuItemIfVisible(provider, false))) {
       await this.getMenuItem("All models").click();
-      if (
-        await directModel
-          .waitFor({ state: "visible", timeout: 1_000 })
-          .then(() => true)
-          .catch(() => false)
-      ) {
+      if (await directModel.isVisible()) {
         await this.selectVisibleModel(directModel, model);
         return;
       }
-      if (
-        await directEffortModel
-          .waitFor({ state: "visible", timeout: 1_000 })
-          .then(() => true)
-          .catch(() => false)
-      ) {
+      if (await directEffortModel.isVisible()) {
         await this.selectVisibleModel(directEffortModel, model);
         return;
       }
@@ -133,7 +108,6 @@ export class ModelPicker {
 
   async selectTestOllamaModel() {
     await this.page.getByTestId("model-picker").click();
-    await this.getMenuItem("All models").click();
     await this.getMenuItem("Local models", false).click();
     await this.getMenuItem("Ollama", false).click();
     await this.getMenuItem("Testollama", false).click();
@@ -141,7 +115,6 @@ export class ModelPicker {
 
   async selectTestLMStudioModel() {
     await this.page.getByTestId("model-picker").click();
-    await this.getMenuItem("All models").click();
     await this.getMenuItem("Local models", false).click();
     await this.getMenuItem("LM Studio", false).click();
     await this.getMenuItem("lmstudio-model-1", false).click();
