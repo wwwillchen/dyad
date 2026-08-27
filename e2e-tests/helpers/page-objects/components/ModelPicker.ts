@@ -102,7 +102,9 @@ export class ModelPicker {
       return;
     }
 
-    const providerItem = this.getMenuItem(provider, false);
+    const providerItem = catalogMenu
+      .getByRole("menuitem", { name: provider, exact: false })
+      .first();
     if (await providerItem.isVisible()) {
       await providerItem.click();
       await this.selectProviderSubmenuModel(model);
