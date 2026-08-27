@@ -6,7 +6,7 @@ import type {
 } from "../../lib/schemas";
 import { db } from "../../db";
 import { messages, chats } from "../../db/schema";
-import { desc, eq, and } from "drizzle-orm";
+import { desc, eq, and, sql } from "drizzle-orm";
 import path from "node:path"; // Import path for basename
 // Import tag parsers
 import { processFullResponseActions } from "../processors/response_processor";
@@ -143,7 +143,21 @@ const getProposalHandler = async (
           content: true, // Fetch the content to parse
           approvalState: true,
         },
+        extras: {
+          hasAiMessagesJson:
+            sql<boolean>`${messages.aiMessagesJson} is not null`.as(
+              "has_ai_messages_json",
+            ),
+        },
       });
+
+      // Local Agent stores its structured transcript here. Its XML is a
+      // renderer projection of tool calls that already executed, not a legacy
+      // proposal awaiting approval. This also protects interrupted Agent turns
+      // created before agentic messages were eagerly marked approved.
+      if (latestAssistantMessage?.hasAiMessagesJson) {
+        return null;
+      }
 
       if (
         latestAssistantMessage?.content &&

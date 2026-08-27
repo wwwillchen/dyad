@@ -4,9 +4,7 @@ import { ProviderSettingsGrid } from "@/components/ProviderSettings";
 import ConfirmationDialog from "@/components/ConfirmationDialog";
 import { ipc } from "@/ipc/types";
 import { showSuccess, showError } from "@/lib/toast";
-import { AutoApproveSwitch } from "@/components/AutoApproveSwitch";
 import { TelemetrySwitch } from "@/components/TelemetrySwitch";
-import { MaxChatTurnsSelector } from "@/components/MaxChatTurnsSelector";
 import { MaxToolCallStepsSelector } from "@/components/MaxToolCallStepsSelector";
 import { useSettings } from "@/hooks/useSettings";
 import { useAppVersion } from "@/hooks/useAppVersion";
@@ -185,8 +183,8 @@ export default function SettingsPage() {
 
           <SettingsSection
             id={SECTION_IDS.agentPermissions}
-            title="Agent Permissions"
-            description="Control what the agent can do on your behalf. Requires Pro."
+            title="Build and Agent Permissions"
+            description="Control what Build and Agent tools can do on your behalf."
           >
             <AgentToolsSettings />
           </SettingsSection>
@@ -482,13 +480,6 @@ export function WorkflowSettings() {
         <DefaultChatModeSelector />
       </div>
 
-      <div id={SETTING_IDS.autoApprove} className="space-y-1.5">
-        <AutoApproveSwitch showToast={false} />
-        <p className={hint}>
-          This will automatically approve code changes and run them.
-        </p>
-      </div>
-
       <div id={SETTING_IDS.appBlueprint} className="space-y-1.5">
         <AppBlueprintSwitch />
         <p className={hint}>
@@ -539,10 +530,6 @@ export function AISettings() {
       title="AI"
       description="Control conversation context and agent limits."
     >
-      <div id={SETTING_IDS.maxChatTurns}>
-        <MaxChatTurnsSelector />
-      </div>
-
       <div id={SETTING_IDS.maxToolCallSteps}>
         <MaxToolCallStepsSelector />
       </div>

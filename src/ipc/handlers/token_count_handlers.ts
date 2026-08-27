@@ -14,7 +14,6 @@ import { buildNeonPromptForApp } from "../../neon_admin/neon_prompt_context";
 import { getDyadAppPath } from "../../paths/paths";
 import { detectFrameworkType } from "../utils/framework_utils";
 import log from "electron-log";
-import { extractCodebase } from "../../utils/codebase";
 import {
   getSupabaseContext,
   getSupabaseClientCode,
@@ -23,7 +22,6 @@ import {
 import { TokenCountParams, TokenCountResult } from "@/ipc/types";
 import { estimateTokens, getContextWindow } from "../utils/token_utils";
 import { createLoggedHandler } from "./safe_handle";
-import { validateChatContext } from "../utils/context_paths_utils";
 import { readSettings } from "@/main/settings";
 import {
   normalizeModelSelection,
@@ -32,12 +30,16 @@ import {
 import { extractMentionedAppsCodebasesFromPrompt } from "../utils/mention_apps";
 import {
   isDyadProEnabled,
+  isBasicAgentMode,
   isLocalAgentBackedMode,
   isTurboEditsV2Enabled,
 } from "@/lib/schemas";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { resolveChatModeForTurn } from "./chat_mode_resolution";
 import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
+import { estimateAgentToolTokens } from "@/pro/main/ipc/handlers/local_agent/tool_definitions";
+import { buildChatMessageHistory } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
+import { getCachedMcpToolDefs } from "@/pro/main/ipc/handlers/local_agent/tools/mcp_type_defs";
 
 const logger = log.scope("token_count_handlers");
 
@@ -67,12 +69,6 @@ export function registerTokenCountHandlers() {
         );
       }
 
-      // Prepare message history for token counting
-      const messageHistory = chat.messages
-        .map((message) => message.content)
-        .join("");
-      const messageHistoryTokens = estimateTokens(messageHistory);
-
       // Count input tokens
       const inputTokens = estimateTokens(req.input);
 
@@ -89,17 +85,25 @@ export function registerTokenCountHandlers() {
         selectedModel,
         selectedChatMode,
       };
+      const willUseLocalAgentStream = isLocalAgentBackedMode(selectedChatMode);
+      const messageHistoryTokens = willUseLocalAgentStream
+        ? estimateTokens(JSON.stringify(buildChatMessageHistory(chat.messages)))
+        : estimateTokens(
+            chat.messages.map((message) => message.content).join(""),
+          );
 
       // Count system prompt tokens
       // Migration on read converts "agent" to "build", so no need to check for it here
       const themePrompt = await getThemePromptById(chat.app?.themeId ?? null);
       const frameworkType = detectFrameworkType(getDyadAppPath(chat.app.path));
+      const enableAppBlueprint =
+        settings.enableAppBlueprint === true && chat.app.needsAppBlueprint;
       let systemPrompt = constructSystemPrompt({
         aiRules: await readAiRules(getDyadAppPath(chat.app.path)),
-        chatMode:
-          selectedChatMode === "local-agent" ? "build" : selectedChatMode,
+        chatMode: selectedChatMode === "ask" ? "local-agent" : selectedChatMode,
         enableTurboEditsV2: isTurboEditsV2Enabled(settings),
         themePrompt,
+        readOnly: selectedChatMode === "ask",
         frameworkType,
         hasSupabaseProject: !!chat.app?.supabaseProjectId,
         implementerAvailable:
@@ -107,6 +111,7 @@ export function registerTokenCountHandlers() {
           isDyadProEnabled(settings) &&
           isImplementerSubagentEnabled(settings),
         testingEnabled: !!chat.app?.testingEnabled,
+        enableAppBlueprint,
       });
       let supabaseContext = "";
 
@@ -117,10 +122,12 @@ export function registerTokenCountHandlers() {
         });
         systemPrompt +=
           "\n\n" + getSupabaseAvailableSystemPrompt(supabaseClientCode);
-        supabaseContext = await getSupabaseContext({
-          supabaseProjectId: chat.app.supabaseProjectId,
-          organizationSlug: chat.app.supabaseOrganizationSlug ?? null,
-        });
+        if (!willUseLocalAgentStream) {
+          supabaseContext = await getSupabaseContext({
+            supabaseProjectId: chat.app.supabaseProjectId,
+            organizationSlug: chat.app.supabaseOrganizationSlug ?? null,
+          });
+        }
       } else if (chat.app?.neonProjectId) {
         systemPrompt +=
           "\n\n" +
@@ -131,49 +138,53 @@ export function registerTokenCountHandlers() {
             neonDevelopmentBranchId: chat.app.neonDevelopmentBranchId,
             selectedChatMode,
           }));
-      } else {
+      } else if (!willUseLocalAgentStream) {
         // Neon projects don't need Supabase (already handled above).
         systemPrompt += "\n\n" + SUPABASE_NOT_AVAILABLE_SYSTEM_PROMPT;
       }
 
-      const systemPromptTokens = estimateTokens(systemPrompt + supabaseContext);
+      const isDyadPro = isDyadProEnabled(settings);
+      const mcpToolDefs =
+        selectedChatMode === "local-agent" ? getCachedMcpToolDefs() : [];
+      const toolDefinitionTokens = await estimateAgentToolTokens({
+        toolProfile: selectedChatMode === "build" ? "build" : "agent",
+        readOnly: selectedChatMode === "ask",
+        planModeOnly: selectedChatMode === "plan",
+        basicAgentMode:
+          selectedChatMode === "local-agent" && isBasicAgentMode(settings),
+        enableAppBlueprint,
+        isDyadPro,
+        frameworkType,
+        supabaseProjectId: chat.app.supabaseProjectId,
+        neonProjectId: chat.app.neonProjectId,
+        neonActiveBranchId:
+          chat.app.neonActiveBranchId ?? chat.app.neonDevelopmentBranchId,
+        testingEnabled: !!chat.app.testingEnabled,
+        canUseExplorerSubagent:
+          selectedChatMode !== "build" &&
+          isDyadPro &&
+          settings.enableExplorerSubagent !== false,
+        canUseImplementerSubagent:
+          selectedChatMode === "local-agent" &&
+          isDyadPro &&
+          isImplementerSubagentEnabled(settings),
+        mcpToolDefs,
+        canUseAdvancedSubagentTools:
+          selectedChatMode === "local-agent" &&
+          isDyadPro &&
+          settings.enableAdvancedSubagents === true,
+      });
+      const systemPromptTokens =
+        estimateTokens(systemPrompt + supabaseContext) + toolDefinitionTokens;
 
-      // Extract codebase information if app is associated with the chat
-      let codebaseInfo = "";
-      let codebaseTokens = 0;
+      // Tool-backed modes inspect the current app on demand, so they do not
+      // inject the full codebase into the initial request.
+      const codebaseTokens = 0;
 
-      if (chat.app) {
-        const appPath = getDyadAppPath(chat.app.path);
-        const { formattedOutput, files } = await extractCodebase({
-          appPath,
-          chatContext: validateChatContext(chat.app.chatContext),
-        });
-        codebaseInfo = formattedOutput;
-        if (settings.enableDyadPro && settings.enableProSmartFilesContextMode) {
-          codebaseTokens = estimateTokens(
-            files
-              // It doesn't need to be the exact format but it's just to get a token estimate
-              .map(
-                (file) => `<dyad-file=${file.path}>${file.content}</dyad-file>`,
-              )
-              .join("\n\n"),
-          );
-        } else {
-          codebaseTokens = estimateTokens(codebaseInfo);
-        }
-        logger.debug(
-          `Extracted codebase information from ${appPath}, tokens: ${codebaseTokens}`,
-        );
-      }
-
-      // Agent/ask/plan modes reach referenced apps via tool calls rather than
+      // Tool-backed modes reach referenced apps via tool calls rather than
       // injecting full codebases into the prompt, so mentioned apps contribute
       // ~0 tokens upfront. Match the extraction behavior in chat_stream_handlers
       // so the UI estimate tracks what's actually sent.
-      const willUseLocalAgentStream = isLocalAgentBackedMode(
-        settings.selectedChatMode,
-      );
-
       let mentionedAppsTokens = 0;
       if (!willUseLocalAgentStream) {
         const mentionedAppsCodebases =

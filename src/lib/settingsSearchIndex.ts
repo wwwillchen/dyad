@@ -21,13 +21,11 @@ export const SETTING_IDS = {
   nodePath: "setting-node-path",
   customAppsFolder: "setting-custom-apps-folder",
   defaultChatMode: "setting-default-chat-mode",
-  autoApprove: "setting-auto-approve",
   autoExpandPreview: "setting-auto-expand-preview",
   keepPreviewsRunning: "setting-keep-previews-running",
   appBlueprint: "setting-app-blueprint",
   testingForNewApps: "setting-testing-for-new-apps",
   chatEventNotification: "setting-chat-event-notification",
-  maxChatTurns: "setting-max-chat-turns",
   maxToolCallSteps: "setting-max-tool-call-steps",
   contextCompaction: "setting-context-compaction",
   telemetry: "setting-telemetry",
@@ -143,14 +141,6 @@ export const SETTINGS_SEARCH_INDEX: SearchableSettingItem[] = [
     sectionLabel: "Workflow",
   },
   {
-    id: SETTING_IDS.autoApprove,
-    label: "Auto-approve",
-    description: "Automatically approve code changes and run them",
-    keywords: ["approve", "automatic", "code changes", "auto"],
-    sectionId: SECTION_IDS.workflow,
-    sectionLabel: "Workflow",
-  },
-  {
     id: SETTING_IDS.appBlueprint,
     label: "App Blueprint",
     description:
@@ -230,14 +220,6 @@ export const SETTINGS_SEARCH_INDEX: SearchableSettingItem[] = [
   },
 
   // AI Settings
-  {
-    id: SETTING_IDS.maxChatTurns,
-    label: "Max Chat Turns",
-    description: "Set the maximum number of conversation turns",
-    keywords: ["turns", "max", "conversation", "limit", "chat"],
-    sectionId: SECTION_IDS.ai,
-    sectionLabel: "AI",
-  },
   {
     id: SETTING_IDS.maxToolCallSteps,
     label: "Max Tool Calls (Agent)",
@@ -357,22 +339,22 @@ export const SETTINGS_SEARCH_INDEX: SearchableSettingItem[] = [
     sectionLabel: "Integrations",
   },
 
-  // Agent Permissions
+  // Build and Agent Permissions
   {
     id: SECTION_IDS.agentPermissions,
-    label: "Agent Permissions",
-    description: "Configure permissions for agent built-in tools",
+    label: "Build and Agent Permissions",
+    description: "Configure permissions for Build and Agent built-in tools",
     keywords: [
+      "build",
       "agent",
       "permissions",
       "tools",
       "approve",
       "allow",
       "consent",
-      "pro",
     ],
     sectionId: SECTION_IDS.agentPermissions,
-    sectionLabel: "Agent Permissions",
+    sectionLabel: "Build and Agent Permissions",
   },
 
   // Advanced
@@ -544,7 +526,7 @@ export const SETTINGS_SEARCH_INDEX: SearchableSettingItem[] = [
   {
     id: SETTING_IDS.enableAutoReview,
     label: "Automatically review changes",
-    description: "Run Reviewer after completed turns that change code",
+    description: "Run Reviewer after completed Agent turns that change code",
     keywords: ["sub-agent", "review", "automatic", "agent", "pro"],
     sectionId: SECTION_IDS.experiments,
     sectionLabel: "Experiments",

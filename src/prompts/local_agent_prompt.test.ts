@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { constructLocalAgentPrompt } from "@/prompts/local_agent_prompt";
+import {
+  constructBuildAgentPrompt,
+  constructLocalAgentPrompt,
+} from "@/prompts/local_agent_prompt";
 
 describe("local_agent_prompt", () => {
   const expectGitContextGuidance = (prompt: string) => {
@@ -212,6 +215,14 @@ describe("local_agent_prompt", () => {
     expect(prompt).not.toContain("reinstall_and_restart_app");
   });
 
+  it("includes lifecycle guidance in the Build prompt", () => {
+    const prompt = constructBuildAgentPrompt(undefined);
+
+    expect(prompt).toContain("<app_lifecycle>");
+    expect(prompt).toContain("restart_app");
+    expect(prompt).toContain("reinstall_and_restart_app");
+  });
+
   it("omits production-build guidance when run_build is unavailable", () => {
     const prompt = constructLocalAgentPrompt(undefined, undefined, {
       runBuildToolAvailable: false,
@@ -270,5 +281,37 @@ describe("local_agent_prompt", () => {
     expect(prompt).not.toContain("write_app_blueprint");
     expect(prompt).toContain("1. **Understand:**");
     expect(prompt).toContain("based on the understanding in steps 1-2");
+  });
+});
+
+describe("build agent prompt", () => {
+  it("describes the curated agentic workflow without excluded tools", () => {
+    const prompt = constructBuildAgentPrompt(undefined, undefined, {
+      frameworkType: "vite",
+      enableAppBlueprint: true,
+    });
+
+    expect(prompt).toMatchSnapshot();
+    expect(prompt).toContain("<tool_calling>");
+    expect(prompt).toContain("`grep` and `list_files`");
+    expect(prompt).toContain("`planning_questionnaire`");
+    expect(prompt).toContain("`update_todos`");
+    expect(prompt).toContain("write_app_blueprint");
+    expect(prompt).toContain("<git_context>");
+    expect(prompt).not.toContain("provided Git inspection tools");
+    for (const unavailableTool of [
+      "spawn_agent",
+      "web_search",
+      "read_logs",
+      "run_build",
+      "run_type_checks",
+      "run_tests",
+      "run_pre_commit",
+      "execute_sandbox_script",
+      "search_chats",
+      "generate_image",
+    ]) {
+      expect(prompt).not.toContain(unavailableTool);
+    }
   });
 });

@@ -16,7 +16,7 @@ async function saveVisualChanges(page: Page) {
 }
 
 testSkipIfWindows("edit style of one selected component", async ({ po }) => {
-  await po.setUpDyadPro();
+  await po.setUpDyadPro({ autoApprove: true });
   await po.sendPrompt("tc=basic");
   await po.previewPanel.ensurePreviewPanelOpen();
   await po.previewPanel.clickPreviewPickElement();
@@ -84,7 +84,7 @@ testSkipIfWindows("edit style of one selected component", async ({ po }) => {
 });
 
 testSkipIfWindows("edit text of the selected component", async ({ po }) => {
-  await po.setUpDyadPro();
+  await po.setUpDyadPro({ autoApprove: true });
   await po.sendPrompt("tc=basic");
   await po.previewPanel.ensurePreviewPanelOpen();
   await po.previewPanel.clickPreviewPickElement();
@@ -153,9 +153,8 @@ testSkipIfWindows("edit text of the selected component", async ({ po }) => {
 });
 
 testSkipIfWindows("swap image via URL", async ({ po }) => {
-  await po.setUpDyadPro();
+  await po.setUpDyadPro({ autoApprove: true });
   await po.sendPrompt("tc=image-basic");
-  await po.approveProposal();
 
   // Wait for the app to rebuild with the new code
   await po.previewPanel.clickPreviewPickElement();
@@ -227,7 +226,7 @@ testSkipIfWindows("swap image via URL", async ({ po }) => {
 });
 
 testSkipIfWindows("discard changes", async ({ po }) => {
-  await po.setUpDyadPro();
+  await po.setUpDyadPro({ autoApprove: true });
   await po.sendPrompt("tc=basic");
   await po.previewPanel.ensurePreviewPanelOpen();
   await po.previewPanel.clickPreviewPickElement();

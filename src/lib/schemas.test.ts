@@ -98,7 +98,7 @@ describe("migrateStoredSettings", () => {
       },
     });
 
-    expect(migrateStoredSettings(stored).agentToolConsents).toEqual({
+    expect(migrateStoredSettings(stored).agentToolConsents).toMatchObject({
       reinstall_and_restart_app: "never",
       restart_app: "always",
     });
@@ -113,8 +113,26 @@ describe("migrateStoredSettings", () => {
       },
     });
 
-    expect(migrateStoredSettings(stored).agentToolConsents).toEqual({
+    expect(migrateStoredSettings(stored).agentToolConsents).toMatchObject({
       reinstall_and_restart_app: "always",
     });
+  });
+
+  it("does not migrate Build auto-approve into global Agent consent settings", () => {
+    const stored = StoredUserSettingsSchema.parse({
+      ...baseSettings,
+      autoApproveChanges: false,
+      agentToolConsents: { write_file: "never" },
+    });
+
+    expect(migrateStoredSettings(stored).agentToolConsents).toEqual({
+      write_file: "never",
+    });
+  });
+
+  it("preserves Agent defaults when legacy Build auto-approve is unset", () => {
+    const stored = StoredUserSettingsSchema.parse(baseSettings);
+
+    expect(migrateStoredSettings(stored).agentToolConsents).toBeUndefined();
   });
 });

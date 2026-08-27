@@ -60,9 +60,17 @@ import { planningQuestionnaireTool } from "./tools/planning_questionnaire";
 import { writePlanTool } from "./tools/write_plan";
 import { exitPlanTool } from "./tools/exit_plan";
 import { readGuideTool } from "./tools/read_guide";
-import { executeSandboxScriptTool } from "./tools/execute_sandbox_script";
+import {
+  buildExecuteSandboxScriptDescription,
+  executeSandboxScriptTool,
+} from "./tools/execute_sandbox_script";
 import { searchMcpToolsTool } from "./tools/search_mcp_tools";
 import { getMcpToolSchemaTool } from "./tools/get_mcp_tool_schema";
+import {
+  estimateMcpInlineTokens,
+  getMcpInlineTokenThreshold,
+  type McpToolDef,
+} from "./tools/mcp_type_defs";
 import { writeAppBlueprintTool } from "./tools/write_app_blueprint";
 import {
   gitDiffTool,
@@ -73,6 +81,7 @@ import {
   gitStatusTool,
 } from "./tools/git";
 import type { LanguageModelV3ToolResultOutput } from "@ai-sdk/provider";
+import { asSchema } from "ai";
 import {
   escapeXmlAttr,
   escapeXmlContent,
@@ -94,6 +103,7 @@ import { getNeonClientCode } from "@/neon_admin/neon_context";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { ExecuteAddDependencyError } from "@/ipc/processors/executeAddDependency";
 import { withTrackedMutation } from "./subagents/mutation_activity_tracker";
+import { estimateTokens } from "@/ipc/utils/token_utils";
 
 const logger = log.scope("local_agent_tools");
 
@@ -407,6 +417,12 @@ function serializeActivityOutput(result: ToolResult): string {
 
 export interface BuildAgentToolSetOptions {
   /**
+   * Selects the fail-closed surface for the active writable mode. Build mode
+   * intentionally exposes only the tools needed to create an app without
+   * Agent-only orchestration, Engine, diagnostics, or verification tools.
+   */
+  toolProfile?: "agent" | "build";
+  /**
    * If true, exclude tools that modify state (files, database, etc.).
    * Used for read-only modes like "ask" mode.
    */
@@ -430,6 +446,173 @@ export interface BuildAgentToolSetOptions {
    * If false, exclude app blueprint tools (write_app_blueprint).
    */
   enableAppBlueprint?: boolean;
+}
+
+export const BUILD_MODE_TOOL_NAMES = [
+  "write_file",
+  "search_replace",
+  "copy_file",
+  "delete_file",
+  "rename_file",
+  "add_dependency",
+  "execute_sql",
+  "read_file",
+  "list_files",
+  "grep",
+  "get_supabase_project_info",
+  "get_neon_project_info",
+  "get_database_table_schema",
+  "set_chat_summary",
+  "add_integration",
+  "enable_nitro",
+  "restart_app",
+  "reinstall_and_restart_app",
+  "update_todos",
+  "read_guide",
+  "planning_questionnaire",
+  "write_app_blueprint",
+] as const satisfies readonly AgentToolName[];
+
+const BUILD_MODE_TOOL_NAME_SET = new Set<AgentToolName>(BUILD_MODE_TOOL_NAMES);
+
+export async function estimateAgentToolTokens({
+  toolProfile = "agent",
+  readOnly = false,
+  planModeOnly = false,
+  basicAgentMode = false,
+  freeModelMode = false,
+  enableAppBlueprint,
+  isDyadPro,
+  frameworkType,
+  supabaseProjectId,
+  neonProjectId,
+  neonActiveBranchId,
+  testingEnabled = false,
+  canUseExplorerSubagent = false,
+  canUseImplementerSubagent = false,
+  canUseAdvancedSubagentTools = false,
+  preCommitHookAvailable = false,
+  reinstallAndRestartAppToolAvailable = true,
+  mcpToolDefs = [],
+}: {
+  toolProfile?: "agent" | "build";
+  readOnly?: boolean;
+  planModeOnly?: boolean;
+  basicAgentMode?: boolean;
+  freeModelMode?: boolean;
+  enableAppBlueprint: boolean;
+  isDyadPro: boolean;
+  frameworkType: AgentContext["frameworkType"];
+  supabaseProjectId: string | null;
+  neonProjectId: string | null;
+  neonActiveBranchId: string | null;
+  testingEnabled?: boolean;
+  canUseExplorerSubagent?: boolean;
+  canUseImplementerSubagent?: boolean;
+  canUseAdvancedSubagentTools?: boolean;
+  preCommitHookAvailable?: boolean;
+  reinstallAndRestartAppToolAvailable?: boolean;
+  mcpToolDefs?: McpToolDef[];
+}): Promise<number> {
+  const estimateContext = {
+    isDyadPro,
+    frameworkType,
+    supabaseProjectId,
+    neonProjectId,
+    neonActiveBranchId,
+    referencedApps: new Map(),
+    testingEnabled,
+    canUseExplorerSubagent,
+    canUseImplementerSubagent,
+    canUseAdvancedSubagentTools,
+    preCommitHookAvailable,
+    reinstallAndRestartAppToolAvailable,
+    sandboxWriteFileHostEnabled: !readOnly && !planModeOnly,
+  } as AgentContext;
+  const options: BuildAgentToolSetOptions = {
+    toolProfile,
+    readOnly,
+    planModeOnly,
+    basicAgentMode,
+    freeModelMode,
+    enableAppBlueprint,
+  };
+  const mcpInSandboxEnabled =
+    toolProfile !== "build" &&
+    !readOnly &&
+    !planModeOnly &&
+    shouldIncludeTool(executeSandboxScriptTool, estimateContext, options);
+  estimateContext.mcpToolsEnabled = mcpInSandboxEnabled;
+  estimateContext.mcpToolDefs = mcpToolDefs;
+  estimateContext.isMcpToolSearchAvailable =
+    mcpInSandboxEnabled &&
+    !!readSettings().enableMcpToolSearch &&
+    estimateMcpInlineTokens(mcpToolDefs) > getMcpInlineTokenThreshold();
+
+  let declarations = await Promise.all(
+    TOOL_DEFINITIONS.filter((definition) =>
+      shouldIncludeTool(definition, estimateContext, options),
+    ).map(async (definition) => ({
+      type: "function" as const,
+      name: definition.name,
+      description: definition.description,
+      inputSchema: await asSchema(definition.inputSchema).jsonSchema,
+    })),
+  );
+
+  let useMcpToolSearch = estimateContext.isMcpToolSearchAvailable;
+  if (
+    useMcpToolSearch &&
+    !declarations.some((declaration) => declaration.name === "search_mcp_tools")
+  ) {
+    useMcpToolSearch = false;
+    declarations = declarations.filter(
+      (declaration) => declaration.name !== "get_mcp_tool_schema",
+    );
+  }
+  const hasGetSchemaTool = declarations.some(
+    (declaration) => declaration.name === "get_mcp_tool_schema",
+  );
+  const sandboxDeclaration = declarations.find(
+    (declaration) => declaration.name === "execute_sandbox_script",
+  );
+  if (sandboxDeclaration) {
+    sandboxDeclaration.description = await buildExecuteSandboxScriptDescription(
+      mcpToolDefs,
+      {
+        useSearch: useMcpToolSearch,
+        hasGetSchemaTool,
+        includeWriteFile: !!estimateContext.sandboxWriteFileHostEnabled,
+      },
+    );
+  }
+
+  if (
+    toolProfile !== "build" &&
+    !readOnly &&
+    !planModeOnly &&
+    !mcpInSandboxEnabled
+  ) {
+    const uniqueMcpTools = new Map(
+      mcpToolDefs.map((definition) => [definition.toolKey, definition]),
+    );
+    declarations.push(
+      ...[...uniqueMcpTools.values()].map((definition) => ({
+        type: "function" as const,
+        name: definition.toolKey,
+        description: definition.description ?? "",
+        inputSchema: definition.inputSchema,
+      })),
+    );
+  }
+
+  return estimateTokens(JSON.stringify(declarations));
+}
+
+export function estimateBuildModeToolTokens(
+  options: Omit<Parameters<typeof estimateAgentToolTokens>[0], "toolProfile">,
+): Promise<number> {
+  return estimateAgentToolTokens({ ...options, toolProfile: "build" });
 }
 
 /**
@@ -505,6 +688,12 @@ export function shouldIncludeTool(
   options: BuildAgentToolSetOptions = {},
 ): boolean {
   if (getAgentToolConsent(tool.name) === "never") {
+    return false;
+  }
+  if (
+    options.toolProfile === "build" &&
+    !BUILD_MODE_TOOL_NAME_SET.has(tool.name)
+  ) {
     return false;
   }
   // In plan mode, skip state-modifying tools unless they're planning-specific.

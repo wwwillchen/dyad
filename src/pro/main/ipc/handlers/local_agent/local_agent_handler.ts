@@ -343,20 +343,32 @@ export function buildChatMessageHistory(
 
 /**
  * Append a `<system-reminder>` to the latest user message listing referenced
- * apps so the agent knows which `app_name` values it can pass to read-only
- * tools (`read_file`, `list_files`, `grep`, `code_search`). Mutates the last
- * user message in-place to avoid copying unrelated parts of the history.
+ * apps so the agent knows which registered read-only tools accept `app_name`.
+ * Mutates the last user message in-place to avoid copying unrelated parts of
+ * the history.
  */
 function injectReferencedAppsReminder(
   messageHistory: ModelMessage[],
   referencedApps: readonly { appName: string }[],
-  options: { codeExplorerAvailable: boolean },
+  options: {
+    codeExplorerAvailable: boolean;
+    registeredToolNames: ReadonlySet<string>;
+  },
 ): void {
   const list = referencedApps.map(({ appName }) => `\`${appName}\``).join(", ");
+  const referencedAppToolNames = [
+    "read_file",
+    "list_files",
+    "grep",
+    "code_search",
+  ].filter((toolName) => options.registeredToolNames.has(toolName));
+  const toolGuidance = referencedAppToolNames
+    .map((toolName) => `\`${toolName}\``)
+    .join(", ");
   const explorerGuidance = options.codeExplorerAvailable
     ? " You may assign an Explorer to inspect a referenced app; name that app explicitly in the assignment, and the child must pass `app_name` to its read tools."
     : "";
-  const reminder = `\n\n<system-reminder>\nThe user has mentioned the following apps in their prompt: ${list}. These apps are separate from the current app and are READ-ONLY. To inspect them, pass the app name as the \`app_name\` parameter to read-only tools (\`read_file\`, \`list_files\`, \`grep\`, \`code_search\`); matching is case-insensitive. Write tools cannot target these apps. Omit \`app_name\` to operate on the current app.${explorerGuidance}\n</system-reminder>`;
+  const reminder = `\n\n<system-reminder>\nThe user has mentioned the following apps in their prompt: ${list}. These apps are separate from the current app and are READ-ONLY. To inspect them, pass the app name as the \`app_name\` parameter to registered read-only tools (${toolGuidance}); matching is case-insensitive. Write tools cannot target these apps. Omit \`app_name\` to operate on the current app.${explorerGuidance}\n</system-reminder>`;
 
   for (let i = messageHistory.length - 1; i >= 0; i--) {
     const msg = messageHistory[i];
@@ -476,6 +488,7 @@ export async function handleLocalAgentStream(
     settingsOverride,
     modelSelectionOverride,
     freeModelMode,
+    toolProfile = "agent",
     preCommitHookAvailable = false,
     referencedApps = [],
     currentTurnHasOnDiskAttachment,
@@ -501,6 +514,8 @@ export async function handleLocalAgentStream(
     settingsOverride?: UserSettings;
     modelSelectionOverride?: ModelSelection;
     freeModelMode?: boolean;
+    /** Fail-closed tool and orchestration surface for this mode. */
+    toolProfile?: "agent" | "build";
     /** Snapshot shared by the prompt and toolset for this writable turn. */
     preCommitHookAvailable?: boolean;
     /**
@@ -515,6 +530,7 @@ export async function handleLocalAgentStream(
   },
 ): Promise<boolean> {
   const storedSettings = settingsOverride ?? readSettings();
+  const buildMode = toolProfile === "build";
   let settings: UserSettings = storedSettings;
   let selectedModel: ModelSelection;
   const maxToolCallSteps =
@@ -601,6 +617,7 @@ export async function handleLocalAgentStream(
   // Basic Agent mode allows non-Pro users with quota (quota check is done in chat_stream_handlers)
   // Read-only mode (ask mode) is allowed for all users without Pro
   if (
+    !buildMode &&
     !readOnly &&
     !planModeOnly &&
     !isDyadProEnabled(settings) &&
@@ -858,16 +875,20 @@ export async function handleLocalAgentStream(
       testRunAttempts: new Map(),
       isDyadPro: isDyadProEnabled(settings),
       canUseExplorerSubagent:
+        !buildMode &&
         isDyadProEnabled(settings) &&
         settings.enableExplorerSubagent !== false &&
         settings.agentToolConsents?.spawn_agent !== "never",
       canUseImplementerSubagent:
+        !buildMode &&
         isDyadProEnabled(settings) &&
         isImplementerSubagentEnabled(settings) &&
         !readOnly &&
         !planModeOnly,
       canUseAdvancedSubagentTools:
-        isDyadProEnabled(settings) && settings.enableAdvancedSubagents === true,
+        !buildMode &&
+        isDyadProEnabled(settings) &&
+        settings.enableAdvancedSubagents === true,
       freeModelMode: effectiveFreeModelMode,
       onXmlStream: (accumulatedXml: string) => {
         // Stream the in-progress tool XML as a sidecar preview overlay.
@@ -942,6 +963,7 @@ export async function handleLocalAgentStream(
     // Read-only mode includes only read-only tools (MCP tools are skipped since
     // we can't tell if they modify state); plan mode includes only planning tools.
     const buildOptions = {
+      toolProfile,
       readOnly,
       planModeOnly,
       basicAgentMode: !readOnly && !planModeOnly && isBasicAgentMode(settings),
@@ -961,6 +983,7 @@ export async function handleLocalAgentStream(
     // search_mcp_tools.isEnabled reads this during the build, so set it up front
     // from the same predicate the builder uses. Off in read-only and plan mode.
     const mcpInSandboxEnabled =
+      !buildMode &&
       !readOnly &&
       !planModeOnly &&
       shouldIncludeTool(executeSandboxScriptTool, ctx, buildOptions);
@@ -1003,7 +1026,7 @@ export async function handleLocalAgentStream(
     // only advertise it in the description when it actually registered.
     const hasGetSchemaTool = agentTools.get_mcp_tool_schema != undefined;
     const mcpToolsForRegistration: ToolSet =
-      !readOnly && !planModeOnly && !mcpInSandboxEnabled
+      !buildMode && !readOnly && !planModeOnly && !mcpInSandboxEnabled
         ? await getMcpTools(event, ctx)
         : {};
     if (agentTools.execute_sandbox_script != undefined) {
@@ -1038,9 +1061,8 @@ export async function handleLocalAgentStream(
     // Use messageOverride if provided (e.g., for summarization)
     // If a compaction summary exists, only include messages from that point onward
     // (pre-compaction messages are preserved in DB for the user but not sent to LLM)
-    const messageHistory: ModelMessage[] = messageOverride
-      ? messageOverride
-      : buildChatMessageHistory(chat.messages);
+    const messageHistory: ModelMessage[] =
+      messageOverride ?? buildChatMessageHistory(chat.messages);
     const latestUserMessage = [...messageHistory]
       .reverse()
       .find((message) => message.role === "user");
@@ -1057,6 +1079,7 @@ export async function handleLocalAgentStream(
     if (referencedApps.length > 0) {
       injectReferencedAppsReminder(messageHistory, referencedApps, {
         codeExplorerAvailable: agentTools.spawn_agent != undefined,
+        registeredToolNames,
       });
     }
 
@@ -1275,6 +1298,7 @@ export async function handleLocalAgentStream(
                       {
                         codeExplorerAvailable:
                           agentTools.spawn_agent != undefined,
+                        registeredToolNames,
                       },
                     );
                   }
@@ -2109,6 +2133,7 @@ export async function handleLocalAgentStream(
       !planModeOnly &&
       (workspaceChanged || ctx.mcpToolRan === true);
     const reviewBarrierRequested =
+      !buildMode &&
       workspaceChanged &&
       !hitStepLimit &&
       isDyadProEnabled(settings) &&
@@ -2129,6 +2154,7 @@ export async function handleLocalAgentStream(
         warningMessages.length > 0 ? [...new Set(warningMessages)] : undefined,
       pausePromptQueue: hitStepLimit || reviewBarrierRequested || undefined,
       reviewBarrierRequested: reviewBarrierRequested || undefined,
+      suppressAutoReview: buildMode || undefined,
     } satisfies ChatResponseEnd);
 
     return true; // Success

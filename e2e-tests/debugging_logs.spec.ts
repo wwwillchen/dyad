@@ -4,10 +4,9 @@ import { expect } from "@playwright/test";
 testSkipIfWindows(
   "console logs should appear in the console",
   async ({ po }) => {
-    await po.setUp();
+    await po.setUp({ autoApprove: true });
 
     await po.sendPrompt("tc=console-logs");
-    await po.approveProposal();
 
     // Wait for app to run
     const picker = po.page.getByTestId("preview-pick-element-button");
@@ -87,10 +86,9 @@ testSkipIfWindows(
 testSkipIfWindows(
   "network requests and responses should appear in the console",
   async ({ po }) => {
-    await po.setUp();
+    await po.setUp({ autoApprove: true });
 
     await po.sendPrompt("tc=network-requests");
-    await po.approveProposal();
 
     // Wait for app to run
     const picker = po.page.getByTestId("preview-pick-element-button");
@@ -104,6 +102,17 @@ testSkipIfWindows(
     ).toBeVisible({
       timeout: Timeout.MEDIUM,
     });
+
+    // The first render can issue requests before the preview service worker
+    // takes control. Reload once it is ready so request/response events are
+    // deterministically observed by the recorder.
+    await iframeFrame.locator("body").evaluate(async () => {
+      await navigator.serviceWorker.ready;
+    });
+    await po.previewPanel.clickPreviewRefresh();
+    await expect(
+      iframeFrame.getByText("Network Requests Test App"),
+    ).toBeVisible({ timeout: Timeout.MEDIUM });
 
     // Wait for service worker to be ready
     // Service worker registration is async, so we wait for it to be active
@@ -182,11 +191,10 @@ testSkipIfWindows(
 testSkipIfWindows(
   "clicking send to chat button adds log to chat input",
   async ({ po }) => {
-    await po.setUp();
+    await po.setUp({ autoApprove: true });
 
     // Create an app with console output using fixture
     await po.sendPrompt("tc=write-index");
-    await po.approveProposal();
 
     // Wait for app to run
     const picker = po.page.getByTestId("preview-pick-element-button");
@@ -217,11 +225,10 @@ testSkipIfWindows(
 );
 
 testSkipIfWindows("clear filters button works", async ({ po }) => {
-  await po.setUp();
+  await po.setUp({ autoApprove: true });
 
   // Create a basic app using fixture
   await po.sendPrompt("tc=write-index");
-  await po.approveProposal();
 
   // Wait for app to run
   await po.page
@@ -251,11 +258,10 @@ testSkipIfWindows("clear filters button works", async ({ po }) => {
 });
 
 testSkipIfWindows("clear logs button clears all logs", async ({ po }) => {
-  await po.setUp();
+  await po.setUp({ autoApprove: true });
 
   // Create an app with console logs
   await po.sendPrompt("tc=console-logs");
-  await po.approveProposal();
 
   // Wait for app to run
   const picker = po.page.getByTestId("preview-pick-element-button");

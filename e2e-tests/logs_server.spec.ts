@@ -9,11 +9,10 @@ import { testSkipIfWindows, Timeout } from "./helpers/test_helper";
 testSkipIfWindows(
   "system messages UI shows server logs with correct type",
   async ({ po }) => {
-    await po.setUp();
+    await po.setUp({ autoApprove: true });
 
     // Create an app to generate server logs
     await po.sendPrompt("tc=write-index");
-    await po.approveProposal();
 
     // Wait for app to run - this generates server logs from stdout/stderr
     // Use toPass() for resilience since the picker button needs time to appear and become enabled

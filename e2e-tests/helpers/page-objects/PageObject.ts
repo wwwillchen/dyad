@@ -39,16 +39,17 @@ import { Catalog } from "./components/Catalog";
 import { BrowserNotifications } from "./components/BrowserNotifications";
 
 // Import dialog page objects
-import { ContextFilesPickerDialog } from "./dialogs/ContextFilesPickerDialog";
-import { ProModesDialog } from "./dialogs/ProModesDialog";
 import { Timeout } from "../constants";
 
 const IGNORED_SNAPSHOT_FILE_PATHS = new Set([".gitattributes"]);
 
 function isIgnoredSnapshotFile(filePath: string | undefined): boolean {
+  const normalizedPath =
+    typeof filePath === "string" ? normalizePath(filePath) : undefined;
   return (
-    typeof filePath === "string" &&
-    IGNORED_SNAPSHOT_FILE_PATHS.has(normalizePath(filePath))
+    normalizedPath !== undefined &&
+    (IGNORED_SNAPSHOT_FILE_PATHS.has(normalizedPath) ||
+      normalizedPath.startsWith(".dyad/"))
   );
 }
 
@@ -323,6 +324,33 @@ export class PageObject {
     await this.githubConnector.resetRepos();
   }
 
+  private async setAgentToolAutoApprove(autoApprove: boolean) {
+    const consent = autoApprove ? "always" : "ask";
+    await this.page.evaluate(
+      async ({ consent }) => {
+        const mutatingToolNames = [
+          "write_file",
+          "search_replace",
+          "copy_file",
+          "delete_file",
+          "rename_file",
+          "add_dependency",
+          "execute_sql",
+          "add_integration",
+          "enable_nitro",
+          "restart_app",
+          "reinstall_and_restart_app",
+        ];
+        await (window as any).electron.ipcRenderer.invoke("set-user-settings", {
+          agentToolConsents: Object.fromEntries(
+            mutatingToolNames.map((toolName) => [toolName, consent]),
+          ),
+        });
+      },
+      { consent },
+    );
+  }
+
   async pinBuildChatModeForSetup() {
     await this.page.evaluate(async () => {
       await (window as any).electron.ipcRenderer.invoke("set-user-settings", {
@@ -353,12 +381,13 @@ export class PageObject {
   } = {}) {
     await this.baseSetup();
     await this.navigation.goToSettingsTab();
-    if (autoApprove) {
-      await this.settings.toggleAutoApprove();
-    }
+    await this.setAgentToolAutoApprove(autoApprove);
     await this.settings.setUpTestProvider();
     await this.settings.setUpTestModel();
     if (!enableBasicAgent) {
+      // Most legacy Build E2Es predate the blueprint workflow. Blueprint tests
+      // use Local Agent setup and explicitly opt the current app back in.
+      await this.settings.disableAppBlueprint();
       await this.pinBuildChatModeForSetup();
     }
     await this.navigation.goToAppsTab();
@@ -382,11 +411,10 @@ export class PageObject {
   } = {}) {
     await this.baseSetup();
     await this.navigation.goToSettingsTab();
-    if (autoApprove) {
-      await this.settings.toggleAutoApprove();
-    }
+    await this.setAgentToolAutoApprove(autoApprove);
     await this.settings.setUpDyadProvider();
     if (!localAgent) {
+      await this.settings.disableAppBlueprint();
       await this.pinBuildChatModeForSetup();
     }
     await this.navigation.goToAppsTab();
@@ -409,9 +437,8 @@ export class PageObject {
   async setUpAzure({ autoApprove = false }: { autoApprove?: boolean } = {}) {
     await this.githubConnector.clearPushEvents();
     await this.navigation.goToSettingsTab();
-    if (autoApprove) {
-      await this.settings.toggleAutoApprove();
-    }
+    await this.setAgentToolAutoApprove(autoApprove);
+    await this.settings.disableAppBlueprint();
     // Azure should already be configured via environment variables
     // so we don't need additional setup steps like setUpDyadProvider
     await this.navigation.goToAppsTab();
@@ -420,88 +447,6 @@ export class PageObject {
   // ================================
   // Dialog Openers
   // ================================
-
-  async openContextFilesPicker() {
-    // Programmatically dismiss toasts using the sonner API by clicking any visible close buttons
-    const toastCloseButtons = this.page.locator(
-      "[data-sonner-toast] button[data-close-button]",
-    );
-    const maxAttempts = 20;
-    let attempts = 0;
-    while ((await toastCloseButtons.count()) > 0 && attempts < maxAttempts) {
-      await toastCloseButtons
-        .first()
-        .click()
-        .catch(() => {});
-      attempts++;
-    }
-
-    // If close buttons don't work, click outside to dismiss
-    if ((await this.page.locator("[data-sonner-toast]").count()) > 0) {
-      // Click somewhere safe to dismiss toasts
-      await this.page.mouse.click(10, 10);
-      await this.page.waitForTimeout(300);
-    }
-
-    // Open the auxiliary actions menu
-    await this.chatActions
-      .getChatInputContainer()
-      .getByTestId("auxiliary-actions-menu")
-      .click();
-
-    // Click on "Codebase context" to open the popover
-    await this.page.getByTestId("codebase-context-trigger").click();
-
-    // Wait for the popover content to be visible
-    await this.page
-      .getByTestId("manual-context-files-input")
-      .waitFor({ state: "visible" });
-
-    return new ContextFilesPickerDialog(this.page, async () => {
-      // Close the popover first
-      await this.page.keyboard.press("Escape");
-      // Wait a bit for the popover to close, then close the dropdown menu
-      await this.page
-        .getByTestId("manual-context-files-input")
-        .waitFor({ state: "hidden" });
-      await this.page.keyboard.press("Escape");
-    });
-  }
-
-  async openProModesDialog({
-    location = "chat-input-container",
-  }: {
-    location?: "chat-input-container" | "home-chat-input-container";
-  } = {}): Promise<ProModesDialog> {
-    const proButton = this.page
-      // Assumes you're on the chat page.
-      .getByTestId(location)
-      .getByRole("button", { name: "Pro", exact: true });
-    await proButton.click();
-    return new ProModesDialog(this.page, async () => {
-      await proButton.click();
-    });
-  }
-
-  // ================================
-  // Proposal Actions
-  // ================================
-
-  async approveProposal() {
-    const approveButton = this.page
-      .getByTestId("approve-proposal-button")
-      .last();
-    await expect(approveButton).toBeEnabled({ timeout: Timeout.MEDIUM });
-    await approveButton.click();
-    await expect(approveButton).toBeHidden({ timeout: Timeout.MEDIUM });
-  }
-
-  async rejectProposal() {
-    const rejectButton = this.page.getByTestId("reject-proposal-button").last();
-    await expect(rejectButton).toBeEnabled({ timeout: Timeout.MEDIUM });
-    await rejectButton.click();
-    await expect(rejectButton).toBeHidden({ timeout: Timeout.MEDIUM });
-  }
 
   async clickRestart() {
     await this.page.getByRole("button", { name: "Restart" }).click();

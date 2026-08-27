@@ -4,23 +4,20 @@ export const fixture: LocalAgentFixture = {
   description: "Fix a security issue in the codebase",
   turns: [
     {
-      text: "I'll fix the security issue by removing the hardcoded secret and using environment variables instead.",
+      text: "I'll apply the security fix now.",
       toolCalls: [
         {
-          name: "search_replace",
+          name: "write_file",
           args: {
-            path: "src/App.tsx",
-            search: "const App = () => <div>Minimal imported app</div>;",
-            replace:
-              "const App = () => <div>Secure app with env vars</div>;",
+            path: "file1.txt",
+            content: "security fix\n",
             description: "Fix security vulnerability",
           },
         },
       ],
     },
     {
-      text: "I've fixed the security issue by replacing the hardcoded value with a more secure implementation using environment variables.",
+      text: "I've applied and committed the security fix. EOM",
     },
   ],
 };
-

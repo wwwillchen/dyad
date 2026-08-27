@@ -49,7 +49,6 @@ import {
 
 import { isPreviewOpenAtom } from "@/atoms/viewAtoms";
 import { useRunApp } from "@/hooks/useRunApp";
-import { AutoApproveSwitch } from "../AutoApproveSwitch";
 import { usePostHog } from "posthog-js/react";
 import { CodeHighlight } from "./CodeHighlight";
 import { TokenBar } from "./TokenBar";
@@ -297,7 +296,6 @@ export function ChatInput({ chatId }: { chatId?: number }) {
 
   const lastMessage = messages.at(-1);
   const disableSendButton =
-    selectedMode !== "local-agent" &&
     lastMessage?.role === "assistant" &&
     !lastMessage.approvalState &&
     !!proposal &&
@@ -941,9 +939,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
           {/* Only render ChatInputActions if proposal is loaded and no pending consent */}
           {!pendingToolConsent &&
             proposal &&
-            proposalResult?.chatId === chatId &&
-            selectedMode !== "ask" &&
-            selectedMode !== "local-agent" && (
+            proposalResult?.chatId === chatId && (
               <ChatInputActions
                 proposal={proposal}
                 onApprove={handleApprove}
@@ -1164,7 +1160,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
           </div>
           <div className="px-2 flex items-center justify-between pb-0.5 pt-0.5">
             <div className="flex items-center">
-              <ChatInputControls showContextFilesPicker={false} />
+              <ChatInputControls />
             </div>
 
             <AuxiliaryActionsMenu
@@ -1550,9 +1546,6 @@ function ChatInputActions({
             )}
             {t("reject")}
           </Button>
-          <div className="flex items-center space-x-1 ml-auto">
-            <AutoApproveSwitch />
-          </div>
         </div>
       </div>
 

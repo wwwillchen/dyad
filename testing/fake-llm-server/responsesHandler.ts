@@ -14,7 +14,10 @@ import {
   SLOW_CONSENT_TOOL,
 } from "./consentClassifier";
 import { matchAssertionCodePayload } from "./testAssertionsFixtures";
-import { loadLocalAgentFixture } from "./localAgentHandler";
+import {
+  extractLocalAgentFixture,
+  loadLocalAgentFixture,
+} from "./localAgentHandler";
 import type { ToolCall, Turn } from "./localAgentTypes";
 
 /**
@@ -149,10 +152,11 @@ async function responsesFixtureTurn(
   testCaseName: string | null,
   input: unknown,
 ): Promise<Turn | undefined> {
-  if (!testCaseName?.startsWith("local-agent/")) return undefined;
-  const fixture = await loadLocalAgentFixture(
-    testCaseName.slice("local-agent/".length),
+  const fixtureName = extractLocalAgentFixture(
+    testCaseName ? `tc=${testCaseName}` : "",
   );
+  if (!fixtureName) return undefined;
+  const fixture = await loadLocalAgentFixture(fixtureName);
   return fixture.turns?.[countFunctionCallOutputs(input)];
 }
 
@@ -293,9 +297,14 @@ export const createResponsesHandler =
     }
 
     // Load a fixture file when the prompt includes tc=<name>
-    const testCaseName = isCompactionRequest
+    const localAgentFixture = isCompactionRequest
       ? null
-      : extractTestCaseName(lastUserText);
+      : extractLocalAgentFixture(lastUserText);
+    const testCaseName = localAgentFixture
+      ? `local-agent/${localAgentFixture}`
+      : isCompactionRequest
+        ? null
+        : extractTestCaseName(lastUserText);
     const localAgentTurn = await responsesFixtureTurn(testCaseName, input);
     if (testCaseName && !testCaseName.startsWith("local-agent/")) {
       const testFilePath = path.join(

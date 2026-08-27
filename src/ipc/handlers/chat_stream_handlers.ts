@@ -47,7 +47,11 @@ import type {
   ChatStreamTransportEndPayload,
 } from "@/chat_stream/protocol";
 import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
-import { CodebaseFile, extractCodebase } from "../../utils/codebase";
+import {
+  CodebaseFile,
+  extractCodebase,
+  listCodebaseFileMetadata,
+} from "../../utils/codebase";
 import {
   dryRunSearchReplace,
   processFullResponseActions,
@@ -78,7 +82,6 @@ import * as crypto from "crypto";
 import { readFile, writeFile } from "fs/promises";
 import { getMaxTokens, getTemperature } from "../utils/token_utils";
 import { MAX_CHAT_TURNS_IN_CONTEXT } from "@/constants/settings_constants";
-import { validateChatContext } from "../utils/context_paths_utils";
 import { getProviderOptions, getAiHeaders } from "../utils/provider_options";
 import { sanitizeMcpToolResult } from "../utils/mcp_result_sanitizer";
 
@@ -1640,6 +1643,13 @@ ${componentSnippet}
         // Generate requestId early so it can be saved with the message
         dyadRequestId = uuidv4();
       }
+      const willUseLocalAgentStream = isLocalAgentBackedMode(selectedChatMode);
+      if (!willUseLocalAgentStream) {
+        throw new DyadError(
+          `Chat mode ${selectedChatMode} is not backed by the local agent stream`,
+          DyadErrorKind.Internal,
+        );
+      }
 
       // Add a placeholder assistant message immediately
       const [placeholderAssistantMessage] = await db
@@ -1648,6 +1658,10 @@ ${componentSnippet}
           chatId: req.chatId,
           role: "assistant",
           content: "", // Start with empty content
+          // Agentic tools apply their mutations as they run. Mark their
+          // messages as already handled so legacy proposal actions cannot
+          // replay tool XML after an error or cancellation.
+          approvalState: willUseLocalAgentStream ? "approved" : null,
           requestId: dyadRequestId,
           model: settings.selectedModel.name,
           sourceCommitHash: await getCurrentCommitHash({
@@ -1707,6 +1721,10 @@ ${componentSnippet}
         const { modelClient, isEngineEnabled, isSmartContextEnabled } =
           await getModelClient(settings.selectedModel, settings, selectedModel);
 
+        const isBuildMode = selectedChatMode === "build";
+        const isLocalAgentMode = selectedChatMode === "local-agent";
+        const isAskMode = selectedChatMode === "ask";
+        const isPlanMode = selectedChatMode === "plan";
         const appPath = getDyadAppPath(updatedChat.app.path);
         // When we don't have smart context enabled, we
         // only include the selected components' files for codebase context.
@@ -1723,21 +1741,44 @@ ${componentSnippet}
                 })),
                 smartContextAutoIncludes: [],
               }
-            : validateChatContext(updatedChat.app.chatContext);
+            : {
+                contextPaths: [],
+                smartContextAutoIncludes: [],
+                excludePaths: [],
+              };
 
-        // Extract codebase for current app
-        const { formattedOutput: codebaseInfo, files } = await extractCodebase({
-          appPath,
-          chatContext,
-          // Recorded as soon as the file list is known rather than after the
-          // extract is built, so a turn that dies reading a large codebase
-          // still reports the size it died on.
-          onSizeStats: (sizeStats) =>
+        let codebaseInfo = "";
+        let files: Awaited<ReturnType<typeof extractCodebase>>["files"] = [];
+        if (willUseLocalAgentStream) {
+          // Agent-backed modes inspect files on demand, but session diagnostics
+          // still need the lightweight app-size measurement. Metadata listing
+          // applies the same exclusions without reading file contents.
+          const { sizeStats } = await listCodebaseFileMetadata({
+            appPath,
+            chatContext,
+          });
+          if (sizeStats) {
             recordAppSizeForSession({
               appId: updatedChat.app.id,
               ...sizeStats,
-            }),
-        });
+            });
+          }
+        } else {
+          const extractedCodebase = await extractCodebase({
+            appPath,
+            chatContext,
+            // Recorded as soon as the file list is known rather than after the
+            // extract is built, so a turn that dies reading a large codebase
+            // still reports the size it died on.
+            onSizeStats: (sizeStats) =>
+              recordAppSizeForSession({
+                appId: updatedChat.app.id,
+                ...sizeStats,
+              }),
+          });
+          codebaseInfo = extractedCodebase.formattedOutput;
+          files = extractedCodebase.files;
+        }
 
         // For smart context and selected components, we will mark the selected components' files as focused.
         // This means that we don't do the regular smart context handling, but we'll allow fetching
@@ -1757,15 +1798,9 @@ ${componentSnippet}
           }
         }
 
-        const isLocalAgentMode = selectedChatMode === "local-agent";
-        const isAskMode = selectedChatMode === "ask";
-        const isPlanMode = selectedChatMode === "plan";
-        const willUseLocalAgentStream =
-          isLocalAgentBackedMode(selectedChatMode);
-
-        // Agent/ask/plan modes reach referenced apps via tool calls (`app_name`
+        // Tool-backed modes reach referenced apps via tool calls (`app_name`
         // on read-only tools), so we only need name/path pairs — skip the heavy
-        // codebase extraction entirely. Build mode still injects full codebases.
+        // full referenced-app codebase extraction entirely.
         let mentionedAppsCodebases: MentionedAppCodebaseEntry[] = [];
         let referencedAppsForAgent: MentionedAppReference[] = [];
         if (willUseLocalAgentStream) {
@@ -1803,13 +1838,10 @@ ${componentSnippet}
             ? localAgentAiUserPrompt
             : defaultAiUserPrompt;
 
-        // The referenced-apps clause only ever fires for build mode: deep
-        // context suppresses `dyadFiles` in favor of `dyadVersionedFiles`, and
-        // the engine's deep pipeline does not read `dyadMentionedApps`, so a
-        // mentioned app's codebase would silently never reach the model. Agent
-        // modes populate `referencedAppsForAgent` from the sticky set, but they
-        // return via handleLocalAgentStream before this flag is read and pass
-        // no smart context mode at all — so stickiness never reaches here.
+        // Every currently selectable chat mode returns through the tool-backed
+        // handlers below. This legacy full-context path is intentionally
+        // dormant during the stored-response protocol migration; none of its
+        // auto-approval or destructive-SQL checks are live safety boundaries.
         const isDeepContextEnabled =
           isEngineEnabled &&
           settings.enableProSmartFilesContextMode &&
@@ -1974,11 +2006,10 @@ ${componentSnippet}
           runBuildToolAvailable,
         });
 
-        // Add information about mentioned apps for build mode only.
-        // Full codebase injection (build mode): full file contents already
-        // concatenated into `otherAppsCodebaseInfo`.
+        // Add information for any legacy caller that still injects full
+        // referenced-app codebases.
         //
-        // Agent/ask/plan modes don't need anything in the system prompt —
+        // Tool-backed modes don't need anything in the system prompt —
         // handleLocalAgentStream injects a `<system-reminder>` into the
         // user's latest message so the system prompt stays static.
         if (otherAppsCodebaseInfo) {
@@ -2024,7 +2055,7 @@ ${componentSnippet}
             getSupabaseAvailableSystemPrompt(supabaseClientCode) +
             "\n\n" +
             // For local agent, we will explicitly fetch the database context when needed.
-            (selectedChatMode === "local-agent"
+            (willUseLocalAgentStream
               ? ""
               : await getSupabaseContext({
                   supabaseProjectId: updatedChat.app.supabaseProjectId,
@@ -2045,7 +2076,7 @@ ${componentSnippet}
             "\n\n";
         } else if (
           // In local agent mode, we will suggest integrations as part of the add-integration tool
-          selectedChatMode !== "local-agent" &&
+          !willUseLocalAgentStream &&
           // If in security review mode, we don't need to mention integrations are available.
           !isSecurityReviewIntent
         ) {
@@ -2450,6 +2481,33 @@ This conversation includes one or more image attachments. When the user uploads 
               freeModelMode,
               referencedApps: referencedAppsForAgent,
               currentTurnHasOnDiskAttachment: false,
+            },
+          );
+          return;
+        }
+
+        // Build uses the same multi-step tool-calling loop as Agent, but with
+        // a fail-closed app-building tool profile: no sub-agents, Engine tools,
+        // logs, verification commands, sandbox scripts, or MCP servers.
+        if (isBuildMode) {
+          const readOnlyBuildTurn = isSecurityReviewIntent || isSummarizeIntent;
+          finishedNaturally = await handleLocalAgentStream(
+            event,
+            req,
+            abortController,
+            {
+              placeholderMessageId: placeholderAssistantMessage.id,
+              systemPrompt,
+              dyadRequestId: dyadRequestId ?? "[no-request-id]",
+              readOnly: readOnlyBuildTurn,
+              toolProfile: "build",
+              messageOverride: isSummarizeIntent ? chatMessages : undefined,
+              settingsOverride: settings,
+              modelSelectionOverride: selectedModel,
+              freeModelMode,
+              referencedApps: referencedAppsForAgent,
+              currentTurnHasOnDiskAttachment:
+                hasScriptReadableAttachment(storedAttachments),
             },
           );
           return;
