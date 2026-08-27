@@ -9,10 +9,17 @@ testSkipIfWindows("fix error with AI", async ({ po }) => {
     name: "fix-error-with-AI-1.aria.yml",
   });
 
+  await po.previewPanel.collapsePreviewErrorBanner();
+  await expect(po.previewPanel.locatePreviewErrorBanner()).toBeVisible();
   await expect(
-    po.page.getByText("Error Line 6 error", { exact: true }),
-  ).toBeVisible({ timeout: Timeout.MEDIUM });
-  await po.page.getByText("Error Line 6 error", { exact: true }).click();
+    po.page.getByRole("button", { name: "Fix error with AI" }),
+  ).toBeHidden();
+  await po.previewPanel.expandPreviewErrorBanner();
+
+  await expect(po.page.getByText("Line 6 error", { exact: true })).toBeVisible({
+    timeout: Timeout.MEDIUM,
+  });
+  await po.page.getByRole("button", { name: "Show details" }).click();
   await po.previewPanel.snapshotPreviewErrorBanner({
     name: "fix-error-with-AI-2.aria.yml",
   });
@@ -35,9 +42,9 @@ testSkipIfWindows("copy error message from banner", async ({ po }) => {
   await po.setUp({ autoApprove: true });
   await po.sendPrompt("tc=create-error");
 
-  await expect(
-    po.page.getByText("Error Line 6 error", { exact: true }),
-  ).toBeVisible({ timeout: Timeout.MEDIUM });
+  await expect(po.page.getByText("Line 6 error", { exact: true })).toBeVisible({
+    timeout: Timeout.MEDIUM,
+  });
 
   await po.previewPanel.clickCopyErrorMessage();
 
