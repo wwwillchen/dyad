@@ -103,6 +103,24 @@ export class ModelPicker {
 
     if (!(await this.clickMenuItemIfVisible(provider, false))) {
       await this.getMenuItem("All models").click();
+      if (
+        await directModel
+          .waitFor({ state: "visible", timeout: 1_000 })
+          .then(() => true)
+          .catch(() => false)
+      ) {
+        await this.selectVisibleModel(directModel, model);
+        return;
+      }
+      if (
+        await directEffortModel
+          .waitFor({ state: "visible", timeout: 1_000 })
+          .then(() => true)
+          .catch(() => false)
+      ) {
+        await this.selectVisibleModel(directEffortModel, model);
+        return;
+      }
       await this.getMenuItem(provider, false).click();
     }
     await this.clickModel(provider, model);
