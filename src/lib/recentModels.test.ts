@@ -42,7 +42,13 @@ describe("recent models", () => {
         provider: "minimax",
         name: "minimax-m2",
       }),
-    ).toHaveLength(5);
+    ).toEqual([
+      { provider: "minimax", name: "minimax-m2" },
+      { provider: "openai", name: "gpt-5" },
+      { provider: "anthropic", name: "claude-sonnet" },
+      { provider: "google", name: "gemini-pro" },
+      { provider: "xai", name: "grok" },
+    ]);
   });
 
   it("uses custom model ids as part of model identity", () => {

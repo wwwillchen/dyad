@@ -63,7 +63,11 @@ import {
   getEffortSettings,
   getModelPreferenceKey,
 } from "@/lib/modelEffort";
-import { addRecentModel, getEffectiveRecentModels } from "@/lib/recentModels";
+import {
+  addRecentModel,
+  getEffectiveRecentModels,
+  isSameModel,
+} from "@/lib/recentModels";
 import {
   AUTO_SIDEKICK_CHAT_MODE,
   AUTO_SIDEKICK_DISPLAY_NAME,
@@ -99,6 +103,11 @@ type RecentModelEntry =
       type: "local";
       providerId: "ollama" | "lmstudio";
       model: LocalModel;
+    }
+  | {
+      type: "local-loading";
+      providerId: "ollama" | "lmstudio";
+      modelName: string;
     };
 const PRICE_TIERS: Tier[] = [
   {
@@ -248,12 +257,16 @@ export function ModelPicker() {
   };
 
   // Cloud models from providers
-  const { data: modelsByProviders, isLoading: modelsByProvidersLoading } =
-    useLanguageModelsByProviders();
+  const {
+    data: modelsByProviders,
+    isLoading: modelsByProvidersLoading,
+    error: modelsByProvidersError,
+  } = useLanguageModelsByProviders();
 
   const {
     data: providers,
     isLoading: providersLoading,
+    error: providersError,
     isProviderSetup,
   } = useLanguageModelProviders();
 
@@ -274,12 +287,23 @@ export function ModelPicker() {
     error: lmStudioError,
     loadModels: loadLMStudioModels,
   } = useLocalLMSModels();
+  const [localModelsLoaded, setLocalModelsLoaded] = useState(false);
 
   // Load models when the dropdown opens
   useEffect(() => {
     if (open) {
-      loadOllamaModels();
-      loadLMStudioModels();
+      let active = true;
+      setLocalModelsLoaded(false);
+      void Promise.all([loadOllamaModels(), loadLMStudioModels()]).finally(
+        () => {
+          if (active) {
+            setLocalModelsLoaded(true);
+          }
+        },
+      );
+      return () => {
+        active = false;
+      };
     }
   }, [open, loadOllamaModels, loadLMStudioModels]);
 
@@ -455,30 +479,52 @@ export function ModelPicker() {
       const model = ollamaModels.find(
         (candidate) => candidate.modelName === recentModel.name,
       );
-      return model
-        ? [{ type: "local" as const, providerId: "ollama" as const, model }]
-        : [];
+      if (model) {
+        return [
+          { type: "local" as const, providerId: "ollama" as const, model },
+        ];
+      }
+      return localModelsLoaded
+        ? []
+        : [
+            {
+              type: "local-loading" as const,
+              providerId: "ollama" as const,
+              modelName: recentModel.name,
+            },
+          ];
     }
     if (recentModel.provider === "lmstudio") {
       const model = lmStudioModels.find(
         (candidate) => candidate.modelName === recentModel.name,
       );
-      return model
-        ? [
+      if (model) {
+        return [
+          {
+            type: "local" as const,
+            providerId: "lmstudio" as const,
+            model,
+          },
+        ];
+      }
+      return localModelsLoaded
+        ? []
+        : [
             {
-              type: "local" as const,
+              type: "local-loading" as const,
               providerId: "lmstudio" as const,
-              model,
+              modelName: recentModel.name,
             },
-          ]
-        : [];
+          ];
     }
 
-    const model = modelsByProviders?.[recentModel.provider]?.find((candidate) =>
-      recentModel.customModelId
-        ? candidate.type === "custom" &&
-          candidate.id === recentModel.customModelId
-        : candidate.apiName === recentModel.name,
+    const model = modelsByProviders?.[recentModel.provider]?.find(
+      (candidate) =>
+        isVisibleCatalogModel(candidate) &&
+        (recentModel.customModelId
+          ? candidate.type === "custom" &&
+            candidate.id === recentModel.customModelId
+          : candidate.apiName === recentModel.name),
     );
     return model
       ? [
@@ -606,9 +652,13 @@ export function ModelPicker() {
     showProvider?: boolean;
     showPrice?: boolean;
   }) => {
-    const isSelected =
-      selectedModel.provider === providerId &&
-      selectedModel.name === model.apiName;
+    const modelRef = {
+      name: model.apiName,
+      provider: providerId,
+      customModelId: model.type === "custom" ? model.id : undefined,
+    };
+    const isSelected = isSameModel(selectedModel, modelRef);
+    const modelKey = `${providerId}-${model.apiName}-${modelRef.customModelId ?? "catalog"}`;
     const isLocked = isModelLocked(providerId);
     const isAutoProviderRow = providerId === "auto";
     const isFreeProRow = isFreeProLanguageModel(providerId, model.apiName);
@@ -636,11 +686,6 @@ export function ModelPicker() {
         : freeModelQuota.error
           ? "Unavailable"
           : `${freeModelQuota.messagesRemaining}/${freeModelQuota.messagesLimit} left`;
-    const modelRef = {
-      name: model.apiName,
-      provider: providerId,
-      customModelId: model.type === "custom" ? model.id : undefined,
-    };
     const effortSettings = getEffortSettings(model);
     const currentEffort = isSelected
       ? selectedEffortLevel
@@ -678,7 +723,7 @@ export function ModelPicker() {
           )}
           <span className="min-w-0 flex flex-col items-start">
             <span
-              title={model.displayName}
+              title={model.description ? undefined : model.displayName}
               className={cn(
                 "block max-w-full truncate text-[13px] leading-tight",
                 isLocked && "text-muted-foreground",
@@ -754,7 +799,11 @@ export function ModelPicker() {
               <span
                 data-effort-level
                 className="text-xs text-muted-foreground"
-                title={`Reasoning effort: ${effortLabel}`}
+                title={
+                  model.description
+                    ? undefined
+                    : `Reasoning effort: ${effortLabel}`
+                }
               >
                 {compactEffortLabel}
               </span>
@@ -787,7 +836,7 @@ export function ModelPicker() {
 
     const item = isLocked ? (
       <DropdownMenuItem
-        key={`${providerId}-${model.apiName}`}
+        key={modelKey}
         {...commonProps}
         aria-label={
           isFreeProviderRow
@@ -800,7 +849,7 @@ export function ModelPicker() {
       </DropdownMenuItem>
     ) : (
       <DropdownMenuSubTrigger
-        key={`${providerId}-${model.apiName}`}
+        key={modelKey}
         {...commonProps}
         aria-label={`${unlockedAriaLabel}.`}
         disabled={isFreeProRow && freeModelQuota.isQuotaExceeded}
@@ -822,7 +871,7 @@ export function ModelPicker() {
     );
 
     const itemWithTooltip = model.description ? (
-      <Tooltip key={`${providerId}-${model.apiName}`}>
+      <Tooltip key={modelKey}>
         <TooltipTrigger render={item} />
         <TooltipContent side="left" align="start">
           <span className="max-w-64">{model.description}</span>
@@ -837,7 +886,7 @@ export function ModelPicker() {
     }
 
     return (
-      <DropdownMenuSub key={`${providerId}-${model.apiName}`}>
+      <DropdownMenuSub key={modelKey}>
         {itemWithTooltip}
         <DropdownMenuSubContent className="w-52">
           <DropdownMenuLabel>Effort</DropdownMenuLabel>
@@ -873,11 +922,25 @@ export function ModelPicker() {
     }
     const provider = providers?.find((p) => p.id === providerId);
     const providerDisplayName = getProviderDisplayName(providerId);
+    const providerState =
+      provider?.type === "custom"
+        ? "Custom provider"
+        : provider?.type === "cloud" && !provider.secondary && dyadProEnabled
+          ? "Pro"
+          : null;
 
     return (
       <DropdownMenuSub key={providerId}>
         <DropdownMenuSubTrigger
           className="w-full font-normal"
+          aria-label={[
+            providerDisplayName,
+            providerState,
+            `${visibleModels.length} models`,
+            "Opens submenu",
+          ]
+            .filter(Boolean)
+            .join(". ")}
           {...NAVIGATION_SUBMENU_HOVER_PROPS}
         >
           <div className="flex flex-col items-start w-full">
@@ -1037,12 +1100,20 @@ export function ModelPicker() {
     error: Error | null;
   }) => {
     const hasModels = !localLoading && !error && models.length > 0;
+    const statusLabel = localLoading
+      ? "Loading"
+      : error
+        ? "Error loading"
+        : hasModels
+          ? `${models.length} models`
+          : "None available";
 
     return (
       <DropdownMenuSub key={providerId}>
         <DropdownMenuSubTrigger
           disabled={localLoading && models.length === 0}
           className="w-full font-normal"
+          aria-label={`${label}. ${statusLabel}. Opens submenu`}
           {...NAVIGATION_SUBMENU_HOVER_PROPS}
         >
           <div className="flex flex-col items-start">
@@ -1100,6 +1171,20 @@ export function ModelPicker() {
       </DropdownMenuSub>
     );
   };
+
+  const cloudCatalogGroups = PRICE_TIERS.map((tier) => ({
+    tier,
+    entries: primaryModelEntries
+      .filter((entry) => tierFor(entry.model.dollarSigns) === tier)
+      .sort(
+        (a, b) =>
+          (a.providerId === "openai" ? 0 : 1) -
+          (b.providerId === "openai" ? 0 : 1),
+      ),
+  })).filter((group) => group.entries.length > 0);
+  const hasCloudCatalogEntries =
+    cloudCatalogGroups.length > 0 || otherProviderEntries.length > 0;
+  const cloudCatalogError = modelsByProvidersError ?? providersError;
 
   return (
     <>
@@ -1232,151 +1317,178 @@ export function ModelPicker() {
           )}
 
           {/* Non-trial users get a compact quick switcher. */}
-          {!isTrial &&
-            (loading ? (
-              <div className="text-xs text-center py-2 text-muted-foreground">
-                Loading models...
-              </div>
-            ) : (
-              <>
-                {autoModels.length > 0 && (
-                  <>
-                    {autoModels.map((model) =>
-                      renderCloudModelItem({
-                        providerId: "auto",
-                        model,
-                        showPrice: false,
-                      }),
-                    )}
-                    <DropdownMenuSeparator />
-                  </>
-                )}
+          {!isTrial && (
+            <>
+              {loading ? (
+                <div className="text-xs text-center py-2 text-muted-foreground">
+                  Loading models...
+                </div>
+              ) : (
+                <>
+                  {autoModels.length > 0 && (
+                    <>
+                      {autoModels.map((model) =>
+                        renderCloudModelItem({
+                          providerId: "auto",
+                          model,
+                          showPrice: false,
+                        }),
+                      )}
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
 
-                {recentModelEntries.length > 0 && (
-                  <>
-                    <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                      Recent
-                    </DropdownMenuLabel>
-                    {recentModelEntries.map((entry) =>
-                      entry.type === "cloud"
-                        ? renderCloudModelItem({
+                  {recentModelEntries.length > 0 && (
+                    <>
+                      <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        Recent
+                      </DropdownMenuLabel>
+                      {recentModelEntries.map((entry) => {
+                        if (entry.type === "cloud") {
+                          return renderCloudModelItem({
                             providerId: entry.providerId,
                             model: entry.model,
-                          })
-                        : renderLocalModelItem(entry.providerId, entry.model),
-                    )}
-                    <DropdownMenuSeparator />
-                  </>
-                )}
-
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger
-                    className="w-full font-normal"
-                    {...NAVIGATION_SUBMENU_HOVER_PROPS}
-                  >
-                    <span>All models</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent
-                    className={cn(MODEL_MENU_WIDTH_CLASS, SCROLL_AREA_CLASS)}
-                    data-testid="more-models-submenu"
-                  >
-                    <DropdownMenuLabel>All models</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    {(() => {
-                      const groups = PRICE_TIERS.map((tier) => ({
-                        tier,
-                        entries: primaryModelEntries
-                          .filter(
-                            (entry) =>
-                              tierFor(entry.model.dollarSigns) === tier,
-                          )
-                          .sort(
-                            (a, b) =>
-                              (a.providerId === "openai" ? 0 : 1) -
-                              (b.providerId === "openai" ? 0 : 1),
-                          ),
-                      })).filter((group) => group.entries.length > 0);
-
-                      const nodes: ReactNode[] = [];
-                      groups.forEach(({ tier, entries }, index) => {
-                        if (index > 0) {
-                          nodes.push(
-                            <DropdownMenuSeparator
-                              key={`tier-sep-${tier.label}`}
-                            />,
+                          });
+                        }
+                        if (entry.type === "local") {
+                          return renderLocalModelItem(
+                            entry.providerId,
+                            entry.model,
                           );
                         }
-                        nodes.push(
-                          <div
-                            key={`tier-label-${tier.label}`}
-                            className="flex items-center gap-1.5 px-2 pt-1.5 pb-1"
+                        return (
+                          <DropdownMenuItem
+                            key={`${entry.providerId}-${entry.modelName}-loading`}
+                            disabled
+                            aria-label={`${entry.modelName}. Loading local model`}
+                            className="py-1.5"
                           >
-                            <span className="text-[10px] uppercase tracking-wider font-medium text-muted-foreground shrink-0">
-                              {tier.label}
+                            <ProviderIcon providerId={entry.providerId} />
+                            <span className="min-w-0 truncate text-[13px]">
+                              {entry.modelName}
                             </span>
-                            <span
-                              aria-hidden="true"
-                              className="size-[3px] rounded-full bg-muted-foreground/50 shrink-0"
-                            />
-                            <span className="text-[11px] text-muted-foreground/85 truncate">
-                              {tier.caption}
+                            <span className="ml-auto text-xs text-muted-foreground">
+                              Loading...
                             </span>
-                          </div>,
+                          </DropdownMenuItem>
                         );
-                        entries.forEach(({ providerId, model }) => {
-                          nodes.push(
-                            renderCloudModelItem({ providerId, model }),
-                          );
-                        });
-                      });
-                      return nodes;
-                    })()}
+                      })}
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
+                </>
+              )}
 
-                    {otherProviderEntries.length > 0 && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <div className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-wider font-medium text-muted-foreground">
-                          Other providers
-                        </div>
-                        {otherProviderEntries.map(([providerId, models]) =>
-                          renderProviderSubmenu(providerId, models),
-                        )}
-                      </>
-                    )}
-                    <DropdownMenuSeparator />
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger
-                        className="w-full font-normal"
-                        {...NAVIGATION_SUBMENU_HOVER_PROPS}
-                      >
-                        <span>Local models</span>
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent
-                        className="w-64"
-                        data-testid="local-models-submenu"
-                      >
-                        <DropdownMenuLabel>Local models</DropdownMenuLabel>
-                        <DropdownMenuSeparator />
-                        {renderLocalProviderSubmenu({
-                          providerId: "ollama",
-                          label: "Ollama",
-                          models: ollamaModels,
-                          loading: ollamaLoading,
-                          error: ollamaError,
-                        })}
-                        {renderLocalProviderSubmenu({
-                          providerId: "lmstudio",
-                          label: "LM Studio",
-                          models: lmStudioModels,
-                          loading: lmStudioLoading,
-                          error: lmStudioError,
-                        })}
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              </>
-            ))}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger
+                  className="w-full font-normal"
+                  {...NAVIGATION_SUBMENU_HOVER_PROPS}
+                >
+                  <span>All models</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent
+                  className={cn(MODEL_MENU_WIDTH_CLASS, SCROLL_AREA_CLASS)}
+                  data-testid="more-models-submenu"
+                >
+                  <DropdownMenuLabel>All models</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger
+                      className="w-full font-normal"
+                      {...NAVIGATION_SUBMENU_HOVER_PROPS}
+                    >
+                      <span>Local models</span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent
+                      className="w-64"
+                      data-testid="local-models-submenu"
+                    >
+                      <DropdownMenuLabel>Local models</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {renderLocalProviderSubmenu({
+                        providerId: "ollama",
+                        label: "Ollama",
+                        models: ollamaModels,
+                        loading: ollamaLoading,
+                        error: ollamaError,
+                      })}
+                      {renderLocalProviderSubmenu({
+                        providerId: "lmstudio",
+                        label: "LM Studio",
+                        models: lmStudioModels,
+                        loading: lmStudioLoading,
+                        error: lmStudioError,
+                      })}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSeparator />
+                  {loading ? (
+                    <div className="text-xs text-center py-2 text-muted-foreground">
+                      Loading cloud models...
+                    </div>
+                  ) : !hasCloudCatalogEntries ? (
+                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                      {cloudCatalogError
+                        ? "Couldn’t load cloud models"
+                        : "No cloud models available"}
+                    </div>
+                  ) : (
+                    <>
+                      {(() => {
+                        const nodes: ReactNode[] = [];
+                        cloudCatalogGroups.forEach(
+                          ({ tier, entries }, index) => {
+                            if (index > 0) {
+                              nodes.push(
+                                <DropdownMenuSeparator
+                                  key={`tier-sep-${tier.label}`}
+                                />,
+                              );
+                            }
+                            nodes.push(
+                              <div
+                                key={`tier-label-${tier.label}`}
+                                className="flex items-center gap-1.5 px-2 pt-1.5 pb-1"
+                              >
+                                <span className="text-[10px] uppercase tracking-wider font-medium text-muted-foreground shrink-0">
+                                  {tier.label}
+                                </span>
+                                <span
+                                  aria-hidden="true"
+                                  className="size-[3px] rounded-full bg-muted-foreground/50 shrink-0"
+                                />
+                                <span className="text-[11px] text-muted-foreground/85 truncate">
+                                  {tier.caption}
+                                </span>
+                              </div>,
+                            );
+                            entries.forEach(({ providerId, model }) => {
+                              nodes.push(
+                                renderCloudModelItem({ providerId, model }),
+                              );
+                            });
+                          },
+                        );
+                        return nodes;
+                      })()}
+
+                      {otherProviderEntries.length > 0 && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <div className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-wider font-medium text-muted-foreground">
+                            Other providers
+                          </div>
+                          {otherProviderEntries.map(([providerId, models]) =>
+                            renderProviderSubmenu(providerId, models),
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            </>
+          )}
 
           {/* Upgrade footer for non-Pro users */}
           {!isTrial && !dyadProEnabled && (

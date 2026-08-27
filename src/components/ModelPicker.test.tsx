@@ -22,6 +22,9 @@ const mocks = vi.hoisted(() => ({
   selectedMode: "build",
   isTrial: false,
   renderSubContent: false,
+  catalogLoading: false,
+  catalogUnavailable: false,
+  catalogError: null as Error | null,
   settingsLoading: false,
   chatLoading: false,
   chat: null as null | {
@@ -80,7 +83,7 @@ const mocks = vi.hoisted(() => ({
     selectedModel: {
       name: "auto",
       provider: "auto",
-    },
+    } as { name: string; provider: string; customModelId?: number },
     recentModels: [] as Array<{
       name: string;
       provider: string;
@@ -181,98 +184,115 @@ vi.mock("@/hooks/useFreeModelQuota", () => ({
 
 vi.mock("@/hooks/useLanguageModelsByProviders", () => ({
   useLanguageModelsByProviders: () => ({
-    isLoading: false,
-    data: {
-      auto: [
-        {
-          apiName: "auto",
-          displayName: "Auto",
-          description: "Automatically selects a model",
-          type: "cloud",
+    isLoading: mocks.catalogLoading,
+    error: mocks.catalogError,
+    data: mocks.catalogUnavailable
+      ? undefined
+      : {
+          auto: [
+            {
+              apiName: "auto",
+              displayName: "Auto",
+              description: "Automatically selects a model",
+              type: "cloud",
+            },
+            {
+              apiName: "free",
+              displayName: "Free (OpenRouter)",
+              description: "Free model",
+              type: "cloud",
+            },
+            {
+              apiName: "free-pro",
+              displayName: "Dyad Free",
+              description: "Free Pro model",
+              type: "cloud",
+              tag: "Free",
+            },
+          ],
+          openai: [
+            {
+              apiName: "gpt-5-mini",
+              displayName: "GPT 5 Mini",
+              description: "OpenAI smaller model",
+              dollarSigns: 2,
+              type: "cloud",
+            },
+            {
+              apiName: "gpt-5",
+              displayName: "GPT 5",
+              description: "OpenAI model",
+              dollarSigns: 3,
+              effortSettings: {
+                defaultEffortLevel: "minimal",
+                possibleEffortLevels: ["minimal", "xhigh"],
+              },
+              type: "cloud",
+            },
+          ],
+          google: [
+            {
+              apiName: "gemini-2.5-pro",
+              displayName: "Gemini 2.5 Pro",
+              description: "Google model",
+              dollarSigns: 2,
+              type: "cloud",
+            },
+            {
+              apiName: "gemini-2.5-flash",
+              displayName: "Gemini 2.5 Flash",
+              description: "Google flash model",
+              dollarSigns: 2,
+              type: "cloud",
+            },
+          ],
+          vertex: [
+            {
+              apiName: "gemini-2.5-pro",
+              displayName: "Vertex Gemini 2.5 Pro",
+              description: "Vertex model with price metadata",
+              dollarSigns: 3,
+              type: "cloud",
+            },
+          ],
+          openrouter: [
+            {
+              apiName: "openrouter/free",
+              displayName: "Free (OpenRouter)",
+              description: "Free OpenRouter model",
+              type: "cloud",
+            },
+            {
+              apiName: "anthropic/claude-sonnet-4.5",
+              displayName: "Claude Sonnet 4.5",
+              description: "OpenRouter paid model",
+              dollarSigns: 2,
+              type: "cloud",
+            },
+          ],
+          xai: [
+            {
+              apiName: "grok-code-fast-1",
+              displayName: "Grok Code Fast",
+              description: "xAI model",
+              type: "cloud",
+            },
+          ],
+          custom: [
+            {
+              id: 1,
+              apiName: "shared-model",
+              displayName: "Custom A",
+              type: "custom",
+            },
+            {
+              id: 2,
+              apiName: "shared-model",
+              displayName: "Custom B",
+              type: "custom",
+            },
+          ],
         },
-        {
-          apiName: "free",
-          displayName: "Free (OpenRouter)",
-          description: "Free model",
-          type: "cloud",
-        },
-        {
-          apiName: "free-pro",
-          displayName: "Dyad Free",
-          description: "Free Pro model",
-          type: "cloud",
-          tag: "Free",
-        },
-      ],
-      openai: [
-        {
-          apiName: "gpt-5-mini",
-          displayName: "GPT 5 Mini",
-          description: "OpenAI smaller model",
-          dollarSigns: 2,
-          type: "cloud",
-        },
-        {
-          apiName: "gpt-5",
-          displayName: "GPT 5",
-          description: "OpenAI model",
-          dollarSigns: 3,
-          effortSettings: {
-            defaultEffortLevel: "minimal",
-            possibleEffortLevels: ["minimal", "xhigh"],
-          },
-          type: "cloud",
-        },
-      ],
-      google: [
-        {
-          apiName: "gemini-2.5-pro",
-          displayName: "Gemini 2.5 Pro",
-          description: "Google model",
-          dollarSigns: 2,
-          type: "cloud",
-        },
-        {
-          apiName: "gemini-2.5-flash",
-          displayName: "Gemini 2.5 Flash",
-          description: "Google flash model",
-          dollarSigns: 2,
-          type: "cloud",
-        },
-      ],
-      vertex: [
-        {
-          apiName: "gemini-2.5-pro",
-          displayName: "Vertex Gemini 2.5 Pro",
-          description: "Vertex model with price metadata",
-          dollarSigns: 3,
-          type: "cloud",
-        },
-      ],
-      openrouter: [
-        {
-          apiName: "openrouter/free",
-          displayName: "Free (OpenRouter)",
-          description: "Free OpenRouter model",
-          type: "cloud",
-        },
-        {
-          apiName: "anthropic/claude-sonnet-4.5",
-          displayName: "Claude Sonnet 4.5",
-          description: "OpenRouter paid model",
-          dollarSigns: 2,
-          type: "cloud",
-        },
-      ],
-      xai: [
-        {
-          apiName: "grok-code-fast-1",
-          displayName: "Grok Code Fast",
-          description: "xAI model",
-          type: "cloud",
-        },
-      ],
-    },
   }),
 }));
 
@@ -320,6 +340,11 @@ vi.mock("@/hooks/useLanguageModelProviders", () => ({
         name: "xAI",
         type: "cloud",
         secondary: true,
+      },
+      {
+        id: "custom",
+        name: "Custom Provider",
+        type: "custom",
       },
     ],
   }),
@@ -460,6 +485,9 @@ describe("ModelPicker", () => {
     mocks.preventBaseUIHandler.mockReset();
     mocks.selectedMode = "build";
     mocks.renderSubContent = false;
+    mocks.catalogLoading = false;
+    mocks.catalogUnavailable = false;
+    mocks.catalogError = null;
     mocks.settingsLoading = false;
     mocks.chatLoading = false;
     mocks.chat = null;
@@ -528,6 +556,74 @@ describe("ModelPicker", () => {
     expect(screen.getAllByText("Auto Sidekick")).toHaveLength(1);
   });
 
+  it("filters hidden Pro models out of Recent", () => {
+    mocks.settings.recentModels = [
+      { provider: "openrouter", name: "openrouter/free" },
+    ];
+
+    render(<ModelPicker />);
+
+    expect(screen.queryByText("Recent")).toBeNull();
+    expect(screen.queryByText("Free (OpenRouter)")).toBeNull();
+  });
+
+  it("uses custom model ids for Recent keys and selection", () => {
+    mocks.settings.selectedModel = {
+      provider: "custom",
+      name: "shared-model",
+      customModelId: 2,
+    };
+    mocks.settings.recentModels = [
+      { provider: "custom", name: "shared-model", customModelId: 1 },
+      { provider: "custom", name: "shared-model", customModelId: 2 },
+    ];
+
+    render(<ModelPicker />);
+
+    const recentRows = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        'button[data-model-provider="custom"][data-model-name="shared-model"]',
+      ),
+    );
+    expect(recentRows).toHaveLength(2);
+    expect(recentRows[0].getAttribute("aria-label")).not.toContain("Selected");
+    expect(recentRows[1].getAttribute("aria-label")).toContain("Selected");
+  });
+
+  it("reserves recent local model rows while local catalogs load", () => {
+    mocks.settings.recentModels = [
+      { provider: "ollama", name: "qwen3-coder:30b" },
+    ];
+
+    render(<ModelPicker />);
+
+    expect(screen.getByText("Recent")).toBeTruthy();
+    expect(screen.getByText("qwen3-coder:30b")).toBeTruthy();
+    expect(screen.getByText("Loading...")).toBeTruthy();
+  });
+
+  it("keeps local models reachable while the cloud catalog loads", () => {
+    mocks.catalogLoading = true;
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    expect(screen.getAllByText("All models").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Local models").length).toBeGreaterThan(0);
+    expect(screen.getByText("Loading cloud models...")).toBeTruthy();
+  });
+
+  it("shows a cloud catalog error without hiding local models", () => {
+    mocks.catalogUnavailable = true;
+    mocks.catalogError = new Error("catalog unavailable");
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    expect(screen.getByText("Couldn’t load cloud models")).toBeTruthy();
+    expect(screen.getAllByText("Local models").length).toBeGreaterThan(0);
+  });
+
   it("keeps Ollama and LM Studio in a separate Local models submenu", () => {
     mocks.renderSubContent = true;
 
@@ -563,6 +659,13 @@ describe("ModelPicker", () => {
       expect(trigger.dataset.closeDelay).toBe("100");
     }
 
+    expect(getTrigger("Google Vertex AI").getAttribute("aria-label")).toBe(
+      "Google Vertex AI. 1 models. Opens submenu",
+    );
+    expect(getTrigger("Ollama").getAttribute("aria-label")).toBe(
+      "Ollama. None available. Opens submenu",
+    );
+
     expect(
       screen.getByText("GPT 5").closest("button")?.dataset.openOnHover,
     ).toBeUndefined();
@@ -579,7 +682,7 @@ describe("ModelPicker", () => {
 
     const modelName = screen.getAllByText("GPT 5")[0];
     expect(modelName.className).toContain("block max-w-full truncate");
-    expect(modelName.getAttribute("title")).toBe("GPT 5");
+    expect(modelName.getAttribute("title")).toBeNull();
     expect(modelName.closest("button")?.firstElementChild?.className).toContain(
       "grid-cols-[minmax(0,1fr)_auto]",
     );
@@ -654,7 +757,7 @@ describe("ModelPicker", () => {
     expect(gpt5Row.getAttribute("aria-label")).toContain("Effort: Minimal");
     expect(
       gpt5Row.querySelector("[data-effort-level]")?.getAttribute("title"),
-    ).toBe("Reasoning effort: Minimal");
+    ).toBeNull();
     fireEvent.click(gpt5Row.querySelector("[data-effort-chevron]")!);
     fireEvent.click(screen.getAllByText("Xhigh")[0]);
 

@@ -102,19 +102,20 @@ export class ModelPicker {
     }
 
     if (!(await this.clickMenuItemIfVisible(provider, false))) {
-      await this.getMenuItem("More models").click();
+      await this.getMenuItem("All models").click();
       await this.getMenuItem(provider, false).click();
     }
     await this.clickModel(provider, model);
   }
 
   async selectTestModel() {
-    // Custom provider models appear directly in the flat tier list.
+    // Custom provider models live in their provider submenu in All models.
     await this.selectModel({ provider: "test-provider", model: "test-model" });
   }
 
   async selectTestOllamaModel() {
     await this.page.getByTestId("model-picker").click();
+    await this.getMenuItem("All models").click();
     await this.getMenuItem("Local models", false).click();
     await this.getMenuItem("Ollama", false).click();
     await this.getMenuItem("Testollama", false).click();
@@ -122,6 +123,7 @@ export class ModelPicker {
 
   async selectTestLMStudioModel() {
     await this.page.getByTestId("model-picker").click();
+    await this.getMenuItem("All models").click();
     await this.getMenuItem("Local models", false).click();
     await this.getMenuItem("LM Studio", false).click();
     await this.getMenuItem("lmstudio-model-1", false).click();
@@ -129,7 +131,7 @@ export class ModelPicker {
 
   async selectTestAzureModel() {
     await this.page.getByTestId("model-picker").click();
-    await this.getMenuItem("More models").click();
+    await this.getMenuItem("All models").click();
     await this.getMenuItem("Azure OpenAI", false).click();
     await this.clickModel("azure", "GPT-5");
   }
