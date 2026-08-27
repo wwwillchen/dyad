@@ -25,7 +25,13 @@ testWithRemoteCatalog(
     await po.setUpDyadPro();
 
     await po.page.getByTestId("model-picker").click();
-    // Models appear directly in the flat tier list.
+    await po.page
+      .getByRole("menuitem", {
+        name: /^All models(?:\s+All models)?$/i,
+      })
+      .first()
+      .click();
+    // Primary-provider models appear directly in the catalog's price tiers.
     await expect(po.page.getByText("GPT 5.2", { exact: true })).toBeVisible();
     await expect(
       po.page.getByText("GPT 5.2 Remote Only", { exact: true }),
@@ -69,7 +75,13 @@ testWithFallbackCatalog(
     await po.setUp();
 
     await po.page.getByTestId("model-picker").click();
-    // Models appear directly in the flat tier list.
+    await po.page
+      .getByRole("menuitem", {
+        name: /^All models(?:\s+All models)?$/i,
+      })
+      .first()
+      .click();
+    // Primary-provider models appear directly in the catalog's price tiers.
     await expect(po.page.getByText("GPT 5.2", { exact: true })).toBeVisible();
     await expect(
       po.page.getByText("GPT 5.2 Remote Only", { exact: true }),
