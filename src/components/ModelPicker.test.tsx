@@ -44,6 +44,13 @@ const mocks = vi.hoisted(() => ({
     modelName: string;
     displayName: string;
   }>,
+  ollamaError: null as Error | null,
+  lmStudioModels: [] as Array<{
+    provider: "lmstudio";
+    modelName: string;
+    displayName: string;
+  }>,
+  lmStudioError: null as Error | null,
   freeModelQuota: {
     quotaStatus: {
       messagesUsed: 3,
@@ -362,16 +369,16 @@ vi.mock("@/hooks/useLocalModels", () => ({
   useLocalModels: () => ({
     models: mocks.ollamaModels,
     loading: false,
-    error: null,
+    error: mocks.ollamaError,
     loadModels: vi.fn(),
   }),
 }));
 
 vi.mock("@/hooks/useLMStudioModels", () => ({
   useLocalLMSModels: () => ({
-    models: [],
+    models: mocks.lmStudioModels,
     loading: false,
-    error: null,
+    error: mocks.lmStudioError,
     loadModels: vi.fn(),
   }),
 }));
@@ -503,6 +510,9 @@ describe("ModelPicker", () => {
     mocks.search = {};
     mocks.envVars = {};
     mocks.ollamaModels = [];
+    mocks.ollamaError = null;
+    mocks.lmStudioModels = [];
+    mocks.lmStudioError = null;
     mocks.settings.enableDyadPro = true;
     mocks.settings.providerSettings.auto.apiKey.value = "dyad-pro-key";
     mocks.settings.providerSettings.openrouter.apiKey.value = "";
@@ -697,6 +707,63 @@ describe("ModelPicker", () => {
     expect(screen.getByText("Recent")).toBeTruthy();
     expect(screen.getByText("qwen3-coder:30b")).toBeTruthy();
     expect(screen.getByText("Loading...")).toBeTruthy();
+  });
+
+  it("hides cached local recents after the provider refresh fails", () => {
+    mocks.ollamaModels = [
+      {
+        provider: "ollama",
+        modelName: "qwen3-coder:30b",
+        displayName: "Qwen3 Coder 30B",
+      },
+    ];
+    mocks.ollamaError = new Error("Ollama unavailable");
+    mocks.settings.recentModels = [
+      { provider: "ollama", name: "qwen3-coder:30b" },
+    ];
+
+    render(<ModelPicker />);
+
+    expect(screen.queryByText("Recent")).toBeNull();
+    expect(screen.queryByText("Qwen3 Coder 30B")).toBeNull();
+  });
+
+  it("identifies providers on ambiguous Recent local model rows", () => {
+    mocks.ollamaModels = [
+      {
+        provider: "ollama",
+        modelName: "shared-model",
+        displayName: "Shared Local",
+      },
+    ];
+    mocks.lmStudioModels = [
+      {
+        provider: "lmstudio",
+        modelName: "shared-model",
+        displayName: "Shared Local",
+      },
+    ];
+    mocks.settings.recentModels = [
+      { provider: "ollama", name: "shared-model" },
+      { provider: "lmstudio", name: "shared-model" },
+    ];
+
+    render(<ModelPicker />);
+
+    const ollamaRow = screen.getByLabelText(/Shared Local\. Ollama\./);
+    const lmStudioRow = screen.getByLabelText(/Shared Local\. LM Studio\./);
+    expect(
+      within(ollamaRow as HTMLElement).getByText("Ollama · shared-model"),
+    ).toBeTruthy();
+    expect(
+      within(lmStudioRow as HTMLElement).getByText("LM Studio · shared-model"),
+    ).toBeTruthy();
+    expect(ollamaRow.getAttribute("aria-label")).toContain(
+      "Shared Local. Ollama.",
+    );
+    expect(lmStudioRow.getAttribute("aria-label")).toContain(
+      "Shared Local. LM Studio.",
+    );
   });
 
   it("keeps local models reachable while the cloud catalog loads", () => {

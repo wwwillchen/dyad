@@ -495,6 +495,9 @@ export function ModelPicker() {
     toRecentModelIdentity(selectedModel),
   ).flatMap<RecentModelEntry>((recentModel) => {
     if (recentModel.provider === "ollama") {
+      if (ollamaError) {
+        return [];
+      }
       const model = ollamaModels.find(
         (candidate) => candidate.modelName === recentModel.name,
       );
@@ -514,6 +517,9 @@ export function ModelPicker() {
           ];
     }
     if (recentModel.provider === "lmstudio") {
+      if (lmStudioError) {
+        return [];
+      }
       const model = lmStudioModels.find(
         (candidate) => candidate.modelName === recentModel.name,
       );
@@ -1001,6 +1007,7 @@ export function ModelPicker() {
   const renderLocalModelItem = (
     providerId: "ollama" | "lmstudio",
     model: LocalModel,
+    showProvider = false,
   ) => {
     const modelRef = { name: model.modelName, provider: providerId };
     const isSelected =
@@ -1016,6 +1023,8 @@ export function ModelPicker() {
         }).effortLevel;
     const effortLabel = formatEffortLevel(currentEffort);
     const compactEffortLabel = formatCompactEffortLevel(currentEffort);
+    const providerDisplayName =
+      providerId === "ollama" ? "Ollama" : "LM Studio";
     const selectLocalModel = (effortLevel?: string) => {
       void onModelSelect({
         model: modelRef,
@@ -1029,7 +1038,7 @@ export function ModelPicker() {
       <DropdownMenuSub key={`${providerId}-${model.modelName}`}>
         <DropdownMenuSubTrigger
           hideChevron
-          aria-label={`${model.displayName}. Effort: ${effortLabel}. Press Enter to select; press Right Arrow to configure effort.`}
+          aria-label={`${model.displayName}.${showProvider ? ` ${providerDisplayName}.` : ""} Effort: ${effortLabel}. Press Enter to select; press Right Arrow to configure effort.`}
           className={cn(
             "relative py-1.5 w-full",
             isSelected &&
@@ -1059,9 +1068,15 @@ export function ModelPicker() {
                 </span>
                 <span
                   className="block max-w-full truncate text-xs text-muted-foreground"
-                  title={model.modelName}
+                  title={
+                    showProvider
+                      ? `${providerDisplayName} · ${model.modelName}`
+                      : model.modelName
+                  }
                 >
-                  {model.modelName}
+                  {showProvider
+                    ? `${providerDisplayName} · ${model.modelName}`
+                    : model.modelName}
                 </span>
               </div>
             </div>
@@ -1487,6 +1502,7 @@ export function ModelPicker() {
                           return renderLocalModelItem(
                             entry.providerId,
                             entry.model,
+                            true,
                           );
                         }
                         return (
