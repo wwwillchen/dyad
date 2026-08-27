@@ -202,24 +202,29 @@ export function ModelPicker() {
           },
         }
       : {};
+    const effectiveRecentModels = getEffectiveRecentModels(
+      settings.recentModels,
+      settings.selectedModel,
+    );
     const recentModelsUpdate =
       model.provider === "auto"
-        ? {}
+        ? settings.recentModels === undefined &&
+          effectiveRecentModels.length > 0
+          ? { recentModels: effectiveRecentModels }
+          : {}
         : {
-            recentModels: addRecentModel(
-              getEffectiveRecentModels(
-                settings.recentModels,
-                settings.selectedModel,
-              ),
-              model,
-            ),
+            recentModels: addRecentModel(effectiveRecentModels, model),
           };
     if (hasEstablishedChat && chatId) {
       await setChatSelection({
         modelSelection,
         ...(fallbackChatMode ? { chatMode: fallbackChatMode } : {}),
       });
-      if (rememberEffort || model.provider !== "auto") {
+      if (
+        rememberEffort ||
+        model.provider !== "auto" ||
+        "recentModels" in recentModelsUpdate
+      ) {
         await updateSettings({
           ...preferenceUpdate,
           ...recentModelsUpdate,
@@ -1348,6 +1353,8 @@ export function ModelPicker() {
           {/* Non-trial users get a compact quick switcher. */}
           {!isTrial && (
             <>
+              {renderLocalModelsSubmenu("local-models-submenu")}
+
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger
                   className="w-full font-normal"
@@ -1426,8 +1433,6 @@ export function ModelPicker() {
                   )}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
-
-              {renderLocalModelsSubmenu("local-models-submenu")}
 
               {loading ? (
                 <div className="text-xs text-center py-2 text-muted-foreground">

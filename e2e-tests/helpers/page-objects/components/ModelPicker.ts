@@ -27,22 +27,15 @@ export class ModelPicker {
       .first();
   }
 
-  private async clickMenuItemIfVisible(name: string, exact = true) {
-    const item = this.getMenuItem(name, exact);
-    if (await item.isVisible()) {
-      await item.click();
-      return true;
-    }
-    return false;
-  }
-
   private getModelItem(provider: string, model: string) {
     return this.page
       .locator("[data-model-provider][data-model-name]")
       .filter({
         has: this.page.getByText(model, { exact: true }),
       })
-      .and(this.page.locator(`[data-model-provider="${provider}"]`))
+      .and(
+        this.page.locator(`[data-model-provider="${provider.toLowerCase()}"]`),
+      )
       .first();
   }
 
@@ -73,6 +66,19 @@ export class ModelPicker {
     await this.selectVisibleModel(modelItem, model);
   }
 
+  private async selectProviderSubmenuModel(model: string) {
+    const providerSubmenu = this.page
+      .locator('[data-testid^="other-provider-models-"]:visible')
+      .last();
+    await expect(providerSubmenu).toBeVisible();
+    const modelItem = providerSubmenu
+      .locator("[data-model-provider][data-model-name]")
+      .filter({ has: this.page.getByText(model, { exact: true }) })
+      .first();
+    await expect(modelItem).toBeVisible();
+    await this.selectVisibleModel(modelItem, model);
+  }
+
   async selectModel({ provider, model }: { provider: string; model: string }) {
     await this.page.getByTestId("model-picker").click();
     const directModel = this.getModelItem(provider, model);
@@ -80,24 +86,29 @@ export class ModelPicker {
       await this.selectVisibleModel(directModel, model);
       return;
     }
-    const directEffortModel = this.getEffortModelItem(model);
-    if (await directEffortModel.isVisible()) {
-      await this.selectVisibleModel(directEffortModel, model);
+
+    await this.getMenuItem("All models").click();
+    const catalogMenu = this.page.getByTestId("more-models-submenu");
+    await expect(catalogMenu).toBeVisible();
+    const loadingIndicator = catalogMenu.getByText("Loading cloud models...", {
+      exact: true,
+    });
+    if (await loadingIndicator.isVisible()) {
+      await expect(loadingIndicator).toBeHidden();
+    }
+
+    if (await directModel.isVisible()) {
+      await this.selectVisibleModel(directModel, model);
       return;
     }
 
-    if (!(await this.clickMenuItemIfVisible(provider, false))) {
-      await this.getMenuItem("All models").click();
-      if (await directModel.isVisible()) {
-        await this.selectVisibleModel(directModel, model);
-        return;
-      }
-      if (await directEffortModel.isVisible()) {
-        await this.selectVisibleModel(directEffortModel, model);
-        return;
-      }
-      await this.getMenuItem(provider, false).click();
+    const providerItem = this.getMenuItem(provider, false);
+    if (await providerItem.isVisible()) {
+      await providerItem.click();
+      await this.selectProviderSubmenuModel(model);
+      return;
     }
+
     await this.clickModel(provider, model);
   }
 

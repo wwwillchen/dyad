@@ -84,11 +84,13 @@ const mocks = vi.hoisted(() => ({
       name: "auto",
       provider: "auto",
     } as { name: string; provider: string; customModelId?: number },
-    recentModels: [] as Array<{
-      name: string;
-      provider: string;
-      customModelId?: number;
-    }>,
+    recentModels: [] as
+      | Array<{
+          name: string;
+          provider: string;
+          customModelId?: number;
+        }>
+      | undefined,
     selectedChatMode: "build",
     defaultChatMode: "build",
   },
@@ -577,6 +579,25 @@ describe("ModelPicker", () => {
     expect(within(gptRow).getByText("OpenAI")).toBeTruthy();
     expect(gptRow.getAttribute("aria-label")).toContain("GPT 5. OpenAI");
     expect(screen.getAllByText("Auto Sidekick")).toHaveLength(1);
+  });
+
+  it("preserves the selected-model fallback when switching to Auto", async () => {
+    mocks.settings.selectedModel = { provider: "openai", name: "gpt-5" };
+    mocks.settings.recentModels = undefined;
+
+    render(<ModelPicker />);
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="auto"][data-model-name="auto"]',
+      )!,
+    );
+
+    await waitFor(() => {
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        selectedModel: { provider: "auto", name: "auto" },
+        recentModels: [{ provider: "openai", name: "gpt-5" }],
+      });
+    });
   });
 
   it("filters hidden Pro models out of Recent", () => {
