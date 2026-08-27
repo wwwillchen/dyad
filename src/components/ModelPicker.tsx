@@ -681,7 +681,8 @@ export function ModelPicker() {
     const isLocked = isModelLocked(providerId);
     const isAutoProviderRow = providerId === "auto";
     const isFreeProRow = isFreeProLanguageModel(providerId, model.apiName);
-    const isFreeProviderRow = isFreeOpenRouterModelName(model.apiName);
+    const isFreeProviderRow =
+      providerId === "openrouter" && isFreeOpenRouterModelName(model.apiName);
     const isAutoOpenRouterFreeRow =
       isAutoProviderRow && model.apiName === "free";
     const shouldShowDataSharingDisclosure =

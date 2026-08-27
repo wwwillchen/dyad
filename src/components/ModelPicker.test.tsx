@@ -645,6 +645,12 @@ describe("ModelPicker", () => {
     render(<ModelPicker />);
 
     expect(screen.getAllByText("Custom Free")).toHaveLength(2);
+    for (const row of document.querySelectorAll(
+      '[data-model-provider="custom"][data-model-name="team/free"]',
+    )) {
+      expect(row.getAttribute("aria-label")).not.toContain("Data sharing");
+      expect(within(row as HTMLElement).queryByText("Data sharing")).toBeNull();
+    }
   });
 
   it("filters hidden Pro models out of Recent", () => {
