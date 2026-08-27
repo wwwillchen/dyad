@@ -302,20 +302,29 @@ export function ModelPicker() {
     error: lmStudioError,
     loadModels: loadLMStudioModels,
   } = useLocalLMSModels();
-  const [localModelsLoaded, setLocalModelsLoaded] = useState(false);
+  const [localProvidersLoaded, setLocalProvidersLoaded] = useState({
+    ollama: false,
+    lmstudio: false,
+  });
 
   // Load models when the dropdown opens
   useEffect(() => {
     if (open) {
       let active = true;
-      setLocalModelsLoaded(false);
-      void Promise.all([loadOllamaModels(), loadLMStudioModels()]).finally(
-        () => {
-          if (active) {
-            setLocalModelsLoaded(true);
-          }
-        },
-      );
+      setLocalProvidersLoaded({ ollama: false, lmstudio: false });
+      void loadOllamaModels().finally(() => {
+        if (active) {
+          setLocalProvidersLoaded((loaded) => ({ ...loaded, ollama: true }));
+        }
+      });
+      void loadLMStudioModels().finally(() => {
+        if (active) {
+          setLocalProvidersLoaded((loaded) => ({
+            ...loaded,
+            lmstudio: true,
+          }));
+        }
+      });
       return () => {
         active = false;
       };
@@ -506,7 +515,7 @@ export function ModelPicker() {
           { type: "local" as const, providerId: "ollama" as const, model },
         ];
       }
-      return localModelsLoaded
+      return localProvidersLoaded.ollama
         ? []
         : [
             {
@@ -532,7 +541,7 @@ export function ModelPicker() {
           },
         ];
       }
-      return localModelsLoaded
+      return localProvidersLoaded.lmstudio
         ? []
         : [
             {

@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -18,6 +19,9 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   posthogCapture: vi.fn(),
   openExternalUrl: vi.fn(),
+  loadOllamaModels: vi.fn(),
+  loadLMStudioModels: vi.fn(),
+  dropdownOpenChange: null as null | ((open: boolean) => void),
   preventBaseUIHandler: vi.fn(),
   selectedMode: "build",
   isTrial: false,
@@ -370,7 +374,7 @@ vi.mock("@/hooks/useLocalModels", () => ({
     models: mocks.ollamaModels,
     loading: false,
     error: mocks.ollamaError,
-    loadModels: vi.fn(),
+    loadModels: mocks.loadOllamaModels,
   }),
 }));
 
@@ -379,7 +383,7 @@ vi.mock("@/hooks/useLMStudioModels", () => ({
     models: mocks.lmStudioModels,
     loading: false,
     error: mocks.lmStudioError,
-    loadModels: vi.fn(),
+    loadModels: mocks.loadLMStudioModels,
   }),
 }));
 
@@ -394,9 +398,16 @@ vi.mock("@/components/ui/tooltip", () => ({
 }));
 
 vi.mock("@/components/ui/dropdown-menu", () => ({
-  DropdownMenu: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
+  DropdownMenu: ({
+    children,
+    onOpenChange,
+  }: {
+    children: React.ReactNode;
+    onOpenChange?: (open: boolean) => void;
+  }) => {
+    mocks.dropdownOpenChange = onOpenChange ?? null;
+    return <div>{children}</div>;
+  },
   DropdownMenuTrigger: ({
     children,
     ...props
@@ -497,6 +508,11 @@ describe("ModelPicker", () => {
     mocks.navigate.mockReset();
     mocks.posthogCapture.mockReset();
     mocks.openExternalUrl.mockReset();
+    mocks.loadOllamaModels.mockReset();
+    mocks.loadOllamaModels.mockResolvedValue(undefined);
+    mocks.loadLMStudioModels.mockReset();
+    mocks.loadLMStudioModels.mockResolvedValue(undefined);
+    mocks.dropdownOpenChange = null;
     mocks.preventBaseUIHandler.mockReset();
     mocks.selectedMode = "build";
     mocks.renderSubContent = false;
@@ -707,6 +723,35 @@ describe("ModelPicker", () => {
     expect(screen.getByText("Recent")).toBeTruthy();
     expect(screen.getByText("qwen3-coder:30b")).toBeTruthy();
     expect(screen.getByText("Loading...")).toBeTruthy();
+  });
+
+  it("resolves recent local rows independently by provider", async () => {
+    let resolveOllama: (() => void) | undefined;
+    mocks.loadOllamaModels.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveOllama = resolve;
+        }),
+    );
+    mocks.loadLMStudioModels.mockImplementationOnce(
+      () => new Promise<void>(() => undefined),
+    );
+    mocks.settings.recentModels = [
+      { provider: "ollama", name: "missing-ollama" },
+      { provider: "lmstudio", name: "missing-lmstudio" },
+    ];
+
+    render(<ModelPicker />);
+    act(() => mocks.dropdownOpenChange?.(true));
+    expect(screen.getAllByText("Loading...")).toHaveLength(2);
+
+    await act(async () => resolveOllama?.());
+
+    await waitFor(() => {
+      expect(screen.queryByText("missing-ollama")).toBeNull();
+      expect(screen.getByText("missing-lmstudio")).toBeTruthy();
+      expect(screen.getAllByText("Loading...")).toHaveLength(1);
+    });
   });
 
   it("hides cached local recents after the provider refresh fails", () => {
