@@ -11,9 +11,9 @@ import {
 import type { LanguageModel } from "ai";
 import log from "electron-log";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { DYAD_INTERNAL_REQUEST_ID_HEADER } from "./provider_options";
 
 const logger = log.scope("fallback_model");
-const DYAD_REQUEST_ID_HEADER = "x-dyad-internal-request-id";
 const MAX_LOG_FIELD_LENGTH = 500;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const MAX_RETRY_DELAY_MS = 10_000;
@@ -208,6 +208,14 @@ export function getFallbackFailureAction(
   try {
     if (APICallError.isInstance(error)) {
       if (error.statusCode === 404) return "fallback-next";
+      const { errorString } = getErrorDetails(error);
+      if (
+        FALLBACK_NEXT_ERROR_PATTERNS.some((pattern) =>
+          errorString.includes(pattern),
+        )
+      ) {
+        return "fallback-next";
+      }
       if (error.isRetryable) return "retry-same";
       return "fail";
     }
@@ -223,24 +231,27 @@ export function getFallbackFailureAction(
     }
 
     const { statusCode, errorString } = getErrorDetails(error);
-    if (
-      statusCode !== undefined &&
-      (RETRY_SAME_STATUS_CODES.has(statusCode) || statusCode >= 500)
-    ) {
-      return "retry-same";
-    }
     if (statusCode === 404) return "fallback-next";
-    if (
-      RETRY_SAME_ERROR_PATTERNS.some((pattern) => errorString.includes(pattern))
-    ) {
-      return "retry-same";
-    }
     if (
       FALLBACK_NEXT_ERROR_PATTERNS.some((pattern) =>
         errorString.includes(pattern),
       )
     ) {
       return "fallback-next";
+    }
+    if (
+      statusCode !== undefined &&
+      (RETRY_SAME_STATUS_CODES.has(statusCode) || statusCode >= 500)
+    ) {
+      return "retry-same";
+    }
+    if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
+      return "fail";
+    }
+    if (
+      RETRY_SAME_ERROR_PATTERNS.some((pattern) => errorString.includes(pattern))
+    ) {
+      return "retry-same";
     }
     return "fail";
   } catch {
@@ -259,7 +270,7 @@ function getHeader(
 }
 
 function boundedRetryDelay(delayMs: number): number | undefined {
-  if (!Number.isFinite(delayMs) || delayMs <= 0) return undefined;
+  if (!Number.isFinite(delayMs) || delayMs < 0) return undefined;
   return Math.min(Math.round(delayMs), MAX_RETRY_DELAY_MS);
 }
 
@@ -269,7 +280,9 @@ function parseRetryAfter(value: string | undefined, nowMs: number) {
   if (Number.isFinite(seconds)) return boundedRetryDelay(seconds * 1_000);
 
   const retryAt = Date.parse(value);
-  return Number.isNaN(retryAt) ? undefined : boundedRetryDelay(retryAt - nowMs);
+  return Number.isNaN(retryAt)
+    ? undefined
+    : boundedRetryDelay(Math.max(0, retryAt - nowMs));
 }
 
 function parseRateLimitReset(value: string | undefined, nowMs: number) {
@@ -278,10 +291,10 @@ function parseRateLimitReset(value: string | undefined, nowMs: number) {
   if (!Number.isFinite(reset)) return undefined;
 
   if (reset > 1_000_000_000_000) {
-    return boundedRetryDelay(reset - nowMs);
+    return boundedRetryDelay(Math.max(0, reset - nowMs));
   }
   if (reset > 1_000_000_000) {
-    return boundedRetryDelay(reset * 1_000 - nowMs);
+    return boundedRetryDelay(Math.max(0, reset * 1_000 - nowMs));
   }
   return boundedRetryDelay(reset * 1_000);
 }
@@ -317,7 +330,44 @@ function getRequestId(options: LanguageModelV3CallOptions): string {
   const headers = options.headers as
     | Record<string, string | undefined>
     | undefined;
-  return headers?.[DYAD_REQUEST_ID_HEADER] ?? "unknown";
+  return headers?.[DYAD_INTERNAL_REQUEST_ID_HEADER] ?? "unknown";
+}
+
+function getAbortReason(signal: AbortSignal): unknown {
+  return (
+    signal.reason ?? new DOMException("The operation was aborted", "AbortError")
+  );
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw getAbortReason(signal);
+}
+
+async function waitForRetryDelay(
+  delayMs: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  throwIfAborted(signal);
+  if (delayMs === 0) return;
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => reject(getAbortReason(signal!)));
+    const timeout = setTimeout(() => finish(resolve), delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
+function isStreamContentPart(part: LanguageModelV3StreamPart): boolean {
+  return part.type !== "stream-start" && part.type !== "response-metadata";
 }
 
 export function createFallback(settings: FallbackSettings): LanguageModel {
@@ -544,6 +594,7 @@ class FallbackModel implements LanguageModelV3 {
     decision: RecoveryDecision,
     state: RetryState,
     error: unknown,
+    abortSignal: AbortSignal | undefined,
   ): Promise<void> {
     if (decision.kind !== "retry-same") return;
 
@@ -551,7 +602,7 @@ class FallbackModel implements LanguageModelV3 {
       error,
       state.attemptsByModel[this.currentModelIndex],
     );
-    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    await waitForRetryDelay(delayMs, abortSignal);
   }
 
   private exhaustedError(operationName: string, error: unknown): DyadError {
@@ -566,6 +617,7 @@ class FallbackModel implements LanguageModelV3 {
     operation: (state: RetryState) => Promise<T>,
     operationName: string,
     requestId: string,
+    abortSignal: AbortSignal | undefined,
   ): Promise<T> {
     const state: RetryState = {
       attemptNumber: 0,
@@ -577,6 +629,7 @@ class FallbackModel implements LanguageModelV3 {
 
     try {
       while (state.attemptNumber < this.maxAttempts) {
+        throwIfAborted(abortSignal);
         this.startAttempt(state);
 
         try {
@@ -606,7 +659,12 @@ class FallbackModel implements LanguageModelV3 {
             stage: "initial-request",
             error,
           });
-          await this.waitBeforeSameModelRetry(decision, state, error);
+          await this.waitBeforeSameModelRetry(
+            decision,
+            state,
+            error,
+            abortSignal,
+          );
         }
       }
 
@@ -644,6 +702,7 @@ class FallbackModel implements LanguageModelV3 {
       },
       "stream",
       requestId,
+      options.abortSignal,
     );
   }
 
@@ -691,7 +750,7 @@ class FallbackModel implements LanguageModelV3 {
               controller.enqueue(value);
 
               // Mark that we've streamed actual content (not just metadata)
-              if (value?.type && value.type !== "stream-start") {
+              if (isStreamContentPart(value)) {
                 attemptHasStreamedContent = true;
                 hasStreamedContent = true;
               }
@@ -755,7 +814,9 @@ class FallbackModel implements LanguageModelV3 {
             decision,
             retryState,
             pendingError,
+            options.abortSignal,
           );
+          throwIfAborted(options.abortSignal);
           fallbackModel.startAttempt(retryState);
 
           try {

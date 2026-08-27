@@ -77,6 +77,7 @@ type ModelOutcome =
   | { type: "succeed" }
   | { type: "throw"; error: unknown }
   | { type: "stream-error"; error: unknown }
+  | { type: "metadata-stream-error"; error: unknown }
   | { type: "partial-stream-error"; error: unknown }
   | { type: "stream-error-event"; error: unknown };
 
@@ -100,6 +101,24 @@ function sequencedModel(params: {
       if (outcome.type === "throw") throw outcome.error;
       if (outcome.type === "stream-error") {
         return { stream: errorStream(outcome.error) };
+      }
+      if (outcome.type === "metadata-stream-error") {
+        let emittedMetadata = false;
+        return {
+          stream: new ReadableStream({
+            pull(controller) {
+              if (emittedMetadata) {
+                controller.error(outcome.error);
+              } else {
+                emittedMetadata = true;
+                controller.enqueue({
+                  type: "response-metadata",
+                  id: "provider-response-1",
+                } as LanguageModelV3StreamPart);
+              }
+            },
+          }),
+        };
       }
       if (outcome.type === "partial-stream-error") {
         let emittedContent = false;
@@ -196,6 +215,15 @@ describe("fallback failure policy", () => {
     expect(
       getFallbackFailureAction(
         apiCallError({
+          message: "model_not_found in this region",
+          statusCode: 403,
+          isRetryable: false,
+        }),
+      ),
+    ).toBe("fallback-next");
+    expect(
+      getFallbackFailureAction(
+        apiCallError({
           message: "unexpected invalid temperature",
           statusCode: 400,
           isRetryable: false,
@@ -205,6 +233,12 @@ describe("fallback failure policy", () => {
     expect(getFallbackFailureAction(new Error("unexpected local error"))).toBe(
       "fail",
     );
+    expect(
+      getFallbackFailureAction({
+        status: 400,
+        message: "timeout must be less than 60 seconds",
+      }),
+    ).toBe("fail");
   });
 
   it("derives a bounded retry delay from provider headers", () => {
@@ -230,6 +264,61 @@ describe("fallback failure policy", () => {
         1,
       ),
     ).toBe(10_000);
+    expect(
+      getFallbackRetryDelayMs(
+        apiCallError({
+          message: "retry immediately",
+          statusCode: 429,
+          isRetryable: true,
+          responseHeaders: { "retry-after": "0" },
+        }),
+        1,
+      ),
+    ).toBe(0);
+    expect(
+      getFallbackRetryDelayMs(
+        apiCallError({
+          message: "retry after past date",
+          statusCode: 503,
+          isRetryable: true,
+          responseHeaders: {
+            "retry-after": "Wed, 21 Oct 2015 07:28:00 GMT",
+          },
+        }),
+        1,
+        Date.UTC(2026, 7, 27),
+      ),
+    ).toBe(0);
+  });
+
+  it("stops immediately when the request is aborted during backoff", async () => {
+    const calls: string[] = [];
+    const abortController = new AbortController();
+    const transientError = apiCallError({
+      message: "rate limited",
+      statusCode: 429,
+      isRetryable: true,
+      responseHeaders: { "retry-after": "10" },
+    });
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [{ type: "throw", error: transientError }],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    const streamPromise = model.doStream({
+      prompt: [],
+      abortSignal: abortController.signal,
+    } as unknown as LanguageModelV3CallOptions);
+    await vi.waitFor(() => expect(calls).toEqual(["gpt-5.6-sol"]));
+    abortController.abort();
+
+    await expect(streamPromise).rejects.toBe(abortController.signal.reason);
+    expect(calls).toEqual(["gpt-5.6-sol"]);
   });
 
   it("retries a transient failure on the same model", async () => {
@@ -413,6 +502,68 @@ describe("fallback failure policy", () => {
         "Retrying model gpt-5.6-sol (requestId=request-stream, stage=stream",
       ),
     );
+  });
+
+  it("stops a mid-stream retry when the request is aborted during backoff", async () => {
+    const calls: string[] = [];
+    const abortController = new AbortController();
+    const transientError = apiCallError({
+      message: "rate limited while streaming",
+      statusCode: 429,
+      isRetryable: true,
+      responseHeaders: { "retry-after": "10" },
+    });
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [{ type: "stream-error", error: transientError }],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    const result = await model.doStream({
+      prompt: [],
+      abortSignal: abortController.signal,
+    } as unknown as LanguageModelV3CallOptions);
+    const drainPromise = drain(result.stream);
+    await vi.waitFor(() =>
+      expect(logMocks.warn).toHaveBeenCalledWith(
+        expect.stringContaining("stage=stream"),
+      ),
+    );
+    abortController.abort();
+
+    await expect(drainPromise).rejects.toBe(abortController.signal.reason);
+    expect(calls).toEqual(["gpt-5.6-sol"]);
+  });
+
+  it("recovers when only response metadata was emitted before a stream error", async () => {
+    const calls: string[] = [];
+    const transientError = apiCallError({
+      message: "stream connection reset",
+      isRetryable: true,
+    });
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [
+            { type: "metadata-stream-error", error: transientError },
+            { type: "succeed" },
+          ],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    const result = await model.doStream({
+      prompt: [],
+    } as unknown as LanguageModelV3CallOptions);
+    await drain(result.stream);
+
+    expect(calls).toEqual(["gpt-5.6-sol", "gpt-5.6-sol"]);
   });
 
   it("passes through deterministic stream error events without falling back", async () => {
