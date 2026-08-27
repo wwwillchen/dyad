@@ -136,6 +136,16 @@ const isFreeOpenRouterModelName = (apiName: string) =>
 const isEffortChevronTarget = (target: EventTarget) =>
   (target as HTMLElement).closest("[data-effort-chevron]") !== null;
 
+const toRecentModelIdentity = (
+  model: LargeLanguageModel,
+): LargeLanguageModel => ({
+  provider: model.provider,
+  name: model.name,
+  ...(model.customModelId !== undefined
+    ? { customModelId: model.customModelId }
+    : {}),
+});
+
 function tierFor(dollarSigns: number | undefined): Tier {
   const ds = dollarSigns ?? Number.NEGATIVE_INFINITY;
   return (
@@ -204,7 +214,7 @@ export function ModelPicker() {
       : {};
     const effectiveRecentModels = getEffectiveRecentModels(
       settings.recentModels,
-      settings.selectedModel,
+      toRecentModelIdentity(selectedModel),
     );
     const recentModelsUpdate =
       model.provider === "auto"
@@ -436,8 +446,12 @@ export function ModelPicker() {
           ([providerId]) => providerId !== "auto",
         )
       : [];
-  const isVisibleCatalogModel = (model: LanguageModel) =>
-    !(dyadProEnabled && isFreeOpenRouterModelName(model.apiName));
+  const isVisibleCatalogModel = (providerId: string, model: LanguageModel) =>
+    !(
+      dyadProEnabled &&
+      providerId === "openrouter" &&
+      isFreeOpenRouterModelName(model.apiName)
+    );
   const isOtherProvider = (providerId: string) => {
     const provider = providers?.find(
       (candidate) => candidate.id === providerId,
@@ -448,7 +462,7 @@ export function ModelPicker() {
     .filter(([providerId]) => !isOtherProvider(providerId))
     .flatMap(([providerId, models], providerIndex) =>
       models.flatMap((model, modelIndex) => {
-        if (!isVisibleCatalogModel(model)) {
+        if (!isVisibleCatalogModel(providerId, model)) {
           return [];
         }
         return [{ providerId, model, providerIndex, modelIndex }];
@@ -469,16 +483,16 @@ export function ModelPicker() {
     .filter(([providerId]) => isOtherProvider(providerId))
     .map(
       ([providerId, models]) =>
-        [providerId, models.filter(isVisibleCatalogModel)] as [
-          string,
-          LanguageModel[],
-        ],
+        [
+          providerId,
+          models.filter((model) => isVisibleCatalogModel(providerId, model)),
+        ] as [string, LanguageModel[]],
     )
     .filter(([, models]) => models.length > 0);
 
   const recentModelEntries = getEffectiveRecentModels(
     settings.recentModels,
-    settings.selectedModel,
+    toRecentModelIdentity(selectedModel),
   ).flatMap<RecentModelEntry>((recentModel) => {
     if (recentModel.provider === "ollama") {
       const model = ollamaModels.find(
@@ -525,7 +539,7 @@ export function ModelPicker() {
 
     const model = modelsByProviders?.[recentModel.provider]?.find(
       (candidate) =>
-        isVisibleCatalogModel(candidate) &&
+        isVisibleCatalogModel(recentModel.provider, candidate) &&
         (recentModel.customModelId
           ? candidate.type === "custom" &&
             candidate.id === recentModel.customModelId
@@ -921,7 +935,9 @@ export function ModelPicker() {
     providerId: string,
     models: LanguageModel[],
   ) => {
-    const visibleModels = models.filter(isVisibleCatalogModel);
+    const visibleModels = models.filter((model) =>
+      isVisibleCatalogModel(providerId, model),
+    );
     if (visibleModels.length === 0) {
       return null;
     }

@@ -293,6 +293,12 @@ vi.mock("@/hooks/useLanguageModelsByProviders", () => ({
               displayName: "Custom B",
               type: "custom",
             },
+            {
+              id: 3,
+              apiName: "team/free",
+              displayName: "Custom Free",
+              type: "custom",
+            },
           ],
         },
   }),
@@ -598,6 +604,47 @@ describe("ModelPicker", () => {
         recentModels: [{ provider: "openai", name: "gpt-5" }],
       });
     });
+  });
+
+  it("uses the active chat model to seed fallback recents", async () => {
+    mocks.pathname = "/chat";
+    mocks.search = { id: 42 };
+    mocks.settings.selectedModel = { provider: "auto", name: "auto" };
+    mocks.settings.recentModels = undefined;
+    mocks.chat = {
+      id: 42,
+      messages: [{ id: 1 }],
+      modelSelection: {
+        provider: "openai",
+        name: "gpt-5",
+        effortLevel: "minimal",
+      },
+    };
+
+    render(<ModelPicker />);
+    expect(screen.getAllByText("GPT 5")).toHaveLength(2);
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="auto"][data-model-name="auto"]',
+      )!,
+    );
+
+    await waitFor(() => {
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        recentModels: [{ provider: "openai", name: "gpt-5" }],
+      });
+    });
+  });
+
+  it("keeps custom model ids ending in /free visible for Pro users", () => {
+    mocks.settings.recentModels = [
+      { provider: "custom", name: "team/free", customModelId: 3 },
+    ];
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    expect(screen.getAllByText("Custom Free")).toHaveLength(2);
   });
 
   it("filters hidden Pro models out of Recent", () => {
