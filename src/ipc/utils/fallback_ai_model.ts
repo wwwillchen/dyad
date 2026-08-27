@@ -10,8 +10,29 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 const logger = log.scope("fallback_model");
 
 // Types
+
+/**
+ * The model-derived subset of call options — what a model should receive
+ * because of what it is, as opposed to what the request is. Everything else
+ * (prompt, tools, headers, request metadata) passes through unchanged.
+ */
+export interface FallbackModelCallOptions {
+  temperature?: number;
+  maxOutputTokens?: number;
+  providerOptions?: Record<string, unknown>;
+}
+
 interface FallbackSettings {
   models: Array<LanguageModel>;
+  /**
+   * Per-model call-option overrides, parallel to `models`. The caller's
+   * options are computed for the PRIMARY selection and encode that model's
+   * constraints; an entry here expresses what the model at the same index
+   * would have received had it been selected as primary. Models without an
+   * entry get the conservative default on cross-provider failover:
+   * `temperature` and `maxOutputTokens` stripped, everything else forwarded.
+   */
+  modelCallOptions?: Array<FallbackModelCallOptions | undefined>;
 }
 
 interface RetryState {
@@ -155,11 +176,11 @@ class FallbackModel implements LanguageModelV3 {
     return this.getUnderlyingModel().supportedUrls;
   }
 
-  private getUnderlyingModel(): LanguageModelV3 {
-    const model = this.settings.models[this.currentModelIndex];
+  private getModelAtIndex(index: number): LanguageModelV3 {
+    const model = this.settings.models[index];
     if (!model) {
       throw new DyadError(
-        `Model at index ${this.currentModelIndex} not found`,
+        `Model at index ${index} not found`,
         DyadErrorKind.Internal,
       );
     }
@@ -175,6 +196,74 @@ class FallbackModel implements LanguageModelV3 {
       throw new DyadError("Model is not a v3 model", DyadErrorKind.External);
     }
     return model;
+  }
+
+  private getUnderlyingModel(): LanguageModelV3 {
+    return this.getModelAtIndex(this.currentModelIndex);
+  }
+
+  /**
+   * Call options are resolved for the PRIMARY model before the request is made
+   * (e.g. `getTemperature(settings.selectedModel)`), so they encode that
+   * model's constraints, not the fallback's. Forwarding them verbatim across a
+   * provider switch produces hard 400s — observed: a gpt-5.6 stream error
+   * failed over to an Anthropic thinking model, which rejected the forwarded
+   * `temperature` ("`temperature` may only be set to 1 when thinking is
+   * enabled"), converting a recoverable blip into a fatal stream error.
+   *
+   * Apply the current model's `modelCallOptions` entry — including for index 0
+   * when a pseudo-model such as Auto supplied the request's original options.
+   * Without an entry, same-provider fallbacks keep the caller's options. A
+   * cross-provider fallback strips `temperature` and `maxOutputTokens`, whose
+   * accepted values vary by model/provider. This also applies to sticky-index
+   * first attempts after a previous failover.
+   */
+  private optionsForCurrentModel(
+    options: LanguageModelV3CallOptions,
+  ): LanguageModelV3CallOptions {
+    const overrides = this.settings.modelCallOptions?.[this.currentModelIndex];
+    if (!overrides) {
+      if (
+        this.currentModelIndex === 0 ||
+        this.getUnderlyingModel().provider === this.getModelAtIndex(0).provider
+      ) {
+        return options;
+      }
+      // No per-model knowledge on a cross-provider fallback: omit constraints
+      // whose accepted values and caps differ between providers.
+      const {
+        temperature: _droppedTemperature,
+        maxOutputTokens: _droppedMaxOutputTokens,
+        ...rest
+      } = options;
+      return rest;
+    }
+    // Rebuild the model-derived subset as if this model had been primary.
+    // Both scalar values are replaced: undefined means "unset", not "inherit
+    // the primary's". Request-scoped provider options pass through, with any
+    // explicit per-model provider options merged on top.
+    const {
+      temperature: _replacedTemperature,
+      maxOutputTokens: _replacedMaxOutputTokens,
+      ...rest
+    } = options;
+    return {
+      ...rest,
+      ...(overrides.temperature !== undefined
+        ? { temperature: overrides.temperature }
+        : {}),
+      ...(overrides.maxOutputTokens !== undefined
+        ? { maxOutputTokens: overrides.maxOutputTokens }
+        : {}),
+      ...(overrides.providerOptions
+        ? {
+            providerOptions: {
+              ...options.providerOptions,
+              ...overrides.providerOptions,
+            } as LanguageModelV3CallOptions["providerOptions"],
+          }
+        : {}),
+    };
   }
 
   private checkAndResetModel(): void {
@@ -269,7 +358,9 @@ class FallbackModel implements LanguageModelV3 {
     this.checkAndResetModel();
 
     return this.retry(async (retryState) => {
-      const result = await this.getUnderlyingModel().doStream(options);
+      const result = await this.getUnderlyingModel().doStream(
+        this.optionsForCurrentModel(options),
+      );
 
       // Create a wrapped stream that handles errors gracefully
       const wrappedStream = this.createWrappedStream(
@@ -380,7 +471,7 @@ class FallbackModel implements LanguageModelV3 {
             try {
               const nextResult = await fallbackModel
                 .getUnderlyingModel()
-                .doStream(options);
+                .doStream(fallbackModel.optionsForCurrentModel(options));
               await processStream(nextResult.stream);
             } catch (nextError) {
               controller.error(nextError);
