@@ -121,14 +121,17 @@ export const DYAD_INTERNAL_REQUEST_ID_HEADER =
 
 export interface GetAiHeadersParams {
   builtinProviderId: string | undefined;
+  dyadRequestId?: string;
 }
 
 /**
- * Returns extra AI request headers for the provider (e.g. beta flags).
- * Currently none; reserved for future provider-specific headers.
+ * Returns request-scoped AI headers used by provider wrappers and diagnostics.
+ * Provider-specific headers (e.g. beta flags) can also be added here.
  */
 export function getAiHeaders(
-  _params: GetAiHeadersParams,
+  params: GetAiHeadersParams,
 ): Record<string, string> | undefined {
-  return undefined;
+  return params.dyadRequestId
+    ? { [DYAD_INTERNAL_REQUEST_ID_HEADER]: params.dyadRequestId }
+    : undefined;
 }

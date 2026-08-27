@@ -15,6 +15,8 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 const logger = log.scope("fallback_model");
 const DYAD_REQUEST_ID_HEADER = "x-dyad-internal-request-id";
 const MAX_LOG_FIELD_LENGTH = 500;
+const DEFAULT_RETRY_DELAY_MS = 500;
+const MAX_RETRY_DELAY_MS = 10_000;
 
 // Types
 
@@ -194,8 +196,9 @@ function getErrorDetails(error: unknown): {
 
 /**
  * Decide whether a failure should retry the current model, move to the next
- * model, or stop. The AI SDK's explicit retryability signal wins over message
- * matching. Unknown and deterministic request errors fail closed.
+ * model, or stop. Explicit model-unavailable signals take precedence over the
+ * AI SDK's retryability flag. Unknown and deterministic request errors fail
+ * closed.
  */
 export function getFallbackFailureAction(
   error: unknown,
@@ -204,8 +207,8 @@ export function getFallbackFailureAction(
 
   try {
     if (APICallError.isInstance(error)) {
-      if (error.isRetryable) return "retry-same";
       if (error.statusCode === 404) return "fallback-next";
+      if (error.isRetryable) return "retry-same";
       return "fail";
     }
 
@@ -245,6 +248,67 @@ export function getFallbackFailureAction(
   }
 }
 
+function getHeader(
+  headers: Record<string, string> | undefined,
+  name: string,
+): string | undefined {
+  const entry = Object.entries(headers ?? {}).find(
+    ([headerName]) => headerName.toLowerCase() === name,
+  );
+  return entry?.[1];
+}
+
+function boundedRetryDelay(delayMs: number): number | undefined {
+  if (!Number.isFinite(delayMs) || delayMs <= 0) return undefined;
+  return Math.min(Math.round(delayMs), MAX_RETRY_DELAY_MS);
+}
+
+function parseRetryAfter(value: string | undefined, nowMs: number) {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return boundedRetryDelay(seconds * 1_000);
+
+  const retryAt = Date.parse(value);
+  return Number.isNaN(retryAt) ? undefined : boundedRetryDelay(retryAt - nowMs);
+}
+
+function parseRateLimitReset(value: string | undefined, nowMs: number) {
+  if (!value) return undefined;
+  const reset = Number(value);
+  if (!Number.isFinite(reset)) return undefined;
+
+  if (reset > 1_000_000_000_000) {
+    return boundedRetryDelay(reset - nowMs);
+  }
+  if (reset > 1_000_000_000) {
+    return boundedRetryDelay(reset * 1_000 - nowMs);
+  }
+  return boundedRetryDelay(reset * 1_000);
+}
+
+export function getFallbackRetryDelayMs(
+  error: unknown,
+  sameModelAttempt: number,
+  nowMs = Date.now(),
+): number {
+  const responseHeaders = APICallError.isInstance(error)
+    ? error.responseHeaders
+    : isRecord(error) && isRecord(error.responseHeaders)
+      ? (error.responseHeaders as Record<string, string>)
+      : undefined;
+  const headerDelay =
+    parseRetryAfter(getHeader(responseHeaders, "retry-after"), nowMs) ??
+    parseRateLimitReset(getHeader(responseHeaders, "x-ratelimit-reset"), nowMs);
+
+  return (
+    headerDelay ??
+    Math.min(
+      DEFAULT_RETRY_DELAY_MS * 2 ** Math.max(0, sameModelAttempt - 1),
+      MAX_RETRY_DELAY_MS,
+    )
+  );
+}
+
 export function defaultShouldRetryThisError(error: unknown): boolean {
   return getFallbackFailureAction(error) === "retry-same";
 }
@@ -266,7 +330,6 @@ class FallbackModel implements LanguageModelV3 {
   private currentModelIndex: number = 0;
   private lastModelReset: number = Date.now();
   private readonly modelResetInterval: number;
-  private readonly retryAfterOutput: boolean;
   private readonly maxAttemptsPerModel: number;
   private readonly maxAttempts: number;
   private isRetrying: boolean = false;
@@ -282,7 +345,6 @@ class FallbackModel implements LanguageModelV3 {
 
     this.settings = settings;
     this.modelResetInterval = 3 * 60 * 1000; // Default: 3 minutes
-    this.retryAfterOutput = true;
     this.maxAttemptsPerModel = 2;
     this.maxAttempts = settings.models.length * this.maxAttemptsPerModel;
   }
@@ -478,10 +540,25 @@ class FallbackModel implements LanguageModelV3 {
     );
   }
 
-  private exhaustedError(operationName: string, error: unknown): Error {
+  private async waitBeforeSameModelRetry(
+    decision: RecoveryDecision,
+    state: RetryState,
+    error: unknown,
+  ): Promise<void> {
+    if (decision.kind !== "retry-same") return;
+
+    const delayMs = getFallbackRetryDelayMs(
+      error,
+      state.attemptsByModel[this.currentModelIndex],
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  private exhaustedError(operationName: string, error: unknown): DyadError {
     const message = error instanceof Error ? error.message : String(error);
-    return new Error(
+    return new DyadError(
       `All ${this.settings.models.length} models failed for ${operationName}. Last error: ${message}`,
+      DyadErrorKind.External,
     );
   }
 
@@ -529,12 +606,14 @@ class FallbackModel implements LanguageModelV3 {
             stage: "initial-request",
             error,
           });
+          await this.waitBeforeSameModelRetry(decision, state, error);
         }
       }
 
       // Should never reach here, but just in case
-      throw new Error(
+      throw new DyadError(
         `Max attempts (${this.maxAttempts}) exceeded for ${operationName}`,
+        DyadErrorKind.Internal,
       );
     } finally {
       this.isRetrying = false;
@@ -624,13 +703,15 @@ class FallbackModel implements LanguageModelV3 {
 
         let currentStream = originalStream;
         let pendingError: unknown;
+        let hasPendingError = false;
         while (true) {
-          if (pendingError === undefined) {
+          if (!hasPendingError) {
             try {
               await processStream(currentStream);
               return;
             } catch (error) {
               pendingError = error;
+              hasPendingError = true;
             }
           }
 
@@ -640,10 +721,7 @@ class FallbackModel implements LanguageModelV3 {
             error: pendingError,
           });
           const action = getFallbackFailureAction(pendingError);
-          if (
-            action === "fail" ||
-            (hasStreamedContent && !fallbackModel.retryAfterOutput)
-          ) {
+          if (action === "fail" || hasStreamedContent) {
             logger.warn(
               `Stream error from model ${failedModelId}; not retrying or falling back (requestId=${getRequestId(options)}, hasStreamedContent=${hasStreamedContent}, attempt=${retryState.attemptNumber}/${fallbackModel.maxAttempts}, error="${formatFallbackErrorForLog(pendingError)}")`,
             );
@@ -673,6 +751,11 @@ class FallbackModel implements LanguageModelV3 {
             error: pendingError,
             hasStreamedContent,
           });
+          await fallbackModel.waitBeforeSameModelRetry(
+            decision,
+            retryState,
+            pendingError,
+          );
           fallbackModel.startAttempt(retryState);
 
           try {
@@ -681,8 +764,10 @@ class FallbackModel implements LanguageModelV3 {
               .doStream(fallbackModel.optionsForCurrentModel(options));
             currentStream = nextResult.stream;
             pendingError = undefined;
+            hasPendingError = false;
           } catch (error) {
             pendingError = error;
+            hasPendingError = true;
           }
         }
       },

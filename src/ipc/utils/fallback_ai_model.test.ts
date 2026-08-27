@@ -10,7 +10,9 @@ import {
   createFallback,
   formatFallbackErrorForLog,
   getFallbackFailureAction,
+  getFallbackRetryDelayMs,
 } from "./fallback_ai_model";
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 const logMocks = vi.hoisted(() => ({
   warn: vi.fn(),
@@ -62,6 +64,7 @@ function apiCallError(params: {
   message: string;
   statusCode?: number;
   isRetryable: boolean;
+  responseHeaders?: Record<string, string>;
 }): APICallError {
   return new APICallError({
     ...params,
@@ -74,6 +77,7 @@ type ModelOutcome =
   | { type: "succeed" }
   | { type: "throw"; error: unknown }
   | { type: "stream-error"; error: unknown }
+  | { type: "partial-stream-error"; error: unknown }
   | { type: "stream-error-event"; error: unknown };
 
 function sequencedModel(params: {
@@ -96,6 +100,25 @@ function sequencedModel(params: {
       if (outcome.type === "throw") throw outcome.error;
       if (outcome.type === "stream-error") {
         return { stream: errorStream(outcome.error) };
+      }
+      if (outcome.type === "partial-stream-error") {
+        let emittedContent = false;
+        return {
+          stream: new ReadableStream({
+            pull(controller) {
+              if (emittedContent) {
+                controller.error(outcome.error);
+              } else {
+                emittedContent = true;
+                controller.enqueue({
+                  type: "text-delta",
+                  id: "1",
+                  delta: "partial",
+                } as LanguageModelV3StreamPart);
+              }
+            },
+          }),
+        };
       }
       if (outcome.type === "stream-error-event") {
         return {
@@ -166,7 +189,7 @@ describe("fallback failure policy", () => {
         apiCallError({
           message: "model not found",
           statusCode: 404,
-          isRetryable: false,
+          isRetryable: true,
         }),
       ),
     ).toBe("fallback-next");
@@ -182,6 +205,31 @@ describe("fallback failure policy", () => {
     expect(getFallbackFailureAction(new Error("unexpected local error"))).toBe(
       "fail",
     );
+  });
+
+  it("derives a bounded retry delay from provider headers", () => {
+    expect(
+      getFallbackRetryDelayMs(
+        apiCallError({
+          message: "rate limited",
+          statusCode: 429,
+          isRetryable: true,
+          responseHeaders: { "Retry-After": "2" },
+        }),
+        1,
+      ),
+    ).toBe(2_000);
+    expect(
+      getFallbackRetryDelayMs(
+        apiCallError({
+          message: "service unavailable",
+          statusCode: 503,
+          isRetryable: true,
+          responseHeaders: { "x-ratelimit-reset": "30" },
+        }),
+        1,
+      ),
+    ).toBe(10_000);
   });
 
   it("retries a transient failure on the same model", async () => {
@@ -398,6 +446,87 @@ describe("fallback failure policy", () => {
     expect(logMocks.warn).toHaveBeenCalledWith(
       expect.stringContaining("Stream error event from model gpt-5.6-sol"),
     );
+  });
+
+  it("does not retry after content has already been emitted", async () => {
+    const calls: string[] = [];
+    const transientError = apiCallError({
+      message: "stream connection reset",
+      isRetryable: true,
+    });
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [{ type: "partial-stream-error", error: transientError }],
+          calls,
+        }),
+        sequencedModel({
+          modelId: "anthropic/claude-opus-5",
+          outcomes: [{ type: "succeed" }],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    const result = await model.doStream({
+      prompt: [],
+    } as unknown as LanguageModelV3CallOptions);
+    await expect(drain(result.stream)).rejects.toBe(transientError);
+    expect(calls).toEqual(["gpt-5.6-sol"]);
+  });
+
+  it("preserves an undefined stream failure without treating it as a sentinel", async () => {
+    const calls: string[] = [];
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [{ type: "stream-error", error: undefined }],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    const result = await model.doStream({
+      prompt: [],
+    } as unknown as LanguageModelV3CallOptions);
+    let rejection: unknown = Symbol("not rejected");
+    try {
+      await drain(result.stream);
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toBeUndefined();
+    expect(calls).toEqual(["gpt-5.6-sol"]);
+  });
+
+  it("classifies exhausted provider failures as external Dyad errors", async () => {
+    const calls: string[] = [];
+    const transientError = apiCallError({
+      message: "service unavailable",
+      statusCode: 503,
+      isRetryable: true,
+    });
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [
+            { type: "throw", error: transientError },
+            { type: "throw", error: transientError },
+          ],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    await expect(
+      model.doStream({ prompt: [] } as unknown as LanguageModelV3CallOptions),
+    ).rejects.toMatchObject({
+      name: "DyadError",
+      kind: DyadErrorKind.External,
+    } satisfies Partial<DyadError>);
   });
 
   it("formats diagnostics without serializing request bodies or headers", () => {

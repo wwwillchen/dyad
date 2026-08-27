@@ -2279,6 +2279,7 @@ This conversation includes one or more image attachments. When the user uploads 
           const streamResult = streamText({
             headers: getAiHeaders({
               builtinProviderId: modelClient.builtinProviderId,
+              dyadRequestId,
             }),
             maxOutputTokens: await getMaxTokens(settings.selectedModel),
             temperature: await getTemperature(settings.selectedModel),
