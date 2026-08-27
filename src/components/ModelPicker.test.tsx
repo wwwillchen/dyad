@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelPicker } from "./ModelPicker";
 
@@ -75,6 +81,11 @@ const mocks = vi.hoisted(() => ({
       name: "auto",
       provider: "auto",
     },
+    recentModels: [] as Array<{
+      name: string;
+      provider: string;
+      customModelId?: number;
+    }>,
     selectedChatMode: "build",
     defaultChatMode: "build",
   },
@@ -229,6 +240,15 @@ vi.mock("@/hooks/useLanguageModelsByProviders", () => ({
           type: "cloud",
         },
       ],
+      vertex: [
+        {
+          apiName: "gemini-2.5-pro",
+          displayName: "Vertex Gemini 2.5 Pro",
+          description: "Vertex model with price metadata",
+          dollarSigns: 3,
+          type: "cloud",
+        },
+      ],
       openrouter: [
         {
           apiName: "openrouter/free",
@@ -283,6 +303,12 @@ vi.mock("@/hooks/useLanguageModelProviders", () => ({
         id: "google",
         name: "Google",
         type: "cloud",
+      },
+      {
+        id: "vertex",
+        name: "Google Vertex AI",
+        type: "cloud",
+        secondary: true,
       },
       {
         id: "openrouter",
@@ -361,12 +387,18 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuSubTrigger: ({
     children,
     hideChevron: _hideChevron,
+    openOnHover,
+    delay,
+    closeDelay,
     onMouseDown,
     onClick,
     ...props
   }: {
     children: React.ReactNode;
     hideChevron?: boolean;
+    openOnHover?: boolean;
+    delay?: number;
+    closeDelay?: number;
     onMouseDown?: (
       event: React.MouseEvent<HTMLButtonElement> & {
         preventBaseUIHandler: () => void;
@@ -380,6 +412,9 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   }) => (
     <button
       {...props}
+      data-open-on-hover={openOnHover || undefined}
+      data-hover-delay={delay}
+      data-close-delay={closeDelay}
       onMouseDown={(event) =>
         onMouseDown?.(
           Object.assign(event, {
@@ -398,8 +433,12 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
       {children}
     </button>
   ),
-  DropdownMenuSubContent: ({ children }: { children: React.ReactNode }) =>
-    mocks.renderSubContent ? <div>{children}</div> : null,
+  DropdownMenuSubContent: ({
+    children,
+    ...props
+  }: {
+    children: React.ReactNode;
+  }) => (mocks.renderSubContent ? <div {...props}>{children}</div> : null),
 }));
 
 describe("ModelPicker", () => {
@@ -432,6 +471,7 @@ describe("ModelPicker", () => {
     mocks.settings.providerSettings.auto.apiKey.value = "dyad-pro-key";
     mocks.settings.providerSettings.openrouter.apiKey.value = "";
     mocks.settings.selectedModel = { name: "auto", provider: "auto" };
+    mocks.settings.recentModels = [];
     mocks.settings.selectedChatMode = "build";
     mocks.settings.defaultChatMode = "build";
     mocks.isTrial = false;
@@ -447,17 +487,16 @@ describe("ModelPicker", () => {
     };
   });
 
-  it("shows Pro users a flat primary cloud model list with provider grouping under More models", () => {
+  it("keeps the root menu focused on Dyad choices and All models", () => {
     render(<ModelPicker />);
 
     expect(screen.getByText("Auto Sidekick")).toBeTruthy();
     expect(
       screen.getByText("Auto Sidekick").closest("button")?.textContent,
     ).toContain("New");
-    expect(screen.getByText("GPT 5")).toBeTruthy();
-    expect(screen.queryByText("OpenAI")).toBeNull();
-    expect(screen.queryByText("GLM 4.7")).toBeNull();
-    expect(screen.queryByText("Kimi K2")).toBeNull();
+    expect(screen.queryByText("GPT 5")).toBeNull();
+    expect(screen.queryByText("Premium")).toBeNull();
+    expect(screen.queryByText("Local models")).toBeNull();
     expect(screen.queryByText("Free (OpenRouter)")).toBeNull();
     expect(screen.getByText("Dyad Free")).toBeTruthy();
     expect(screen.getByText("2/5 left")).toBeTruthy();
@@ -468,11 +507,94 @@ describe("ModelPicker", () => {
         .closest("button")
         ?.getAttribute("aria-label"),
     ).toContain("2/5 left. Data sharing");
+    expect(screen.getByText("All models")).toBeTruthy();
+  });
+
+  it("shows up to five persisted specific models in a Recent section", () => {
+    mocks.settings.recentModels = [
+      { provider: "openai", name: "gpt-5" },
+      {
+        provider: "openrouter",
+        name: "anthropic/claude-sonnet-4.5",
+      },
+      { provider: "auto", name: "auto-sidekick" },
+    ];
+
+    render(<ModelPicker />);
+
+    expect(screen.getByText("Recent")).toBeTruthy();
+    expect(screen.getByText("GPT 5")).toBeTruthy();
     expect(screen.getByText("Claude Sonnet 4.5")).toBeTruthy();
-    expect(screen.queryByText("Grok Code Fast")).toBeNull();
-    expect(screen.queryByText("xAI")).toBeNull();
-    expect(screen.getByText("More models")).toBeTruthy();
-    expect(screen.queryByText("Other AI providers")).toBeNull();
+    expect(screen.getAllByText("Auto Sidekick")).toHaveLength(1);
+  });
+
+  it("keeps Ollama and LM Studio in a separate Local models submenu", () => {
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    const localModelsMenu = screen.getByTestId("local-models-submenu");
+    expect(within(localModelsMenu).getByText("Ollama")).toBeTruthy();
+    expect(within(localModelsMenu).getByText("LM Studio")).toBeTruthy();
+    expect(within(localModelsMenu).queryByText("xAI")).toBeNull();
+  });
+
+  it("opens navigation submenus on hover with forgiving pointer timing", () => {
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    const getTrigger = (label: string) =>
+      screen
+        .getAllByText(label)
+        .map((element) => element.closest("button"))
+        .find((element): element is HTMLButtonElement => element !== null)!;
+
+    for (const label of [
+      "All models",
+      "Google Vertex AI",
+      "Local models",
+      "Ollama",
+      "LM Studio",
+    ]) {
+      const trigger = getTrigger(label);
+      expect(trigger.dataset.openOnHover).toBe("true");
+      expect(trigger.dataset.hoverDelay).toBe("120");
+      expect(trigger.dataset.closeDelay).toBe("100");
+    }
+
+    expect(
+      screen.getByText("GPT 5").closest("button")?.dataset.openOnHover,
+    ).toBeUndefined();
+  });
+
+  it("gives model-list menus room while keeping model metadata separate", () => {
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    expect(screen.getByTestId("more-models-submenu").className).toContain(
+      "w-[min(20rem,calc(100vw-1.5rem))]",
+    );
+
+    const modelName = screen.getAllByText("GPT 5")[0];
+    expect(modelName.className).toContain("block max-w-full truncate");
+    expect(modelName.getAttribute("title")).toBe("GPT 5");
+    expect(modelName.closest("button")?.firstElementChild?.className).toContain(
+      "grid-cols-[minmax(0,1fr)_auto]",
+    );
+  });
+
+  it("groups secondary providers under Other providers regardless of price", () => {
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    const vertexModels = screen.getByTestId("other-provider-models-vertex");
+    expect(
+      within(vertexModels).getByText("Vertex Gemini 2.5 Pro"),
+    ).toBeTruthy();
+    expect(screen.getAllByText("Vertex Gemini 2.5 Pro")).toHaveLength(1);
   });
 
   it("selects Auto Sidekick and moves Build mode to Agent", async () => {
@@ -522,20 +644,24 @@ describe("ModelPicker", () => {
       "max-w-[220px]",
     );
     expect(screen.getByTestId("model-picker-dropdown").className).toContain(
-      "w-[320px]",
+      "w-[min(20rem,calc(100vw-1.5rem))]",
     );
     const gpt5Row = screen.getAllByText("GPT 5")[0].closest("button")!;
     expect(
       gpt5Row.querySelector("[data-effort-chevron]")?.previousElementSibling
         ?.textContent,
-    ).toBe("Minimal");
+    ).toBe("Min");
     expect(gpt5Row.getAttribute("aria-label")).toContain("Effort: Minimal");
+    expect(
+      gpt5Row.querySelector("[data-effort-level]")?.getAttribute("title"),
+    ).toBe("Reasoning effort: Minimal");
     fireEvent.click(gpt5Row.querySelector("[data-effort-chevron]")!);
     fireEvent.click(screen.getAllByText("Xhigh")[0]);
 
     await waitFor(() => {
       expect(mocks.updateSettings).toHaveBeenCalledWith({
         selectedModel: { name: "gpt-5", provider: "openai" },
+        recentModels: [{ name: "gpt-5", provider: "openai" }],
         modelEffortPreferences: {
           '["openai","gpt-5",null]': "xhigh",
         },
@@ -565,6 +691,12 @@ describe("ModelPicker", () => {
           name: "qwen3-coder:30b",
           provider: "ollama",
         },
+        recentModels: [
+          {
+            name: "qwen3-coder:30b",
+            provider: "ollama",
+          },
+        ],
         modelEffortPreferences: {
           '["ollama","qwen3-coder:30b",null]': "none",
         },
@@ -573,6 +705,7 @@ describe("ModelPicker", () => {
   });
 
   it("only opens the effort submenu from its chevron", () => {
+    mocks.renderSubContent = true;
     render(<ModelPicker />);
 
     const gpt5Row = screen.getByText("GPT 5").closest("button")!;
@@ -623,10 +756,17 @@ describe("ModelPicker", () => {
         },
       });
     });
+    expect(mocks.updateSettings).toHaveBeenCalledWith({
+      modelEffortPreferences: {
+        '["openai","gpt-5",null]': "xhigh",
+      },
+      recentModels: [{ name: "gpt-5", provider: "openai" }],
+    });
     expect(mocks.updateChat).not.toHaveBeenCalled();
   });
 
-  it("sorts the Pro flat list by price descending and groups same-price models by provider", () => {
+  it("sorts the All models catalog by price and provider", () => {
+    mocks.renderSubContent = true;
     render(<ModelPicker />);
 
     const modelNames = [
@@ -655,18 +795,16 @@ describe("ModelPicker", () => {
     ]);
   });
 
-  it("shows non-Pro users the same tiered flat list with More models", () => {
+  it("keeps the non-Pro root compact while preserving its Dyad choices", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
 
     render(<ModelPicker />);
 
     expect(screen.queryByText("Auto Sidekick")).toBeNull();
-    expect(screen.getByText("GPT 5")).toBeTruthy();
-    expect(screen.queryByText("OpenAI")).toBeNull();
-    expect(screen.getByText("More models")).toBeTruthy();
+    expect(screen.queryByText("GPT 5")).toBeNull();
+    expect(screen.getByText("All models")).toBeTruthy();
     expect(screen.queryByText("Other AI providers")).toBeNull();
-    expect(screen.queryByText("Grok Code Fast")).toBeNull();
     expect(screen.queryByText("Dyad Free")).toBeNull();
     expect(screen.getByText("Free (OpenRouter)")).toBeTruthy();
   });
@@ -675,6 +813,7 @@ describe("ModelPicker", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.settings.providerSettings.openrouter.apiKey.value = "openrouter-key";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -700,6 +839,7 @@ describe("ModelPicker", () => {
   it("opens the unlock dialog instead of selecting a locked model", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -716,6 +856,7 @@ describe("ModelPicker", () => {
   it("opens the Pro upgrade page from the unlock dialog", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -739,6 +880,7 @@ describe("ModelPicker", () => {
   it("navigates to provider settings from the unlock dialog own-key link", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -756,23 +898,33 @@ describe("ModelPicker", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.settings.providerSettings.openrouter.apiKey.value = "openrouter-key";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
     fireEvent.click(screen.getByText("Claude Sonnet 4.5").closest("button")!);
 
-    expect(mocks.updateSettings).toHaveBeenCalledWith({
-      selectedModel: expect.objectContaining({
-        name: "anthropic/claude-sonnet-4.5",
-        provider: "openrouter",
+    expect(mocks.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selectedModel: expect.objectContaining({
+          name: "anthropic/claude-sonnet-4.5",
+          provider: "openrouter",
+        }),
+        recentModels: [
+          {
+            name: "anthropic/claude-sonnet-4.5",
+            provider: "openrouter",
+          },
+        ],
       }),
-    });
+    );
   });
 
   it("does not lock models while settings and env vars are still loading", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.settingsLoading = true;
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -782,6 +934,7 @@ describe("ModelPicker", () => {
   it("labels locked models for assistive tech", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -909,16 +1062,20 @@ describe("ModelPicker", () => {
   });
 
   it("selects flat Pro models with their source provider", async () => {
+    mocks.renderSubContent = true;
     render(<ModelPicker />);
 
     fireEvent.click(screen.getByText("GPT 5").closest("button")!);
 
-    expect(mocks.updateSettings).toHaveBeenCalledWith({
-      selectedModel: expect.objectContaining({
-        name: "gpt-5",
-        provider: "openai",
+    expect(mocks.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selectedModel: expect.objectContaining({
+          name: "gpt-5",
+          provider: "openai",
+        }),
+        recentModels: [{ name: "gpt-5", provider: "openai" }],
       }),
-    });
+    );
     await waitFor(() => {
       expect(mocks.invalidateQueries).toHaveBeenCalledTimes(1);
     });
@@ -939,7 +1096,7 @@ describe("ModelPicker", () => {
     expect(
       autoRow.querySelector("[data-effort-chevron]")?.previousElementSibling
         ?.textContent,
-    ).toBe("Medium");
+    ).toBe("Med");
   });
 
   it("does not select Dyad Free when quota is exhausted", () => {
