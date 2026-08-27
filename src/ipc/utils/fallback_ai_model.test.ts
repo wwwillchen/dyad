@@ -1,11 +1,21 @@
-import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-  LanguageModelV3StreamPart,
+import {
+  APICallError,
+  type LanguageModelV3,
+  type LanguageModelV3CallOptions,
+  type LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createFallback } from "./fallback_ai_model";
+import {
+  createFallback,
+  formatFallbackErrorForLog,
+  getFallbackFailureAction,
+} from "./fallback_ai_model";
+
+const logMocks = vi.hoisted(() => ({
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
 
 vi.mock("electron-log", () => ({
   default: {
@@ -13,8 +23,8 @@ vi.mock("electron-log", () => ({
       debug: vi.fn(),
       info: vi.fn(),
       log: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
+      warn: logMocks.warn,
+      error: logMocks.error,
     }),
   },
 }));
@@ -36,6 +46,73 @@ function textStream(): ReadableStream<LanguageModelV3StreamPart> {
       controller.close();
     },
   });
+}
+
+function errorStream(
+  error: unknown,
+): ReadableStream<LanguageModelV3StreamPart> {
+  return new ReadableStream({
+    start(controller) {
+      controller.error(error);
+    },
+  });
+}
+
+function apiCallError(params: {
+  message: string;
+  statusCode?: number;
+  isRetryable: boolean;
+}): APICallError {
+  return new APICallError({
+    ...params,
+    url: "https://engine.dyad.sh/v1/responses",
+    requestBodyValues: {},
+  });
+}
+
+type ModelOutcome =
+  | { type: "succeed" }
+  | { type: "throw"; error: unknown }
+  | { type: "stream-error"; error: unknown }
+  | { type: "stream-error-event"; error: unknown };
+
+function sequencedModel(params: {
+  modelId: string;
+  outcomes: ModelOutcome[];
+  calls: string[];
+}): LanguageModelV3 {
+  let callIndex = 0;
+  return {
+    specificationVersion: "v3",
+    provider: "fake",
+    modelId: params.modelId,
+    supportedUrls: {},
+    async doGenerate() {
+      throw new Error("not used");
+    },
+    async doStream() {
+      params.calls.push(params.modelId);
+      const outcome = params.outcomes[callIndex++] ?? { type: "succeed" };
+      if (outcome.type === "throw") throw outcome.error;
+      if (outcome.type === "stream-error") {
+        return { stream: errorStream(outcome.error) };
+      }
+      if (outcome.type === "stream-error-event") {
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({
+                type: "error",
+                error: outcome.error,
+              } as LanguageModelV3StreamPart);
+              controller.close();
+            },
+          }),
+        };
+      }
+      return { stream: textStream() };
+    },
+  } as unknown as LanguageModelV3;
 }
 
 function fakeModel(params: {
@@ -69,6 +146,275 @@ async function drain(stream: ReadableStream<LanguageModelV3StreamPart>) {
     // consume
   }
 }
+
+describe("fallback failure policy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("classifies explicit SDK and provider failures into three actions", () => {
+    expect(
+      getFallbackFailureAction(
+        apiCallError({
+          message: "Cannot connect to API: socket hang up",
+          isRetryable: true,
+        }),
+      ),
+    ).toBe("retry-same");
+    expect(
+      getFallbackFailureAction(
+        apiCallError({
+          message: "model not found",
+          statusCode: 404,
+          isRetryable: false,
+        }),
+      ),
+    ).toBe("fallback-next");
+    expect(
+      getFallbackFailureAction(
+        apiCallError({
+          message: "unexpected invalid temperature",
+          statusCode: 400,
+          isRetryable: false,
+        }),
+      ),
+    ).toBe("fail");
+    expect(getFallbackFailureAction(new Error("unexpected local error"))).toBe(
+      "fail",
+    );
+  });
+
+  it("retries a transient failure on the same model", async () => {
+    const calls: string[] = [];
+    const transientError = apiCallError({
+      message: "Cannot connect to API: socket hang up",
+      isRetryable: true,
+    });
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [
+            { type: "throw", error: transientError },
+            { type: "succeed" },
+          ],
+          calls,
+        }),
+        sequencedModel({
+          modelId: "anthropic/claude-opus-5",
+          outcomes: [{ type: "succeed" }],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    const result = await model.doStream({
+      prompt: [],
+      headers: { "x-dyad-internal-request-id": "request-123" },
+    } as unknown as LanguageModelV3CallOptions);
+    await drain(result.stream);
+
+    expect(calls).toEqual(["gpt-5.6-sol", "gpt-5.6-sol"]);
+    expect(logMocks.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Retrying model gpt-5.6-sol (requestId=request-123, stage=initial-request",
+      ),
+    );
+  });
+
+  it("falls back after the same-model transient retry is exhausted", async () => {
+    const calls: string[] = [];
+    const transientError = apiCallError({
+      message: "service unavailable",
+      statusCode: 503,
+      isRetryable: true,
+    });
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [
+            { type: "throw", error: transientError },
+            { type: "throw", error: transientError },
+          ],
+          calls,
+        }),
+        sequencedModel({
+          modelId: "anthropic/claude-opus-5",
+          outcomes: [{ type: "succeed" }],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    const result = await model.doStream({
+      prompt: [],
+    } as unknown as LanguageModelV3CallOptions);
+    await drain(result.stream);
+
+    expect(calls).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-sol",
+      "anthropic/claude-opus-5",
+    ]);
+    expect(logMocks.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Falling back from model gpt-5.6-sol to anthropic/claude-opus-5",
+      ),
+    );
+  });
+
+  it("falls back immediately for a permanent model-specific failure", async () => {
+    const calls: string[] = [];
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [
+            {
+              type: "throw",
+              error: apiCallError({
+                message: "model not found",
+                statusCode: 404,
+                isRetryable: false,
+              }),
+            },
+          ],
+          calls,
+        }),
+        sequencedModel({
+          modelId: "anthropic/claude-opus-5",
+          outcomes: [{ type: "succeed" }],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    const result = await model.doStream({
+      prompt: [],
+    } as unknown as LanguageModelV3CallOptions);
+    await drain(result.stream);
+
+    expect(calls).toEqual(["gpt-5.6-sol", "anthropic/claude-opus-5"]);
+  });
+
+  it("does not retry or fall back for a deterministic request error", async () => {
+    const calls: string[] = [];
+    const requestError = apiCallError({
+      message: "temperature is invalid",
+      statusCode: 400,
+      isRetryable: false,
+    });
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [{ type: "throw", error: requestError }],
+          calls,
+        }),
+        sequencedModel({
+          modelId: "anthropic/claude-opus-5",
+          outcomes: [{ type: "succeed" }],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    await expect(
+      model.doStream({ prompt: [] } as unknown as LanguageModelV3CallOptions),
+    ).rejects.toBe(requestError);
+    expect(calls).toEqual(["gpt-5.6-sol"]);
+    expect(logMocks.warn).toHaveBeenCalledWith(
+      expect.stringContaining("not retrying or falling back"),
+    );
+  });
+
+  it("applies the same retry policy to mid-stream failures", async () => {
+    const calls: string[] = [];
+    const transientError = apiCallError({
+      message: "stream connection reset",
+      isRetryable: true,
+    });
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [
+            { type: "stream-error", error: transientError },
+            { type: "succeed" },
+          ],
+          calls,
+        }),
+        sequencedModel({
+          modelId: "anthropic/claude-opus-5",
+          outcomes: [{ type: "succeed" }],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    const result = await model.doStream({
+      prompt: [],
+      headers: { "x-dyad-internal-request-id": "request-stream" },
+    } as unknown as LanguageModelV3CallOptions);
+    await drain(result.stream);
+
+    expect(calls).toEqual(["gpt-5.6-sol", "gpt-5.6-sol"]);
+    expect(logMocks.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Retrying model gpt-5.6-sol (requestId=request-stream, stage=stream",
+      ),
+    );
+  });
+
+  it("passes through deterministic stream error events without falling back", async () => {
+    const calls: string[] = [];
+    const requestError = apiCallError({
+      message: "invalid tool transcript",
+      statusCode: 400,
+      isRetryable: false,
+    });
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "gpt-5.6-sol",
+          outcomes: [{ type: "stream-error-event", error: requestError }],
+          calls,
+        }),
+        sequencedModel({
+          modelId: "anthropic/claude-opus-5",
+          outcomes: [{ type: "succeed" }],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+
+    const result = await model.doStream({
+      prompt: [],
+    } as unknown as LanguageModelV3CallOptions);
+    await drain(result.stream);
+
+    expect(calls).toEqual(["gpt-5.6-sol"]);
+    expect(logMocks.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Stream error event from model gpt-5.6-sol"),
+    );
+  });
+
+  it("formats diagnostics without serializing request bodies or headers", () => {
+    expect(
+      formatFallbackErrorForLog({
+        status: 503,
+        request_id: "provider-request-456",
+        message: "Gateway\n unavailable",
+        cause: { code: "ECONNRESET", message: "socket hang up" },
+        requestBody: "sensitive prompt",
+        headers: { authorization: "secret-token" },
+      }),
+    ).toBe(
+      "status=503 providerRequestId=provider-request-456 code=ECONNRESET message=Gateway unavailable cause=socket hang up",
+    );
+  });
+});
 
 describe("fallback model call options", () => {
   it("passes temperature to the primary model untouched", async () => {
