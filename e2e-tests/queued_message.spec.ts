@@ -26,6 +26,12 @@ async function queueMessage(page: Page, chatInput: Locator, message: string) {
   });
 }
 
+async function waitForGeneration(po: PageObject) {
+  await expect(
+    po.page.getByRole("button", { name: /cancel generation/i }),
+  ).toBeVisible({ timeout: Timeout.MEDIUM });
+}
+
 async function launchDyadWithProfile({
   userDataDir,
   fakeLlmPort,
@@ -72,8 +78,9 @@ test.describe("queued messages", () => {
     await po.sendPrompt("tc=1 [sleep=medium]", {
       skipWaitForCompletion: true,
     });
+    await waitForGeneration(po);
 
-    // Wait for chat input to appear (indicates we're in chat view and streaming)
+    // Wait for chat input to appear now that streaming is active.
     await expect(chatInput).toBeVisible();
 
     // While streaming, send another message - this should be queued
@@ -85,21 +92,20 @@ test.describe("queued messages", () => {
       po.page.getByText(/\d+ Queued.*will send after current response/),
     ).toBeVisible();
 
-    // Wait for the first stream to complete
-    await po.chatActions.waitForChatCompletion();
-
-    // Verify the queued message indicator is gone (message is now being sent)
+    // The next generation starts immediately, so the idle state between turns
+    // can be too brief to observe. Wait for the queued prompt to be admitted,
+    // then wait for the final generation to finish.
+    const messagesList = po.page.locator('[data-testid="messages-list"]');
+    await expect(messagesList.getByText("tc=2", { exact: true })).toBeVisible({
+      timeout: Timeout.EXTRA_LONG,
+    });
     await expect(
       po.page.getByText(/\d+ Queued.*will send after current response/),
     ).not.toBeVisible();
-
-    // Wait for the queued message to also complete
-    await po.chatActions.waitForChatCompletion();
+    await po.chatActions.waitForChatCompletion({ timeout: Timeout.EXTRA_LONG });
 
     // Verify both messages were sent by checking the message list
-    const messagesList = po.page.locator('[data-testid="messages-list"]');
     await expect(messagesList.getByText("tc=1 [sleep=medium]")).toBeVisible();
-    await expect(messagesList.getByText("tc=2")).toBeVisible();
   });
 
   test("can be reordered, deleted, and edited", async ({ po }) => {
@@ -107,8 +113,9 @@ test.describe("queued messages", () => {
     await po.sendPrompt("tc=1 [sleep=medium]", {
       skipWaitForCompletion: true,
     });
+    await waitForGeneration(po);
 
-    // Wait for chat input to appear (indicates we're in chat view and streaming)
+    // Wait for chat input to appear now that streaming is active.
     await expect(chatInput).toBeVisible();
 
     // Queue 3 messages while streaming
@@ -151,15 +158,18 @@ test.describe("queued messages", () => {
       po.page.locator("li", { hasText: "tc=first-edited" }),
     ).toBeVisible();
 
-    // Wait for the initial stream to finish, then the queued messages to send
-    await po.chatActions.waitForChatCompletion();
-    await po.chatActions.waitForChatCompletion();
-
     // Verify the final messages were sent in correct order:
     // "tc=first-edited" first, then "tc=third" (which was moved up past "tc=second")
     const messagesList = po.page.locator('[data-testid="messages-list"]');
-    await expect(messagesList.getByText("tc=first-edited")).toBeVisible();
-    await expect(messagesList.getByText("tc=third")).toBeVisible();
+    await expect(
+      messagesList.getByText("tc=first-edited", { exact: true }),
+    ).toBeVisible({ timeout: Timeout.EXTRA_LONG });
+    await expect(
+      messagesList.getByText("tc=third", { exact: true }),
+    ).toBeVisible({
+      timeout: Timeout.EXTRA_LONG,
+    });
+    await po.chatActions.waitForChatCompletion({ timeout: Timeout.EXTRA_LONG });
     // "tc=second" was deleted, so it should NOT appear
     await expect(messagesList.getByText("tc=second")).not.toBeVisible();
   });
@@ -170,6 +180,7 @@ test.describe("queued messages", () => {
     await po.sendPrompt("tc=1 [sleep=long]", {
       skipWaitForCompletion: true,
     });
+    await waitForGeneration(po);
     await expect(chatInput).toBeVisible();
 
     await queueMessage(po.page, chatInput, "tc=2 [sleep=medium]");
@@ -192,8 +203,10 @@ test.describe("queued messages", () => {
     ).toBeVisible();
     await po.toastNotifications.expectNoToast();
 
-    await chatInput.fill("tc=3");
-    await chatInput.press("Enter");
+    // Cancellation replaces the composer while its acceptance state settles.
+    // Use the resilient Send-button path so this submission targets the current
+    // editor and resumes the parked queue.
+    await po.sendPrompt("tc=3", { skipWaitForCompletion: true });
 
     await expect(
       po.page.getByRole("button", { name: /cancel generation/i }),
@@ -214,8 +227,9 @@ test.describe("queued messages", () => {
     await po.sendPrompt("tc=1 [sleep=medium]", {
       skipWaitForCompletion: true,
     });
+    await waitForGeneration(po);
 
-    // Wait for chat input to appear (indicates we're in chat view and streaming)
+    // Wait for chat input to appear now that streaming is active.
     await expect(chatInput).toBeVisible();
 
     // While streaming, queue a second message
@@ -264,6 +278,7 @@ test("keeps queued prompts across renderer reload", async ({
   await po.sendPrompt("tc=1 [sleep=long]", {
     skipWaitForCompletion: true,
   });
+  await waitForGeneration(po);
   await expect(chatInput).toBeVisible();
 
   for (const prompt of queuedPrompts) {
@@ -334,6 +349,7 @@ baseTest(
       await firstSession.po.sendPrompt("tc=1 [sleep=long]", {
         skipWaitForCompletion: true,
       });
+      await waitForGeneration(firstSession.po);
       await expect(chatInput).toBeVisible();
       for (const prompt of queuedPrompts) {
         await queueMessage(firstSession.po.page, chatInput, prompt);

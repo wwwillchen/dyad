@@ -185,6 +185,8 @@ If Playwright's `config.webServer` exits while building `testing/fake-llm-server
 
 If every test in a run fails with `apiRequestContext.post: connect ECONNREFUSED ::1:3500`, the run likely reused a fake LLM server leaked from a previous (killed) Playwright run that then finished tearing down mid-run (`reuseExistingServer` is true locally). Kill whatever is listening on port 3500 (`lsof -nP -i :3500`) and rerun.
 
+After changing `testing/fake-llm-server`, run its package build and restart the listener on port 3500 before rerunning Playwright. Local `reuseExistingServer` can otherwise keep serving stale compiled `dist` code, making the source fix appear ineffective.
+
 If this happens:
 
 1. Verify whether the failure reproduces on an existing known-good E2E spec.
