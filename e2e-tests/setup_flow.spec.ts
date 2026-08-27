@@ -246,7 +246,7 @@ testSetup.describe("Setup Flow", () => {
     async ({ po }) => {
       await seedFakeModelSelection(po);
       const attachmentPath =
-        "e2e-tests/fixtures/attachment-only-setup-resume.txt";
+        "e2e-tests/fixtures/[dump]-attachment-only-setup-resume.txt";
       const dialog = await openAiSetupDialog(po, "", {
         beforeSubmit: async () => {
           await attachHomeChatContextFile(po, attachmentPath);
@@ -274,8 +274,9 @@ testSetup.describe("Setup Flow", () => {
 
       const dump = await readLastServerDump(po);
       const serializedDump = JSON.stringify(dump);
-      expect(serializedDump).toContain("attachment-only-setup-resume.txt");
-      expect(serializedDump).toContain("Attachment-only setup resume fixture.");
+      expect(serializedDump).toContain(
+        "attachments:[dump]-attachment-only-setup-resume.txt",
+      );
     },
   );
 

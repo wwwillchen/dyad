@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   convertLegacyFixtureToLocalAgent,
   extractLocalAgentFixture,
+  extractSyntheticDelayMs,
 } from "../../testing/fake-llm-server/localAgentHandler";
 
 describe("legacy Build fixture adapter", () => {
@@ -94,5 +95,24 @@ Done`);
         "Fix these 2 TypeScript compile-time errors in a concise way.",
       ),
     ).toBe("fix-typescript-errors");
+  });
+
+  it("preserves legacy synthetic response delays for agentic fixtures", () => {
+    expect(
+      extractSyntheticDelayMs([
+        { role: "user", content: "tc=1 [sleep=medium]" },
+      ]),
+    ).toBe(10_000);
+    expect(
+      extractSyntheticDelayMs([
+        {
+          role: "user",
+          content: [{ type: "text", text: "tc=1 [sleep=long]" }],
+        },
+      ]),
+    ).toBe(30_000);
+    expect(
+      extractSyntheticDelayMs([{ role: "user", content: "tc=1" }]),
+    ).toBeUndefined();
   });
 });

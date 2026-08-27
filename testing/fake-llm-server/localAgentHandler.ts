@@ -286,6 +286,22 @@ function extractSyntheticUsage(messages: any[]): Turn["usage"] | undefined {
   return undefined;
 }
 
+export function extractSyntheticDelayMs(messages: any[]): number | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message?.role !== "user" || isToolResultMessage(message)) continue;
+    const text = Array.isArray(message.content)
+      ? message.content.find((part: any) => part.type === "text")?.text
+      : typeof message.content === "string"
+        ? message.content
+        : null;
+    const delay = text?.match(/\[sleep=(medium|long)\]/)?.[1];
+    if (delay === "medium") return 10_000;
+    if (delay === "long") return 30_000;
+  }
+  return undefined;
+}
+
 /**
  * Load a fixture file dynamically
  * Tries .ts first (for dev mode with ts-node), then .js
@@ -747,6 +763,11 @@ export async function handleLocalAgentFixture(
     const syntheticUsage = extractSyntheticUsage(messages);
     if (syntheticUsage && !turn.toolCalls?.length) {
       turn = { ...turn, usage: syntheticUsage };
+    }
+    const syntheticDelayMs =
+      turnIndex === 0 ? extractSyntheticDelayMs(messages) : undefined;
+    if (syntheticDelayMs && !turn.delayMs) {
+      turn = { ...turn, delayMs: syntheticDelayMs };
     }
     fakeLlmLog(
       `[local-agent] Executing pass ${passIndex}, turn ${turnIndex}:`,
