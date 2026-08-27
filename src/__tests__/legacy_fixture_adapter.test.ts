@@ -114,5 +114,12 @@ Done`);
     expect(
       extractSyntheticDelayMs([{ role: "user", content: "tc=1" }]),
     ).toBeUndefined();
+    expect(
+      extractSyntheticDelayMs([
+        { role: "user", content: "tc=1 [sleep=medium]" },
+        { role: "assistant", content: "Done" },
+        { role: "user", content: "tc=2" },
+      ]),
+    ).toBeUndefined();
   });
 });

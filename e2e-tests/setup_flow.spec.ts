@@ -6,6 +6,7 @@ import {
 import { expect, type Locator } from "@playwright/test";
 import type { ElectronApplication } from "playwright";
 import * as fs from "fs";
+import path from "path";
 
 const testSetup = testWithConfig({
   showSetupScreen: true,
@@ -245,6 +246,9 @@ testSetup.describe("Setup Flow", () => {
     "Google API key setup resumes an attachment-only first prompt",
     async ({ po }) => {
       await seedFakeModelSelection(po);
+      // Agentic Build receives attachment logical paths rather than eagerly
+      // inlined contents. The marker in the filename makes the fake model dump
+      // that request while remaining a valid logical attachment path.
       const attachmentPath =
         "e2e-tests/fixtures/[dump]-attachment-only-setup-resume.txt";
       const dialog = await openAiSetupDialog(po, "", {
@@ -277,6 +281,34 @@ testSetup.describe("Setup Flow", () => {
       expect(serializedDump).toContain(
         "attachments:[dump]-attachment-only-setup-resume.txt",
       );
+
+      // Prove the resumed turn persisted both the logical mapping and payload
+      // used by attachment-aware agent tools such as read_file.
+      const appPath = await po.appManagement.getCurrentAppPath();
+      const mediaDir = path.join(appPath, ".dyad", "media");
+      const manifest = JSON.parse(
+        fs.readFileSync(
+          path.join(mediaDir, "attachments-manifest.json"),
+          "utf8",
+        ),
+      ) as Array<{
+        logicalName: string;
+        originalName: string;
+        storedFileName: string;
+      }>;
+      const attachment = manifest.find(
+        (entry) =>
+          entry.logicalName === "[dump]-attachment-only-setup-resume.txt",
+      );
+      expect(attachment).toMatchObject({
+        originalName: "[dump]-attachment-only-setup-resume.txt",
+      });
+      expect(
+        fs.readFileSync(
+          path.join(mediaDir, attachment!.storedFileName),
+          "utf8",
+        ),
+      ).toContain("Attachment-only setup resume fixture.");
     },
   );
 

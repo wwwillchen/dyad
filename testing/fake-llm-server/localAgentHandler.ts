@@ -298,6 +298,7 @@ export function extractSyntheticDelayMs(messages: any[]): number | undefined {
     const delay = text?.match(/\[sleep=(medium|long)\]/)?.[1];
     if (delay === "medium") return 10_000;
     if (delay === "long") return 30_000;
+    return undefined;
   }
   return undefined;
 }
