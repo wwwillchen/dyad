@@ -8,6 +8,8 @@ import log from "electron-log";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 const logger = log.scope("fallback_model");
+const DYAD_REQUEST_ID_HEADER = "x-dyad-internal-request-id";
+const MAX_LOG_FIELD_LENGTH = 500;
 
 // Types
 interface FallbackSettings {
@@ -61,6 +63,72 @@ const RETRYABLE_ERROR_PATTERNS = [
   "etimedout",
   "unknown_error",
 ];
+
+function normalizeLogField(value: unknown): string | undefined {
+  if (value == null || value === "") return undefined;
+
+  const normalized = String(value).replace(/\s+/g, " ").trim();
+  if (!normalized) return undefined;
+  return normalized.slice(0, MAX_LOG_FIELD_LENGTH);
+}
+
+/**
+ * Produce a compact error description for fallback logs. Avoid serializing the
+ * full error because provider errors can contain request bodies and headers.
+ */
+export function formatFallbackErrorForLog(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return `message=${normalizeLogField(error) ?? "unknown error"}`;
+  }
+
+  const outer = error as Record<string, any>;
+  const inner =
+    outer.error && typeof outer.error === "object"
+      ? (outer.error as Record<string, any>)
+      : undefined;
+  const cause =
+    outer.cause && typeof outer.cause === "object"
+      ? (outer.cause as Record<string, any>)
+      : undefined;
+
+  const fields = {
+    status:
+      outer.statusCode ??
+      outer.status ??
+      outer.response?.status ??
+      inner?.statusCode ??
+      inner?.status,
+    providerRequestId:
+      outer.requestId ??
+      outer.request_id ??
+      inner?.requestId ??
+      inner?.request_id ??
+      outer.response?.headers?.["x-request-id"],
+    code: outer.code ?? inner?.code ?? cause?.code,
+    type: outer.type ?? inner?.type ?? cause?.type,
+    message:
+      outer.message ?? inner?.message ?? cause?.message ?? "unknown error",
+    cause:
+      cause?.message && cause.message !== outer.message
+        ? cause.message
+        : undefined,
+  };
+
+  return Object.entries(fields)
+    .map(([key, value]) => {
+      const normalized = normalizeLogField(value);
+      return normalized ? `${key}=${normalized}` : undefined;
+    })
+    .filter((field): field is string => Boolean(field))
+    .join(" ");
+}
+
+function getRequestId(options: LanguageModelV3CallOptions): string {
+  const headers = options.headers as
+    | Record<string, string | undefined>
+    | undefined;
+  return headers?.[DYAD_REQUEST_ID_HEADER] ?? "unknown";
+}
 
 export function defaultShouldRetryThisError(error: any): boolean {
   if (!error) return false;
@@ -199,6 +267,7 @@ class FallbackModel implements LanguageModelV3 {
   private async retry<T>(
     operation: (state: RetryState) => Promise<T>,
     operationName: string,
+    requestId: string,
   ): Promise<T> {
     const state: RetryState = {
       attemptNumber: 0,
@@ -217,12 +286,14 @@ class FallbackModel implements LanguageModelV3 {
           return await operation(state);
         } catch (error) {
           const err = error as Error;
-          state.errors.push({ modelId: this.modelId, error: err });
+          const failedModelId = this.modelId;
+          const errorDetails = formatFallbackErrorForLog(err);
+          state.errors.push({ modelId: failedModelId, error: err });
 
           // Check if we should retry this error
           if (!defaultShouldRetryThisError(err)) {
             logger.warn(
-              `Non-retryable error from model ${this.modelId}, not falling back`,
+              `Non-retryable error from model ${failedModelId}; not falling back (requestId=${requestId}, stage=${operationName}, attempt=${state.attemptNumber}/${this.maxRetries}, error="${errorDetails}")`,
             );
             throw err;
           }
@@ -243,8 +314,8 @@ class FallbackModel implements LanguageModelV3 {
           // Switch to next model
           this.switchToNextModel();
           state.modelsAttempted.add(this.currentModelIndex);
-          logger.info(
-            `Falling back to model ${this.modelId} (attempt ${state.attemptNumber}/${this.maxRetries})`,
+          logger.warn(
+            `Falling back from model ${failedModelId} to ${this.modelId} (requestId=${requestId}, stage=${operationName}, attempt=${state.attemptNumber}/${this.maxRetries}, error="${errorDetails}")`,
           );
         }
       }
@@ -267,22 +338,27 @@ class FallbackModel implements LanguageModelV3 {
 
   async doStream(options: LanguageModelV3CallOptions): Promise<StreamResult> {
     this.checkAndResetModel();
+    const requestId = getRequestId(options);
 
-    return this.retry(async (retryState) => {
-      const result = await this.getUnderlyingModel().doStream(options);
+    return this.retry(
+      async (retryState) => {
+        const result = await this.getUnderlyingModel().doStream(options);
 
-      // Create a wrapped stream that handles errors gracefully
-      const wrappedStream = this.createWrappedStream(
-        result.stream,
-        options,
-        retryState,
-      );
+        // Create a wrapped stream that handles errors gracefully
+        const wrappedStream = this.createWrappedStream(
+          result.stream,
+          options,
+          retryState,
+        );
 
-      return {
-        ...result,
-        stream: wrappedStream,
-      };
-    }, "stream");
+        return {
+          ...result,
+          stream: wrappedStream,
+        };
+      },
+      "initial-request",
+      requestId,
+    );
   }
 
   private createWrappedStream(
@@ -345,9 +421,11 @@ class FallbackModel implements LanguageModelV3 {
             retryState.attemptNumber < fallbackModel.maxRetries;
 
           if (shouldRetry) {
+            const failedModelId = fallbackModel.modelId;
+            const errorDetails = formatFallbackErrorForLog(err);
             // Track this error
             retryState.errors.push({
-              modelId: fallbackModel.modelId,
+              modelId: failedModelId,
               error: err,
             });
             retryState.attemptNumber++;
@@ -373,8 +451,8 @@ class FallbackModel implements LanguageModelV3 {
               return;
             }
 
-            logger.info(
-              `Stream error from model, falling back to ${fallbackModel.modelId} (attempt ${retryState.attemptNumber}/${fallbackModel.maxRetries})`,
+            logger.warn(
+              `Falling back from model ${failedModelId} to ${fallbackModel.modelId} (requestId=${getRequestId(options)}, stage=stream, hasStreamedContent=${hasStreamedContent}, attempt=${retryState.attemptNumber}/${fallbackModel.maxRetries}, error="${errorDetails}")`,
             );
 
             try {
@@ -386,8 +464,9 @@ class FallbackModel implements LanguageModelV3 {
               controller.error(nextError);
             }
           } else {
+            const errorDetails = formatFallbackErrorForLog(err);
             logger.warn(
-              `Stream error not retryable (hasContent=${hasStreamedContent}, retryable=${defaultShouldRetryThisError(err)}, attempts=${retryState.attemptNumber}/${fallbackModel.maxRetries}), propagating error`,
+              `Stream error not retryable; propagating error (requestId=${getRequestId(options)}, model=${fallbackModel.modelId}, hasStreamedContent=${hasStreamedContent}, retryable=${defaultShouldRetryThisError(err)}, attempt=${retryState.attemptNumber}/${fallbackModel.maxRetries}, error="${errorDetails}")`,
             );
             controller.error(err);
           }
