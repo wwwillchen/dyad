@@ -136,7 +136,7 @@ export const languageModelContracts = {
   createCustomModel: defineContract({
     channel: "create-custom-language-model",
     input: CreateCustomLanguageModelParamsSchema,
-    output: z.void(),
+    output: z.number(),
   }),
 
   deleteCustomModel: defineContract({

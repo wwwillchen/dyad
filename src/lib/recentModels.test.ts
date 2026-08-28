@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { addRecentModel, getEffectiveRecentModels } from "./recentModels";
+import {
+  addRecentModel,
+  getEffectiveRecentModels,
+  replaceRecentModelIdentity,
+} from "./recentModels";
 
 describe("recent models", () => {
   it("uses the selected specific model when history has not been created yet", () => {
@@ -73,5 +77,29 @@ describe("recent models", () => {
         { provider: "auto", name: "auto" },
       ),
     ).toEqual([{ provider: "openai", name: "gpt-5" }]);
+  });
+
+  it("replaces edited custom model ids and legacy id-less references", () => {
+    const replacement = {
+      provider: "custom",
+      name: "renamed-model",
+      customModelId: 9,
+    };
+
+    expect(
+      replaceRecentModelIdentity(
+        [
+          { provider: "custom", name: "old-model", customModelId: 4 },
+          { provider: "custom", name: "old-model" },
+          { provider: "custom", name: "old-model", customModelId: 5 },
+        ],
+        { provider: "custom", name: "old-model", customModelId: 4 },
+        replacement,
+      ),
+    ).toEqual([
+      replacement,
+      replacement,
+      { provider: "custom", name: "old-model", customModelId: 5 },
+    ]);
   });
 });

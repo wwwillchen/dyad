@@ -3,7 +3,7 @@
  * Handles model and provider selection.
  */
 
-import { expect, type Locator, Page } from "@playwright/test";
+import { errors, expect, type Locator, Page } from "@playwright/test";
 
 const QUICK_VISIBILITY_TIMEOUT_MS = 1_000;
 
@@ -69,13 +69,18 @@ export class ModelPicker {
   }
 
   private async isVisibleSoon(locator: Locator) {
-    return locator
-      .waitFor({
+    try {
+      await locator.waitFor({
         state: "visible",
         timeout: QUICK_VISIBILITY_TIMEOUT_MS,
-      })
-      .then(() => true)
-      .catch(() => false);
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof errors.TimeoutError) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   private async selectProviderSubmenuModel(model: string) {

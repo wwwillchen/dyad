@@ -858,6 +858,7 @@ describe("ModelPicker", () => {
     const recentRow = document.querySelector(
       '[data-model-provider="openai"][data-model-name="gpt-5"]',
     );
+    expect(recentRow).not.toBeNull();
     expect(recentRow?.nextElementSibling?.getAttribute("data-slot")).not.toBe(
       "dropdown-menu-separator",
     );

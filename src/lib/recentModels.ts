@@ -43,3 +43,18 @@ export function addRecentModel(
     ...recentModels.filter((recent) => !isSameModel(recent, model)),
   ].slice(0, MAX_RECENT_MODELS);
 }
+
+export function replaceRecentModelIdentity(
+  recentModels: LargeLanguageModel[] | undefined,
+  previous: LargeLanguageModel,
+  replacement: LargeLanguageModel,
+): LargeLanguageModel[] | undefined {
+  return recentModels?.map((model) =>
+    model.provider === previous.provider &&
+    model.name === previous.name &&
+    (model.customModelId === undefined ||
+      model.customModelId === previous.customModelId)
+      ? replacement
+      : model,
+  );
+}

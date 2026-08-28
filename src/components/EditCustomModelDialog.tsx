@@ -14,8 +14,10 @@ import { ipc } from "@/ipc/types";
 import { useSettings } from "@/hooks/useSettings";
 import { useMutation } from "@tanstack/react-query";
 import { showError, showSuccess } from "@/lib/toast";
+import { replaceRecentModelIdentity } from "@/lib/recentModels";
 
 interface Model {
+  id?: number;
   apiName: string;
   displayName: string;
   description?: string;
@@ -60,6 +62,7 @@ export function EditCustomModelDialog({
   const mutation = useMutation({
     mutationFn: async () => {
       if (!model) throw new Error("No model to edit");
+      if (model.id === undefined) throw new Error("Custom model ID is missing");
 
       const newParams = {
         apiName,
@@ -87,7 +90,7 @@ export function EditCustomModelDialog({
       });
 
       // Then create the new model
-      await ipc.languageModel.createCustomModel({
+      return ipc.languageModel.createCustomModel({
         providerId: newParams.providerId,
         displayName: newParams.displayName,
         apiName: newParams.apiName,
@@ -96,20 +99,44 @@ export function EditCustomModelDialog({
         contextWindow: newParams.contextWindow,
       });
     },
-    onSuccess: async () => {
-      if (
-        settings?.selectedModel?.name === model?.apiName &&
-        settings?.selectedModel?.provider === providerId
-      ) {
-        const newModel = {
-          ...settings.selectedModel,
-          name: apiName,
+    onSuccess: async (customModelId) => {
+      if (!model) return;
+      if (settings) {
+        const previousModel = {
+          provider: providerId,
+          name: model.apiName,
+          customModelId: model.id,
         };
-        try {
-          await updateSettings({ selectedModel: newModel });
-        } catch {
-          showError("Failed to update settings");
-          return; // stop closing dialog
+        const replacementModel = {
+          provider: providerId,
+          name: apiName,
+          customModelId,
+        };
+        const [selectedModel] = replaceRecentModelIdentity(
+          [settings.selectedModel],
+          previousModel,
+          replacementModel,
+        )!;
+        const recentModels = replaceRecentModelIdentity(
+          settings.recentModels,
+          previousModel,
+          replacementModel,
+        );
+        const selectedModelChanged = selectedModel !== settings.selectedModel;
+        const recentModelsChanged = recentModels?.some(
+          (recentModel, index) =>
+            recentModel !== settings.recentModels?.[index],
+        );
+        if (selectedModelChanged || recentModelsChanged) {
+          try {
+            await updateSettings({
+              ...(selectedModelChanged ? { selectedModel } : {}),
+              ...(recentModelsChanged ? { recentModels } : {}),
+            });
+          } catch {
+            showError("Failed to update settings");
+            return; // stop closing dialog
+          }
         }
       }
       showSuccess("Custom model updated successfully!");

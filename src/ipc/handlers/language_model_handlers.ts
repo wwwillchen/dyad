@@ -102,7 +102,7 @@ export function registerLanguageModelHandlers() {
     async (
       event: IpcMainInvokeEvent,
       params: CreateCustomLanguageModelParams,
-    ): Promise<void> => {
+    ): Promise<number> => {
       const {
         apiName,
         displayName,
@@ -143,15 +143,19 @@ export function registerLanguageModelHandlers() {
       }
 
       // Insert the new model
-      await db.insert(languageModelsSchema).values({
-        displayName,
-        apiName,
-        builtinProviderId: provider.type === "cloud" ? providerId : undefined,
-        customProviderId: provider.type === "custom" ? providerId : undefined,
-        description: description || null,
-        max_output_tokens: maxOutputTokens || null,
-        context_window: contextWindow || null,
-      });
+      const result = db
+        .insert(languageModelsSchema)
+        .values({
+          displayName,
+          apiName,
+          builtinProviderId: provider.type === "cloud" ? providerId : undefined,
+          customProviderId: provider.type === "custom" ? providerId : undefined,
+          description: description || null,
+          max_output_tokens: maxOutputTokens || null,
+          context_window: contextWindow || null,
+        })
+        .run();
+      return Number(result.lastInsertRowid);
     },
   );
   handle(
