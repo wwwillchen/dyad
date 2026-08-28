@@ -371,9 +371,6 @@
     "inputRequired": "입력 필요"
   },
   "guide": "가이드",
-  "agentModeActivated": "에이전트 모드 활성화됨",
-  "agentModeTip": "팁: 새 채팅을 만들면 에이전트에게 더 나은 결과를 위한 깨끗한 컨텍스트를 제공할 수 있습니다.",
-  "neverShowAgain": "다시 표시 안 함",
   "annotations": {
     "commentOnSelection": "선택한 텍스트에 댓글 달기",
     "editComment": "댓글 수정",
