@@ -66,13 +66,13 @@ const parseSummaryIssues = (value) => {
   const rows = [];
   for (const line of lines) {
     if (!line.startsWith("|")) continue;
-    if (line.includes("---")) continue;
 
     const cells = line
       .split("|")
       .slice(1, -1)
       .map((cell) => cell.trim());
     if (cells.length !== 3) continue;
+    if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
 
     const severity = cells[0]
       .replace(/^:[^:]+:\s*/, "")
