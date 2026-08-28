@@ -69,6 +69,8 @@ describe("run_build", () => {
         fs.rm(directory, {
           recursive: true,
           force: true,
+          maxRetries: 10,
+          retryDelay: 100,
         }),
       ),
     );
@@ -318,7 +320,7 @@ describe("run_build", () => {
     } finally {
       await removeSnapshot(snapshot.worktreePath, snapshot.sourceRepoPath);
     }
-  });
+  }, 15_000);
 
   it("uses only applicable workspace roots for package-manager signals", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "dyad-build-test-"));

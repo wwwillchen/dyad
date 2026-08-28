@@ -6,7 +6,15 @@ import http from "node:http";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { ipc } from "@/ipc/types";
@@ -20,6 +28,11 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { mcpServers } from "@/db/schema";
 import { decryptFromString } from "@/ipc/utils/mcp_oauth_provider";
+
+vi.mock("@/lib/toast", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/toast")>()),
+  showSuccess: vi.fn(),
+}));
 
 describe("Plugins catalog (integration)", () => {
   let harness: HybridChatHarness;
