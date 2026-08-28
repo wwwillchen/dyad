@@ -560,7 +560,7 @@ describe("ModelPicker", () => {
     ).toContain("New");
     expect(screen.queryByText("GPT 5")).toBeNull();
     expect(screen.queryByText("Premium")).toBeNull();
-    expect(screen.getByText("Local models")).toBeTruthy();
+    expect(screen.queryByText("Local models")).toBeNull();
     expect(screen.queryByText("Free (OpenRouter)")).toBeNull();
     expect(screen.getByText("Dyad Free")).toBeTruthy();
     expect(screen.getByText("2/5 left")).toBeTruthy();
@@ -594,19 +594,13 @@ describe("ModelPicker", () => {
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
-  it("puts common catalog navigation before local models and quick choices", () => {
+  it("keeps All models as the only catalog entry before quick choices", () => {
     render(<ModelPicker />);
 
     const allModels = screen.getByText("All models").closest("button")!;
-    const localModels = screen.getByText("Local models").closest("button")!;
-    const localNavigationGroup = localModels.parentElement!;
-
+    expect(screen.queryByText("Local models")).toBeNull();
     expect(
-      allModels.compareDocumentPosition(localModels) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(
-      localNavigationGroup.nextElementSibling?.getAttribute("data-slot"),
+      allModels.parentElement?.nextElementSibling?.getAttribute("data-slot"),
     ).toBe("dropdown-menu-separator");
   });
 
@@ -626,8 +620,8 @@ describe("ModelPicker", () => {
     expect(screen.getByText("GPT 5")).toBeTruthy();
     expect(screen.getByText("Claude Sonnet 4.5")).toBeTruthy();
     const gptRow = screen.getByText("GPT 5").closest("button")!;
-    expect(within(gptRow).getByText("OpenAI")).toBeTruthy();
-    expect(gptRow.getAttribute("aria-label")).toContain("GPT 5. OpenAI");
+    expect(within(gptRow).queryByText("OpenAI")).toBeNull();
+    expect(gptRow.getAttribute("aria-label")).not.toContain("OpenAI");
     expect(screen.getAllByText("Auto Sidekick")).toHaveLength(1);
   });
 
@@ -848,7 +842,7 @@ describe("ModelPicker", () => {
     });
   });
 
-  it("identifies providers on pending Recent local model rows", () => {
+  it("does not show providers on pending Recent local model rows", () => {
     mocks.settings.recentModels = [
       { provider: "ollama", name: "shared-model" },
       { provider: "lmstudio", name: "shared-model" },
@@ -856,14 +850,10 @@ describe("ModelPicker", () => {
 
     render(<ModelPicker />);
 
-    const ollamaRow = screen.getByLabelText(
-      "shared-model. Ollama. Loading local model",
-    );
-    const lmStudioRow = screen.getByLabelText(
-      "shared-model. LM Studio. Loading local model",
-    );
-    expect(within(ollamaRow).getByText("Ollama")).toBeTruthy();
-    expect(within(lmStudioRow).getByText("LM Studio")).toBeTruthy();
+    const rows = screen.getAllByLabelText("shared-model. Loading local model");
+    expect(rows).toHaveLength(2);
+    expect(screen.queryByText("Ollama")).toBeNull();
+    expect(screen.queryByText("LM Studio")).toBeNull();
   });
 
   it("hides cached local recents after the provider refresh fails", () => {
@@ -885,7 +875,7 @@ describe("ModelPicker", () => {
     expect(screen.queryByText("Qwen3 Coder 30B")).toBeNull();
   });
 
-  it("identifies providers on ambiguous Recent local model rows", () => {
+  it("does not show providers on ambiguous Recent local model rows", () => {
     mocks.ollamaModels = [
       {
         provider: "ollama",
@@ -907,20 +897,12 @@ describe("ModelPicker", () => {
 
     render(<ModelPicker />);
 
-    const ollamaRow = screen.getByLabelText(/Shared Local\. Ollama\./);
-    const lmStudioRow = screen.getByLabelText(/Shared Local\. LM Studio\./);
-    expect(
-      within(ollamaRow as HTMLElement).getByText("Ollama · shared-model"),
-    ).toBeTruthy();
-    expect(
-      within(lmStudioRow as HTMLElement).getByText("LM Studio · shared-model"),
-    ).toBeTruthy();
-    expect(ollamaRow.getAttribute("aria-label")).toContain(
-      "Shared Local. Ollama.",
-    );
-    expect(lmStudioRow.getAttribute("aria-label")).toContain(
-      "Shared Local. LM Studio.",
-    );
+    const rows = screen.getAllByLabelText(/^Shared Local\. Effort:/);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(within(row).getByText("shared-model")).toBeTruthy();
+      expect(row.getAttribute("aria-label")).not.toMatch(/Ollama|LM Studio/);
+    }
   });
 
   it("keeps local models reachable while the cloud catalog loads", () => {
@@ -930,18 +912,25 @@ describe("ModelPicker", () => {
     render(<ModelPicker />);
 
     expect(screen.getAllByText("All models").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Local models").length).toBeGreaterThan(0);
+    expect(screen.getByText("Local providers")).toBeTruthy();
+    expect(screen.getByText("Ollama")).toBeTruthy();
+    expect(screen.getByText("LM Studio")).toBeTruthy();
     expect(screen.getByText("Loading cloud models...")).toBeTruthy();
   });
 
   it("shows a cloud catalog error without hiding local models", () => {
     mocks.catalogUnavailable = true;
     mocks.catalogError = new Error("catalog unavailable");
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
-    expect(screen.getByText("Couldn’t load cloud models")).toBeTruthy();
-    expect(screen.getAllByText("Local models").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("Couldn’t load cloud models").length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText("Local providers")).toBeTruthy();
+    expect(screen.getByText("Ollama")).toBeTruthy();
+    expect(screen.getByText("LM Studio")).toBeTruthy();
   });
 
   it("does not leave a trailing separator after Recent", () => {
@@ -958,15 +947,21 @@ describe("ModelPicker", () => {
     );
   });
 
-  it("keeps Ollama and LM Studio in a separate Local models submenu", () => {
+  it("lists Ollama and LM Studio directly under Local providers", () => {
     mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
-    const localModelsMenu = screen.getByTestId("local-models-submenu");
-    expect(within(localModelsMenu).getByText("Ollama")).toBeTruthy();
-    expect(within(localModelsMenu).getByText("LM Studio")).toBeTruthy();
-    expect(within(localModelsMenu).queryByText("xAI")).toBeNull();
+    const allModelsMenu = screen.getByTestId("more-models-submenu");
+    const localProviders = within(allModelsMenu).getByText("Local providers");
+    const cloudProviders = within(allModelsMenu).getByText("Cloud providers");
+    expect(
+      localProviders.compareDocumentPosition(cloudProviders) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(within(allModelsMenu).getByText("Ollama")).toBeTruthy();
+    expect(within(allModelsMenu).getByText("LM Studio")).toBeTruthy();
+    expect(screen.queryByText("Local models")).toBeNull();
   });
 
   it("opens nested navigation submenus on hover with forgiving pointer timing", () => {
@@ -980,7 +975,12 @@ describe("ModelPicker", () => {
         .map((element) => element.closest("button"))
         .find((element): element is HTMLButtonElement => element !== null)!;
 
-    for (const label of ["Google Vertex AI", "Ollama", "LM Studio"]) {
+    for (const label of [
+      "All models",
+      "Google Vertex AI",
+      "Ollama",
+      "LM Studio",
+    ]) {
       const trigger = getTrigger(label);
       expect(trigger.dataset.openOnHover).toBe("true");
       expect(trigger.dataset.hoverDelay).toBe("120");
@@ -997,10 +997,6 @@ describe("ModelPicker", () => {
     expect(
       screen.getByText("GPT 5").closest("button")?.dataset.openOnHover,
     ).toBeUndefined();
-
-    for (const label of ["Local models", "All models"]) {
-      expect(getTrigger(label).dataset.openOnHover).toBeUndefined();
-    }
   });
 
   it("gives model-list menus room while keeping model metadata separate", () => {
@@ -1020,11 +1016,13 @@ describe("ModelPicker", () => {
     );
   });
 
-  it("groups secondary providers under Other providers regardless of price", () => {
+  it("groups secondary providers under Cloud providers regardless of price", () => {
     mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
+    expect(screen.getByText("Cloud providers")).toBeTruthy();
+    expect(screen.queryByText("Other providers")).toBeNull();
     const vertexModels = screen.getByTestId("other-provider-models-vertex");
     expect(
       within(vertexModels).getByText("Vertex Gemini 2.5 Pro"),
