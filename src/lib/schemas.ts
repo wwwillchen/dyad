@@ -478,7 +478,6 @@ const BaseUserSettingsFields = {
   customAppsFolder: z.string().optional().nullable(),
   isRunning: z.boolean().optional(),
   lastKnownPerformance: LastKnownPerformanceSchema.optional(),
-  hideLocalAgentNewChatToast: z.boolean().optional(),
   enableContextCompaction: z.boolean().optional(),
   skipNotificationBanner: z.boolean().optional(),
   previewIdleTimeoutPolicy: z.enum(["default", "never"]).optional(),

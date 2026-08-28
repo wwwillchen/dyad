@@ -10,7 +10,6 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
-import { useSettings } from "@/hooks/useSettings";
 import { useChatMode } from "@/hooks/useChatMode";
 import { useFreeAgentQuota } from "@/hooks/useFreeAgentQuota";
 import type { ChatMode } from "@/lib/schemas";
@@ -20,10 +19,8 @@ import { cn } from "@/lib/utils";
 import { detectIsMac } from "@/hooks/useChatModeToggle";
 import { useRouterState } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { LocalAgentNewChatToast } from "./LocalAgentNewChatToast";
 import { useSetAtom } from "jotai";
 import { hasManuallySelectedChatModeAtom } from "@/atoms/chatAtoms";
-import { useChatMessageCount } from "@/hooks/useChatMessages";
 import { Hammer, Bot, MessageCircle, Lightbulb } from "lucide-react";
 import { useEffect } from "react";
 import {
@@ -33,11 +30,9 @@ import {
 } from "@/lib/freeProModel";
 
 export function ChatModeSelector() {
-  const { updateSettings } = useSettings();
   const routerState = useRouterState();
   const isChatRoute = routerState.location.pathname === "/chat";
   const chatId = routerState.location.search.id as number | undefined;
-  const currentChatMessageCount = useChatMessageCount(chatId);
   const { selectedMode, storedChatMode, selectedModel, setChatMode, settings } =
     useChatMode(isChatRoute ? chatId : null);
   const setHasManuallySelectedChatMode = useSetAtom(
@@ -76,33 +71,6 @@ export function ChatModeSelector() {
       setHasManuallySelectedChatMode(true);
     }
     void setChatMode(newMode).catch(() => {});
-
-    // We want to show a toast when user is switching to the new agent mode
-    // because they might weird results mixing Build and Agent mode in the same chat.
-    //
-    // Only show toast if:
-    // - User is switching to the new agent mode
-    // - User is on the chat (not home page) with existing messages
-    // - User has not explicitly disabled the toast
-    if (
-      newMode === "local-agent" &&
-      isChatRoute &&
-      currentChatMessageCount > 0 &&
-      !settings?.hideLocalAgentNewChatToast
-    ) {
-      toast.custom(
-        (t) => (
-          <LocalAgentNewChatToast
-            toastId={t}
-            onNeverShowAgain={() => {
-              updateSettings({ hideLocalAgentNewChatToast: true });
-            }}
-          />
-        ),
-        // Make the toast shorter in test mode for faster tests.
-        { duration: settings?.isTestMode ? 50 : 8000 },
-      );
-    }
   };
 
   const getModeDisplayName = (mode: ChatMode) => {

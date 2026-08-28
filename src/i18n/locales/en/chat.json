@@ -371,9 +371,6 @@
     "inputRequired": "Input Required"
   },
   "guide": "Guide",
-  "agentModeActivated": "Agent Mode Activated",
-  "agentModeTip": "Tip: Create a new chat to give the agent a clean context for better results.",
-  "neverShowAgain": "Never show again",
   "annotations": {
     "commentOnSelection": "Comment on selected text",
     "editComment": "Edit comment",
