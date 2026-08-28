@@ -24,13 +24,13 @@ import {
   NEON_RLS_REQUIRES_JWT_RULE,
 } from "@/prompts/neon_prompt";
 
-describe("local_agent_prompt", () => {
-  const expectGitContextGuidance = (prompt: string) => {
-    expect(prompt).toContain("<git_context>");
-    expect(prompt).toContain("Dyad may add Git provenance to a user message");
-    expect(prompt).not.toContain("<dyad-git-context>");
-  };
+const expectGitContextGuidance = (prompt: string) => {
+  expect(prompt).toContain("<git_context>");
+  expect(prompt).toContain("Dyad may add Git provenance to a user message");
+  expect(prompt).not.toContain("<dyad-git-context>");
+};
 
+describe("local_agent_prompt", () => {
   it("keeps Supabase safety invariants in the disconnected root prompt", () => {
     expect(SUPABASE_DISCONNECTED_SYSTEM_PROMPT).toContain(
       SUPABASE_SERVICE_ROLE_BROWSER_RULE,
@@ -587,8 +587,7 @@ describe("build agent prompt", () => {
     expect(prompt).toContain("`planning_questionnaire`");
     expect(prompt).toContain("`update_todos`");
     expect(prompt).toContain("write_app_blueprint");
-    expect(prompt).toContain("<git_context>");
-    expect(prompt).not.toContain("provided Git inspection tools");
+    expectGitContextGuidance(prompt);
     for (const unavailableTool of [
       "spawn_agent",
       "web_search",
