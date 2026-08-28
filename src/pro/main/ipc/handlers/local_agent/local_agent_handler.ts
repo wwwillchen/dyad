@@ -15,7 +15,12 @@ import {
 import log from "electron-log";
 
 import { db } from "@/db";
-import { chats, messages, mcpServers } from "@/db/schema";
+import {
+  chats,
+  messages,
+  mcpServers,
+  type AiMessagesJsonV6,
+} from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { mcpManager } from "@/ipc/utils/mcp_manager";
 import { requireMcpToolConsent } from "@/ipc/utils/mcp_consent";
@@ -86,6 +91,7 @@ import {
   type MutationActivityOwner,
 } from "./subagents/mutation_activity_tracker";
 import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
+import { COMPLETED_PLANNING_QUESTIONNAIRE_RESULT_PREFIX } from "./tools/planning_questionnaire";
 
 import type {
   ChatStreamParams,
@@ -399,6 +405,33 @@ export function buildChatMessageHistory(
   }
 
   return history;
+}
+
+export function hasCompletedAppBlueprintQuestionnaire(
+  chatMessages: ReadonlyArray<{
+    aiMessagesJson?: AiMessagesJsonV6 | null;
+  }>,
+): boolean {
+  return chatMessages.some((chatMessage) =>
+    chatMessage.aiMessagesJson?.messages.some(
+      (message) =>
+        message.role === "tool" &&
+        message.content.some((part) => {
+          if (
+            part.type !== "tool-result" ||
+            part.toolName !== PLANNING_QUESTIONNAIRE_TOOL_NAME ||
+            !isRecord(part.output) ||
+            part.output.type !== "text" ||
+            typeof part.output.value !== "string"
+          ) {
+            return false;
+          }
+          return part.output.value.startsWith(
+            COMPLETED_PLANNING_QUESTIONNAIRE_RESULT_PREFIX,
+          );
+        }),
+    ),
+  );
 }
 
 /**
@@ -949,6 +982,9 @@ export async function handleLocalAgentStream(
       preCommitHookAvailable,
       testingEnabled: Boolean(chat.app.testingEnabled),
       testRunAttempts: new Map(),
+      appBlueprintQuestionnaireCompleted: hasCompletedAppBlueprintQuestionnaire(
+        chat.messages,
+      ),
       isDyadPro: isDyadProEnabled(settings),
       canUseExplorerSubagent:
         !buildMode &&

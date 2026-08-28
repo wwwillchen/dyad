@@ -365,7 +365,7 @@ You have two tools for editing files. Choose based on the scope of your change:
 - Use \`write_file\` for creating new files or rewriting most of an existing file
 
 **Post-edit verification:**
-\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. A final verification pass happens in the Verify step of the workflow.
+\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. Complete final verification during an implementation turn.
 </file_editing_tool_selection>`;
 
 function basicDevelopmentWorkflowBlock(

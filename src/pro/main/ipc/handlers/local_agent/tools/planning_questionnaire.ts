@@ -10,6 +10,9 @@ import {
 
 const logger = log.scope("planning_questionnaire");
 
+export const COMPLETED_PLANNING_QUESTIONNAIRE_RESULT_PREFIX =
+  "User responses:\n\n";
+
 const QuestionSchema = z
   .object({
     id: z
@@ -172,6 +175,6 @@ export const planningQuestionnaireTool: ToolDefinition<
       `<dyad-questionnaire count="${questions.length}">\n${qaEntries}\n</dyad-questionnaire>`,
     );
 
-    return `User responses:\n\n${formattedAnswers}`;
+    return `${COMPLETED_PLANNING_QUESTIONNAIRE_RESULT_PREFIX}${formattedAnswers}`;
   },
 };

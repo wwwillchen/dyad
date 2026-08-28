@@ -396,6 +396,7 @@ import {
   buildExplorerSynthesisMessage,
   buildImplementerOutcomeNotices,
   handleLocalAgentStream as handleLocalAgentStreamImpl,
+  hasCompletedAppBlueprintQuestionnaire,
   shouldStopAfterAppBlueprintWrite,
 } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
@@ -422,6 +423,47 @@ describe("shouldStopAfterAppBlueprintWrite", () => {
       shouldStopAfterAppBlueprintWrite({
         appBlueprintWrittenThisTurn: true,
       }),
+    ).toBe(true);
+  });
+});
+
+describe("hasCompletedAppBlueprintQuestionnaire", () => {
+  const transcriptWithResult = (value: string): AiMessagesJsonV6 => ({
+    sdkVersion: "ai@v6",
+    messages: [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "questionnaire-call",
+            toolName: "planning_questionnaire",
+            output: { type: "text", value },
+          },
+        ],
+      },
+    ],
+  });
+
+  it("recognizes successful persisted answers but not dismissed questionnaires", () => {
+    expect(hasCompletedAppBlueprintQuestionnaire([])).toBe(false);
+    expect(
+      hasCompletedAppBlueprintQuestionnaire([
+        {
+          aiMessagesJson: transcriptWithResult(
+            "The user dismissed the questionnaire without answering.",
+          ),
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      hasCompletedAppBlueprintQuestionnaire([
+        {
+          aiMessagesJson: transcriptWithResult(
+            "User responses:\n\n**Visual style**\nMinimal",
+          ),
+        },
+      ]),
     ).toBe(true);
   });
 });
