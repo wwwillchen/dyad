@@ -41,7 +41,15 @@ testSkipIfWindows(
     await po.chatActions.waitForChatCompletion();
     await po.chatActions.clickNewChat();
 
-    await po.sendPrompt("tc=local-agent/app-blueprint-rename");
+    await po.sendPrompt("tc=local-agent/app-blueprint-rename", {
+      skipWaitForCompletion: true,
+    });
+    const submitQuestionnaire = po.page
+      .getByTestId("chat-input-container")
+      .getByRole("button", { name: "Submit", exact: true });
+    await expect(submitQuestionnaire).toBeVisible({ timeout: Timeout.MEDIUM });
+    await submitQuestionnaire.click();
+    await po.chatActions.waitForChatCompletion();
 
     const approveButton = po.page.getByRole("button", { name: "Approve Plan" });
     await expect(approveButton).toBeVisible({ timeout: Timeout.MEDIUM });
@@ -66,7 +74,15 @@ testSkipIfWindows(
     await po.chatActions.waitForChatCompletion();
     await po.chatActions.clickNewChat();
 
-    await po.sendPrompt("tc=local-agent/app-blueprint-invalid-name");
+    await po.sendPrompt("tc=local-agent/app-blueprint-invalid-name", {
+      skipWaitForCompletion: true,
+    });
+    const submitQuestionnaire = po.page
+      .getByTestId("chat-input-container")
+      .getByRole("button", { name: "Submit", exact: true });
+    await expect(submitQuestionnaire).toBeVisible({ timeout: Timeout.MEDIUM });
+    await submitQuestionnaire.click();
+    await po.chatActions.waitForChatCompletion();
 
     const approveButton = po.page.getByRole("button", { name: "Approve Plan" });
     await expect(approveButton).toBeVisible({ timeout: Timeout.MEDIUM });

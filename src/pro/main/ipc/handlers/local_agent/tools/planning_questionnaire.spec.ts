@@ -1,5 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentContext } from "./types";
 import { planningQuestionnaireTool } from "./planning_questionnaire";
+
+const registryMocks = vi.hoisted(() => ({
+  request: vi.fn(() => "request-1"),
+  park: vi.fn(),
+}));
+
+vi.mock("@/user_input/main", () => ({
+  userInputRegistry: registryMocks,
+}));
+
+vi.mock("electron-log", () => ({
+  default: {
+    scope: () => ({
+      log: vi.fn(),
+    }),
+  },
+}));
 
 const question = {
   type: "text" as const,
@@ -7,6 +25,11 @@ const question = {
 };
 
 describe("planningQuestionnaireTool", () => {
+  beforeEach(() => {
+    registryMocks.request.mockClear();
+    registryMocks.park.mockReset();
+  });
+
   it("uses product-focused language in its example", () => {
     expect(planningQuestionnaireTool.description).toContain(
       "look and feel and key product features",
@@ -33,5 +56,46 @@ describe("planningQuestionnaireTool", () => {
         "questions array must have at most 5 questions",
       );
     }
+  });
+
+  it("marks the turn after user answers successfully return", async () => {
+    registryMocks.park.mockResolvedValue({
+      kind: "questionnaire",
+      answers: { product: "Minimal and calm" },
+    });
+    const ctx = {
+      chatId: 1,
+      onXmlComplete: vi.fn(),
+    } as unknown as AgentContext;
+
+    await planningQuestionnaireTool.execute(
+      {
+        questions: [
+          {
+            id: "product",
+            type: "text",
+            question: "What should this app feel like?",
+          },
+        ],
+      },
+      ctx,
+    );
+
+    expect(ctx.appBlueprintQuestionnaireCompleted).toBe(true);
+  });
+
+  it("does not mark the turn when the questionnaire is dismissed", async () => {
+    registryMocks.park.mockResolvedValue({ kind: "declined" });
+    const ctx = {
+      chatId: 1,
+      onXmlComplete: vi.fn(),
+    } as unknown as AgentContext;
+
+    await planningQuestionnaireTool.execute(
+      { questions: [{ type: "text", question: "What should this app do?" }] },
+      ctx,
+    );
+
+    expect(ctx.appBlueprintQuestionnaireCompleted).not.toBe(true);
   });
 });

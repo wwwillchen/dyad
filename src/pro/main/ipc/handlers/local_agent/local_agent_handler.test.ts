@@ -396,6 +396,8 @@ import {
   buildExplorerSynthesisMessage,
   buildImplementerOutcomeNotices,
   handleLocalAgentStream as handleLocalAgentStreamImpl,
+  hasCompletedAppBlueprintQuestionnaire,
+  shouldStopAfterAppBlueprintWrite,
 } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { buildAgentToolSet } from "@/pro/main/ipc/handlers/local_agent/tool_definitions";
@@ -408,6 +410,72 @@ import type { AiMessagesJsonV6 } from "@/db/schema";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 
 type LocalAgentStreamParameters = Parameters<typeof handleLocalAgentStreamImpl>;
+
+describe("shouldStopAfterAppBlueprintWrite", () => {
+  it("stops only after a blueprint write succeeds", () => {
+    expect(shouldStopAfterAppBlueprintWrite({})).toBe(false);
+    expect(
+      shouldStopAfterAppBlueprintWrite({
+        appBlueprintWrittenThisTurn: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldStopAfterAppBlueprintWrite({
+        appBlueprintWrittenThisTurn: true,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("hasCompletedAppBlueprintQuestionnaire", () => {
+  const transcriptWithResult = (value: string): AiMessagesJsonV6 => ({
+    sdkVersion: "ai@v6",
+    messages: [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "questionnaire-call",
+            toolName: "planning_questionnaire",
+            output: { type: "text", value },
+          },
+        ],
+      },
+    ],
+  });
+
+  it("recognizes successful persisted answers but not dismissed questionnaires", () => {
+    expect(hasCompletedAppBlueprintQuestionnaire([])).toBe(false);
+    expect(
+      hasCompletedAppBlueprintQuestionnaire([
+        {
+          aiMessagesJson: transcriptWithResult(
+            "The user dismissed the questionnaire without answering.",
+          ),
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      hasCompletedAppBlueprintQuestionnaire([
+        {
+          aiMessagesJson: transcriptWithResult(
+            "User responses:\n\n**Visual style**\nMinimal",
+          ),
+        },
+      ]),
+    ).toBe(true);
+
+    const legacyTranscript = transcriptWithResult(
+      "User responses:\n\n**Visual style**\nMinimal",
+    ).messages;
+    expect(
+      hasCompletedAppBlueprintQuestionnaire([
+        { aiMessagesJson: legacyTranscript },
+      ]),
+    ).toBe(true);
+  });
+});
 type LocalAgentStreamOptions = LocalAgentStreamParameters[3];
 const handleLocalAgentStream = (
   event: LocalAgentStreamParameters[0],

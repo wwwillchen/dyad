@@ -398,6 +398,7 @@ export function createFakeLlmApp(getPort: () => number) {
             apiName: "gpt-5.2",
             displayName: "GPT 5.2",
             description: "Remote catalog OpenAI model",
+            maxOutputTokens: 32_000,
           },
           {
             apiName: "gpt-5",

@@ -419,15 +419,20 @@ describe("local_agent_prompt", () => {
       enableAppBlueprint: true,
     });
     expect(prompt).toMatchSnapshot();
-    expect(prompt).toContain("<app_blueprint>");
-    expect(prompt).toContain("App Blueprint (new apps only)");
+    expect(prompt).toContain('<app_blueprint mode="required">');
+    expect(prompt).toContain("Required App Blueprint Gate");
+    expect(prompt).toContain(
+      "Blueprint mode is enabled for this turn. Dyad has already determined",
+    );
     expect(prompt).toContain("write_app_blueprint");
     expect(prompt).toContain("planning_questionnaire");
-    expect(prompt).toContain("ask up to 5 focused questions");
+    expect(prompt).toContain("Ask 1-5 focused questions (usually 2-3)");
     expect(prompt).toContain(
-      "Ask only the questions needed to resolve meaningful ambiguity",
+      "Every radio or checkbox question must have 1-3 options",
     );
-    expect(prompt).toContain("aim for 3-4 quick questions; never exceed 5");
+    expect(prompt).toContain(
+      "It must successfully return the user's answers before you continue",
+    );
     expect(prompt).toContain(
       "user-facing product requirements and high-level architectural needs",
     );
@@ -438,6 +443,8 @@ describe("local_agent_prompt", () => {
     expect(prompt).toContain(
       "Do not ask the user to choose implementation details such as frameworks, libraries, hosting platforms, database providers, authentication providers, or other technology-specific options",
     );
+    expect(prompt).not.toContain("**Clarify (when needed):**");
+    expect(prompt).not.toContain("**Implement:**");
   });
 
   it("basic agent mode system prompt with app blueprint enabled", () => {
@@ -446,8 +453,8 @@ describe("local_agent_prompt", () => {
       enableAppBlueprint: true,
     });
     expect(prompt).toMatchSnapshot();
-    expect(prompt).toContain("<app_blueprint>");
-    expect(prompt).toContain("App Blueprint (new apps only)");
+    expect(prompt).toContain('<app_blueprint mode="required">');
+    expect(prompt).toContain("Required App Blueprint Gate");
     expectGitContextGuidance(prompt);
   });
 
@@ -569,11 +576,13 @@ describe("local_agent_prompt", () => {
       enableAppBlueprint: false,
     });
     expect(prompt).toMatchSnapshot();
-    expect(prompt).not.toContain("<app_blueprint>");
-    expect(prompt).not.toContain("App Blueprint (new apps only)");
+    expect(prompt).not.toContain('<app_blueprint mode="required">');
+    expect(prompt).not.toContain("Required App Blueprint Gate");
     expect(prompt).not.toContain("write_app_blueprint");
     expect(prompt).toContain("1. **Understand:**");
-    expect(prompt).toContain("based on the understanding in steps 1-2");
+    expect(prompt).toContain(
+      "plan based on the understanding and clarification steps",
+    );
   });
 
   it("basic agent mode system prompt with app blueprint disabled", () => {
@@ -582,11 +591,95 @@ describe("local_agent_prompt", () => {
       enableAppBlueprint: false,
     });
     expect(prompt).toMatchSnapshot();
-    expect(prompt).not.toContain("<app_blueprint>");
-    expect(prompt).not.toContain("App Blueprint (new apps only)");
+    expect(prompt).not.toContain('<app_blueprint mode="required">');
+    expect(prompt).not.toContain("Required App Blueprint Gate");
     expect(prompt).not.toContain("write_app_blueprint");
     expect(prompt).toContain("1. **Understand:**");
-    expect(prompt).toContain("based on the understanding in steps 1-2");
+    expect(prompt).toContain(
+      "plan based on the understanding and clarification steps",
+    );
+  });
+
+  it("updates an existing unapproved blueprint without repeating the questionnaire", () => {
+    const prompt = constructLocalAgentPrompt(undefined, undefined, {
+      enableAppBlueprint: true,
+      hasAppBlueprint: true,
+      appBlueprint: {
+        appName: "Card-edited name",
+        userPrompt: "Build an app",
+        attachments: [],
+        templateId: "react",
+        themeId: "default",
+        designDirection: "Card-edited direction",
+        primaryColor: "#2563EB",
+        visuals: [],
+      },
+    });
+
+    expect(prompt).toContain("an unapproved blueprint already exists");
+    expect(prompt).toContain("update the blueprint directly");
+    expect(prompt).toContain("Card-edited name");
+    expect(prompt).toContain("Card-edited direction");
+    expect(prompt).toContain("including edits made in the blueprint card");
+    expect(prompt).toContain(
+      "Do not repeat it merely to update an existing unapproved blueprint",
+    );
+    expect(prompt).not.toContain(
+      "You MUST call this tool even when the initial request seems concrete",
+    );
+  });
+
+  it("preserves reserved prompt markers inside blueprint data", () => {
+    const prompt = constructLocalAgentPrompt("# Actual app rules", undefined, {
+      enableAppBlueprint: true,
+      hasAppBlueprint: true,
+      appBlueprint: {
+        appName: "Marker test",
+        userPrompt: "Keep [[AI_RULES]] and [[SERVER_LAYER]] as data",
+        attachments: [],
+        templateId: "react",
+        themeId: "default",
+        designDirection: "Literal [[AI_RULES]] marker",
+        primaryColor: "#2563EB",
+        visuals: [],
+      },
+    });
+
+    expect(prompt).toContain(
+      "Keep \\u005b\\u005bAI_RULES\\u005d\\u005d and \\u005b\\u005bSERVER_LAYER\\u005d\\u005d as data",
+    );
+    expect(prompt).toContain("# Actual app rules");
+    expect(prompt).not.toContain("[[AI_RULES]]");
+    expect(prompt).not.toContain("[[SERVER_LAYER]]");
+  });
+
+  it("does not repeat a completed initial blueprint questionnaire", () => {
+    const prompt = constructLocalAgentPrompt(undefined, undefined, {
+      enableAppBlueprint: true,
+      appBlueprintQuestionnaireCompleted: true,
+      planningQuestionnaireAvailable: false,
+    });
+
+    expect(prompt).toContain("initial questionnaire was already completed");
+    expect(prompt).toContain("questionnaire answers already recorded");
+    expect(prompt).toContain("Do not call `planning_questionnaire` again");
+    expect(prompt).not.toContain(
+      "You MUST call this tool even when the initial request seems concrete",
+    );
+  });
+
+  it("surfaces an actionable recovery when the initial questionnaire is disabled", () => {
+    const prompt = constructLocalAgentPrompt(undefined, undefined, {
+      enableAppBlueprint: true,
+      planningQuestionnaireAvailable: false,
+    });
+
+    expect(prompt).toContain('state="questionnaire-disabled"');
+    expect(prompt).toContain("Settings → Build and Agent Permissions");
+    expect(prompt).toContain(
+      "set `planning_questionnaire` to Ask or Always allow",
+    );
+    expect(prompt).toContain("Do not call `write_app_blueprint`");
   });
 });
 
@@ -601,9 +694,10 @@ describe("build agent prompt", () => {
     expect(prompt).toContain("<tool_calling>");
     expect(prompt).toContain("`grep` and `list_files`");
     expect(prompt).toContain("`planning_questionnaire`");
-    expect(prompt).toContain("`update_todos`");
     expect(prompt).toContain("write_app_blueprint");
     expectBuildGitContextGuidance(prompt);
+    expect(prompt).toContain("Required App Blueprint Gate");
+    expect(prompt).not.toContain("**Implement:**");
     for (const unavailableTool of [
       "spawn_agent",
       "web_search",
@@ -618,5 +712,16 @@ describe("build agent prompt", () => {
     ]) {
       expect(prompt).not.toContain(unavailableTool);
     }
+  });
+
+  it("uses the normal Build workflow when app blueprint is disabled", () => {
+    const prompt = constructBuildAgentPrompt(undefined, undefined, {
+      enableAppBlueprint: false,
+    });
+
+    expect(prompt).not.toContain("Required App Blueprint Gate");
+    expect(prompt).not.toContain('<app_blueprint mode="required">');
+    expect(prompt).toContain("**Clarify (when needed):**");
+    expect(prompt).toContain("**Implement:**");
   });
 });

@@ -15,7 +15,12 @@ import {
 import log from "electron-log";
 
 import { db } from "@/db";
-import { chats, messages, mcpServers } from "@/db/schema";
+import {
+  chats,
+  messages,
+  mcpServers,
+  type AiMessagesJsonV6,
+} from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { mcpManager } from "@/ipc/utils/mcp_manager";
 import { requireMcpToolConsent } from "@/ipc/utils/mcp_consent";
@@ -86,6 +91,7 @@ import {
   type MutationActivityOwner,
 } from "./subagents/mutation_activity_tracker";
 import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
+import { COMPLETED_PLANNING_QUESTIONNAIRE_RESULT_PREFIX } from "./tools/planning_questionnaire";
 
 import type {
   ChatStreamParams,
@@ -134,7 +140,6 @@ import {
 import { addIntegrationTool } from "./tools/add_integration";
 import { writePlanTool } from "./tools/write_plan";
 import { exitPlanTool } from "./tools/exit_plan";
-import { writeAppBlueprintTool } from "./tools/write_app_blueprint";
 import { appendCancelledResponseNotice } from "@/shared/chatCancellation";
 import {
   isModelRefusal,
@@ -168,6 +173,13 @@ export function clearPendingLocalAgentInputsForChat(chatId: number): void {
 
 const logger = log.scope("local_agent_handler");
 const PLANNING_QUESTIONNAIRE_TOOL_NAME = "planning_questionnaire";
+
+export function shouldStopAfterAppBlueprintWrite(
+  ctx: Pick<AgentContext, "appBlueprintWrittenThisTurn">,
+): boolean {
+  return ctx.appBlueprintWrittenThisTurn === true;
+}
+
 const MAX_TERMINATED_STREAM_RETRIES = 3;
 const MAX_ERROR_RESPONSE_BODY_DEPTH = 5;
 const STREAM_RETRY_BASE_DELAY_MS = 400;
@@ -393,6 +405,36 @@ export function buildChatMessageHistory(
   }
 
   return history;
+}
+
+export function hasCompletedAppBlueprintQuestionnaire(
+  chatMessages: ReadonlyArray<{
+    aiMessagesJson?: AiMessagesJsonV6 | ModelMessage[] | null;
+  }>,
+): boolean {
+  return chatMessages.some((chatMessage) => {
+    const storedMessages = Array.isArray(chatMessage.aiMessagesJson)
+      ? chatMessage.aiMessagesJson
+      : (chatMessage.aiMessagesJson?.messages ?? []);
+    return storedMessages.some(
+      (message) =>
+        message.role === "tool" &&
+        message.content.some((part) => {
+          if (
+            part.type !== "tool-result" ||
+            part.toolName !== PLANNING_QUESTIONNAIRE_TOOL_NAME ||
+            !isRecord(part.output) ||
+            part.output.type !== "text" ||
+            typeof part.output.value !== "string"
+          ) {
+            return false;
+          }
+          return part.output.value.startsWith(
+            COMPLETED_PLANNING_QUESTIONNAIRE_RESULT_PREFIX,
+          );
+        }),
+    );
+  });
 }
 
 /**
@@ -943,6 +985,9 @@ export async function handleLocalAgentStream(
       preCommitHookAvailable,
       testingEnabled: Boolean(chat.app.testingEnabled),
       testRunAttempts: new Map(),
+      appBlueprintQuestionnaireCompleted: hasCompletedAppBlueprintQuestionnaire(
+        chat.messages,
+      ),
       isDyadPro: isDyadProEnabled(settings),
       canUseExplorerSubagent:
         !buildMode &&
@@ -1084,6 +1129,8 @@ export async function handleLocalAgentStream(
       estimateMcpInlineTokens(mcpDefs) > getMcpInlineTokenThreshold();
 
     const agentTools = buildAgentToolSet(ctx, buildOptions);
+    ctx.planningQuestionnaireAvailable =
+      agentTools.planning_questionnaire != undefined;
     // search_mcp_tools returns full tool declarations, so it alone is enough for
     // search mode. If tool permissions removed it, fall back to inline and drop
     // the now-unused get_mcp_tool_schema tool.
@@ -1303,11 +1350,12 @@ export async function handleLocalAgentStream(
               // Supabase/Neon context. The frontend auto-triggers a hidden
               // continuation message once the user clicks Continue.
               hasToolCall(addIntegrationTool.name),
-              // End the turn after the blueprint tool returns: approval may have
-              // renamed the app folder, so `ctx.appPath` is now stale. The
-              // renderer queues a follow-up user message that starts a fresh
-              // turn with a refreshed ctx (see pendingAppBlueprintImplementationAtom).
-              hasToolCall(writeAppBlueprintTool.name),
+              // End the turn only after the blueprint was persisted. A rejected
+              // initial call (for example, before a successful questionnaire)
+              // must leave room for the model to correct itself. After success,
+              // approval may rename the app folder, so the renderer starts a
+              // fresh turn with a refreshed ctx.
+              () => shouldStopAfterAppBlueprintWrite(ctx),
               // In plan mode, also stop after writing a plan or exiting plan mode.
               ...(planModeOnly
                 ? [
@@ -1935,6 +1983,13 @@ export async function handleLocalAgentStream(
         (!lastStep ||
           lastStep.toolCalls.length === 0 ||
           stepOnlyCalledTool(lastStep, setChatSummaryTool.name));
+
+      // A successful blueprint write owns the end of this user turn. Do not
+      // start Explorer synthesis or todo follow-up passes against an
+      // unapproved blueprint.
+      if (shouldStopAfterAppBlueprintWrite(ctx)) {
+        break;
+      }
 
       const unsynthesizedThreadIds = spawnedSubagentThreadIds.filter(
         (threadId) =>

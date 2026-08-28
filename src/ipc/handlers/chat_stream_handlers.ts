@@ -101,9 +101,11 @@ import { sanitizeMcpToolResult } from "../utils/mcp_result_sanitizer";
 import {
   clearPendingLocalAgentInputsForChat,
   handleLocalAgentStream,
+  hasCompletedAppBlueprintQuestionnaire,
 } from "../../pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { isPreCommitHookAvailable } from "../services/pre_commit_service";
 import { userInputRegistry } from "../../user_input/main";
+import { getAppBlueprintForChat } from "./app_blueprint_handlers";
 
 import { safeSend, type SafeSender } from "../utils/safe_sender";
 import {
@@ -2050,6 +2052,12 @@ ${componentSnippet}
           settings.agentToolConsents?.["reinstall_and_restart_app"] !== "never";
         const runBuildToolAvailable =
           settings.agentToolConsents?.["run_build"] !== "never";
+        const planningQuestionnaireAvailable =
+          settings.agentToolConsents?.["planning_questionnaire"] !== "never";
+        const appBlueprint = getAppBlueprintForChat(updatedChat.id);
+        const hasAppBlueprint = Boolean(appBlueprint);
+        const appBlueprintQuestionnaireCompleted =
+          hasCompletedAppBlueprintQuestionnaire(updatedChat.messages);
         const initialSupabaseProviderToolsAvailable = Boolean(
           updatedChat.app.supabaseProjectId &&
           hasSupabaseCredentialsForOrganization(
@@ -2159,6 +2167,10 @@ ${componentSnippet}
           hasSupabaseProject: !!updatedChat.app?.supabaseProjectId,
           enableAppBlueprint:
             settings.enableAppBlueprint && updatedChat.app.needsAppBlueprint,
+          hasAppBlueprint,
+          planningQuestionnaireAvailable,
+          appBlueprintQuestionnaireCompleted,
+          appBlueprint,
           codeExplorerAvailable,
           historyExplorerAvailable,
           implementerAvailable,

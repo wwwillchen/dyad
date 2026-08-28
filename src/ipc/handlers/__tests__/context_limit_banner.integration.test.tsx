@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { eq } from "drizzle-orm";
 
-import { messages, language_models } from "@/db/schema";
+import { apps, chats, messages, language_models } from "@/db/schema";
 import { isIpcInvokeEnvelope, unwrapIpcEnvelope } from "@/ipc/contracts/core";
 import { estimateTokens } from "@/ipc/utils/token_utils";
 import { buildChatMessageHistory } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
@@ -12,6 +12,11 @@ import {
   type HybridChatHarness,
 } from "@/testing/hybrid_chat_harness";
 import { h } from "@/testing/hybrid.setup";
+import { readSettings, writeSettings } from "@/main/settings";
+import {
+  deleteAppBlueprintForChat,
+  setAppBlueprintForChat,
+} from "@/ipc/handlers/app_blueprint_handlers";
 
 function makeEvent() {
   const frame = { url: "http://localhost:5173/" };
@@ -240,5 +245,72 @@ describe("context limit banner (integration)", () => {
 
     expect(result.messageHistoryTokens).toBe(expectedHistoryTokens);
     expect(result.messageHistoryTokens).toBeGreaterThan(1_000);
+  });
+
+  it("counts the blueprint prompt for the current blueprint and questionnaire state", async () => {
+    const chatId = await harness.createChat();
+    const chat = await harness.db.query.chats.findFirst({
+      where: eq(chats.id, chatId),
+    });
+    expect(chat).toBeDefined();
+    const originalApp = await harness.db.query.apps.findFirst({
+      where: eq(apps.id, chat!.appId),
+    });
+    expect(originalApp).toBeDefined();
+    await harness.db
+      .update(apps)
+      .set({ needsAppBlueprint: true })
+      .where(eq(apps.id, chat!.appId));
+
+    const originalSettings = readSettings();
+    writeSettings({
+      enableAppBlueprint: true,
+      agentToolConsents: {
+        ...originalSettings.agentToolConsents,
+        planning_questionnaire: "always",
+      },
+    });
+
+    try {
+      const initialBlueprintTokens = (await countTokens(chatId))
+        .systemPromptTokens;
+
+      setAppBlueprintForChat(chatId, {
+        appName: "Token Count Blueprint",
+        userPrompt: "Build an app",
+        attachments: [],
+        templateId: "react",
+        themeId: "default",
+        designDirection: "Clean and focused",
+        primaryColor: "#2563EB",
+        visuals: [],
+      });
+      const updateBlueprintTokens = (await countTokens(chatId))
+        .systemPromptTokens;
+
+      deleteAppBlueprintForChat(chatId);
+      writeSettings({
+        agentToolConsents: {
+          ...originalSettings.agentToolConsents,
+          planning_questionnaire: "never",
+        },
+      });
+      const disabledQuestionnaireTokens = (await countTokens(chatId))
+        .systemPromptTokens;
+
+      expect(updateBlueprintTokens).not.toBe(initialBlueprintTokens);
+      expect(disabledQuestionnaireTokens).not.toBe(initialBlueprintTokens);
+      expect(disabledQuestionnaireTokens).not.toBe(updateBlueprintTokens);
+    } finally {
+      deleteAppBlueprintForChat(chatId);
+      await harness.db
+        .update(apps)
+        .set({ needsAppBlueprint: originalApp!.needsAppBlueprint })
+        .where(eq(apps.id, chat!.appId));
+      writeSettings({
+        enableAppBlueprint: originalSettings.enableAppBlueprint,
+        agentToolConsents: originalSettings.agentToolConsents,
+      });
+    }
   });
 });

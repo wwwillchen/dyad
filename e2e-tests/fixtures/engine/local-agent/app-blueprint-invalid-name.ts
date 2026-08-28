@@ -5,6 +5,25 @@ export const fixture: LocalAgentFixture = {
     "Create an app blueprint whose generated name contains characters that are invalid in folder names",
   turns: [
     {
+      text: "Let me confirm the blueprint direction first.",
+      toolCalls: [
+        {
+          name: "planning_questionnaire",
+          args: {
+            questions: [
+              {
+                id: "blueprint-preferences",
+                type: "radio",
+                question: "Should I use the requested design direction?",
+                options: ["Use the requested direction"],
+                required: true,
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
       text: "I drafted an app blueprint for this app.",
       toolCalls: [
         {
@@ -27,9 +46,6 @@ export const fixture: LocalAgentFixture = {
           },
         },
       ],
-    },
-    {
-      text: "Please review the app blueprint and approve it to continue.",
     },
   ],
 };

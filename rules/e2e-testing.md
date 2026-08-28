@@ -126,6 +126,8 @@ description and JSON schema. After changing any of those inputs, rebuild the
 app and regenerate every affected request-dump snapshot; editing only the
 visibly related schema block can leave unrelated stale prompt text behind.
 
+Request snapshots for remote-catalog models derive limits such as `max_output_tokens` from the fake catalog metadata. When a catalog fixture represents a local model, set its `maxOutputTokens` explicitly so regeneration does not silently drop the production limit from the request snapshot.
+
 Keep modules reachable from Node-side E2E helpers Node-loadable. In particular,
 `dump-prettifier.ts` reaches the system and Local Agent prompt modules, so those
 modules must not import Vite-only assets such as Markdown `?raw` imports. Put

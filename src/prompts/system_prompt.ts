@@ -8,6 +8,7 @@ import {
 } from "./local_agent_prompt";
 import { constructPlanModePrompt } from "./plan_mode_prompt";
 import type { AppFrameworkType } from "@/lib/framework_constants";
+import type { AppBlueprintData } from "@/ipc/types/app_blueprint";
 
 const logger = log.scope("system_prompt");
 
@@ -752,6 +753,10 @@ export const constructSystemPrompt = ({
   frameworkType,
   hasSupabaseProject,
   enableAppBlueprint,
+  hasAppBlueprint,
+  planningQuestionnaireAvailable,
+  appBlueprintQuestionnaireCompleted,
+  appBlueprint,
   codeExplorerAvailable,
   historyExplorerAvailable,
   implementerAvailable,
@@ -785,6 +790,14 @@ export const constructSystemPrompt = ({
   hasSupabaseProject?: boolean;
   /** If false, omit the app blueprint block from the local-agent prompt. */
   enableAppBlueprint?: boolean;
+  /** Whether this chat already has an unapproved blueprint to update. */
+  hasAppBlueprint?: boolean;
+  /** Whether planning_questionnaire is exposed in this turn's tool set. */
+  planningQuestionnaireAvailable?: boolean;
+  /** Whether this chat has already completed the initial blueprint questionnaire. */
+  appBlueprintQuestionnaireCompleted?: boolean;
+  /** Current unapproved blueprint data, including edits made in the card. */
+  appBlueprint?: AppBlueprintData;
   /**
    * If true, the local-agent prompt can use Code Explorer when the relevant
    * files are not already known or reasonably clear from available context.
@@ -821,6 +834,10 @@ export const constructSystemPrompt = ({
       frameworkType,
       hasSupabaseProject,
       enableAppBlueprint,
+      hasAppBlueprint,
+      planningQuestionnaireAvailable,
+      appBlueprintQuestionnaireCompleted,
+      appBlueprint,
       codeExplorerAvailable,
       historyExplorerAvailable,
       implementerAvailable,
@@ -837,6 +854,10 @@ export const constructSystemPrompt = ({
       frameworkType,
       hasSupabaseProject,
       enableAppBlueprint,
+      hasAppBlueprint,
+      planningQuestionnaireAvailable,
+      appBlueprintQuestionnaireCompleted,
+      appBlueprint,
       restartAppToolAvailable,
       reinstallAndRestartAppToolAvailable,
     });
