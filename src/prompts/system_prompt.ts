@@ -755,6 +755,7 @@ export const constructSystemPrompt = ({
   enableAppBlueprint,
   hasAppBlueprint,
   planningQuestionnaireAvailable,
+  appBlueprintQuestionnaireCompleted,
   appBlueprint,
   codeExplorerAvailable,
   historyExplorerAvailable,
@@ -793,6 +794,8 @@ export const constructSystemPrompt = ({
   hasAppBlueprint?: boolean;
   /** Whether planning_questionnaire is exposed in this turn's tool set. */
   planningQuestionnaireAvailable?: boolean;
+  /** Whether this chat has already completed the initial blueprint questionnaire. */
+  appBlueprintQuestionnaireCompleted?: boolean;
   /** Current unapproved blueprint data, including edits made in the card. */
   appBlueprint?: AppBlueprintData;
   /**
@@ -833,6 +836,7 @@ export const constructSystemPrompt = ({
       enableAppBlueprint,
       hasAppBlueprint,
       planningQuestionnaireAvailable,
+      appBlueprintQuestionnaireCompleted,
       appBlueprint,
       codeExplorerAvailable,
       historyExplorerAvailable,
@@ -852,6 +856,7 @@ export const constructSystemPrompt = ({
       enableAppBlueprint,
       hasAppBlueprint,
       planningQuestionnaireAvailable,
+      appBlueprintQuestionnaireCompleted,
       appBlueprint,
       restartAppToolAvailable,
       reinstallAndRestartAppToolAvailable,

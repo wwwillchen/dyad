@@ -629,6 +629,45 @@ describe("local_agent_prompt", () => {
     );
   });
 
+  it("preserves reserved prompt markers inside blueprint data", () => {
+    const prompt = constructLocalAgentPrompt("# Actual app rules", undefined, {
+      enableAppBlueprint: true,
+      hasAppBlueprint: true,
+      appBlueprint: {
+        appName: "Marker test",
+        userPrompt: "Keep [[AI_RULES]] and [[SERVER_LAYER]] as data",
+        attachments: [],
+        templateId: "react",
+        themeId: "default",
+        designDirection: "Literal [[AI_RULES]] marker",
+        primaryColor: "#2563EB",
+        visuals: [],
+      },
+    });
+
+    expect(prompt).toContain(
+      "Keep \\u005b\\u005bAI_RULES\\u005d\\u005d and \\u005b\\u005bSERVER_LAYER\\u005d\\u005d as data",
+    );
+    expect(prompt).toContain("# Actual app rules");
+    expect(prompt).not.toContain("[[AI_RULES]]");
+    expect(prompt).not.toContain("[[SERVER_LAYER]]");
+  });
+
+  it("does not repeat a completed initial blueprint questionnaire", () => {
+    const prompt = constructLocalAgentPrompt(undefined, undefined, {
+      enableAppBlueprint: true,
+      appBlueprintQuestionnaireCompleted: true,
+      planningQuestionnaireAvailable: false,
+    });
+
+    expect(prompt).toContain("initial questionnaire was already completed");
+    expect(prompt).toContain("questionnaire answers already recorded");
+    expect(prompt).toContain("Do not call `planning_questionnaire` again");
+    expect(prompt).not.toContain(
+      "You MUST call this tool even when the initial request seems concrete",
+    );
+  });
+
   it("surfaces an actionable recovery when the initial questionnaire is disabled", () => {
     const prompt = constructLocalAgentPrompt(undefined, undefined, {
       enableAppBlueprint: true,
@@ -636,8 +675,9 @@ describe("local_agent_prompt", () => {
     });
 
     expect(prompt).toContain('state="questionnaire-disabled"');
+    expect(prompt).toContain("Settings → Build and Agent Permissions");
     expect(prompt).toContain(
-      "enable the Planning Questionnaire tool in Settings → Agent Tools",
+      "set `planning_questionnaire` to Ask or Always allow",
     );
     expect(prompt).toContain("Do not call `write_app_blueprint`");
   });

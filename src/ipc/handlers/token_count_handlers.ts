@@ -41,7 +41,10 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { resolveChatModeForTurn } from "./chat_mode_resolution";
 import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
 import { estimateAgentToolTokens } from "@/pro/main/ipc/handlers/local_agent/tool_definitions";
-import { buildChatMessageHistory } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
+import {
+  buildChatMessageHistory,
+  hasCompletedAppBlueprintQuestionnaire,
+} from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { getCachedMcpToolDefs } from "@/pro/main/ipc/handlers/local_agent/tools/mcp_type_defs";
 import { resolveRootDatabasePromptState } from "@/shared/database_provider";
 import { getAppBlueprintForChat } from "./app_blueprint_handlers";
@@ -107,6 +110,8 @@ export function registerTokenCountHandlers() {
       const hasAppBlueprint = Boolean(appBlueprint);
       const planningQuestionnaireAvailable =
         settings.agentToolConsents?.["planning_questionnaire"] !== "never";
+      const appBlueprintQuestionnaireCompleted =
+        hasCompletedAppBlueprintQuestionnaire(chat.messages);
       let systemPrompt = constructSystemPrompt({
         aiRules: await readAiRules(getDyadAppPath(chat.app.path)),
         chatMode: selectedChatMode === "ask" ? "local-agent" : selectedChatMode,
@@ -123,6 +128,7 @@ export function registerTokenCountHandlers() {
         enableAppBlueprint,
         hasAppBlueprint,
         planningQuestionnaireAvailable,
+        appBlueprintQuestionnaireCompleted,
         appBlueprint,
       });
       let supabaseContext = "";

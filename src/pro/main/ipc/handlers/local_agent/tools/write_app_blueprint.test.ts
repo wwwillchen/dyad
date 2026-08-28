@@ -134,7 +134,7 @@ describe("app blueprint tools", () => {
         ctx,
       ),
     ).rejects.toThrow(
-      "disabled in Settings → Agent Tools. Enable the Planning Questionnaire tool",
+      "disabled in Settings → Build and Agent Permissions. Set planning_questionnaire to Ask or Always allow",
     );
 
     expect(getAppBlueprintForChat(ctx.chatId)).toBeUndefined();

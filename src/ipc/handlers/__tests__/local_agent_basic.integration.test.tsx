@@ -107,6 +107,16 @@ describe("local-agent basic flows (integration)", () => {
     errorEventsBaseline = harness ? allErrorEvents().length : 0;
   });
 
+  async function submitBlueprintQuestionnaire() {
+    await screen.findByText(
+      "Should I use the requested design direction?",
+      undefined,
+      { timeout: 20_000 },
+    );
+    fireEvent.click(screen.getByText("Use the requested direction"));
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+  }
+
   it("reads a file, edits it, and persists the result", async () => {
     const app = await createMinimalApp({ name: "Read Edit" });
     harness.mount({ chatId: app.chatId, appId: app.appId });
@@ -203,6 +213,8 @@ describe("local-agent basic flows (integration)", () => {
     );
     send();
 
+    await submitBlueprintQuestionnaire();
+
     await screen.findByRole(
       "button",
       { name: "Approve Plan" },
@@ -251,6 +263,8 @@ describe("local-agent basic flows (integration)", () => {
       { chatId: app.chatId },
     );
     send();
+
+    await submitBlueprintQuestionnaire();
 
     await screen.findByTestId("app-blueprint-template-select", undefined, {
       timeout: 20_000,
