@@ -1,13 +1,22 @@
-import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-  LanguageModelV3StreamPart,
+import {
+  APICallError,
+  InvalidArgumentError,
+  LoadAPIKeyError,
+  NoSuchModelError,
+  TypeValidationError,
+  type LanguageModelV3,
+  type LanguageModelV3CallOptions,
+  type LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
 import type { LanguageModel } from "ai";
 import log from "electron-log";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { DYAD_INTERNAL_REQUEST_ID_HEADER } from "./provider_options";
 
 const logger = log.scope("fallback_model");
+const MAX_LOG_FIELD_LENGTH = 500;
+const DEFAULT_RETRY_DELAY_MS = 500;
+const MAX_RETRY_DELAY_MS = 10_000;
 
 // Types
 
@@ -37,9 +46,8 @@ interface FallbackSettings {
 
 interface RetryState {
   attemptNumber: number;
-  modelsAttempted: Set<number>;
-  initialModelIndex: number;
-  errors: Array<{ modelId: string; error: Error }>;
+  attemptsByModel: number[];
+  errors: Array<{ modelId: string; error: unknown }>;
 }
 
 interface StreamResult {
@@ -48,21 +56,21 @@ interface StreamResult {
   response?: { headers?: Record<string, string> };
 }
 
-// Error classification
-const RETRYABLE_STATUS_CODES = new Set([
-  401, // Unauthorized - wrong API key
-  403, // Forbidden - permission error
+interface RecoveryDecision {
+  kind: "retry-same" | "fallback-next";
+  failedModelId: string;
+  nextModelId: string;
+}
+
+export type FallbackFailureAction = "retry-same" | "fallback-next" | "fail";
+
+const RETRY_SAME_STATUS_CODES = new Set([
   408, // Request Timeout
   409, // Conflict
-  413, // Payload Too Large
   429, // Too Many Requests
-  500, // Internal Server Error
-  502, // Bad Gateway
-  503, // Service Unavailable
-  504, // Gateway Timeout
 ]);
 
-const RETRYABLE_ERROR_PATTERNS = [
+const RETRY_SAME_ERROR_PATTERNS = [
   "overloaded",
   "service unavailable",
   "bad gateway",
@@ -70,8 +78,6 @@ const RETRYABLE_ERROR_PATTERNS = [
   "internal server error",
   "gateway timeout",
   "rate_limit",
-  "wrong-key",
-  "unexpected",
   "capacity",
   "timeout",
   "server_error",
@@ -80,57 +86,288 @@ const RETRYABLE_ERROR_PATTERNS = [
   "econnreset",
   "epipe",
   "etimedout",
-  "unknown_error",
 ];
 
-export function defaultShouldRetryThisError(error: any): boolean {
-  if (!error) return false;
+const FALLBACK_NEXT_ERROR_PATTERNS = [
+  "model_not_found",
+  "model not found",
+  "model_not_available",
+  "model is not available",
+  "no such model",
+  "unsupported model",
+];
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null;
+}
+
+function normalizeLogField(value: unknown): string | undefined {
+  if (value == null || value === "") return undefined;
+
+  const normalized = String(value).replace(/\s+/g, " ").trim();
+  if (!normalized) return undefined;
+  return normalized.slice(0, MAX_LOG_FIELD_LENGTH);
+}
+
+/**
+ * Produce a compact error description for fallback logs. Avoid serializing the
+ * full error because provider errors can contain request bodies and headers.
+ */
+export function formatFallbackErrorForLog(error: unknown): string {
+  if (!isRecord(error)) {
+    return `message=${normalizeLogField(error) ?? "unknown error"}`;
+  }
+
+  const inner = isRecord(error.error) ? error.error : undefined;
+  const cause = isRecord(error.cause) ? error.cause : undefined;
+  const response = isRecord(error.response) ? error.response : undefined;
+  const responseHeaders = isRecord(response?.headers)
+    ? response.headers
+    : undefined;
+  const directResponseHeaders = isRecord(error.responseHeaders)
+    ? error.responseHeaders
+    : undefined;
+
+  const fields = {
+    status:
+      error.statusCode ??
+      error.status ??
+      response?.status ??
+      inner?.statusCode ??
+      inner?.status,
+    providerRequestId:
+      error.requestId ??
+      error.request_id ??
+      inner?.requestId ??
+      inner?.request_id ??
+      responseHeaders?.["x-request-id"] ??
+      directResponseHeaders?.["x-request-id"] ??
+      directResponseHeaders?.["request-id"],
+    code: error.code ?? inner?.code ?? cause?.code,
+    type: error.type ?? inner?.type ?? cause?.type,
+    message:
+      error.message ?? inner?.message ?? cause?.message ?? "unknown error",
+    cause:
+      cause?.message && cause.message !== error.message
+        ? cause.message
+        : undefined,
+  };
+
+  return Object.entries(fields)
+    .map(([key, value]) => {
+      const normalized = normalizeLogField(value);
+      return normalized ? `${key}=${normalized}` : undefined;
+    })
+    .filter((field): field is string => Boolean(field))
+    .join(" ");
+}
+
+function getErrorDetails(error: unknown): {
+  statusCode?: number;
+  errorString: string;
+} {
+  if (!isRecord(error)) {
+    return { errorString: normalizeLogField(error)?.toLowerCase() ?? "" };
+  }
+
+  const inner = isRecord(error.error) ? error.error : undefined;
+  const response = isRecord(error.response) ? error.response : undefined;
+  const statusCode = [
+    error.statusCode,
+    error.status,
+    response?.status,
+    inner?.statusCode,
+    inner?.status,
+  ].find((value): value is number => typeof value === "number");
+  const errorString = [
+    error.message,
+    error.code,
+    error.type,
+    inner?.message,
+    inner?.code,
+    inner?.type,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+
+  return { statusCode, errorString };
+}
+
+/**
+ * Decide whether a failure should retry the current model, move to the next
+ * model, or stop. Explicit model-unavailable signals take precedence over the
+ * AI SDK's retryability flag. Unknown and deterministic request errors fail
+ * closed.
+ */
+export function getFallbackFailureAction(
+  error: unknown,
+): FallbackFailureAction {
+  if (!error) return "fail";
 
   try {
-    // Some API errors nest the real details inside an `error` property
-    // (e.g. { type: 'error', error: { type, code, message } }).
-    const inner = error?.error;
-
-    // Check status code on the error or its inner wrapper
-    const statusCode =
-      error?.statusCode ||
-      error?.status ||
-      error?.response?.status ||
-      inner?.statusCode ||
-      inner?.status;
-    if (
-      statusCode &&
-      (RETRYABLE_STATUS_CODES.has(statusCode) || statusCode >= 500)
-    ) {
-      return true;
+    if (APICallError.isInstance(error)) {
+      if (error.statusCode === 404) return "fallback-next";
+      const { errorString } = getErrorDetails(error);
+      if (
+        FALLBACK_NEXT_ERROR_PATTERNS.some((pattern) =>
+          errorString.includes(pattern),
+        )
+      ) {
+        return "fallback-next";
+      }
+      if (error.isRetryable) return "retry-same";
+      return "fail";
     }
 
-    // Concatenate fields from both the outer error and the inner wrapper
-    // so we don't miss nested codes/types.
-    const errorString =
-      [
-        error?.message,
-        error?.code,
-        error?.type,
-        inner?.message,
-        inner?.code,
-        inner?.type,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase() || JSON.stringify(error).toLowerCase();
+    if (NoSuchModelError.isInstance(error)) return "fallback-next";
+    if (
+      InvalidArgumentError.isInstance(error) ||
+      LoadAPIKeyError.isInstance(error) ||
+      TypeValidationError.isInstance(error) ||
+      (error instanceof Error && error.name === "AbortError")
+    ) {
+      return "fail";
+    }
 
-    const isRetryable = RETRYABLE_ERROR_PATTERNS.some((pattern) =>
-      errorString.includes(pattern),
-    );
-    logger.info(
-      `Error retryable=${isRetryable}, statusCode=${statusCode ?? "none"}, errorString="${errorString.slice(0, 200)}"`,
-    );
-    return isRetryable;
+    const { statusCode, errorString } = getErrorDetails(error);
+    if (statusCode === 404) return "fallback-next";
+    if (
+      FALLBACK_NEXT_ERROR_PATTERNS.some((pattern) =>
+        errorString.includes(pattern),
+      )
+    ) {
+      return "fallback-next";
+    }
+    if (
+      statusCode !== undefined &&
+      (RETRY_SAME_STATUS_CODES.has(statusCode) || statusCode >= 500)
+    ) {
+      return "retry-same";
+    }
+    if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
+      return "fail";
+    }
+    if (
+      RETRY_SAME_ERROR_PATTERNS.some((pattern) => errorString.includes(pattern))
+    ) {
+      return "retry-same";
+    }
+    return "fail";
   } catch {
-    // If we can't parse the error, don't retry
-    return false;
+    return "fail";
   }
+}
+
+function getHeader(
+  headers: Record<string, string> | undefined,
+  name: string,
+): string | undefined {
+  const entry = Object.entries(headers ?? {}).find(
+    ([headerName]) => headerName.toLowerCase() === name,
+  );
+  return entry?.[1];
+}
+
+function boundedRetryDelay(delayMs: number): number | undefined {
+  if (!Number.isFinite(delayMs) || delayMs < 0) return undefined;
+  return Math.min(Math.round(delayMs), MAX_RETRY_DELAY_MS);
+}
+
+function parseRetryAfter(value: string | undefined, nowMs: number) {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return boundedRetryDelay(seconds * 1_000);
+
+  const retryAt = Date.parse(value);
+  return Number.isNaN(retryAt)
+    ? undefined
+    : boundedRetryDelay(Math.max(0, retryAt - nowMs));
+}
+
+function parseRateLimitReset(value: string | undefined, nowMs: number) {
+  if (!value) return undefined;
+  const reset = Number(value);
+  if (!Number.isFinite(reset)) return undefined;
+
+  if (reset > 1_000_000_000_000) {
+    return boundedRetryDelay(Math.max(0, reset - nowMs));
+  }
+  if (reset > 1_000_000_000) {
+    return boundedRetryDelay(Math.max(0, reset * 1_000 - nowMs));
+  }
+  return boundedRetryDelay(reset * 1_000);
+}
+
+export function getFallbackRetryDelayMs(
+  error: unknown,
+  sameModelAttempt: number,
+  nowMs = Date.now(),
+): number {
+  const responseHeaders = APICallError.isInstance(error)
+    ? error.responseHeaders
+    : isRecord(error) && isRecord(error.responseHeaders)
+      ? (error.responseHeaders as Record<string, string>)
+      : undefined;
+  const headerDelay =
+    parseRetryAfter(getHeader(responseHeaders, "retry-after"), nowMs) ??
+    parseRateLimitReset(getHeader(responseHeaders, "x-ratelimit-reset"), nowMs);
+
+  return (
+    headerDelay ??
+    Math.min(
+      DEFAULT_RETRY_DELAY_MS * 2 ** Math.max(0, sameModelAttempt - 1),
+      MAX_RETRY_DELAY_MS,
+    )
+  );
+}
+
+export function defaultShouldRetryThisError(error: unknown): boolean {
+  return getFallbackFailureAction(error) === "retry-same";
+}
+
+function getRequestId(options: LanguageModelV3CallOptions): string {
+  const headers = options.headers as
+    | Record<string, string | undefined>
+    | undefined;
+  return headers?.[DYAD_INTERNAL_REQUEST_ID_HEADER] ?? "unknown";
+}
+
+function getAbortReason(signal: AbortSignal): unknown {
+  return (
+    signal.reason ?? new DOMException("The operation was aborted", "AbortError")
+  );
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw getAbortReason(signal);
+}
+
+async function waitForRetryDelay(
+  delayMs: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  throwIfAborted(signal);
+  if (delayMs === 0) return;
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => reject(getAbortReason(signal!)));
+    const timeout = setTimeout(() => finish(resolve), delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
+function isStreamContentPart(part: LanguageModelV3StreamPart): boolean {
+  return part.type !== "stream-start" && part.type !== "response-metadata";
 }
 
 export function createFallback(settings: FallbackSettings): LanguageModel {
@@ -143,8 +380,8 @@ class FallbackModel implements LanguageModelV3 {
   private currentModelIndex: number = 0;
   private lastModelReset: number = Date.now();
   private readonly modelResetInterval: number;
-  private readonly retryAfterOutput: boolean;
-  private readonly maxRetries: number;
+  private readonly maxAttemptsPerModel: number;
+  private readonly maxAttempts: number;
   private isRetrying: boolean = false;
 
   constructor(settings: FallbackSettings) {
@@ -158,8 +395,8 @@ class FallbackModel implements LanguageModelV3 {
 
     this.settings = settings;
     this.modelResetInterval = 3 * 60 * 1000; // Default: 3 minutes
-    this.retryAfterOutput = true;
-    this.maxRetries = settings.models.length * 2; // Default: try each model twice
+    this.maxAttemptsPerModel = 2;
+    this.maxAttempts = settings.models.length * this.maxAttemptsPerModel;
   }
 
   get modelId(): string {
@@ -280,67 +517,161 @@ class FallbackModel implements LanguageModelV3 {
     }
   }
 
-  private switchToNextModel(): void {
-    this.currentModelIndex =
-      (this.currentModelIndex + 1) % this.settings.models.length;
+  private startAttempt(state: RetryState): void {
+    state.attemptNumber++;
+    state.attemptsByModel[this.currentModelIndex]++;
+  }
+
+  private moveToNextAvailableModel(state: RetryState): boolean {
+    for (let offset = 1; offset < this.settings.models.length; offset++) {
+      const candidateIndex =
+        (this.currentModelIndex + offset) % this.settings.models.length;
+      if (state.attemptsByModel[candidateIndex] < this.maxAttemptsPerModel) {
+        this.currentModelIndex = candidateIndex;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private prepareRecovery(
+    action: FallbackFailureAction,
+    state: RetryState,
+  ): RecoveryDecision | null {
+    const failedModelId = this.modelId;
+    if (
+      action === "retry-same" &&
+      state.attemptsByModel[this.currentModelIndex] < this.maxAttemptsPerModel
+    ) {
+      return {
+        kind: "retry-same",
+        failedModelId,
+        nextModelId: failedModelId,
+      };
+    }
+
+    // A permanent model-specific failure, or an exhausted transient retry,
+    // should not circle back to the same model during this request.
+    state.attemptsByModel[this.currentModelIndex] = this.maxAttemptsPerModel;
+    if (!this.moveToNextAvailableModel(state)) return null;
+
+    return {
+      kind: "fallback-next",
+      failedModelId,
+      nextModelId: this.modelId,
+    };
+  }
+
+  private logRecovery(params: {
+    decision: RecoveryDecision;
+    state: RetryState;
+    requestId: string;
+    stage: "initial-request" | "stream";
+    error: unknown;
+    hasStreamedContent?: boolean;
+  }): void {
+    const { decision, state, requestId, stage, error, hasStreamedContent } =
+      params;
+    const errorDetails = formatFallbackErrorForLog(error);
+    const streamDetails =
+      hasStreamedContent === undefined
+        ? ""
+        : `, hasStreamedContent=${hasStreamedContent}`;
+
+    if (decision.kind === "retry-same") {
+      logger.warn(
+        `Retrying model ${decision.failedModelId} (requestId=${requestId}, stage=${stage}${streamDetails}, modelAttempt=${state.attemptsByModel[this.currentModelIndex] + 1}/${this.maxAttemptsPerModel}, totalAttempt=${state.attemptNumber + 1}/${this.maxAttempts}, error="${errorDetails}")`,
+      );
+      return;
+    }
+
+    logger.warn(
+      `Falling back from model ${decision.failedModelId} to ${decision.nextModelId} (requestId=${requestId}, stage=${stage}${streamDetails}, nextAttempt=${state.attemptNumber + 1}/${this.maxAttempts}, error="${errorDetails}")`,
+    );
+  }
+
+  private async waitBeforeSameModelRetry(
+    decision: RecoveryDecision,
+    state: RetryState,
+    error: unknown,
+    abortSignal: AbortSignal | undefined,
+  ): Promise<void> {
+    if (decision.kind !== "retry-same") return;
+
+    const delayMs = getFallbackRetryDelayMs(
+      error,
+      state.attemptsByModel[this.currentModelIndex],
+    );
+    await waitForRetryDelay(delayMs, abortSignal);
+  }
+
+  private exhaustedError(operationName: string, error: unknown): DyadError {
+    const message = error instanceof Error ? error.message : String(error);
+    return new DyadError(
+      `All ${this.settings.models.length} models failed for ${operationName}. Last error: ${message}`,
+      DyadErrorKind.External,
+    );
   }
 
   private async retry<T>(
     operation: (state: RetryState) => Promise<T>,
     operationName: string,
+    requestId: string,
+    abortSignal: AbortSignal | undefined,
   ): Promise<T> {
     const state: RetryState = {
       attemptNumber: 0,
-      modelsAttempted: new Set([this.currentModelIndex]),
-      initialModelIndex: this.currentModelIndex,
+      attemptsByModel: this.settings.models.map(() => 0),
       errors: [],
     };
 
     this.isRetrying = true;
 
     try {
-      while (state.attemptNumber < this.maxRetries) {
-        state.attemptNumber++;
+      while (state.attemptNumber < this.maxAttempts) {
+        throwIfAborted(abortSignal);
+        this.startAttempt(state);
 
         try {
           return await operation(state);
         } catch (error) {
-          const err = error as Error;
-          state.errors.push({ modelId: this.modelId, error: err });
-
-          // Check if we should retry this error
-          if (!defaultShouldRetryThisError(err)) {
+          const failedModelId = this.modelId;
+          state.errors.push({ modelId: failedModelId, error });
+          const action = getFallbackFailureAction(error);
+          if (action === "fail") {
             logger.warn(
-              `Non-retryable error from model ${this.modelId}, not falling back`,
+              `Request error from model ${failedModelId}; not retrying or falling back (requestId=${requestId}, stage=initial-request, attempt=${state.attemptNumber}/${this.maxAttempts}, error="${formatFallbackErrorForLog(error)}")`,
             );
-            throw err;
+            throw error;
           }
 
-          // If we've tried all models at least once and still failing, throw
-          if (state.modelsAttempted.size === this.settings.models.length) {
-            if (state.attemptNumber >= this.maxRetries) {
-              logger.error(
-                `All ${this.settings.models.length} models exhausted for ${operationName} after ${state.attemptNumber} attempts`,
-              );
-              throw new Error(
-                `All ${this.settings.models.length} models failed for ${operationName}. ` +
-                  `Last error: ${err.message}`,
-              );
-            }
+          const decision = this.prepareRecovery(action, state);
+          if (!decision) {
+            logger.error(
+              `All ${this.settings.models.length} models exhausted for ${operationName} after ${state.attemptNumber} attempts (requestId=${requestId}, error="${formatFallbackErrorForLog(error)}")`,
+            );
+            throw this.exhaustedError(operationName, error);
           }
-
-          // Switch to next model
-          this.switchToNextModel();
-          state.modelsAttempted.add(this.currentModelIndex);
-          logger.info(
-            `Falling back to model ${this.modelId} (attempt ${state.attemptNumber}/${this.maxRetries})`,
+          this.logRecovery({
+            decision,
+            state,
+            requestId,
+            stage: "initial-request",
+            error,
+          });
+          await this.waitBeforeSameModelRetry(
+            decision,
+            state,
+            error,
+            abortSignal,
           );
         }
       }
 
       // Should never reach here, but just in case
-      throw new Error(
-        `Max retries (${this.maxRetries}) exceeded for ${operationName}`,
+      throw new DyadError(
+        `Max attempts (${this.maxAttempts}) exceeded for ${operationName}`,
+        DyadErrorKind.Internal,
       );
     } finally {
       this.isRetrying = false;
@@ -356,24 +687,23 @@ class FallbackModel implements LanguageModelV3 {
 
   async doStream(options: LanguageModelV3CallOptions): Promise<StreamResult> {
     this.checkAndResetModel();
+    const requestId = getRequestId(options);
 
-    return this.retry(async (retryState) => {
-      const result = await this.getUnderlyingModel().doStream(
-        this.optionsForCurrentModel(options),
-      );
+    return this.retry(
+      async (retryState) => {
+        const result = await this.getUnderlyingModel().doStream(
+          this.optionsForCurrentModel(options),
+        );
 
-      // Create a wrapped stream that handles errors gracefully
-      const wrappedStream = this.createWrappedStream(
-        result.stream,
-        options,
-        retryState,
-      );
-
-      return {
-        ...result,
-        stream: wrappedStream,
-      };
-    }, "stream");
+        return {
+          ...result,
+          stream: this.createWrappedStream(result.stream, options, retryState),
+        };
+      },
+      "stream",
+      requestId,
+      options.abortSignal,
+    );
   }
 
   private createWrappedStream(
@@ -381,18 +711,19 @@ class FallbackModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
     retryState: RetryState,
   ): ReadableStream<LanguageModelV3StreamPart> {
-    let hasStreamedContent = false;
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const fallbackModel = this;
 
     return new ReadableStream<LanguageModelV3StreamPart>({
       async start(controller) {
+        let hasStreamedContent = false;
         let reader: ReadableStreamDefaultReader<LanguageModelV3StreamPart> | null =
           null;
 
         const processStream = async (
           stream: ReadableStream<LanguageModelV3StreamPart>,
         ): Promise<void> => {
+          let attemptHasStreamedContent = false;
           reader = stream.getReader();
 
           try {
@@ -405,17 +736,22 @@ class FallbackModel implements LanguageModelV3 {
               }
 
               // Check for early errors before streaming content
-              if (!hasStreamedContent && value && "error" in value) {
-                const error = value.error as Error;
-                if (defaultShouldRetryThisError(error)) {
+              if (!attemptHasStreamedContent && value && "error" in value) {
+                const error = value.error;
+                const action = getFallbackFailureAction(error);
+                if (action !== "fail") {
                   throw error;
                 }
+                logger.warn(
+                  `Stream error event from model ${fallbackModel.modelId}; not retrying or falling back (requestId=${getRequestId(options)}, hasStreamedContent=${hasStreamedContent}, attempt=${retryState.attemptNumber}/${fallbackModel.maxAttempts}, error="${formatFallbackErrorForLog(error)}")`,
+                );
               }
 
               controller.enqueue(value);
 
               // Mark that we've streamed actual content (not just metadata)
-              if (value?.type && value.type !== "stream-start") {
+              if (isStreamContentPart(value)) {
+                attemptHasStreamedContent = true;
                 hasStreamedContent = true;
               }
             }
@@ -424,63 +760,75 @@ class FallbackModel implements LanguageModelV3 {
           }
         };
 
-        try {
-          await processStream(originalStream);
-        } catch (error) {
-          const err = error as Error;
-
-          // Decide whether to retry
-          const shouldRetry =
-            (!hasStreamedContent || fallbackModel.retryAfterOutput) &&
-            defaultShouldRetryThisError(err) &&
-            retryState.attemptNumber < fallbackModel.maxRetries;
-
-          if (shouldRetry) {
-            // Track this error
-            retryState.errors.push({
-              modelId: fallbackModel.modelId,
-              error: err,
-            });
-            retryState.attemptNumber++;
-
-            // Switch to next model
-            fallbackModel.switchToNextModel();
-            retryState.modelsAttempted.add(fallbackModel.currentModelIndex);
-
-            // Check if we've tried all models
-            if (
-              retryState.modelsAttempted.size ===
-                fallbackModel.settings.models.length &&
-              retryState.attemptNumber >= fallbackModel.maxRetries
-            ) {
-              logger.error(
-                `All models exhausted during streaming after ${retryState.attemptNumber} attempts`,
-              );
-              controller.error(
-                new Error(
-                  `All models failed during streaming. Last error: ${err.message}`,
-                ),
-              );
-              return;
-            }
-
-            logger.info(
-              `Stream error from model, falling back to ${fallbackModel.modelId} (attempt ${retryState.attemptNumber}/${fallbackModel.maxRetries})`,
-            );
-
+        let currentStream = originalStream;
+        let pendingError: unknown;
+        let hasPendingError = false;
+        while (true) {
+          if (!hasPendingError) {
             try {
-              const nextResult = await fallbackModel
-                .getUnderlyingModel()
-                .doStream(fallbackModel.optionsForCurrentModel(options));
-              await processStream(nextResult.stream);
-            } catch (nextError) {
-              controller.error(nextError);
+              await processStream(currentStream);
+              return;
+            } catch (error) {
+              pendingError = error;
+              hasPendingError = true;
             }
-          } else {
+          }
+
+          const failedModelId = fallbackModel.modelId;
+          retryState.errors.push({
+            modelId: failedModelId,
+            error: pendingError,
+          });
+          const action = getFallbackFailureAction(pendingError);
+          if (action === "fail" || hasStreamedContent) {
             logger.warn(
-              `Stream error not retryable (hasContent=${hasStreamedContent}, retryable=${defaultShouldRetryThisError(err)}, attempts=${retryState.attemptNumber}/${fallbackModel.maxRetries}), propagating error`,
+              `Stream error from model ${failedModelId}; not retrying or falling back (requestId=${getRequestId(options)}, hasStreamedContent=${hasStreamedContent}, attempt=${retryState.attemptNumber}/${fallbackModel.maxAttempts}, error="${formatFallbackErrorForLog(pendingError)}")`,
             );
-            controller.error(err);
+            controller.error(pendingError);
+            return;
+          }
+
+          const decision = fallbackModel.prepareRecovery(action, retryState);
+          if (
+            !decision ||
+            retryState.attemptNumber >= fallbackModel.maxAttempts
+          ) {
+            logger.error(
+              `All ${fallbackModel.settings.models.length} models exhausted during streaming after ${retryState.attemptNumber} attempts (requestId=${getRequestId(options)}, error="${formatFallbackErrorForLog(pendingError)}")`,
+            );
+            controller.error(
+              fallbackModel.exhaustedError("streaming", pendingError),
+            );
+            return;
+          }
+
+          fallbackModel.logRecovery({
+            decision,
+            state: retryState,
+            requestId: getRequestId(options),
+            stage: "stream",
+            error: pendingError,
+            hasStreamedContent,
+          });
+          await fallbackModel.waitBeforeSameModelRetry(
+            decision,
+            retryState,
+            pendingError,
+            options.abortSignal,
+          );
+          throwIfAborted(options.abortSignal);
+          fallbackModel.startAttempt(retryState);
+
+          try {
+            const nextResult = await fallbackModel
+              .getUnderlyingModel()
+              .doStream(fallbackModel.optionsForCurrentModel(options));
+            currentStream = nextResult.stream;
+            pendingError = undefined;
+            hasPendingError = false;
+          } catch (error) {
+            pendingError = error;
+            hasPendingError = true;
           }
         }
       },

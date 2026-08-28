@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { ModelSelection, UserSettings } from "@/lib/schemas";
-import { getProviderOptions } from "./provider_options";
+import {
+  DYAD_INTERNAL_REQUEST_ID_HEADER,
+  getAiHeaders,
+  getProviderOptions,
+} from "./provider_options";
 
 const settingsFor = (provider: string, name: string, effortLevel: string) =>
   ({
@@ -91,5 +95,20 @@ describe("getProviderOptions model effort", () => {
         "custom-provider",
       )["custom-provider"],
     ).toEqual({ reasoningEffort: "low" });
+  });
+});
+
+describe("getAiHeaders", () => {
+  it("forwards the Dyad request ID for fallback diagnostics", () => {
+    expect(
+      getAiHeaders({
+        builtinProviderId: "dyad-engine",
+        dyadRequestId: "request-123",
+      }),
+    ).toEqual({ [DYAD_INTERNAL_REQUEST_ID_HEADER]: "request-123" });
+  });
+
+  it("omits headers when there is no request ID", () => {
+    expect(getAiHeaders({ builtinProviderId: "openai" })).toBeUndefined();
   });
 });
