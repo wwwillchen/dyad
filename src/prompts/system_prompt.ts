@@ -8,6 +8,7 @@ import {
 } from "./local_agent_prompt";
 import { constructPlanModePrompt } from "./plan_mode_prompt";
 import type { AppFrameworkType } from "@/lib/framework_constants";
+import type { AppBlueprintData } from "@/ipc/types/app_blueprint";
 
 const logger = log.scope("system_prompt");
 
@@ -754,6 +755,7 @@ export const constructSystemPrompt = ({
   enableAppBlueprint,
   hasAppBlueprint,
   planningQuestionnaireAvailable,
+  appBlueprint,
   codeExplorerAvailable,
   historyExplorerAvailable,
   implementerAvailable,
@@ -791,6 +793,8 @@ export const constructSystemPrompt = ({
   hasAppBlueprint?: boolean;
   /** Whether planning_questionnaire is exposed in this turn's tool set. */
   planningQuestionnaireAvailable?: boolean;
+  /** Current unapproved blueprint data, including edits made in the card. */
+  appBlueprint?: AppBlueprintData;
   /**
    * If true, the local-agent prompt can use Code Explorer when the relevant
    * files are not already known or reasonably clear from available context.
@@ -829,6 +833,7 @@ export const constructSystemPrompt = ({
       enableAppBlueprint,
       hasAppBlueprint,
       planningQuestionnaireAvailable,
+      appBlueprint,
       codeExplorerAvailable,
       historyExplorerAvailable,
       implementerAvailable,
@@ -847,6 +852,7 @@ export const constructSystemPrompt = ({
       enableAppBlueprint,
       hasAppBlueprint,
       planningQuestionnaireAvailable,
+      appBlueprint,
       restartAppToolAvailable,
       reinstallAndRestartAppToolAvailable,
     });

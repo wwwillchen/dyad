@@ -604,10 +604,23 @@ describe("local_agent_prompt", () => {
     const prompt = constructLocalAgentPrompt(undefined, undefined, {
       enableAppBlueprint: true,
       hasAppBlueprint: true,
+      appBlueprint: {
+        appName: "Card-edited name",
+        userPrompt: "Build an app",
+        attachments: [],
+        templateId: "react",
+        themeId: "default",
+        designDirection: "Card-edited direction",
+        primaryColor: "#2563EB",
+        visuals: [],
+      },
     });
 
     expect(prompt).toContain("an unapproved blueprint already exists");
     expect(prompt).toContain("update the blueprint directly");
+    expect(prompt).toContain("Card-edited name");
+    expect(prompt).toContain("Card-edited direction");
+    expect(prompt).toContain("including edits made in the blueprint card");
     expect(prompt).toContain(
       "Do not repeat it merely to update an existing unapproved blueprint",
     );

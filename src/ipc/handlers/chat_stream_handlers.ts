@@ -2053,7 +2053,8 @@ ${componentSnippet}
           settings.agentToolConsents?.["run_build"] !== "never";
         const planningQuestionnaireAvailable =
           settings.agentToolConsents?.["planning_questionnaire"] !== "never";
-        const hasAppBlueprint = Boolean(getAppBlueprintForChat(updatedChat.id));
+        const appBlueprint = getAppBlueprintForChat(updatedChat.id);
+        const hasAppBlueprint = Boolean(appBlueprint);
         const initialSupabaseProviderToolsAvailable = Boolean(
           updatedChat.app.supabaseProjectId &&
           hasSupabaseCredentialsForOrganization(
@@ -2165,6 +2166,7 @@ ${componentSnippet}
             settings.enableAppBlueprint && updatedChat.app.needsAppBlueprint,
           hasAppBlueprint,
           planningQuestionnaireAvailable,
+          appBlueprint,
           codeExplorerAvailable,
           historyExplorerAvailable,
           implementerAvailable,

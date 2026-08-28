@@ -253,6 +253,10 @@ describe("context limit banner (integration)", () => {
       where: eq(chats.id, chatId),
     });
     expect(chat).toBeDefined();
+    const originalApp = await harness.db.query.apps.findFirst({
+      where: eq(apps.id, chat!.appId),
+    });
+    expect(originalApp).toBeDefined();
     await harness.db
       .update(apps)
       .set({ needsAppBlueprint: true })
@@ -299,6 +303,10 @@ describe("context limit banner (integration)", () => {
       expect(disabledQuestionnaireTokens).not.toBe(updateBlueprintTokens);
     } finally {
       deleteAppBlueprintForChat(chatId);
+      await harness.db
+        .update(apps)
+        .set({ needsAppBlueprint: originalApp!.needsAppBlueprint })
+        .where(eq(apps.id, chat!.appId));
       writeSettings({
         enableAppBlueprint: originalSettings.enableAppBlueprint,
         agentToolConsents: originalSettings.agentToolConsents,

@@ -103,7 +103,8 @@ export function registerTokenCountHandlers() {
       const frameworkType = detectFrameworkType(getDyadAppPath(chat.app.path));
       const enableAppBlueprint =
         settings.enableAppBlueprint === true && chat.app.needsAppBlueprint;
-      const hasAppBlueprint = Boolean(getAppBlueprintForChat(chat.id));
+      const appBlueprint = getAppBlueprintForChat(chat.id);
+      const hasAppBlueprint = Boolean(appBlueprint);
       const planningQuestionnaireAvailable =
         settings.agentToolConsents?.["planning_questionnaire"] !== "never";
       let systemPrompt = constructSystemPrompt({
@@ -122,6 +123,7 @@ export function registerTokenCountHandlers() {
         enableAppBlueprint,
         hasAppBlueprint,
         planningQuestionnaireAvailable,
+        appBlueprint,
       });
       let supabaseContext = "";
       const supabaseProviderToolsAvailable = Boolean(
