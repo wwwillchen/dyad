@@ -737,12 +737,10 @@ export function ModelPicker() {
   const renderCloudModelItem = ({
     providerId,
     model,
-    showProvider = false,
     showPrice = true,
   }: {
     providerId: string;
     model: LanguageModel;
-    showProvider?: boolean;
     showPrice?: boolean;
   }) => {
     const modelRef = {
@@ -793,7 +791,6 @@ export function ModelPicker() {
     const compactEffortLabel = formatCompactEffortLevel(currentEffort);
     const unlockedAriaLabel = [
       model.displayName,
-      showProvider ? getProviderDisplayName(providerId) : null,
       showPrice && model.dollarSigns != null
         ? model.dollarSigns === 0
           ? "Free"
@@ -825,11 +822,6 @@ export function ModelPicker() {
             >
               {model.displayName}
             </span>
-            {showProvider && (
-              <span className="block max-w-full truncate text-xs text-muted-foreground">
-                {getProviderDisplayName(providerId)}
-              </span>
-            )}
           </span>
         </span>
         <span className="flex min-w-fit items-center gap-1.5">
@@ -1076,7 +1068,6 @@ export function ModelPicker() {
   const renderLocalModelItem = (
     providerId: "ollama" | "lmstudio",
     model: LocalModel,
-    showProvider = false,
   ) => {
     const modelRef = { name: model.modelName, provider: providerId };
     const isSelected =
@@ -1092,8 +1083,6 @@ export function ModelPicker() {
         }).effortLevel;
     const effortLabel = formatEffortLevel(currentEffort);
     const compactEffortLabel = formatCompactEffortLevel(currentEffort);
-    const providerDisplayName =
-      providerId === "ollama" ? "Ollama" : "LM Studio";
     const selectLocalModel = (effortLevel?: string) => {
       void onModelSelect({
         model: modelRef,
@@ -1107,7 +1096,7 @@ export function ModelPicker() {
       <DropdownMenuSub key={`${providerId}-${model.modelName}`}>
         <DropdownMenuSubTrigger
           hideChevron
-          aria-label={`${model.displayName}.${showProvider ? ` ${providerDisplayName}.` : ""} Effort: ${effortLabel}. Press Enter to select; press Right Arrow to configure effort.`}
+          aria-label={`${model.displayName}. Effort: ${effortLabel}. Press Enter to select; press Right Arrow to configure effort.`}
           className={cn(
             "relative py-1.5 w-full",
             isSelected &&
@@ -1137,15 +1126,9 @@ export function ModelPicker() {
                 </span>
                 <span
                   className="block max-w-full truncate text-xs text-muted-foreground"
-                  title={
-                    showProvider
-                      ? `${providerDisplayName} · ${model.modelName}`
-                      : model.modelName
-                  }
+                  title={model.modelName}
                 >
-                  {showProvider
-                    ? `${providerDisplayName} · ${model.modelName}`
-                    : model.modelName}
+                  {model.modelName}
                 </span>
               </div>
             </div>
@@ -1277,32 +1260,6 @@ export function ModelPicker() {
       </DropdownMenuSub>
     );
   };
-
-  const renderLocalModelsSubmenu = (testId: string) => (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger className="w-full font-normal">
-        <span>Local models</span>
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className="w-64" data-testid={testId}>
-        <DropdownMenuLabel>Local models</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        {renderLocalProviderSubmenu({
-          providerId: "ollama",
-          label: "Ollama",
-          models: ollamaModels,
-          loading: ollamaLoading,
-          error: ollamaError,
-        })}
-        {renderLocalProviderSubmenu({
-          providerId: "lmstudio",
-          label: "LM Studio",
-          models: lmStudioModels,
-          loading: lmStudioLoading,
-          error: lmStudioError,
-        })}
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
-  );
 
   const cloudCatalogGroups = PRICE_TIERS.map((tier) => ({
     tier,
@@ -1452,7 +1409,10 @@ export function ModelPicker() {
           {!isTrial && (
             <>
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger className="w-full font-normal">
+                <DropdownMenuSubTrigger
+                  className="w-full font-normal"
+                  {...NAVIGATION_SUBMENU_HOVER_PROPS}
+                >
                   <span>All models</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent
@@ -1511,24 +1471,46 @@ export function ModelPicker() {
                         );
                         return nodes;
                       })()}
-
-                      {otherProviderEntries.length > 0 && (
-                        <>
-                          <DropdownMenuSeparator />
-                          <div className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-wider font-medium text-muted-foreground">
-                            Other providers
-                          </div>
-                          {otherProviderEntries.map(([providerId, models]) =>
-                            renderProviderSubmenu(providerId, models),
-                          )}
-                        </>
+                    </>
+                  )}
+                  <DropdownMenuSeparator />
+                  <div
+                    className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-wider font-medium text-muted-foreground"
+                    data-testid="local-providers-section"
+                  >
+                    Local providers
+                  </div>
+                  {renderLocalProviderSubmenu({
+                    providerId: "ollama",
+                    label: "Ollama",
+                    models: ollamaModels,
+                    loading: ollamaLoading,
+                    error: ollamaError,
+                  })}
+                  {renderLocalProviderSubmenu({
+                    providerId: "lmstudio",
+                    label: "LM Studio",
+                    models: lmStudioModels,
+                    loading: lmStudioLoading,
+                    error: lmStudioError,
+                  })}
+                  {otherProviderEntries.length > 0 && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <div
+                        className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-wider font-medium text-muted-foreground"
+                        data-testid="cloud-providers-section"
+                      >
+                        Cloud providers
+                      </div>
+                      {otherProviderEntries.map(([providerId, models]) =>
+                        renderProviderSubmenu(providerId, models),
                       )}
                     </>
                   )}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
 
-              {renderLocalModelsSubmenu("local-models-submenu")}
               <DropdownMenuSeparator />
 
               {loading ? (
@@ -1568,33 +1550,24 @@ export function ModelPicker() {
                           return renderCloudModelItem({
                             providerId: entry.providerId,
                             model: entry.model,
-                            showProvider: true,
                           });
                         }
                         if (entry.type === "local") {
                           return renderLocalModelItem(
                             entry.providerId,
                             entry.model,
-                            true,
                           );
                         }
-                        const providerDisplayName =
-                          entry.providerId === "ollama"
-                            ? "Ollama"
-                            : "LM Studio";
                         return (
                           <DropdownMenuItem
                             key={`${entry.providerId}-${entry.modelName}-loading`}
                             disabled
-                            aria-label={`${entry.modelName}. ${providerDisplayName}. Loading local model`}
+                            aria-label={`${entry.modelName}. Loading local model`}
                             className="py-1.5"
                           >
                             <ProviderIcon providerId={entry.providerId} />
                             <span className="min-w-0 truncate text-[13px]">
                               {entry.modelName}
-                            </span>
-                            <span className="text-xs text-muted-foreground">
-                              {providerDisplayName}
                             </span>
                             <span className="ml-auto text-xs text-muted-foreground">
                               Loading...

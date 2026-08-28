@@ -137,14 +137,14 @@ export class ModelPicker {
 
   async selectTestOllamaModel() {
     await this.page.getByTestId("model-picker").click();
-    await this.getMenuItem("Local models", false).click();
+    await this.getMenuItem("All models").click();
     await this.getMenuItem("Ollama", false).click();
     await this.getMenuItem("Testollama", false).click();
   }
 
   async selectTestLMStudioModel() {
     await this.page.getByTestId("model-picker").click();
-    await this.getMenuItem("Local models", false).click();
+    await this.getMenuItem("All models").click();
     await this.getMenuItem("LM Studio", false).click();
     await this.getMenuItem("lmstudio-model-1", false).click();
   }
