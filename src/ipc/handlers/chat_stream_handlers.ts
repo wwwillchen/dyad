@@ -18,26 +18,39 @@ import {
 } from "ai";
 
 import { db } from "../../db";
-import { chats, messages } from "../../db/schema";
+import { apps, chats, messages } from "../../db/schema";
 import { scheduleChatSearchIndexing } from "../../pro/main/ipc/handlers/local_agent/chat_search_indexer";
 import { and, eq, isNull } from "drizzle-orm";
-import type { SmartContextMode } from "../../lib/schemas";
+import {
+  hasSupabaseCredentialsForOrganization,
+  type SmartContextMode,
+} from "../../lib/schemas";
 import {
   constructSystemPrompt,
   readAiRules,
 } from "../../prompts/system_prompt";
+import {
+  constructImplementerPrompt,
+  resolveImplementerProvider,
+} from "../../prompts/local_agent_prompt";
 import { detectFrameworkType } from "../utils/framework_utils";
 import { getThemePromptById } from "../utils/theme_utils";
 import {
   getSupabaseAvailableSystemPrompt,
+  SUPABASE_DISCONNECTED_SYSTEM_PROMPT,
   SUPABASE_NOT_AVAILABLE_SYSTEM_PROMPT,
 } from "../../prompts/supabase_prompt";
 import { registerTrustedIpcHandler } from "./trusted_handle";
-import { buildNeonPromptForApp } from "../../neon_admin/neon_prompt_context";
+import {
+  buildNeonPromptForApp,
+  getNeonEmailVerificationEnabled,
+} from "../../neon_admin/neon_prompt_context";
+import { NEON_DISCONNECTED_SYSTEM_PROMPT } from "../../prompts/neon_prompt";
 import { getDyadAppPath } from "../../paths/paths";
 import { buildDyadMediaUrl } from "../../lib/dyadMediaUrl";
 import type { ChatStreamParams } from "@/ipc/types";
 import type { ChatStreamInvocationRef } from "@/chat_stream/invocation";
+import { resolveRootDatabasePromptState } from "@/shared/database_provider";
 import type { SerializableChatTurnIntent } from "@/chat_stream/transport";
 import type {
   ChatStreamChunkPayload,
@@ -135,7 +148,6 @@ import {
   isBasicAgentMode,
   isDyadProEnabled,
   isLocalAgentBackedMode,
-  isSupabaseConnected,
   isTurboEditsV2Enabled,
 } from "@/lib/schemas";
 import { isFreeProModel } from "@/lib/freeProModel";
@@ -188,6 +200,61 @@ function createEmptyTextStream(): AsyncIterableStream<TextStreamPart<ToolSet>> {
 }
 
 const logger = log.scope("chat_stream_handlers");
+
+type ImplementerCapabilityApp = Pick<
+  typeof apps.$inferSelect,
+  | "supabaseProjectId"
+  | "supabaseOrganizationSlug"
+  | "neonProjectId"
+  | "neonActiveBranchId"
+  | "neonDevelopmentBranchId"
+>;
+
+export function resolveImplementerCapabilityState(
+  app: ImplementerCapabilityApp,
+  settings: ReturnType<typeof readSettings>,
+) {
+  const supabaseConnected = hasSupabaseCredentialsForOrganization(
+    settings,
+    app.supabaseOrganizationSlug,
+  );
+  const neonConnected = Boolean(settings.neon?.accessToken?.value);
+  const neonBranchId = app.neonActiveBranchId ?? app.neonDevelopmentBranchId;
+  const neonToolsAvailable = Boolean(
+    neonConnected && app.neonProjectId && neonBranchId,
+  );
+  const provider = resolveImplementerProvider({
+    hasSupabaseProject: Boolean(app.supabaseProjectId),
+    hasNeonProject: Boolean(app.neonProjectId),
+  });
+  const providerAvailable =
+    provider === "supabase"
+      ? supabaseConnected
+      : provider === "neon"
+        ? neonToolsAvailable
+        : false;
+  const providerMetadataToolName =
+    provider === "supabase"
+      ? "get_supabase_project_info"
+      : provider === "neon"
+        ? "get_neon_project_info"
+        : undefined;
+
+  return {
+    provider,
+    supabaseConnected,
+    neonToolsAvailable,
+    neonBranchId,
+    providerMetadataReadAvailable:
+      providerAvailable &&
+      providerMetadataToolName !== undefined &&
+      settings.agentToolConsents?.[providerMetadataToolName] !== "never",
+    databaseSchemaReadAvailable:
+      providerAvailable &&
+      settings.agentToolConsents?.["get_database_table_schema"] !== "never",
+    readGuideAvailable: settings.agentToolConsents?.["read_guide"] !== "never",
+  };
+}
 
 export interface ChatStreamExecutionObserver {
   intent: SerializableChatTurnIntent;
@@ -1983,6 +2050,102 @@ ${componentSnippet}
           settings.agentToolConsents?.["reinstall_and_restart_app"] !== "never";
         const runBuildToolAvailable =
           settings.agentToolConsents?.["run_build"] !== "never";
+        const initialSupabaseProviderToolsAvailable = Boolean(
+          updatedChat.app.supabaseProjectId &&
+          hasSupabaseCredentialsForOrganization(
+            settings,
+            updatedChat.app.supabaseOrganizationSlug,
+          ),
+        );
+        const initialNeonCredentialsAvailable = Boolean(
+          updatedChat.app.neonProjectId && settings.neon?.accessToken?.value,
+        );
+        const initialNeonProviderToolsAvailable = Boolean(
+          initialNeonCredentialsAvailable &&
+          (updatedChat.app.neonActiveBranchId ??
+            updatedChat.app.neonDevelopmentBranchId),
+        );
+        const implementerFallbackSystemPrompt = constructImplementerPrompt(
+          aiRules,
+          {
+            provider: resolveImplementerProvider({
+              hasSupabaseProject: Boolean(updatedChat.app.supabaseProjectId),
+              hasNeonProject: Boolean(updatedChat.app.neonProjectId),
+            }),
+            frameworkType,
+            testingEnabled: Boolean(updatedChat.app.testingEnabled),
+            runTestsAvailable:
+              settings.agentToolConsents?.["run_tests"] !== "never",
+            // Refresh failure disables every provider tool for the child, so
+            // the fallback prompt must not advertise live provider reads.
+            supabaseConnected: false,
+            neonToolsAvailable: false,
+            neonEmailVerificationEnabled: undefined,
+            providerMetadataReadAvailable: false,
+            databaseSchemaReadAvailable: false,
+            readGuideAvailable:
+              settings.agentToolConsents?.["read_guide"] !== "never",
+          },
+        );
+        const refreshImplementerContext = async () => {
+          const refreshedApp =
+            (await db.query.apps.findFirst({
+              where: eq(apps.id, updatedChat.app.id),
+            })) ?? updatedChat.app;
+          const latestSettings = readSettings();
+          const capabilityState = resolveImplementerCapabilityState(
+            refreshedApp,
+            latestSettings,
+          );
+          const {
+            provider,
+            supabaseConnected,
+            neonToolsAvailable,
+            neonBranchId,
+            providerMetadataReadAvailable,
+            databaseSchemaReadAvailable,
+            readGuideAvailable,
+          } = capabilityState;
+          const refreshedFrameworkType = detectFrameworkType(
+            getDyadAppPath(refreshedApp.path),
+          );
+          const neonEmailVerificationEnabled =
+            provider === "neon" &&
+            neonToolsAvailable &&
+            refreshedApp.neonProjectId
+              ? await getNeonEmailVerificationEnabled(
+                  refreshedApp.neonProjectId,
+                  neonBranchId,
+                )
+              : provider === "neon"
+                ? undefined
+                : false;
+          return {
+            systemPrompt: constructImplementerPrompt(aiRules, {
+              provider,
+              frameworkType: refreshedFrameworkType,
+              testingEnabled: Boolean(refreshedApp.testingEnabled),
+              runTestsAvailable:
+                latestSettings.agentToolConsents?.["run_tests"] !== "never",
+              supabaseConnected,
+              neonToolsAvailable,
+              neonEmailVerificationEnabled,
+              providerMetadataReadAvailable,
+              databaseSchemaReadAvailable,
+              readGuideAvailable,
+            }),
+            supabaseProjectId: refreshedApp.supabaseProjectId,
+            supabaseOrganizationSlug: refreshedApp.supabaseOrganizationSlug,
+            neonProjectId: refreshedApp.neonProjectId,
+            neonActiveBranchId: neonBranchId,
+            supabaseProviderToolsAvailable: Boolean(
+              supabaseConnected && refreshedApp.supabaseProjectId,
+            ),
+            neonProviderToolsAvailable: neonToolsAvailable,
+            frameworkType: refreshedFrameworkType,
+            testingEnabled: Boolean(refreshedApp.testingEnabled),
+          };
+        };
 
         // Migration on read converts "agent" to "build", so no need to check for it here
         let systemPrompt = constructSystemPrompt({
@@ -2042,12 +2205,15 @@ ${componentSnippet}
           }
         }
 
-        if (
-          updatedChat.app?.supabaseProjectId &&
-          isSupabaseConnected(settings)
-        ) {
+        const rootDatabasePromptState = resolveRootDatabasePromptState({
+          hasSupabaseProject: Boolean(updatedChat.app.supabaseProjectId),
+          supabaseCredentialsAvailable: initialSupabaseProviderToolsAvailable,
+          hasNeonProject: Boolean(updatedChat.app.neonProjectId),
+          neonCredentialsAvailable: initialNeonCredentialsAvailable,
+        });
+        if (rootDatabasePromptState === "supabase") {
           const supabaseClientCode = await getSupabaseClientCode({
-            projectId: updatedChat.app.supabaseProjectId,
+            projectId: updatedChat.app.supabaseProjectId!,
             organizationSlug: updatedChat.app.supabaseOrganizationSlug ?? null,
           });
           systemPrompt +=
@@ -2058,11 +2224,13 @@ ${componentSnippet}
             (willUseLocalAgentStream
               ? ""
               : await getSupabaseContext({
-                  supabaseProjectId: updatedChat.app.supabaseProjectId,
+                  supabaseProjectId: updatedChat.app.supabaseProjectId!,
                   organizationSlug:
                     updatedChat.app.supabaseOrganizationSlug ?? null,
                 }));
-        } else if (updatedChat.app?.neonProjectId) {
+        } else if (rootDatabasePromptState === "supabase-disconnected") {
+          systemPrompt += "\n\n" + SUPABASE_DISCONNECTED_SYSTEM_PROMPT;
+        } else if (rootDatabasePromptState === "neon") {
           // Neon is connected — inject Neon prompt instead of Supabase
           systemPrompt +=
             "\n\n" +
@@ -2074,6 +2242,8 @@ ${componentSnippet}
               selectedChatMode,
             })) +
             "\n\n";
+        } else if (rootDatabasePromptState === "neon-disconnected") {
+          systemPrompt += "\n\n" + NEON_DISCONNECTED_SYSTEM_PROMPT;
         } else if (
           // In local agent mode, we will suggest integrations as part of the add-integration tool
           !willUseLocalAgentStream &&
@@ -2408,7 +2578,7 @@ This conversation includes one or more image attachments. When the user uploads 
         // Ask mode does not consume free agent quota
         if (isAskMode) {
           // Reconstruct system prompt for local-agent read-only mode
-          const readOnlySystemPrompt = constructSystemPrompt({
+          let readOnlySystemPrompt = constructSystemPrompt({
             aiRules,
             chatMode: "local-agent",
             enableTurboEditsV2: false,
@@ -2418,6 +2588,12 @@ This conversation includes one or more image attachments. When the user uploads 
             codeExplorerAvailable,
             historyExplorerAvailable,
           });
+          if (rootDatabasePromptState === "supabase-disconnected") {
+            readOnlySystemPrompt +=
+              "\n\n" + SUPABASE_DISCONNECTED_SYSTEM_PROMPT;
+          } else if (rootDatabasePromptState === "neon-disconnected") {
+            readOnlySystemPrompt += "\n\n" + NEON_DISCONNECTED_SYSTEM_PROMPT;
+          }
 
           // Return value indicates success/failure for quota tracking.
           // Ask mode doesn't consume quota, but we still capture it for
@@ -2444,6 +2620,9 @@ This conversation includes one or more image attachments. When the user uploads 
               referencedApps: referencedAppsForAgent,
               currentTurnHasOnDiskAttachment:
                 hasScriptReadableAttachment(storedAttachments),
+              supabaseProviderToolsAvailable:
+                initialSupabaseProviderToolsAvailable,
+              neonProviderToolsAvailable: initialNeonProviderToolsAvailable,
             },
           );
           if (!streamSuccess) {
@@ -2459,13 +2638,19 @@ This conversation includes one or more image attachments. When the user uploads 
         // Plan mode is for requirements gathering and creating implementation plans
         if (isPlanMode) {
           // Reconstruct system prompt for plan mode
-          const planModeSystemPrompt = constructSystemPrompt({
+          let planModeSystemPrompt = constructSystemPrompt({
             aiRules,
             chatMode: "plan",
             enableTurboEditsV2: false,
             themePrompt,
             freeModelMode,
           });
+          if (rootDatabasePromptState === "supabase-disconnected") {
+            planModeSystemPrompt +=
+              "\n\n" + SUPABASE_DISCONNECTED_SYSTEM_PROMPT;
+          } else if (rootDatabasePromptState === "neon-disconnected") {
+            planModeSystemPrompt += "\n\n" + NEON_DISCONNECTED_SYSTEM_PROMPT;
+          }
 
           finishedNaturally = await handleLocalAgentStream(
             event,
@@ -2482,6 +2667,9 @@ This conversation includes one or more image attachments. When the user uploads 
               freeModelMode,
               referencedApps: referencedAppsForAgent,
               currentTurnHasOnDiskAttachment: false,
+              supabaseProviderToolsAvailable:
+                initialSupabaseProviderToolsAvailable,
+              neonProviderToolsAvailable: initialNeonProviderToolsAvailable,
             },
           );
           return;
@@ -2509,6 +2697,9 @@ This conversation includes one or more image attachments. When the user uploads 
               referencedApps: referencedAppsForAgent,
               currentTurnHasOnDiskAttachment:
                 hasScriptReadableAttachment(storedAttachments),
+              supabaseProviderToolsAvailable:
+                initialSupabaseProviderToolsAvailable,
+              neonProviderToolsAvailable: initialNeonProviderToolsAvailable,
             },
           );
           return;
@@ -2534,6 +2725,11 @@ This conversation includes one or more image attachments. When the user uploads 
               modelSelectionOverride: selectedModel,
               freeModelMode,
               preCommitHookAvailable,
+              refreshImplementerContext,
+              implementerFallbackSystemPrompt,
+              supabaseProviderToolsAvailable:
+                initialSupabaseProviderToolsAvailable,
+              neonProviderToolsAvailable: initialNeonProviderToolsAvailable,
               referencedApps: referencedAppsForAgent,
               currentTurnHasOnDiskAttachment:
                 hasScriptReadableAttachment(storedAttachments),

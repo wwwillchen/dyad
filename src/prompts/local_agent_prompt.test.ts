@@ -1,8 +1,28 @@
 import { describe, it, expect } from "vitest";
 import {
   constructBuildAgentPrompt,
+  constructImplementerPrompt,
   constructLocalAgentPrompt,
+  resolveImplementerProvider,
 } from "@/prompts/local_agent_prompt";
+import {
+  SUPABASE_DISCONNECTED_SYSTEM_PROMPT,
+  SUPABASE_EDGE_FUNCTION_JWT_RULE,
+  SUPABASE_GRANTS_AND_RLS_RULE,
+  SUPABASE_IMPLEMENTER_NO_MANUAL_MIGRATIONS_RULE,
+  SUPABASE_IMPLEMENTER_RLS_RULE,
+  SUPABASE_ROOT_NO_MANUAL_MIGRATIONS_RULE,
+  SUPABASE_ROOT_RLS_RULE,
+  SUPABASE_SERVICE_ROLE_BROWSER_RULE,
+} from "@/prompts/supabase_prompt";
+import {
+  NEON_DISCONNECTED_SYSTEM_PROMPT,
+  NEON_NO_BROWSER_DATABASE_URL_RULE,
+  NEON_NO_BROWSER_SERVERLESS_RULE,
+  NEON_NO_CUSTOM_AUTH_RULE,
+  NEON_IMPLEMENTER_NO_MANUAL_MIGRATIONS_RULE,
+  NEON_RLS_REQUIRES_JWT_RULE,
+} from "@/prompts/neon_prompt";
 
 describe("local_agent_prompt", () => {
   const expectGitContextGuidance = (prompt: string) => {
@@ -10,6 +30,47 @@ describe("local_agent_prompt", () => {
     expect(prompt).toContain("<dyad-git-context>");
     expect(prompt).toContain('source_commit="..." no_commit="true"');
   };
+
+  it("keeps Supabase safety invariants in the disconnected root prompt", () => {
+    expect(SUPABASE_DISCONNECTED_SYSTEM_PROMPT).toContain(
+      SUPABASE_SERVICE_ROLE_BROWSER_RULE,
+    );
+    expect(SUPABASE_DISCONNECTED_SYSTEM_PROMPT).toContain(
+      SUPABASE_EDGE_FUNCTION_JWT_RULE,
+    );
+    expect(SUPABASE_DISCONNECTED_SYSTEM_PROMPT).toContain(
+      SUPABASE_GRANTS_AND_RLS_RULE,
+    );
+    expect(SUPABASE_DISCONNECTED_SYSTEM_PROMPT).toContain(
+      SUPABASE_ROOT_RLS_RULE,
+    );
+    expect(SUPABASE_DISCONNECTED_SYSTEM_PROMPT).toContain(
+      SUPABASE_ROOT_NO_MANUAL_MIGRATIONS_RULE,
+    );
+    expect(SUPABASE_DISCONNECTED_SYSTEM_PROMPT).not.toContain(
+      "Report required schema or SQL changes to the root Agent",
+    );
+  });
+
+  it("keeps Neon safety invariants in the disconnected root prompt", () => {
+    expect(NEON_DISCONNECTED_SYSTEM_PROMPT).toContain(NEON_NO_CUSTOM_AUTH_RULE);
+    expect(NEON_DISCONNECTED_SYSTEM_PROMPT).toContain(
+      NEON_RLS_REQUIRES_JWT_RULE,
+    );
+    expect(NEON_DISCONNECTED_SYSTEM_PROMPT).toContain(
+      NEON_NO_BROWSER_DATABASE_URL_RULE,
+    );
+    expect(NEON_DISCONNECTED_SYSTEM_PROMPT).toContain(
+      NEON_NO_BROWSER_SERVERLESS_RULE,
+    );
+    expect(NEON_DISCONNECTED_SYSTEM_PROMPT).toContain("reconnect Neon");
+    expect(NEON_DISCONNECTED_SYSTEM_PROMPT).toContain(
+      "email-verification setting is unknown",
+    );
+    expect(NEON_DISCONNECTED_SYSTEM_PROMPT).toContain(
+      "Do not change authentication or sign-up behavior",
+    );
+  });
 
   it("agent mode system prompt", () => {
     const prompt = constructLocalAgentPrompt(undefined);
@@ -90,6 +151,235 @@ describe("local_agent_prompt", () => {
     expect(enabled).toContain("These are advisory");
     expect(enabled).toContain("inspect the complete actual diff");
     expect(enabled).toContain("You remain responsible for the result");
+  });
+
+  it("builds a focused Implementer prompt with app and Supabase rules", () => {
+    const prompt = constructImplementerPrompt("# App Rules\n- Use foo.", {
+      provider: "supabase",
+      supabaseConnected: true,
+    });
+
+    expect(prompt).toContain("You are Dyad Implementer");
+    expect(prompt).toContain('<provider_invariants provider="supabase">');
+    expect(prompt).toContain(SUPABASE_SERVICE_ROLE_BROWSER_RULE);
+    expect(prompt).toContain(SUPABASE_GRANTS_AND_RLS_RULE);
+    expect(prompt).toContain(SUPABASE_IMPLEMENTER_RLS_RULE);
+    expect(prompt).toContain(SUPABASE_EDGE_FUNCTION_JWT_RULE);
+    expect(prompt).toContain(SUPABASE_IMPLEMENTER_NO_MANUAL_MIGRATIONS_RULE);
+    expect(prompt).toContain("SQL execution, dependency installation");
+    expect(prompt).toContain("# App Rules\n- Use foo.");
+    expect(prompt).toContain(
+      "its current on-disk contents supersede this snapshot",
+    );
+    expect(prompt).toContain("Address every MUST HOLD item");
+    expect(prompt).not.toContain("set_chat_summary");
+    expect(prompt).not.toContain("planning_questionnaire");
+    expect(prompt).not.toContain("execute SQL");
+    expect(prompt).not.toContain("dyad-execute-sql");
+    expect(prompt).not.toContain("add_integration");
+  });
+
+  it("keeps Supabase safety rules without claiming disconnected tools work", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      provider: "supabase",
+      supabaseConnected: false,
+    });
+
+    expect(prompt).toContain(SUPABASE_GRANTS_AND_RLS_RULE);
+    expect(prompt).toContain(
+      "Supabase project metadata inspection is unavailable",
+    );
+    expect(prompt).toContain("Live-schema inspection is unavailable");
+    expect(prompt).not.toContain("The app is connected to Supabase");
+    expect(prompt).not.toContain(
+      "You may inspect provider metadata and the live schema",
+    );
+  });
+
+  it("warns a plain Vite Implementer that no app server runtime exists", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      frameworkType: "vite",
+    });
+
+    expect(prompt).toContain('framework="vite"');
+    expect(prompt).toContain("no application server runtime");
+    expect(prompt).toContain("report the need for a server layer");
+    expect(prompt).toContain("Supabase Edge Functions are the only exception");
+  });
+
+  it("does not add the no-server warning after Nitro is enabled", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      frameworkType: "vite-nitro",
+    });
+
+    expect(prompt).not.toContain("no application server runtime");
+  });
+
+  it("includes test-writing conventions for testing-enabled apps", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      testingEnabled: true,
+    });
+
+    expect(prompt).toContain("e2e-tests/");
+    expect(prompt).toContain(".spec.ts");
+    expect(prompt).not.toContain("generate_test_assertions");
+    expect(prompt).not.toContain("install it (Playwright is required");
+    expect(prompt).not.toContain("ask the user to start it");
+    expect(prompt).not.toContain("tell the user which flow");
+    expect(prompt).toContain("report the required dev dependency");
+    expect(prompt).toContain("report to the root Agent");
+    expect(prompt).toContain("report the missing login prerequisite");
+    expect(prompt).not.toContain(
+      "build one before writing the auth-gated test",
+    );
+    expect(
+      constructImplementerPrompt(undefined, { testingEnabled: false }),
+    ).not.toContain("e2e-tests/");
+  });
+
+  it("reports verification to root when run_tests is unavailable", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      testingEnabled: true,
+      runTestsAvailable: false,
+    });
+
+    expect(prompt).toContain("`run_tests` tool is unavailable");
+    expect(prompt).not.toContain("VERIFY it with the `run_tests` tool");
+    expect(prompt).not.toContain("VERIFY it with `run_tests`");
+  });
+
+  it("renders Supabase provider invariants as separate bullets", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      provider: "supabase",
+      supabaseConnected: true,
+    });
+
+    for (const rule of [
+      SUPABASE_SERVICE_ROLE_BROWSER_RULE,
+      SUPABASE_GRANTS_AND_RLS_RULE,
+      SUPABASE_IMPLEMENTER_RLS_RULE,
+      SUPABASE_IMPLEMENTER_NO_MANUAL_MIGRATIONS_RULE,
+      SUPABASE_EDGE_FUNCTION_JWT_RULE,
+    ]) {
+      expect(rule).toMatch(/^- /);
+      expect(prompt).toContain(`\n${rule}`);
+    }
+  });
+
+  it("keeps Neon identity over disconnected Supabase", () => {
+    expect(
+      resolveImplementerProvider({
+        hasSupabaseProject: true,
+        hasNeonProject: true,
+      }),
+    ).toBe("neon");
+  });
+
+  it("gives Neon Implementers critical code-writing invariants", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      provider: "neon",
+      neonToolsAvailable: true,
+      neonEmailVerificationEnabled: true,
+    });
+
+    expect(prompt).toContain('<provider_invariants provider="neon">');
+    expect(prompt).toContain(NEON_NO_CUSTOM_AUTH_RULE);
+    expect(prompt).toContain(NEON_IMPLEMENTER_NO_MANUAL_MIGRATIONS_RULE);
+    expect(prompt).toContain(NEON_RLS_REQUIRES_JWT_RULE);
+    expect(prompt).toContain(NEON_NO_BROWSER_DATABASE_URL_RULE);
+    expect(prompt).toContain(NEON_NO_BROWSER_SERVERLESS_RULE);
+    expect(prompt).toContain(
+      '`read_guide` tool with guide="add-authentication"',
+    );
+    expect(prompt).toContain('guide="add-email-verification"');
+    expect(prompt).toContain('guide="add-password-reset"');
+    expect(prompt).toContain("Never hand-roll a reset-token flow");
+    expect(prompt).not.toContain("execute SQL");
+    expect(prompt).not.toContain("dyad-execute-sql");
+  });
+
+  it("omits the Neon email-verification guide when it is disabled", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      provider: "neon",
+      neonToolsAvailable: true,
+      neonEmailVerificationEnabled: false,
+    });
+
+    expect(prompt).not.toContain('guide="add-email-verification"');
+  });
+
+  it("does not treat unknown Neon email verification as disabled", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      provider: "neon",
+      neonToolsAvailable: false,
+    });
+
+    expect(prompt).toContain("Email-verification state is unavailable");
+    expect(prompt).toContain("do not assume it is disabled");
+  });
+
+  it("does not promise Neon provider tools without branch context", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      provider: "neon",
+      neonToolsAvailable: false,
+    });
+
+    expect(prompt).toContain("Neon project metadata inspection is unavailable");
+    expect(prompt).toContain("Live-schema inspection is unavailable");
+  });
+
+  it("describes provider read-tool consent independently", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      provider: "neon",
+      neonToolsAvailable: true,
+      neonEmailVerificationEnabled: true,
+      providerMetadataReadAvailable: true,
+      databaseSchemaReadAvailable: false,
+      readGuideAvailable: false,
+    });
+
+    expect(prompt).toContain("read_guide` tool is unavailable");
+    expect(prompt).toContain(
+      "`get_neon_project_info` metadata tool is available",
+    );
+    expect(prompt).toContain("Live-schema inspection is unavailable");
+    expect(prompt).not.toContain("MUST call the `read_guide`");
+  });
+
+  it("keeps root-owned operation boundaries without a provider", () => {
+    const prompt = constructImplementerPrompt(undefined);
+
+    expect(prompt).toContain(
+      "SQL execution, dependency installation, provider configuration, and deployment are root-owned operations",
+    );
+    expect(prompt).not.toContain("<provider_invariants");
+  });
+
+  it("selects Implementer safety guidance from the app provider association", () => {
+    expect(
+      resolveImplementerProvider({
+        hasSupabaseProject: true,
+        hasNeonProject: false,
+      }),
+    ).toBe("supabase");
+    expect(
+      resolveImplementerProvider({
+        hasSupabaseProject: true,
+        hasNeonProject: true,
+      }),
+    ).toBe("neon");
+    expect(
+      resolveImplementerProvider({
+        hasSupabaseProject: false,
+        hasNeonProject: true,
+      }),
+    ).toBe("neon");
+    expect(
+      resolveImplementerProvider({
+        hasSupabaseProject: false,
+        hasNeonProject: false,
+      }),
+    ).toBeUndefined();
   });
 
   it("agent mode system prompt (vite framework includes Nitro nudge)", () => {

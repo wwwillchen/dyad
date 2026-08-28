@@ -1,5 +1,6 @@
 import type { WebContents } from "electron";
 import { describe, expect, it, vi } from "vitest";
+import type { AgentContext } from "../tools/types";
 
 import {
   buildAllExcludedReviewResult,
@@ -16,10 +17,13 @@ import {
   isTerminalSubagentStatus,
   isWaitCompleteStatus,
   prepareSubagentStepMessages,
+  prepareImplementerRunContext,
   raceWithAbort,
+  resolveSubagentSystemPrompt,
   reviewFollowupAvailability,
   setSubagentEventTarget,
   shouldDrainMutationOnAbort,
+  syncRootImplementerProviderContext,
   SUBAGENT_NONTERMINAL_STATUSES,
   waitForAbortableDelay,
   withFinalizationAdmission,
@@ -280,6 +284,87 @@ describe("sub-agent manager status policy", () => {
     expect(shouldDrainMutationOnAbort("implementer")).toBe(true);
     expect(shouldDrainMutationOnAbort("reviewer")).toBe(false);
     expect(shouldDrainMutationOnAbort("explorer")).toBe(false);
+  });
+
+  it("uses the root-provided system prompt only for Implementers", () => {
+    expect(
+      resolveSubagentSystemPrompt("implementer", "App implementation rules"),
+    ).toBe("App implementation rules");
+    expect(resolveSubagentSystemPrompt("explorer", "Ignored")).toContain(
+      "Dyad Explorer",
+    );
+    expect(resolveSubagentSystemPrompt("reviewer", "Ignored")).toContain(
+      "Dyad Reviewer",
+    );
+  });
+
+  it("refreshes root finalization identity while returning child overrides", async () => {
+    const root = {
+      supabaseProjectId: null,
+      refreshImplementerContext: vi.fn(async () => ({
+        systemPrompt: "Refreshed implementer rules",
+        supabaseProjectId: "project-1",
+        supabaseOrganizationSlug: "org-1",
+        neonProjectId: null,
+        neonActiveBranchId: null,
+        supabaseProviderToolsAvailable: true,
+        neonProviderToolsAvailable: false,
+        frameworkType: "vite" as const,
+        testingEnabled: true,
+      })),
+    } as unknown as AgentContext;
+
+    const prepared = await prepareImplementerRunContext(root);
+
+    expect(prepared.systemPrompt).toBe("Refreshed implementer rules");
+    expect(prepared.contextOverrides?.supabaseProjectId).toBe("project-1");
+    expect(root.supabaseProjectId).toBeNull();
+    syncRootImplementerProviderContext(root, prepared.rootContextOverrides);
+    expect(root.supabaseProjectId).toBe("project-1");
+    expect(root.supabaseProviderToolsAvailable).toBe(true);
+    expect(root.neonProviderToolsAvailable).toBe(false);
+    expect(prepared.contextOverrides?.testingEnabled).toBe(true);
+  });
+
+  it("fails child tools closed without changing root capabilities when refresh fails", async () => {
+    const root = {
+      implementerFallbackSystemPrompt: "Fallback implementer rules",
+      supabaseProviderToolsAvailable: true,
+      neonProviderToolsAvailable: true,
+      refreshImplementerContext: vi.fn(async () => {
+        throw new Error("database unavailable");
+      }),
+    } as unknown as AgentContext;
+
+    const prepared = await prepareImplementerRunContext(root);
+    expect(prepared).toEqual({
+      systemPrompt: "Fallback implementer rules",
+      contextOverrides: {
+        supabaseProviderToolsAvailable: false,
+        neonProviderToolsAvailable: false,
+      },
+    });
+    expect(root.supabaseProviderToolsAvailable).toBe(true);
+    expect(root.neonProviderToolsAvailable).toBe(true);
+    syncRootImplementerProviderContext(root, prepared.rootContextOverrides);
+    expect(root.supabaseProviderToolsAvailable).toBe(true);
+    expect(root.neonProviderToolsAvailable).toBe(true);
+  });
+
+  it("fails child provider tools closed when context refresh is unavailable", async () => {
+    const root = {
+      implementerFallbackSystemPrompt: "Fallback implementer rules",
+      supabaseProviderToolsAvailable: true,
+      neonProviderToolsAvailable: true,
+    } as unknown as AgentContext;
+
+    await expect(prepareImplementerRunContext(root)).resolves.toEqual({
+      systemPrompt: "Fallback implementer rules",
+      contextOverrides: {
+        supabaseProviderToolsAvailable: false,
+        neonProviderToolsAvailable: false,
+      },
+    });
   });
 
   it("rejects finalization when its owning root is already cancelled", async () => {

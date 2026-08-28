@@ -64,17 +64,35 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { useTheme } from "@/contexts/ThemeContext";
-import { isSupabaseConnected } from "@/lib/schemas";
+import {
+  hasSupabaseCredentialsForOrganization,
+  isSupabaseConnected,
+} from "@/lib/schemas";
 import { showError } from "@/lib/toast";
+
+function findLinkedSupabaseProject(
+  projects: SupabaseProject[],
+  projectId: string,
+  parentProjectId?: string | null,
+) {
+  const organizationLookupProjectId = parentProjectId ?? projectId;
+  return projects.find((project) => project.id === organizationLookupProjectId);
+}
 
 export function SupabaseConnector({ appId }: { appId: number }) {
   const { t } = useTranslation(["home", "common"]);
-  const { settings, refreshSettings } = useSettings();
-  const { app, refreshApp } = useLoadApp(appId);
+  const { settings, refreshSettings, loading: settingsLoading } = useSettings();
+  const { app, loading: appLoading, refreshApp } = useLoadApp(appId);
   const { isDarkMode } = useTheme();
 
-  // Check if there are any connected organizations
-  const isConnected = isSupabaseConnected(settings);
+  // A linked app must be authenticated to its own organization. Before a
+  // project is selected, any connected organization can populate the picker.
+  const isConnected = app?.supabaseProjectId
+    ? hasSupabaseCredentialsForOrganization(
+        settings,
+        app.supabaseOrganizationSlug,
+      )
+    : isSupabaseConnected(settings);
 
   // Gates the update offer: true only when the app's generated client is
   // holding this project's legacy key and a publishable key exists to replace
@@ -98,6 +116,8 @@ export function SupabaseConnector({ appId }: { appId: number }) {
     branches,
     isLoadingProjects,
     isFetchingProjects,
+    isLoadingOrganizations,
+    organizationsError,
     projectsError,
     isLoadingBranches,
     branchesError,
@@ -106,6 +126,7 @@ export function SupabaseConnector({ appId }: { appId: number }) {
     refetchProjects,
     deleteOrganization,
     setAppProject,
+    recoverAppProject,
     unsetAppProject,
   } = useSupabase({
     branchesProjectId,
@@ -120,9 +141,41 @@ export function SupabaseConnector({ appId }: { appId: number }) {
 
   const refreshAfterConnectRef = useRef<() => Promise<void>>(async () => {});
   refreshAfterConnectRef.current = async () => {
-    await refreshSettings();
+    const refreshedSettings = await refreshSettings();
     await refetchOrganizations();
-    await refetchProjects();
+    const refreshedProjects = await refetchProjects();
+    if (app?.supabaseProjectId && !refreshedProjects.isError) {
+      const linkedProject = findLinkedSupabaseProject(
+        refreshedProjects.data ?? [],
+        app.supabaseProjectId,
+        app.supabaseParentProjectId,
+      );
+      if (
+        linkedProject &&
+        linkedProject.organizationSlug !== app.supabaseOrganizationSlug &&
+        hasSupabaseCredentialsForOrganization(
+          refreshedSettings,
+          linkedProject.organizationSlug,
+        )
+      ) {
+        try {
+          await recoverAppProject({
+            appId,
+            projectId: app.supabaseProjectId,
+            parentProjectId: app.supabaseParentProjectId,
+            organizationSlug: linkedProject.organizationSlug,
+          });
+          toast.success(t("integrations.supabase.projectConnected"));
+        } catch (error) {
+          console.error("Failed to recover legacy Supabase link:", error);
+          toast.error(
+            t("integrations.supabase.failedConnectProject", {
+              error: String(error),
+            }),
+          );
+        }
+      }
+    }
     await refreshApp();
   };
 
@@ -314,6 +367,134 @@ export function SupabaseConnector({ appId }: { appId: number }) {
       toast.error(t("integrations.supabase.failedDisconnect"));
     }
   };
+
+  const linkedProjectCandidate = app?.supabaseProjectId
+    ? findLinkedSupabaseProject(
+        projects,
+        app.supabaseProjectId,
+        app.supabaseParentProjectId,
+      )
+    : undefined;
+  const linkedProjectForRelink =
+    linkedProjectCandidate &&
+    hasSupabaseCredentialsForOrganization(
+      settings,
+      linkedProjectCandidate.organizationSlug,
+    )
+      ? linkedProjectCandidate
+      : undefined;
+  const isLoadingRelinkCandidate = isLoadingOrganizations || isLoadingProjects;
+  const handleRelinkProject = async () => {
+    if (!app?.supabaseProjectId || !linkedProjectForRelink) return;
+    try {
+      await recoverAppProject({
+        appId,
+        projectId: app.supabaseProjectId,
+        parentProjectId: app.supabaseParentProjectId,
+        organizationSlug: linkedProjectForRelink.organizationSlug,
+      });
+      toast.success(t("integrations.supabase.projectConnected"));
+      await refreshApp();
+    } catch (error) {
+      toast.error(
+        t("integrations.supabase.failedConnectProject", {
+          error: String(error),
+        }),
+      );
+    }
+  };
+
+  if (settingsLoading || appLoading) {
+    return (
+      <Skeleton
+        className="h-24 w-full"
+        data-testid="supabase-settings-loading"
+      />
+    );
+  }
+
+  // Keep recovery controls available when the app still points at a project
+  // whose organization token has been removed. Hiding the association here
+  // would strand the user on a generic account-connect screen.
+  if (app?.supabaseProjectId && !isConnected) {
+    return (
+      <Card className="mt-1" data-testid="supabase-reconnect-card">
+        <CardHeader>
+          <CardTitle>{t("integrations.supabase.project")}</CardTitle>
+          <div className="flex flex-col gap-1.5 text-sm text-muted-foreground">
+            {t("integrations.supabase.connectedToProject")}
+            <Badge variant="secondary" className="w-fit text-base font-bold">
+              {app.supabaseProjectName || app.supabaseProjectId}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Alert>
+            <Info className="h-4 w-4" />
+            <AlertDescription>
+              {t("integrations.supabase.organizationCredentialsMissing")}
+            </AlertDescription>
+          </Alert>
+          {(organizationsError || projectsError) && (
+            <div className="text-red-500">
+              {t("integrations.supabase.errorLoadingProjects", {
+                message: (organizationsError || projectsError)?.message,
+              })}
+              <Button
+                variant="outline"
+                className="mt-2"
+                onClick={async () => {
+                  await refetchOrganizations();
+                  await refetchProjects();
+                }}
+              >
+                {t("common:retry")}
+              </Button>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {isLoadingRelinkCandidate ? (
+              <Button variant="outline" disabled>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {t("integrations.supabase.relinkProject")}
+              </Button>
+            ) : linkedProjectForRelink ? (
+              <Button
+                variant="outline"
+                onClick={handleRelinkProject}
+                disabled={isSettingAppProject}
+                data-testid="relink-supabase-project-button"
+              >
+                {t("integrations.supabase.relinkProject")}
+              </Button>
+            ) : null}
+            <Button
+              variant="outline"
+              onClick={handleAddAccount}
+              disabled={isFlowActive}
+              data-testid="reconnect-supabase-button"
+            >
+              {t("integrations.supabase.addOrganization")}
+            </Button>
+            <Button variant="destructive" onClick={handleUnsetProject}>
+              {t("integrations.supabase.disconnectProject")}
+            </Button>
+            {isFlowActive && "invocationRef" in flowState && (
+              <Button
+                variant="ghost"
+                onClick={() =>
+                  void cancelConnectionFlow("supabase", flowState.invocationRef)
+                }
+                data-testid="cancel-supabase-flow-button"
+              >
+                {t("integrations.supabase.cancelSignIn")}
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   // Connected and has project set
   if (isConnected && app?.supabaseProjectName) {

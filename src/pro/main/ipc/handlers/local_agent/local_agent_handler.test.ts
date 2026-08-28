@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { InvalidToolInputError, streamText, type ModelMessage } from "ai";
+import type { AgentContext } from "./tools/types";
 
 // ============================================================================
 // Test Fakes & Builders
@@ -394,7 +395,7 @@ import {
   buildChatMessageHistory,
   buildExplorerSynthesisMessage,
   buildImplementerOutcomeNotices,
-  handleLocalAgentStream,
+  handleLocalAgentStream as handleLocalAgentStreamImpl,
 } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { buildAgentToolSet } from "@/pro/main/ipc/handlers/local_agent/tool_definitions";
@@ -405,6 +406,29 @@ import {
 import { MCP_RESULT_MAX_BYTES } from "@/ipc/utils/mcp_result_sanitizer";
 import type { AiMessagesJsonV6 } from "@/db/schema";
 import { getModelClient } from "@/ipc/utils/get_model_client";
+
+type LocalAgentStreamParameters = Parameters<typeof handleLocalAgentStreamImpl>;
+type LocalAgentStreamOptions = LocalAgentStreamParameters[3];
+const handleLocalAgentStream = (
+  event: LocalAgentStreamParameters[0],
+  request: LocalAgentStreamParameters[1],
+  abortController: LocalAgentStreamParameters[2],
+  options: Omit<
+    LocalAgentStreamOptions,
+    "supabaseProviderToolsAvailable" | "neonProviderToolsAvailable"
+  > &
+    Partial<
+      Pick<
+        LocalAgentStreamOptions,
+        "supabaseProviderToolsAvailable" | "neonProviderToolsAvailable"
+      >
+    >,
+) =>
+  handleLocalAgentStreamImpl(event, request, abortController, {
+    supabaseProviderToolsAvailable: true,
+    neonProviderToolsAvailable: true,
+    ...options,
+  });
 
 // ============================================================================
 // Tests
@@ -686,6 +710,55 @@ describe("handleLocalAgentStream", () => {
     vi.mocked(streamText).mockClear();
     vi.mocked(buildAgentToolSet).mockImplementation(() => ({}));
     mockRequireMcpToolConsent.mockResolvedValue({ approved: true });
+  });
+
+  it("projects the capability-aware Implementer prompt into the root tool context", async () => {
+    const { event } = createFakeEvent();
+    mockSettings = buildTestSettings({ enableDyadPro: true });
+    mockChatData = buildTestChat();
+    let seenContextFactory: AgentContext["refreshImplementerContext"];
+    let seenSupabaseProviderToolsAvailable: boolean | undefined;
+    let seenNeonProviderToolsAvailable: boolean | undefined;
+    vi.mocked(buildAgentToolSet).mockImplementationOnce((ctx) => {
+      seenContextFactory = ctx.refreshImplementerContext;
+      seenSupabaseProviderToolsAvailable = ctx.supabaseProviderToolsAvailable;
+      seenNeonProviderToolsAvailable = ctx.neonProviderToolsAvailable;
+      return {};
+    });
+    mockStreamResult = createFakeStream([{ type: "text-delta", text: "Done" }]);
+
+    const succeeded = await handleLocalAgentStream(
+      event,
+      { chatId: 1, prompt: "test" },
+      new AbortController(),
+      {
+        placeholderMessageId: 10,
+        systemPrompt: "Root rules",
+        refreshImplementerContext: async () => ({
+          systemPrompt: "Implementer rules",
+          supabaseProjectId: null,
+          supabaseOrganizationSlug: null,
+          neonProjectId: null,
+          neonActiveBranchId: null,
+          supabaseProviderToolsAvailable: false,
+          neonProviderToolsAvailable: false,
+          frameworkType: null,
+          testingEnabled: false,
+        }),
+        implementerFallbackSystemPrompt: "Fallback implementer rules",
+        supabaseProviderToolsAvailable: false,
+        neonProviderToolsAvailable: true,
+        dyadRequestId,
+      },
+    );
+
+    expect(succeeded).toBe(true);
+    expect(buildAgentToolSet).toHaveBeenCalledOnce();
+    expect((await seenContextFactory?.())?.systemPrompt).toBe(
+      "Implementer rules",
+    );
+    expect(seenSupabaseProviderToolsAvailable).toBe(false);
+    expect(seenNeonProviderToolsAvailable).toBe(true);
   });
 
   describe("provider-scoped tool-call ID normalization", () => {

@@ -80,11 +80,16 @@ export function useSupabase(options: UseSupabaseOptions = {}) {
     mutationFn: async (params) => {
       await ipc.supabase.deleteOrganization(params);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.supabase.organizations,
-      });
-      queryClient.invalidateQueries({ queryKey: queryKeys.supabase.projects });
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.settings.user }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.supabase.organizations,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.supabase.projects,
+        }),
+      ]);
     },
     meta: { showErrorToast: true },
   });
@@ -99,6 +104,18 @@ export function useSupabase(options: UseSupabaseOptions = {}) {
       await ipc.supabase.setAppProject(params);
     },
     meta: { showErrorToast: true },
+  });
+
+  // Background link recovery needs mutation pending-state tracking without a
+  // generic global error toast; the connector provides contextual feedback.
+  const recoverAppProjectMutation = useMutation<
+    void,
+    Error,
+    SetSupabaseAppProjectParams
+  >({
+    mutationFn: async (params) => {
+      await ipc.supabase.setAppProject(params);
+    },
   });
 
   // Mutation: Remove a Supabase project association from an app
@@ -244,7 +261,8 @@ export function useSupabase(options: UseSupabaseOptions = {}) {
 
     // Mutation states
     isDeletingOrganization: deleteOrganizationMutation.isPending,
-    isSettingAppProject: setAppProjectMutation.isPending,
+    isSettingAppProject:
+      setAppProjectMutation.isPending || recoverAppProjectMutation.isPending,
     isUnsettingAppProject: unsetAppProjectMutation.isPending,
     isLoadingEdgeLogs: edgeLogsQuery.isFetching,
 
@@ -254,6 +272,7 @@ export function useSupabase(options: UseSupabaseOptions = {}) {
     refetchBranches: branchesQuery.refetch,
     deleteOrganization: deleteOrganizationMutation.mutateAsync,
     setAppProject: setAppProjectMutation.mutateAsync,
+    recoverAppProject: recoverAppProjectMutation.mutateAsync,
     unsetAppProject: unsetAppProjectMutation.mutateAsync,
   };
 }

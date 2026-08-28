@@ -2,9 +2,36 @@ import addAuthenticationGuide from "./guides/add-authentication.md?raw";
 import addEmailVerificationGuide from "./guides/add-email-verification.md?raw";
 import addPasswordResetGuide from "./guides/add-password-reset.md?raw";
 import { filterGuideByFramework } from "./guides/filter_guide_by_framework";
+import {
+  NEON_NO_BROWSER_DATABASE_URL_RULE,
+  NEON_NO_BROWSER_SERVERLESS_RULE,
+  NEON_NO_CUSTOM_AUTH_RULE,
+  NEON_NO_MANUAL_MIGRATIONS_RULE,
+  NEON_RLS_REQUIRES_JWT_RULE,
+} from "./neon_prompt_rules";
 import type { AppFrameworkType } from "@/lib/framework_constants";
 
 const normalizeGuideNewlines = (guide: string) => guide.replace(/\r\n/g, "\n");
+
+export {
+  NEON_IMPLEMENTER_NO_MANUAL_MIGRATIONS_RULE,
+  NEON_NO_BROWSER_DATABASE_URL_RULE,
+  NEON_NO_BROWSER_SERVERLESS_RULE,
+  NEON_NO_CUSTOM_AUTH_RULE,
+  NEON_NO_MANUAL_MIGRATIONS_RULE,
+  NEON_RLS_REQUIRES_JWT_RULE,
+} from "./neon_prompt_rules";
+export const NEON_DISCONNECTED_SYSTEM_PROMPT = `
+This app is already linked to a Neon project, but Neon credentials or active branch context are unavailable. Do not offer to add another database integration. Tell the user to reconnect Neon or select an active branch before attempting provider operations. Any preceding claim that live Neon operations or inspection tools are available is superseded by this notice.
+
+The project's email-verification setting is unknown while Neon is disconnected. Do not change authentication or sign-up behavior until Neon is reconnected, the setting is confirmed, and the applicable authentication and email-verification guidance has been followed. Never assume the default AuthView sign-up flow is compatible with the project.
+
+Continue to preserve these Neon code-safety invariants while disconnected:
+${NEON_NO_CUSTOM_AUTH_RULE}
+${NEON_RLS_REQUIRES_JWT_RULE}
+${NEON_NO_BROWSER_DATABASE_URL_RULE}
+${NEON_NO_BROWSER_SERVERLESS_RULE}
+- **no-manual-migrations**: NEVER write SQL migration files manually; reconnect Neon before attempting schema changes.`;
 
 export function getNeonAvailableSystemPrompt(
   neonClientCode: string,
@@ -13,16 +40,19 @@ export function getNeonAvailableSystemPrompt(
     emailVerificationEnabled?: boolean;
     nextjsMajorVersion?: number | null;
     isLocalAgentMode?: boolean;
+    providerToolsAvailable?: boolean;
   },
 ): string {
   const emailVerification = options?.emailVerificationEnabled ?? false;
   const nextjsMajorVersion = options?.nextjsMajorVersion ?? null;
   const isLocalAgentMode = options?.isLocalAgentMode ?? false;
+  const providerToolsAvailable = options?.providerToolsAvailable ?? true;
   const sharedPrompt = getSharedNeonPrompt(
     neonClientCode,
     emailVerification,
     isLocalAgentMode,
     frameworkType,
+    providerToolsAvailable,
   );
 
   if (frameworkType === "nextjs") {
@@ -57,6 +87,7 @@ function getSharedNeonPrompt(
   emailVerificationEnabled: boolean,
   isLocalAgentMode: boolean,
   frameworkType: AppFrameworkType | null,
+  providerToolsAvailable: boolean,
 ): string {
   const addAuthenticationGuideBody = normalizeGuideNewlines(
     addAuthenticationGuide,
@@ -89,11 +120,11 @@ You are a Neon Postgres integration assistant. The user has Neon available for t
 <critical-rules>
 These rules MUST be followed at all times. Violation of any critical rule is a hard failure.
 
-- **no-custom-auth**: NEVER implement homegrown auth with JWT + bcrypt or any other custom auth solution. Always use Neon Auth.
-- **no-manual-migrations**: NEVER write SQL migration files manually. Always use the execute SQL tool (\`<dyad-execute-sql>\`) to run schema changes against the Neon database.
-- **no-rls-without-jwt**: NEVER claim that \`auth.user_id()\`-based RLS works automatically with a plain \`DATABASE_URL\` connection. RLS policies that rely on Neon Auth identity helpers only work when the app uses Neon Data API, authenticated URLs, or another JWT-backed RLS flow.
-- **no-db-url-client-side**: NEVER place \`DATABASE_URL\` in client-side or browser-accessible code. It gives full read/write database access and must only be used in server-side code.
-- **no-serverless-in-browser**: NEVER import \`@neondatabase/serverless\` in React components or browser code.
+${NEON_NO_CUSTOM_AUTH_RULE}
+${providerToolsAvailable ? NEON_NO_MANUAL_MIGRATIONS_RULE : "- **no-manual-migrations**: NEVER write SQL migration files manually. Report required schema changes and reconnect or select a Neon branch before attempting them."}
+${NEON_RLS_REQUIRES_JWT_RULE}
+${NEON_NO_BROWSER_DATABASE_URL_RULE}
+${NEON_NO_BROWSER_SERVERLESS_RULE}
 - **no-web-search-for-packages**: Do NOT use web search to figure out which Neon Auth package to install or which import surface to start from. Use the API surface defined in this prompt.
 </critical-rules>
 
@@ -115,9 +146,7 @@ ${authSection}
 
 ## Database
 
-**REMINDER: Always use the execute SQL tool for schema changes. NEVER write SQL migration files manually.**
-
-- Use \`<dyad-execute-sql>\` for schema changes.
+${providerToolsAvailable ? "**REMINDER: Always use the execute SQL tool for schema changes. NEVER write SQL migration files manually.**\n\n- Use `<dyad-execute-sql>` for schema changes." : "**REMINDER: The Neon branch context is unavailable. NEVER write SQL migration files manually; reconnect or select a Neon branch before attempting schema changes.**"}
 - Keep the app's queries, types, and schema files synchronized with the SQL you execute through Dyad.
 - Prefer tagged \`sql\`...\`\` queries or Drizzle over string-built SQL.
 
@@ -140,7 +169,7 @@ If you do implement RLS, create complete policies for the required operations an
 
 When the database has no tables yet:
 1. Determine what data the feature needs to store
-2. Create the schema with the execute SQL tool
+2. ${providerToolsAvailable ? "Create the schema with the execute SQL tool" : "Report the required schema and reconnect or select a Neon branch before applying it"}
 3. Generate the matching server code, UI, and auth wiring
 
 ## Default Packages

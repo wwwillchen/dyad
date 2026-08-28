@@ -457,6 +457,8 @@ export async function spawnModelSubagent(params: {
   assignment: string;
   scope: string[];
   buildTools: (params: {
+    ctx: AgentContext;
+    contextOverrides?: Partial<AgentContext>;
     threadId: string;
     persona: "explorer" | "implementer";
     taskName: string;
@@ -541,8 +543,10 @@ export async function spawnModelSubagent(params: {
                 normalizedScope,
               ),
               params.ctx,
-              (abortSignal) =>
+              (abortSignal, contextOverrides) =>
                 params.buildTools({
+                  ctx: params.ctx,
+                  contextOverrides,
                   threadId: thread.id,
                   persona: params.persona,
                   taskName: params.taskName,
@@ -1145,6 +1149,8 @@ export async function followupSubagent(
   currentTurn?: {
     ctx: AgentContext;
     buildTools: (params: {
+      ctx: AgentContext;
+      contextOverrides?: Partial<AgentContext>;
       threadId: string;
       persona: "explorer" | "implementer";
       taskName: string;
@@ -1167,6 +1173,8 @@ async function followupSubagentAdmitted(
   currentTurn?: {
     ctx: AgentContext;
     buildTools: (params: {
+      ctx: AgentContext;
+      contextOverrides?: Partial<AgentContext>;
       threadId: string;
       persona: "explorer" | "implementer";
       taskName: string;
@@ -1233,8 +1241,10 @@ async function followupSubagentAdmitted(
             currentTurn.ctx.appId,
             nextAssignment,
             currentTurn.ctx,
-            (abortSignal) =>
+            (abortSignal, contextOverrides) =>
               currentTurn.buildTools({
+                ctx: currentTurn.ctx,
+                contextOverrides,
                 threadId: thread.id,
                 persona,
                 taskName: thread.taskName,
@@ -1445,12 +1455,87 @@ export function isAcceptableImplementerJoinStatus(status: string): boolean {
   return status === "completed" || status === "partial";
 }
 
+type RootImplementerProviderContext = Partial<
+  Pick<
+    AgentContext,
+    | "supabaseProjectId"
+    | "supabaseOrganizationSlug"
+    | "neonProjectId"
+    | "neonActiveBranchId"
+    | "supabaseProviderToolsAvailable"
+    | "neonProviderToolsAvailable"
+    | "frameworkType"
+  >
+>;
+
+export async function prepareImplementerRunContext(
+  rootCtx: AgentContext,
+): Promise<{
+  systemPrompt?: string;
+  contextOverrides?: Partial<AgentContext>;
+  rootContextOverrides?: RootImplementerProviderContext;
+}> {
+  if (!rootCtx.refreshImplementerContext) {
+    return {
+      systemPrompt: rootCtx.implementerFallbackSystemPrompt,
+      contextOverrides: {
+        supabaseProviderToolsAvailable: false,
+        neonProviderToolsAvailable: false,
+      },
+    };
+  }
+  try {
+    const { systemPrompt, ...contextOverrides } =
+      await rootCtx.refreshImplementerContext();
+    return {
+      systemPrompt,
+      contextOverrides,
+      rootContextOverrides: {
+        supabaseProjectId: contextOverrides.supabaseProjectId,
+        supabaseOrganizationSlug: contextOverrides.supabaseOrganizationSlug,
+        neonProjectId: contextOverrides.neonProjectId,
+        neonActiveBranchId: contextOverrides.neonActiveBranchId,
+        supabaseProviderToolsAvailable:
+          contextOverrides.supabaseProviderToolsAvailable,
+        neonProviderToolsAvailable: contextOverrides.neonProviderToolsAvailable,
+        frameworkType: contextOverrides.frameworkType,
+      },
+    };
+  } catch (error) {
+    logger.warn(
+      "Failed to refresh Implementer provider context; using the capability-aware fallback prompt",
+      error,
+    );
+    return {
+      systemPrompt: rootCtx.implementerFallbackSystemPrompt,
+      contextOverrides: {
+        supabaseProviderToolsAvailable: false,
+        neonProviderToolsAvailable: false,
+      },
+    };
+  }
+}
+
+export function syncRootImplementerProviderContext(
+  rootCtx: AgentContext,
+  rootContextOverrides: RootImplementerProviderContext | undefined,
+): void {
+  if (!rootContextOverrides) return;
+  // Root-owned finalization (notably deferred provider deployments) must use
+  // the same provider identity and availability that the child just refreshed.
+  // Mutation bookkeeping remains owned by rootCtx.
+  Object.assign(rootCtx, rootContextOverrides);
+}
+
 async function runThread(
   threadId: string,
   appId: number,
   assignment: string,
   rootCtx: AgentContext,
-  buildTools: (abortSignal: AbortSignal) => ToolSet,
+  buildTools: (
+    abortSignal: AbortSignal,
+    contextOverrides?: Partial<AgentContext>,
+  ) => ToolSet,
   scope: string[],
   mutationOwner?: MutationActivityOwner,
   runActivity?: ActivityHandle,
@@ -1472,7 +1557,18 @@ async function runThread(
     );
     if (controller.signal.aborted || cancelledThreadIds.has(threadId)) return;
     if (!(await updateStatus(threadId, "running"))) return;
-    const tools = buildTools(controller.signal);
+    const implementerRunContext =
+      thread.persona === "implementer"
+        ? await prepareImplementerRunContext(rootCtx)
+        : {};
+    syncRootImplementerProviderContext(
+      rootCtx,
+      implementerRunContext.rootContextOverrides,
+    );
+    const tools = buildTools(
+      controller.signal,
+      implementerRunContext.contextOverrides,
+    );
     let usedExplorerFallback = false;
     let explorerAssignment = assignment;
     if (thread.persona === "explorer") {
@@ -1523,6 +1619,7 @@ async function runThread(
             assignment,
             tools,
             abortSignal: controller.signal,
+            systemPromptOverride: implementerRunContext.systemPrompt,
           });
     const durableResult = boundDurableReport(result.text).trim();
     if (!durableResult) {
@@ -1650,14 +1747,19 @@ async function runReview(
   }
 }
 
-async function runModel(params: {
+type RunModelParams = {
   threadId: string;
   appId: number;
   persona: SubagentPersona;
   assignment: string;
   tools: ToolSet;
   abortSignal: AbortSignal;
-}): Promise<{ text: string; hitStepLimit: boolean }> {
+  systemPromptOverride?: string;
+};
+
+async function runModel(
+  params: RunModelParams,
+): Promise<{ text: string; hitStepLimit: boolean }> {
   assertPro(params.persona);
   const claimedRootMessageIds = new Set<number>();
   const settings = personaModelSettings(params.persona);
@@ -1680,7 +1782,10 @@ async function runModel(params: {
         modelInfo.modelClient.reasoningEffortProviderId,
       modelSelection: settings.selectedModel,
     }),
-    system: systemPrompt(params.persona),
+    system: resolveSubagentSystemPrompt(
+      params.persona,
+      params.systemPromptOverride,
+    ),
     messages: history,
     tools: params.tools,
     prepareStep: async ({ messages: stepMessages }) => {
@@ -1893,6 +1998,15 @@ function systemPrompt(persona: SubagentPersona): string {
   if (persona === "implementer")
     return "You are Dyad Implementer. Complete the focused assignment using only provided tools. Treat assigned paths as the expected focus, but cross them when correctness requires it and report every changed file and unresolved issue.";
   return "You are Dyad Explorer. Investigate read-only, cite files and evidence, and return a concise report with confidence and recommended next action.";
+}
+
+export function resolveSubagentSystemPrompt(
+  persona: SubagentPersona,
+  implementerPrompt?: string,
+): string {
+  return persona === "implementer" && implementerPrompt
+    ? implementerPrompt
+    : systemPrompt(persona);
 }
 
 async function createThread(params: {

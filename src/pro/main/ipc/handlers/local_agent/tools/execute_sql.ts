@@ -2,14 +2,19 @@ import { z } from "zod";
 import {
   ToolDefinition,
   AgentContext,
+  canUseLinkedDatabaseTools,
+  canUseNeonTools,
+  canUseSupabaseTools,
   escapeXmlAttr,
   escapeXmlContent,
+  getUnavailableDatabaseProviderMessage,
 } from "./types";
 import { executeSupabaseSql } from "../../../../../../supabase_admin/supabase_management_client";
 import { executeNeonSql } from "../../../../../../neon_admin/neon_context";
 import { writeMigrationFile } from "../../../../../../ipc/utils/file_utils";
 import { readSettings } from "../../../../../../main/settings";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { resolveLinkedDatabaseProvider } from "@/shared/database_provider";
 import {
   doesSqlDeleteData,
   doesSqlMutateSchema,
@@ -176,9 +181,7 @@ export const executeSqlTool: ToolDefinition<z.infer<typeof executeSqlSchema>> =
     inputSchema: executeSqlSchema,
     defaultConsent: "ask",
     modifiesState: true,
-    isEnabled: (ctx) =>
-      !!ctx.supabaseProjectId ||
-      (!!ctx.neonProjectId && !!ctx.neonActiveBranchId),
+    isEnabled: canUseLinkedDatabaseTools,
 
     getConsentPreview: (args) => args.query,
 
@@ -204,23 +207,12 @@ export const executeSqlTool: ToolDefinition<z.infer<typeof executeSqlSchema>> =
     },
 
     execute: async (args, ctx: AgentContext) => {
-      if (ctx.neonProjectId && ctx.neonActiveBranchId) {
-        const sqlResult = await executeNeonSql({
-          projectId: ctx.neonProjectId,
-          branchId: ctx.neonActiveBranchId,
-          query: args.query,
-        });
-        return `Successfully executed SQL query.\n\nSQL result:\n${sqlResult}`;
-      }
+      const provider = resolveLinkedDatabaseProvider({
+        hasSupabaseProject: Boolean(ctx.supabaseProjectId),
+        hasNeonProject: Boolean(ctx.neonProjectId),
+      });
 
-      if (ctx.neonProjectId && !ctx.neonActiveBranchId) {
-        throw new DyadError(
-          "Neon active branch not configured. Please select a branch in the Neon integration settings.",
-          DyadErrorKind.Precondition,
-        );
-      }
-
-      if (ctx.supabaseProjectId) {
+      if (provider === "supabase" && canUseSupabaseTools(ctx)) {
         const sqlResult = await executeSupabaseSql({
           supabaseProjectId: ctx.supabaseProjectId,
           query: args.query,
@@ -246,8 +238,17 @@ export const executeSqlTool: ToolDefinition<z.infer<typeof executeSqlSchema>> =
           : `Successfully executed SQL query.\n\nSQL result:\n${sqlResult}`;
       }
 
+      if (provider === "neon" && canUseNeonTools(ctx)) {
+        const sqlResult = await executeNeonSql({
+          projectId: ctx.neonProjectId,
+          branchId: ctx.neonActiveBranchId,
+          query: args.query,
+        });
+        return `Successfully executed SQL query.\n\nSQL result:\n${sqlResult}`;
+      }
+
       throw new DyadError(
-        "No database is connected to this app",
+        getUnavailableDatabaseProviderMessage(ctx, "SQL execution"),
         DyadErrorKind.Precondition,
       );
     },

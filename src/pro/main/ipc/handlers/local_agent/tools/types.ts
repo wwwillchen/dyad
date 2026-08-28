@@ -9,6 +9,7 @@ import { AgentToolConsent } from "@/lib/schemas";
 import { AgentTodo } from "@/ipc/types";
 import type { SubagentPersona } from "@/ipc/types";
 import type { AppFrameworkType } from "@/lib/framework_constants";
+import { resolveLinkedDatabaseProvider } from "@/shared/database_provider";
 import type { SqlConsentMetadata } from "@/shared/sqlConsentMetadata";
 import type { McpToolDef } from "./mcp_type_defs";
 import type { MutationActivityOwner } from "../subagents/mutation_activity_tracker";
@@ -107,6 +108,24 @@ export interface AgentContext {
   workspaceMutated?: boolean;
   /** True after any directly registered or sandbox-hosted MCP tool succeeds. */
   mcpToolRan?: boolean;
+  /** Lazily refreshes provider context and prompt for writable Implementers. */
+  refreshImplementerContext?: () => Promise<{
+    systemPrompt: string;
+    supabaseProjectId: string | null;
+    supabaseOrganizationSlug: string | null;
+    neonProjectId: string | null;
+    neonActiveBranchId: string | null;
+    supabaseProviderToolsAvailable: boolean;
+    neonProviderToolsAvailable: boolean;
+    frameworkType: AppFrameworkType | null;
+    testingEnabled: boolean;
+  }>;
+  /** Capability-aware provider-less prompt used if context refresh fails. */
+  implementerFallbackSystemPrompt?: string;
+  /** Whether Supabase metadata/schema reads are currently authenticated. */
+  supabaseProviderToolsAvailable?: boolean;
+  /** Whether Neon metadata/schema reads are currently authenticated. */
+  neonProviderToolsAvailable?: boolean;
   /** Successful workspace-file mutations completed during this turn. */
   fileMutationCount?: number;
   /**
@@ -304,6 +323,76 @@ export interface AgentContext {
     mutationCountAtLastRun?: number;
     mutationCountAtLastSetupFailure?: number;
   };
+}
+
+export function canUseSupabaseTools<
+  T extends Pick<
+    AgentContext,
+    "supabaseProjectId" | "supabaseProviderToolsAvailable"
+  >,
+>(ctx: T): ctx is T & { supabaseProjectId: string } {
+  return !!ctx.supabaseProjectId && ctx.supabaseProviderToolsAvailable === true;
+}
+
+export function canUseNeonTools<
+  T extends Pick<
+    AgentContext,
+    "neonProjectId" | "neonActiveBranchId" | "neonProviderToolsAvailable"
+  >,
+>(ctx: T): ctx is T & { neonProjectId: string; neonActiveBranchId: string } {
+  return (
+    !!ctx.neonProjectId &&
+    !!ctx.neonActiveBranchId &&
+    ctx.neonProviderToolsAvailable === true
+  );
+}
+
+export function canUseLinkedDatabaseTools(
+  ctx: Pick<
+    AgentContext,
+    | "supabaseProjectId"
+    | "supabaseProviderToolsAvailable"
+    | "neonProjectId"
+    | "neonActiveBranchId"
+    | "neonProviderToolsAvailable"
+  >,
+): boolean {
+  const provider = resolveLinkedDatabaseProvider({
+    hasSupabaseProject: Boolean(ctx.supabaseProjectId),
+    hasNeonProject: Boolean(ctx.neonProjectId),
+  });
+  return provider === "neon"
+    ? canUseNeonTools(ctx)
+    : provider === "supabase"
+      ? canUseSupabaseTools(ctx)
+      : false;
+}
+
+export function getUnavailableDatabaseProviderMessage(
+  ctx: Pick<
+    AgentContext,
+    | "supabaseProjectId"
+    | "neonProjectId"
+    | "neonActiveBranchId"
+    | "supabaseProviderToolsAvailable"
+    | "neonProviderToolsAvailable"
+  >,
+  operation: "SQL execution" | "schema inspection",
+): string {
+  const provider = resolveLinkedDatabaseProvider({
+    hasSupabaseProject: Boolean(ctx.supabaseProjectId),
+    hasNeonProject: Boolean(ctx.neonProjectId),
+  });
+  if (provider === "neon") {
+    if (!ctx.neonActiveBranchId) {
+      return `Neon is linked, but no active branch is configured for ${operation}. Select an active branch in the Neon integration settings.`;
+    }
+    return `Neon is linked, but its credentials are unavailable for ${operation}. Reconnect the Neon account.`;
+  }
+  if (provider === "supabase") {
+    return `Supabase is linked, but its organization credentials are unavailable for ${operation}. Reconnect the Supabase organization.`;
+  }
+  return `No database provider is available for ${operation}`;
 }
 
 /** Per-spec fix-loop state for the `run_tests` tool, tracked across one turn. */

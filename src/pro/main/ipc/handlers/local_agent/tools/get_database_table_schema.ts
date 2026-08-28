@@ -2,12 +2,17 @@ import { z } from "zod";
 import {
   ToolDefinition,
   AgentContext,
+  canUseLinkedDatabaseTools,
+  canUseNeonTools,
+  canUseSupabaseTools,
   escapeXmlAttr,
   escapeXmlContent,
+  getUnavailableDatabaseProviderMessage,
 } from "./types";
 import { getSupabaseTableSchema } from "../../../../../../supabase_admin/supabase_context";
 import { getNeonTableSchema } from "../../../../../../neon_admin/neon_context";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { resolveLinkedDatabaseProvider } from "@/shared/database_provider";
 
 const getDatabaseTableSchemaSchema = z.object({
   tableName: z
@@ -26,9 +31,7 @@ export const getDatabaseTableSchemaTool: ToolDefinition<
     "Get database table schema as PostgreSQL SQL/DDL. If tableName is provided, returns schema for that specific table and relevant constraints/indexes/triggers/policies. If omitted, returns schema for all public tables.",
   inputSchema: getDatabaseTableSchemaSchema,
   defaultConsent: "always",
-  isEnabled: (ctx) =>
-    !!ctx.supabaseProjectId ||
-    (!!ctx.neonProjectId && !!ctx.neonActiveBranchId),
+  isEnabled: canUseLinkedDatabaseTools,
 
   getConsentPreview: (args) =>
     args.tableName
@@ -40,25 +43,12 @@ export const getDatabaseTableSchemaTool: ToolDefinition<
       ? ` table="${escapeXmlAttr(args.tableName)}"`
       : "";
 
-    if (ctx.neonProjectId && ctx.neonActiveBranchId) {
-      ctx.onXmlStream(
-        `<dyad-db-table-schema provider="Neon"${tableAttr}></dyad-db-table-schema>`,
-      );
+    const provider = resolveLinkedDatabaseProvider({
+      hasSupabaseProject: Boolean(ctx.supabaseProjectId),
+      hasNeonProject: Boolean(ctx.neonProjectId),
+    });
 
-      const schema = await getNeonTableSchema({
-        projectId: ctx.neonProjectId,
-        branchId: ctx.neonActiveBranchId,
-        tableName: args.tableName,
-      });
-
-      ctx.onXmlComplete(
-        `<dyad-db-table-schema provider="Neon"${tableAttr}>\n${escapeXmlContent(schema)}\n</dyad-db-table-schema>`,
-      );
-
-      return schema;
-    }
-
-    if (ctx.supabaseProjectId) {
+    if (provider === "supabase" && canUseSupabaseTools(ctx)) {
       ctx.onXmlStream(
         `<dyad-db-table-schema provider="Supabase"${tableAttr}></dyad-db-table-schema>`,
       );
@@ -76,8 +66,26 @@ export const getDatabaseTableSchemaTool: ToolDefinition<
       return schema;
     }
 
+    if (provider === "neon" && canUseNeonTools(ctx)) {
+      ctx.onXmlStream(
+        `<dyad-db-table-schema provider="Neon"${tableAttr}></dyad-db-table-schema>`,
+      );
+
+      const schema = await getNeonTableSchema({
+        projectId: ctx.neonProjectId,
+        branchId: ctx.neonActiveBranchId,
+        tableName: args.tableName,
+      });
+
+      ctx.onXmlComplete(
+        `<dyad-db-table-schema provider="Neon"${tableAttr}>\n${escapeXmlContent(schema)}\n</dyad-db-table-schema>`,
+      );
+
+      return schema;
+    }
+
     throw new DyadError(
-      "No database is connected to this app",
+      getUnavailableDatabaseProviderMessage(ctx, "schema inspection"),
       DyadErrorKind.Precondition,
     );
   },

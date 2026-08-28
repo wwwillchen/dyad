@@ -16,8 +16,10 @@ import {
   setPartialResponseForStream,
   hasUnclosedDyadWrite,
   processStreamChunks,
+  resolveImplementerCapabilityState,
   takePartialResponseForStream,
 } from "@/ipc/handlers/chat_stream_handlers";
+import { resolveRootDatabasePromptState } from "@/shared/database_provider";
 import type { AsyncIterableStream, TextStreamPart, ToolSet } from "ai";
 import fs from "node:fs";
 import path from "node:path";
@@ -69,6 +71,174 @@ describe("stream invocation tracking", () => {
     expect(takePartialResponseForStream(newerStream)).toBe(
       "newer partial response",
     );
+  });
+});
+
+describe("root database prompt selection", () => {
+  it("handles a legacy dual-linked row deterministically", () => {
+    expect(
+      resolveRootDatabasePromptState({
+        hasSupabaseProject: true,
+        supabaseCredentialsAvailable: false,
+        hasNeonProject: true,
+        neonCredentialsAvailable: true,
+      }),
+    ).toBe("neon");
+  });
+
+  it("selects usable Neon when the app is not linked to Supabase", () => {
+    expect(
+      resolveRootDatabasePromptState({
+        hasSupabaseProject: false,
+        supabaseCredentialsAvailable: false,
+        hasNeonProject: true,
+        neonCredentialsAvailable: true,
+      }),
+    ).toBe("neon");
+  });
+
+  it("reports a retained Neon association as disconnected without credentials", () => {
+    expect(
+      resolveRootDatabasePromptState({
+        hasSupabaseProject: false,
+        supabaseCredentialsAvailable: false,
+        hasNeonProject: true,
+        neonCredentialsAvailable: false,
+      }),
+    ).toBe("neon-disconnected");
+  });
+
+  it("prefers usable Neon even when Supabase credentials exist", () => {
+    expect(
+      resolveRootDatabasePromptState({
+        hasSupabaseProject: true,
+        supabaseCredentialsAvailable: true,
+        hasNeonProject: true,
+        neonCredentialsAvailable: true,
+      }),
+    ).toBe("neon");
+  });
+
+  it("keeps dual-linked prompts on disconnected Neon instead of usable Supabase", () => {
+    expect(
+      resolveRootDatabasePromptState({
+        hasSupabaseProject: true,
+        supabaseCredentialsAvailable: true,
+        hasNeonProject: true,
+        neonCredentialsAvailable: false,
+      }),
+    ).toBe("neon-disconnected");
+  });
+
+  it("keeps a dual-linked Neon association when neither provider is usable", () => {
+    expect(
+      resolveRootDatabasePromptState({
+        hasSupabaseProject: true,
+        supabaseCredentialsAvailable: false,
+        hasNeonProject: true,
+        neonCredentialsAvailable: false,
+      }),
+    ).toBe("neon-disconnected");
+  });
+
+  it("preserves a disconnected Supabase association", () => {
+    expect(
+      resolveRootDatabasePromptState({
+        hasSupabaseProject: true,
+        supabaseCredentialsAvailable: false,
+        hasNeonProject: false,
+        neonCredentialsAvailable: false,
+      }),
+    ).toBe("supabase-disconnected");
+  });
+
+  it("returns none when the app has no provider association", () => {
+    expect(
+      resolveRootDatabasePromptState({
+        hasSupabaseProject: false,
+        supabaseCredentialsAvailable: false,
+        hasNeonProject: false,
+        neonCredentialsAvailable: false,
+      }),
+    ).toBe("none");
+  });
+});
+
+describe("Implementer capability state", () => {
+  const app = {
+    supabaseProjectId: null,
+    supabaseOrganizationSlug: null,
+    neonProjectId: null,
+    neonActiveBranchId: null,
+    neonDevelopmentBranchId: null,
+  };
+
+  it("tracks Supabase metadata and schema consent independently", () => {
+    const state = resolveImplementerCapabilityState(
+      {
+        ...app,
+        supabaseProjectId: "supabase-project",
+        supabaseOrganizationSlug: "org",
+      },
+      {
+        supabase: {
+          accessToken: { value: "token" },
+          organizations: { org: { accessToken: { value: "token" } } },
+        },
+        agentToolConsents: { get_database_table_schema: "never" },
+      } as any,
+    );
+
+    expect(state.provider).toBe("supabase");
+    expect(state.providerMetadataReadAvailable).toBe(true);
+    expect(state.databaseSchemaReadAvailable).toBe(false);
+  });
+
+  it("fails Supabase capabilities closed without organization credentials", () => {
+    const state = resolveImplementerCapabilityState(
+      {
+        ...app,
+        supabaseProjectId: "supabase-project",
+        supabaseOrganizationSlug: "missing-org",
+      },
+      { supabase: { accessToken: { value: "legacy-token" } } } as any,
+    );
+
+    expect(state.provider).toBe("supabase");
+    expect(state.supabaseConnected).toBe(false);
+    expect(state.providerMetadataReadAvailable).toBe(false);
+    expect(state.databaseSchemaReadAvailable).toBe(false);
+  });
+
+  it("fails Neon capabilities closed without a branch", () => {
+    const state = resolveImplementerCapabilityState(
+      { ...app, neonProjectId: "neon-project" },
+      { neon: { accessToken: { value: "token" } } } as any,
+    );
+
+    expect(state.provider).toBe("neon");
+    expect(state.neonToolsAvailable).toBe(false);
+    expect(state.providerMetadataReadAvailable).toBe(false);
+    expect(state.databaseSchemaReadAvailable).toBe(false);
+  });
+
+  it("keeps root and Implementer on Neon when dual-linked providers are unavailable", () => {
+    const state = resolveImplementerCapabilityState(
+      {
+        ...app,
+        supabaseProjectId: "supabase-project",
+        supabaseOrganizationSlug: "missing-org",
+        neonProjectId: "neon-project",
+      },
+      {
+        supabase: { accessToken: { value: "legacy-token" } },
+        neon: { accessToken: { value: "token" } },
+      } as any,
+    );
+
+    expect(state.provider).toBe("neon");
+    expect(state.neonToolsAvailable).toBe(false);
+    expect(state.supabaseConnected).toBe(false);
   });
 });
 

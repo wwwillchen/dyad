@@ -25,6 +25,9 @@ import {
 } from "./subagent_tools";
 import type { AgentContext } from "./types";
 import { trackAppMutation } from "./tool_invocation";
+import { getSupabaseProjectInfoTool } from "./get_supabase_project_info";
+import { getNeonProjectInfoTool } from "./get_neon_project_info";
+import { getDatabaseTableSchemaTool } from "./get_database_table_schema";
 
 const advancedSubagentTools = [
   listAgentsTool,
@@ -33,6 +36,34 @@ const advancedSubagentTools = [
   sendMessageTool,
   followupTaskTool,
 ];
+
+describe("provider tool enablement", () => {
+  it("fails closed when provider availability is omitted", () => {
+    const ctx = {
+      supabaseProjectId: "supabase-project",
+      neonProjectId: "neon-project",
+      neonActiveBranchId: "neon-branch",
+    } as unknown as AgentContext;
+
+    expect(getSupabaseProjectInfoTool.isEnabled?.(ctx)).toBe(false);
+    expect(getNeonProjectInfoTool.isEnabled?.(ctx)).toBe(false);
+    expect(getDatabaseTableSchemaTool.isEnabled?.(ctx)).toBe(false);
+  });
+
+  it("fails closed for retained associations with unavailable credentials", () => {
+    const ctx = {
+      supabaseProjectId: "supabase-project",
+      neonProjectId: "neon-project",
+      neonActiveBranchId: "neon-branch",
+      supabaseProviderToolsAvailable: false,
+      neonProviderToolsAvailable: false,
+    } as unknown as AgentContext;
+
+    expect(getSupabaseProjectInfoTool.isEnabled?.(ctx)).toBe(false);
+    expect(getNeonProjectInfoTool.isEnabled?.(ctx)).toBe(false);
+    expect(getDatabaseTableSchemaTool.isEnabled?.(ctx)).toBe(false);
+  });
+});
 
 describe("spawn_agent schema", () => {
   beforeEach(() => {
@@ -76,6 +107,7 @@ describe("spawn_agent schema", () => {
 
   it("propagates successful child mutations to the root turn", () => {
     const root = {
+      supabaseProjectId: null,
       sharedServerModulePaths: [],
       pendingFunctionDeploys: [],
       referencedApps: new Map(),
@@ -88,14 +120,22 @@ describe("spawn_agent schema", () => {
       taskName: "Edit auth flow",
       scope: ["src/auth"],
       abortSignal: new AbortController().signal,
+      contextOverrides: {
+        supabaseProjectId: "refreshed-project",
+        supabaseProviderToolsAvailable: true,
+      },
     });
 
     trackAppMutation(child, "write_file", true, true);
+    child.onSharedServerModuleChange?.("supabase/functions/_shared/auth.ts");
 
+    expect(child.supabaseProjectId).toBe("refreshed-project");
+    expect(root.supabaseProjectId).toBeNull();
     expect(child.mutationCount).toBe(1);
     expect(root.mutationCount).toBe(1);
     expect(root.fileMutationCount).toBe(1);
     expect(root.workspaceMutated).toBe(true);
+    expect(root.isSharedModulesChanged).toBe(true);
   });
 
   it("queues child function deletions for root finalization", () => {

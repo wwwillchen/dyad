@@ -492,6 +492,10 @@ export async function handleLocalAgentStream(
     preCommitHookAvailable = false,
     referencedApps = [],
     currentTurnHasOnDiskAttachment,
+    refreshImplementerContext,
+    implementerFallbackSystemPrompt,
+    supabaseProviderToolsAvailable,
+    neonProviderToolsAvailable,
   }: {
     placeholderMessageId: number;
     systemPrompt: string;
@@ -527,6 +531,14 @@ export async function handleLocalAgentStream(
       appPath: string;
     }[];
     currentTurnHasOnDiskAttachment?: boolean;
+    /** Lazily refreshed provider context and prompt for writable Implementers. */
+    refreshImplementerContext?: AgentContext["refreshImplementerContext"];
+    /** Provider-less capability-aware prompt used if refresh fails. */
+    implementerFallbackSystemPrompt?: string;
+    /** Whether the root and read-only children can authenticate Supabase reads. */
+    supabaseProviderToolsAvailable: boolean;
+    /** Whether the root and read-only children can authenticate Neon reads. */
+    neonProviderToolsAvailable: boolean;
   },
 ): Promise<boolean> {
   const storedSettings = settingsOverride ?? readSettings();
@@ -870,6 +882,10 @@ export async function handleLocalAgentStream(
       todos: persistedTodos,
       dyadRequestId,
       fileEditTracker,
+      refreshImplementerContext,
+      implementerFallbackSystemPrompt,
+      supabaseProviderToolsAvailable,
+      neonProviderToolsAvailable,
       preCommitHookAvailable,
       testingEnabled: Boolean(chat.app.testingEnabled),
       testRunAttempts: new Map(),

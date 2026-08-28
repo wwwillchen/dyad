@@ -60,6 +60,7 @@ const spawnFallbackSchema = z.object({
 
 interface SubagentToolContextParams {
   ctx: AgentContext;
+  contextOverrides?: Partial<AgentContext>;
   threadId: string;
   persona: "explorer" | "implementer";
   taskName: string;
@@ -79,9 +80,11 @@ export function buildSubagentContext(
     scope,
     abortSignal,
     mutationActivityOwner,
+    contextOverrides,
   } = params;
   return {
     ...ctx,
+    ...contextOverrides,
     subagentThreadId: threadId,
     subagentPersona: persona,
     subagentPathScope: scope.map(normalizeMutationScope),
@@ -260,9 +263,10 @@ export const spawnAgentTool: ToolDefinition<
       taskName: args.task_name,
       assignment: args.assignment,
       scope: args.scope,
-      buildTools: (child) =>
+      buildTools: ({ ctx: childCtx, contextOverrides, ...child }) =>
         buildSubagentToolSet({
-          ctx,
+          ctx: childCtx,
+          contextOverrides,
           ...child,
         }),
     });
@@ -440,9 +444,10 @@ export const followupTaskTool: ToolDefinition<z.infer<typeof messageSchema>> = {
       args.message,
       {
         ctx,
-        buildTools: (child) =>
+        buildTools: ({ ctx: childCtx, contextOverrides, ...child }) =>
           buildSubagentToolSet({
-            ctx,
+            ctx: childCtx,
+            contextOverrides,
             ...child,
           }),
       },
