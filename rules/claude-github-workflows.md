@@ -20,6 +20,8 @@ When a Claude workflow needs write credentials, prefer a two-job shape: the Clau
 
 When a headless Claude job must write local handoff artifacts, exclude project/local settings with `claude_args --setting-sources user`, explicitly pre-approve its inspection tools, and scope `Edit(...)` to the output directory via `--allowedTools`. Without the setting-source restriction, the repository's broad project allowlist merges with the scoped rule and defeats the intended boundary. After the action, verify every mandatory file with `test -s` before upload: `actions/upload-artifact`'s `if-no-files-found: error` still succeeds when only one of several listed paths exists, and Claude Code can report a successful session after denied tool calls.
 
+When validating Markdown tables from an agent artifact, recognize separator rows by matching the complete row or every cell, not with a substring check such as `line.includes("---")`. Valid filenames and issue titles can contain three consecutive hyphens, and dropping one such row makes the summary and structured findings disagree.
+
 ## Harden the agent's permissions — `.claude/settings.json` merges into CI
 
 Both `claude-code-action` and `claude-code-base-action` read `.claude/settings.json` from the workspace after `actions/checkout`, and the project's file is committed (tracked in git). **`permissions.allow` arrays merge across scopes — they do not replace each other.** From the Claude Code docs: _"Array settings merge across scopes. When the same array-valued setting (such as `permissions.allow`) appears in multiple scopes, the arrays are concatenated and deduplicated, not replaced."_ ([source](https://code.claude.com/docs/en/settings)).
