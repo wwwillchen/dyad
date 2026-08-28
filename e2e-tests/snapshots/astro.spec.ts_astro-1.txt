@@ -13,8 +13,10 @@ message:
   A file (2)
   </dyad-write>
   More
-  EOM<dyad-git-context commit="[[GIT_COMMIT]]"></dyad-git-context>
+  EOM
 
 ===
 role: user
 message: [dump] hi
+
+<system-reminder>Previous assistant message created commit: [[GIT_COMMIT]].</system-reminder>

@@ -31,10 +31,6 @@
           {
             "type": "text",
             "text": "\n  <dyad-write path=\"file1.txt\">\n  A file (2)\n  </dyad-write>\n  More\n  EOM"
-          },
-          {
-            "type": "text",
-            "text": "<dyad-git-context commit=\"[[GIT_COMMIT]]\"></dyad-git-context>"
           }
         ]
       },
@@ -43,7 +39,7 @@
         "content": [
           {
             "type": "text",
-            "text": "[dump]"
+            "text": "[dump]\n\n<system-reminder>Previous assistant message created commit: [[GIT_COMMIT]].</system-reminder>"
           }
         ]
       }

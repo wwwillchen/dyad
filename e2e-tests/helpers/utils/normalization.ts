@@ -69,12 +69,17 @@ export function normalizeMcpCallIds(dump: any): void {
  */
 export function normalizeGitContextHashes(dump: any): void {
   const scrub = (value: string): string =>
-    value.replace(/<dyad-git-context\b[^>]*>/g, (tag) =>
-      tag.replace(
-        /\b(commit|source_commit)="[0-9a-f]{40,64}"/gi,
-        '$1="[[GIT_COMMIT]]"',
-      ),
-    );
+    value
+      .replace(
+        /(<system-reminder>Previous assistant message created (?:commit: |no commit\. Repository commit before that message: ))[0-9a-f]{40,64}(\.<\/system-reminder>)/gi,
+        "$1[[GIT_COMMIT]]$2",
+      )
+      .replace(/<dyad-git-context\b[^>]*>/g, (tag) =>
+        tag.replace(
+          /\b(commit|source_commit)="[0-9a-f]{40,64}"/gi,
+          '$1="[[GIT_COMMIT]]"',
+        ),
+      );
 
   const visit = (value: unknown, set: (next: unknown) => void): void => {
     if (typeof value === "string") {

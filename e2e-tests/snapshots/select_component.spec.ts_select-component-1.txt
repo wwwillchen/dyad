@@ -8,7 +8,7 @@ message: tc=basic
 
 ===
 role: assistant
-message: This is a simple basic response<dyad-git-context source_commit="[[GIT_COMMIT]]" no_commit="true"></dyad-git-context>
+message: This is a simple basic response
 
 ===
 role: user
@@ -26,3 +26,5 @@ Snippet:
           Start building your amazing project here!
         </p>
 ```
+
+<system-reminder>Previous assistant message created no commit. Repository commit before that message: [[GIT_COMMIT]].</system-reminder>

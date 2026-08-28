@@ -3,10 +3,11 @@ import { test, Timeout } from "./helpers/test_helper";
 import { expect } from "@playwright/test";
 import * as fs from "fs";
 
-// It's hard to read the snapshots, but they should be identical across
-// all test cases in this file, so we use the same snapshot name to ensure
-// the outputs are identical.
-const SNAPSHOT_NAME = "attach-image";
+// The in-chat picker and drag-and-drop requests should stay identical. The
+// home request has no prior assistant turn, so it does not include Git
+// provenance and uses a separate baseline.
+const CHAT_SNAPSHOT_NAME = "attach-image";
+const HOME_SNAPSHOT_NAME = "attach-image-home";
 
 // attach image is implemented in two separate components
 // - HomeChatInput
@@ -39,7 +40,7 @@ test("attach image - home chat", async ({ po }) => {
   await fileChooser.setFiles("e2e-tests/fixtures/images/logo.png");
 
   await po.sendPrompt("[dump]");
-  await po.snapshotServerDump("last-message", { name: SNAPSHOT_NAME });
+  await po.snapshotServerDump("last-message", { name: HOME_SNAPSHOT_NAME });
   await po.snapshotMessages({ replaceDumpPath: true });
 });
 
@@ -71,7 +72,7 @@ test("attach image - chat", async ({ po }) => {
   await fileChooser.setFiles("e2e-tests/fixtures/images/logo.png");
 
   await po.sendPrompt("[dump]");
-  await po.snapshotServerDump("last-message", { name: SNAPSHOT_NAME });
+  await po.snapshotServerDump("last-message", { name: CHAT_SNAPSHOT_NAME });
   await po.snapshotMessages({ replaceDumpPath: true });
 });
 
@@ -175,6 +176,6 @@ test("attach image via drag - chat", async ({ po }) => {
   // submit and verify
   await po.sendPrompt("[dump]");
   // Note: this should match EXACTLY the server dump from the previous test.
-  await po.snapshotServerDump("last-message", { name: SNAPSHOT_NAME });
+  await po.snapshotServerDump("last-message", { name: CHAT_SNAPSHOT_NAME });
   await po.snapshotMessages({ replaceDumpPath: true });
 });
