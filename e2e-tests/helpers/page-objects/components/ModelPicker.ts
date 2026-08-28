@@ -107,12 +107,7 @@ export class ModelPicker {
     await this.getMenuItem("All models").click();
     const catalogMenu = this.page.getByTestId("more-models-submenu");
     await expect(catalogMenu).toBeVisible();
-    const loadingIndicator = catalogMenu.getByText("Loading cloud models...", {
-      exact: true,
-    });
-    if (await loadingIndicator.isVisible()) {
-      await expect(loadingIndicator).toBeHidden();
-    }
+    await expect(catalogMenu).toHaveAttribute("data-catalog-loading", "false");
 
     if (await this.isVisibleSoon(directModel)) {
       await this.selectVisibleModel(directModel, model);

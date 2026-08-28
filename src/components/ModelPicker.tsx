@@ -11,7 +11,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { usePostHog } from "posthog-js/react";
 import { useLocalModels } from "@/hooks/useLocalModels";
@@ -109,6 +109,12 @@ type RecentModelEntry =
       providerId: "ollama" | "lmstudio";
       modelName: string;
     };
+type ModelSelectParams = {
+  model: LargeLanguageModel;
+  catalogModel?: LanguageModel | null;
+  effortLevel?: string;
+  rememberEffort?: boolean;
+};
 const PRICE_TIERS: Tier[] = [
   {
     label: "Premium",
@@ -176,20 +182,13 @@ export function ModelPicker() {
   const hasEstablishedChat = Boolean(
     chat && (chat.modelSelection || chat.messages.length > 0),
   );
-  const resolvedRecentModelsRef = useRef<LargeLanguageModel[] | null>(null);
-  const normalizedRecentModelsRef = useRef<LargeLanguageModel[] | null>(null);
-
-  const onModelSelect = async ({
+  const performModelSelect = async ({
     model,
     catalogModel,
     effortLevel,
     rememberEffort = false,
-  }: {
-    model: LargeLanguageModel;
-    catalogModel?: LanguageModel | null;
-    effortLevel?: string;
-    rememberEffort?: boolean;
-  }) => {
+    recentModels,
+  }: ModelSelectParams & { recentModels: LargeLanguageModel[] }) => {
     if (!settings || (isChatRoute && chatId != null && chatLoading)) return;
     const modelSelection = createModelSelection({
       model,
@@ -217,29 +216,13 @@ export function ModelPicker() {
           },
         }
       : {};
-    const effectiveRecentModels = getEffectiveRecentModels(
-      settings.recentModels,
-      toRecentModelIdentity(selectedModel),
-    );
-    const recentModelsWithoutStaleEntries = resolvedRecentModelsRef.current
-      ? effectiveRecentModels.filter((recentModel) =>
-          resolvedRecentModelsRef.current?.some((resolvedModel) =>
-            isSameModel(recentModel, resolvedModel),
-          ),
-        )
-      : effectiveRecentModels;
     const recentModelsUpdate =
       model.provider === "auto"
-        ? settings.recentModels === undefined &&
-          recentModelsWithoutStaleEntries.length > 0
-          ? { recentModels: recentModelsWithoutStaleEntries }
+        ? settings.recentModels === undefined && recentModels.length > 0
+          ? { recentModels }
           : {}
         : {
-            recentModels: addRecentModel(
-              normalizedRecentModelsRef.current ??
-                recentModelsWithoutStaleEntries,
-              model,
-            ),
+            recentModels: addRecentModel(recentModels, model),
           };
     if (hasEstablishedChat && chatId) {
       await setChatSelection({
@@ -631,8 +614,7 @@ export function ModelPicker() {
       );
     },
   );
-  resolvedRecentModelsRef.current = recentModelsWithoutStaleEntries;
-  normalizedRecentModelsRef.current = recentModelsWithoutStaleEntries.map(
+  const normalizedRecentModels = recentModelsWithoutStaleEntries.map(
     (recentModel) => {
       if (recentModel.customModelId !== undefined) {
         return recentModel;
@@ -645,6 +627,8 @@ export function ModelPicker() {
         : recentModel;
     },
   );
+  const onModelSelect = (params: ModelSelectParams) =>
+    performModelSelect({ ...params, recentModels: normalizedRecentModels });
 
   const getProviderDisplayName = (providerId: string) => {
     const provider = providers?.find((p) => p.id === providerId);
@@ -1474,6 +1458,7 @@ export function ModelPicker() {
                 <DropdownMenuSubContent
                   className={cn(MODEL_MENU_WIDTH_CLASS, SCROLL_AREA_CLASS)}
                   data-testid="more-models-submenu"
+                  data-catalog-loading={loading}
                 >
                   <DropdownMenuLabel>All models</DropdownMenuLabel>
                   <DropdownMenuSeparator />
