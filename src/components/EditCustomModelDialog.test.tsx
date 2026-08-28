@@ -24,7 +24,6 @@ vi.mock("@/hooks/useSettings", () => ({
       selectedModel: {
         provider: "openai",
         name: "shared-api-name",
-        customModelId: 12,
       },
       recentModels: [
         {
@@ -96,6 +95,18 @@ describe("EditCustomModelDialog", () => {
             displayName: "Original name",
             type: "custom",
           }}
+          models={[
+            {
+              id: 12,
+              apiName: "shared-api-name",
+              type: "custom",
+            },
+            {
+              id: 99,
+              apiName: "shared-api-name",
+              type: "custom",
+            },
+          ]}
         />
       </QueryClientProvider>,
     );

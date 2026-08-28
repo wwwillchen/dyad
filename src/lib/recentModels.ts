@@ -48,11 +48,13 @@ export function replaceRecentModelIdentity(
   recentModels: LargeLanguageModel[] | undefined,
   previous: LargeLanguageModel,
   replacement: LargeLanguageModel,
+  options?: { includeLegacyIdless?: boolean },
 ): LargeLanguageModel[] | undefined {
   return recentModels?.map((model) =>
     model.provider === previous.provider &&
     model.name === previous.name &&
-    model.customModelId === previous.customModelId
+    (model.customModelId === previous.customModelId ||
+      (options?.includeLegacyIdless && model.customModelId === undefined))
       ? replacement
       : model,
   );

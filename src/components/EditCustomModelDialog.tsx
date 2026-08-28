@@ -33,6 +33,11 @@ interface EditCustomModelDialogProps {
   onSuccess: () => void;
   providerId: string;
   model: Model | null;
+  models?: Array<{
+    id?: number;
+    apiName: string;
+    type?: "cloud" | "custom" | "local";
+  }>;
 }
 
 export function EditCustomModelDialog({
@@ -41,6 +46,7 @@ export function EditCustomModelDialog({
   onSuccess,
   providerId,
   model,
+  models,
 }: EditCustomModelDialogProps) {
   const [apiName, setApiName] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -96,6 +102,12 @@ export function EditCustomModelDialog({
     onSuccess: async (customModelId) => {
       if (!model) return;
       if (settings) {
+        const legacyResolvedModel = models?.find(
+          (candidate) => candidate.apiName === model.apiName,
+        );
+        const includeLegacyIdless =
+          legacyResolvedModel?.type === "custom" &&
+          legacyResolvedModel.id === model.id;
         const previousModel = {
           provider: providerId,
           name: model.apiName,
@@ -110,11 +122,13 @@ export function EditCustomModelDialog({
           [settings.selectedModel],
           previousModel,
           replacementModel,
+          { includeLegacyIdless },
         )!;
         const recentModels = replaceRecentModelIdentity(
           settings.recentModels,
           previousModel,
           replacementModel,
+          { includeLegacyIdless },
         );
         const selectedModelChanged = selectedModel !== settings.selectedModel;
         const recentModelsChanged = recentModels?.some(

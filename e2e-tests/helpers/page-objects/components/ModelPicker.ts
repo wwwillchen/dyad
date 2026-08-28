@@ -120,16 +120,16 @@ export class ModelPicker {
     }
 
     const providerItem = catalogMenu
-      .getByRole("menuitem", { name: provider, exact: false })
+      .locator("[data-provider-id]")
+      .filter({ hasText: provider })
       .first();
     if (await this.isVisibleSoon(providerItem)) {
       const providerId = await providerItem.getAttribute("data-provider-id");
-      if (!providerId) {
-        throw new Error(`Provider menu item "${provider}" has no provider ID`);
+      if (providerId) {
+        await providerItem.click();
+        await this.selectProviderSubmenuModel(providerId, model);
+        return;
       }
-      await providerItem.click();
-      await this.selectProviderSubmenuModel(providerId, model);
-      return;
     }
 
     await this.clickModel(provider, model);

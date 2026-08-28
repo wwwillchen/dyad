@@ -618,12 +618,16 @@ export function ModelPicker() {
       if (loading || modelsByProvidersError || providersError) {
         return true;
       }
+      if (recentModel.customModelId === undefined) {
+        // The successful query can still contain the bundled fallback catalog,
+        // which is intentionally smaller than the remote catalog. Keep
+        // unresolved built-in identities persisted and merely omit their rows.
+        return true;
+      }
       return (modelsByProviders?.[recentModel.provider] ?? []).some(
         (candidate) =>
-          recentModel.customModelId !== undefined
-            ? candidate.type === "custom" &&
-              candidate.id === recentModel.customModelId
-            : candidate.apiName === recentModel.name,
+          candidate.type === "custom" &&
+          candidate.id === recentModel.customModelId,
       );
     },
   );

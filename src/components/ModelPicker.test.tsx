@@ -631,7 +631,7 @@ describe("ModelPicker", () => {
     expect(screen.getAllByText("Auto Sidekick")).toHaveLength(1);
   });
 
-  it("drops unresolved history before adding a recent model", async () => {
+  it("preserves unresolved cloud history when adding a recent model", async () => {
     mocks.renderSubContent = true;
     mocks.settings.recentModels = [
       { provider: "openai", name: "deleted-model" },
@@ -653,10 +653,10 @@ describe("ModelPicker", () => {
         selectedModel: { provider: "xai", name: "grok-code-fast-1" },
         recentModels: [
           { provider: "xai", name: "grok-code-fast-1" },
+          { provider: "openai", name: "deleted-model" },
           { provider: "openai", name: "gpt-5" },
           { provider: "openai", name: "gpt-5-mini" },
           { provider: "google", name: "gemini-2.5-pro" },
-          { provider: "google", name: "gemini-2.5-flash" },
         ],
       });
     });

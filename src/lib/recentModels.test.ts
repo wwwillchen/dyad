@@ -102,4 +102,27 @@ describe("recent models", () => {
       { provider: "custom", name: "old-model", customModelId: 5 },
     ]);
   });
+
+  it("optionally migrates legacy id-less identities", () => {
+    const replacement = {
+      provider: "custom",
+      name: "renamed-model",
+      customModelId: 9,
+    };
+
+    expect(
+      replaceRecentModelIdentity(
+        [
+          { provider: "custom", name: "old-model" },
+          { provider: "custom", name: "old-model", customModelId: 5 },
+        ],
+        { provider: "custom", name: "old-model", customModelId: 4 },
+        replacement,
+        { includeLegacyIdless: true },
+      ),
+    ).toEqual([
+      replacement,
+      { provider: "custom", name: "old-model", customModelId: 5 },
+    ]);
+  });
 });
