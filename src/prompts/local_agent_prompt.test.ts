@@ -27,6 +27,22 @@ import {
 const expectGitContextGuidance = (prompt: string) => {
   expect(prompt).toContain("<git_context>");
   expect(prompt).toContain("Dyad may add Git provenance to a user message");
+  expect(prompt).toContain(
+    "identifies the app state at the start of that turn",
+  );
+  expect(prompt).toContain(
+    "use the provided commit hash with Git inspection tools",
+  );
+  expect(prompt).not.toContain("<dyad-git-context>");
+};
+
+const expectBuildGitContextGuidance = (prompt: string) => {
+  expect(prompt).toContain("<git_context>");
+  expect(prompt).toContain("Dyad may add Git provenance to a user message");
+  expect(prompt).toContain(
+    "identifies the app state at the start of that turn",
+  );
+  expect(prompt).not.toContain("Git inspection tools");
   expect(prompt).not.toContain("<dyad-git-context>");
 };
 
@@ -587,7 +603,7 @@ describe("build agent prompt", () => {
     expect(prompt).toContain("`planning_questionnaire`");
     expect(prompt).toContain("`update_todos`");
     expect(prompt).toContain("write_app_blueprint");
-    expectGitContextGuidance(prompt);
+    expectBuildGitContextGuidance(prompt);
     for (const unavailableTool of [
       "spawn_agent",
       "web_search",

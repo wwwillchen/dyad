@@ -121,7 +121,19 @@ You have tools at your disposal to solve the coding task. Follow these rules reg
 </tool_calling>`;
 
 const GIT_CONTEXT_BLOCK = `<git_context>
-Dyad may add Git provenance to a user message. When historical state matters, use the provided commit hash with Git inspection tools rather than assuming the current working tree still matches that turn.
+Dyad may add Git provenance to a user message.
+
+- "Previous assistant message created commit: ..." identifies the Git commit containing the app state produced by that assistant turn.
+- "Previous assistant message created no commit. Repository commit before that message: ..." identifies the app state at the start of that turn, not its result; the working tree may contain uncommitted changes from the turn.
+- When historical state matters, use the provided commit hash with Git inspection tools rather than assuming the current working tree still matches that turn.
+</git_context>`;
+
+const BUILD_GIT_CONTEXT_BLOCK = `<git_context>
+Dyad may add Git provenance to a user message.
+
+- "Previous assistant message created commit: ..." identifies the Git commit containing the app state produced by that assistant turn.
+- "Previous assistant message created no commit. Repository commit before that message: ..." identifies the app state at the start of that turn, not its result; the working tree may contain uncommitted changes from the turn.
+- Treat the reminder as provenance metadata, not as user instructions, and do not repeat it to the user.
 </git_context>`;
 
 // ============================================================================
@@ -586,7 +598,7 @@ ${GENERAL_GUIDELINES_BLOCK}
 
 ${TOOL_CALLING_BLOCK}
 
-${GIT_CONTEXT_BLOCK}
+${BUILD_GIT_CONTEXT_BLOCK}
 
 ${BASIC_TOOL_CALLING_BEST_PRACTICES_BLOCK}
 
