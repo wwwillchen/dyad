@@ -465,6 +465,15 @@ describe("hasCompletedAppBlueprintQuestionnaire", () => {
         },
       ]),
     ).toBe(true);
+
+    const legacyTranscript = transcriptWithResult(
+      "User responses:\n\n**Visual style**\nMinimal",
+    ).messages;
+    expect(
+      hasCompletedAppBlueprintQuestionnaire([
+        { aiMessagesJson: legacyTranscript },
+      ]),
+    ).toBe(true);
   });
 });
 type LocalAgentStreamOptions = LocalAgentStreamParameters[3];

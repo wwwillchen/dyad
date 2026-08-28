@@ -409,11 +409,14 @@ export function buildChatMessageHistory(
 
 export function hasCompletedAppBlueprintQuestionnaire(
   chatMessages: ReadonlyArray<{
-    aiMessagesJson?: AiMessagesJsonV6 | null;
+    aiMessagesJson?: AiMessagesJsonV6 | ModelMessage[] | null;
   }>,
 ): boolean {
-  return chatMessages.some((chatMessage) =>
-    chatMessage.aiMessagesJson?.messages.some(
+  return chatMessages.some((chatMessage) => {
+    const storedMessages = Array.isArray(chatMessage.aiMessagesJson)
+      ? chatMessage.aiMessagesJson
+      : (chatMessage.aiMessagesJson?.messages ?? []);
+    return storedMessages.some(
       (message) =>
         message.role === "tool" &&
         message.content.some((part) => {
@@ -430,8 +433,8 @@ export function hasCompletedAppBlueprintQuestionnaire(
             COMPLETED_PLANNING_QUESTIONNAIRE_RESULT_PREFIX,
           );
         }),
-    ),
-  );
+    );
+  });
 }
 
 /**
