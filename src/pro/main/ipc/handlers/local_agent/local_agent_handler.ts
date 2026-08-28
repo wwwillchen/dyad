@@ -167,6 +167,13 @@ export function clearPendingLocalAgentInputsForChat(chatId: number): void {
 
 const logger = log.scope("local_agent_handler");
 const PLANNING_QUESTIONNAIRE_TOOL_NAME = "planning_questionnaire";
+
+export function shouldStopAfterAppBlueprintWrite(
+  ctx: Pick<AgentContext, "appBlueprintWrittenThisTurn">,
+): boolean {
+  return ctx.appBlueprintWrittenThisTurn === true;
+}
+
 const MAX_TERMINATED_STREAM_RETRIES = 3;
 const MAX_ERROR_RESPONSE_BODY_DEPTH = 5;
 const STREAM_RETRY_BASE_DELAY_MS = 400;
@@ -1083,6 +1090,8 @@ export async function handleLocalAgentStream(
       estimateMcpInlineTokens(mcpDefs) > getMcpInlineTokenThreshold();
 
     const agentTools = buildAgentToolSet(ctx, buildOptions);
+    ctx.planningQuestionnaireAvailable =
+      agentTools.planning_questionnaire != undefined;
     // search_mcp_tools returns full tool declarations, so it alone is enough for
     // search mode. If tool permissions removed it, fall back to inline and drop
     // the now-unused get_mcp_tool_schema tool.
@@ -1307,7 +1316,7 @@ export async function handleLocalAgentStream(
               // must leave room for the model to correct itself. After success,
               // approval may rename the app folder, so the renderer starts a
               // fresh turn with a refreshed ctx.
-              () => ctx.appBlueprintWrittenThisTurn === true,
+              () => shouldStopAfterAppBlueprintWrite(ctx),
               // In plan mode, also stop after writing a plan or exiting plan mode.
               ...(planModeOnly
                 ? [
@@ -1935,6 +1944,13 @@ export async function handleLocalAgentStream(
         (!lastStep ||
           lastStep.toolCalls.length === 0 ||
           stepOnlyCalledTool(lastStep, setChatSummaryTool.name));
+
+      // A successful blueprint write owns the end of this user turn. Do not
+      // start Explorer synthesis or todo follow-up passes against an
+      // unapproved blueprint.
+      if (shouldStopAfterAppBlueprintWrite(ctx)) {
+        break;
+      }
 
       const unsynthesizedThreadIds = spawnedSubagentThreadIds.filter(
         (threadId) =>

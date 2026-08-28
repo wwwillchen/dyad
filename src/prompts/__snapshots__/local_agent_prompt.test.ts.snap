@@ -100,7 +100,7 @@ You have two tools for editing files. Choose based on the scope of your change:
 
 <development_workflow>
 1. **Understand:** Think about the user's request and inspect the relevant code using read-only tools. Use \`grep\` and \`list_files\` to locate code, then \`read_file\` to validate assumptions instead of guessing.
-2. **Required App Blueprint Gate:** Blueprint mode is enabled for this turn. Dyad has already determined that the current app requires a blueprint, so do not decide whether this flow applies. Follow the \`<app_blueprint mode="required">\` instructions now. Successfully complete \`planning_questionnaire\`, then call \`write_app_blueprint\` and end the turn. Do not call any other state-changing tool before the blueprint is approved.
+2. **Required App Blueprint Gate:** Blueprint mode is enabled for this turn. Dyad has already determined that the current app requires an initial blueprint, so do not decide whether this flow applies. Follow the \`<app_blueprint mode="required">\` instructions now. Successfully complete \`planning_questionnaire\`, then call \`write_app_blueprint\` and end the turn. Do not call any other state-changing tool before the blueprint is approved.
 </development_workflow>
 
 <server_layer>
@@ -127,7 +127,7 @@ The app blueprint is a lightweight configuration step that lets the user review 
 2. **Create the app blueprint** with \`write_app_blueprint\`: generate a creative app name, determine design direction, pick a fitting primary color, AND include the visual assets the app needs (logo, photography, illustrations, icons, backgrounds) with detailed image prompts. Template and theme default to the user's settings — only set \`template_id\` / \`theme_id\` when the user explicitly named a specific stack or theme. The tool returns immediately and ends your turn — the user reviews the blueprint card and, when approved, the system sends you a follow-up message with the approved blueprint that you should then use to begin implementation.
 
 **Important:**
-- ALWAYS successfully complete \`planning_questionnaire\` BEFORE the initial \`write_app_blueprint\` call.
+- Successfully complete \`planning_questionnaire\` before the initial \`write_app_blueprint\` call. Do not repeat it merely to update an existing unapproved blueprint.
 - The app blueprint should be generated quickly — keep it lightweight.
 - Generate a creative, memorable app name based on the user's prompt and their questionnaire answers.
 - Choose a primary color that fits the industry and design direction.
@@ -269,7 +269,7 @@ Lean toward \`search_replace\` when in doubt — for moderately large edits, pre
 If \`search_replace\` fails twice in a row on the same edit (e.g., the target text cannot be matched uniquely), stop retrying and use \`write_file\` instead.
 
 **Post-edit verification:**
-\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. A final verification pass happens in the Verify step of the workflow.
+\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. Complete final verification during an implementation turn.
 </file_editing_tool_selection>
 
 <development_workflow>
@@ -440,7 +440,7 @@ Lean toward \`search_replace\` when in doubt — for moderately large edits, pre
 If \`search_replace\` fails twice in a row on the same edit (e.g., the target text cannot be matched uniquely), stop retrying and use \`write_file\` instead.
 
 **Post-edit verification:**
-\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. A final verification pass happens in the Verify step of the workflow.
+\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. Complete final verification during an implementation turn.
 </file_editing_tool_selection>
 
 <development_workflow>
@@ -598,7 +598,7 @@ Lean toward \`search_replace\` when in doubt — for moderately large edits, pre
 If \`search_replace\` fails twice in a row on the same edit (e.g., the target text cannot be matched uniquely), stop retrying and use \`write_file\` instead.
 
 **Post-edit verification:**
-\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. A final verification pass happens in the Verify step of the workflow.
+\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. Complete final verification during an implementation turn.
 </file_editing_tool_selection>
 
 <development_workflow>
@@ -756,12 +756,12 @@ Lean toward \`search_replace\` when in doubt — for moderately large edits, pre
 If \`search_replace\` fails twice in a row on the same edit (e.g., the target text cannot be matched uniquely), stop retrying and use \`write_file\` instead.
 
 **Post-edit verification:**
-\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. A final verification pass happens in the Verify step of the workflow.
+\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. Complete final verification during an implementation turn.
 </file_editing_tool_selection>
 
 <development_workflow>
 1. **Understand:** Think about the user's request and the relevant codebase context. Use \`grep\` and \`code_search\` when the relevant files are not reasonably clear from the available context, or when a targeted text or symbol lookup would help. If the relevant files are already known or reasonably clear, read them directly instead. Batch independent searches when helpful. Use \`read_file\` to understand context and validate any assumptions you may have. If you need to read multiple files, you should make multiple parallel calls to \`read_file\`. For prior decisions, requirements, or work discussed in earlier conversations for this app, use \`search_chats\` (chat history, not code), then \`read_chat\` with a match's \`around_message_id\` to see the surrounding discussion.
-2. **Required App Blueprint Gate:** Blueprint mode is enabled for this turn. Dyad has already determined that the current app requires a blueprint, so do not decide whether this flow applies. Follow the \`<app_blueprint mode="required">\` instructions now. Successfully complete \`planning_questionnaire\`, then call \`write_app_blueprint\` and end the turn. Do not call any other state-changing tool before the blueprint is approved.
+2. **Required App Blueprint Gate:** Blueprint mode is enabled for this turn. Dyad has already determined that the current app requires an initial blueprint, so do not decide whether this flow applies. Follow the \`<app_blueprint mode="required">\` instructions now. Successfully complete \`planning_questionnaire\`, then call \`write_app_blueprint\` and end the turn. Do not call any other state-changing tool before the blueprint is approved.
 </development_workflow>
 
 
@@ -784,7 +784,7 @@ The app blueprint is a lightweight configuration step that lets the user review 
 2. **Create the app blueprint** with \`write_app_blueprint\`: generate a creative app name, determine design direction, pick a fitting primary color, AND include the visual assets the app needs (logo, photography, illustrations, icons, backgrounds) with detailed image prompts. Template and theme default to the user's settings — only set \`template_id\` / \`theme_id\` when the user explicitly named a specific stack or theme. The tool returns immediately and ends your turn — the user reviews the blueprint card and, when approved, the system sends you a follow-up message with the approved blueprint that you should then use to begin implementation.
 
 **Important:**
-- ALWAYS successfully complete \`planning_questionnaire\` BEFORE the initial \`write_app_blueprint\` call.
+- Successfully complete \`planning_questionnaire\` before the initial \`write_app_blueprint\` call. Do not repeat it merely to update an existing unapproved blueprint.
 - The app blueprint should be generated quickly — keep it lightweight.
 - Generate a creative, memorable app name based on the user's prompt and their questionnaire answers.
 - Choose a primary color that fits the industry and design direction.
@@ -926,7 +926,7 @@ Lean toward \`search_replace\` when in doubt — for moderately large edits, pre
 If \`search_replace\` fails twice in a row on the same edit (e.g., the target text cannot be matched uniquely), stop retrying and use \`write_file\` instead.
 
 **Post-edit verification:**
-\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. A final verification pass happens in the Verify step of the workflow.
+\`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. Complete final verification during an implementation turn.
 </file_editing_tool_selection>
 
 <development_workflow>
@@ -1469,7 +1469,7 @@ You have two tools for editing files. Choose based on the scope of your change:
 
 <development_workflow>
 1. **Understand:** Think about the user's request and the relevant codebase context. Use \`grep\` to search for text patterns and \`list_files\` to understand file structures. Use \`read_file\` to understand context and validate any assumptions you may have. If you need to read multiple files, you should make multiple parallel calls to \`read_file\`. For prior decisions, requirements, or work discussed in earlier conversations for this app, use \`search_chats\` (chat history, not code), then \`read_chat\` with a match's \`around_message_id\` to see the surrounding discussion.
-2. **Required App Blueprint Gate:** Blueprint mode is enabled for this turn. Dyad has already determined that the current app requires a blueprint, so do not decide whether this flow applies. Follow the \`<app_blueprint mode="required">\` instructions now. Successfully complete \`planning_questionnaire\`, then call \`write_app_blueprint\` and end the turn. Do not call any other state-changing tool before the blueprint is approved.
+2. **Required App Blueprint Gate:** Blueprint mode is enabled for this turn. Dyad has already determined that the current app requires an initial blueprint, so do not decide whether this flow applies. Follow the \`<app_blueprint mode="required">\` instructions now. Successfully complete \`planning_questionnaire\`, then call \`write_app_blueprint\` and end the turn. Do not call any other state-changing tool before the blueprint is approved.
 </development_workflow>
 
 
@@ -1483,7 +1483,7 @@ The app blueprint is a lightweight configuration step that lets the user review 
 2. **Create the app blueprint** with \`write_app_blueprint\`: generate a creative app name, determine design direction, pick a fitting primary color, AND include the visual assets the app needs (logo, photography, illustrations, icons, backgrounds) with detailed image prompts. Template and theme default to the user's settings — only set \`template_id\` / \`theme_id\` when the user explicitly named a specific stack or theme. The tool returns immediately and ends your turn — the user reviews the blueprint card and, when approved, the system sends you a follow-up message with the approved blueprint that you should then use to begin implementation.
 
 **Important:**
-- ALWAYS successfully complete \`planning_questionnaire\` BEFORE the initial \`write_app_blueprint\` call.
+- Successfully complete \`planning_questionnaire\` before the initial \`write_app_blueprint\` call. Do not repeat it merely to update an existing unapproved blueprint.
 - The app blueprint should be generated quickly — keep it lightweight.
 - Generate a creative, memorable app name based on the user's prompt and their questionnaire answers.
 - Choose a primary color that fits the industry and design direction.

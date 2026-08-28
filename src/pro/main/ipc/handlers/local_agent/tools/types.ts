@@ -295,6 +295,8 @@ export interface AgentContext {
    * invalid or dismissed questionnaire cannot be skipped by the model.
    */
   appBlueprintQuestionnaireCompleted?: boolean;
+  /** Whether planning_questionnaire is exposed in this turn's tool set. */
+  planningQuestionnaireAvailable?: boolean;
   /** True after write_app_blueprint persists a blueprint during this turn. */
   appBlueprintWrittenThisTurn?: boolean;
   /**

@@ -110,6 +110,37 @@ describe("app blueprint tools", () => {
     expect(ctx.appBlueprintWrittenThisTurn).not.toBe(true);
   });
 
+  it("explains how to recover when the required questionnaire is disabled", async () => {
+    const ctx = createAgentContext(1006);
+    ctx.appBlueprintQuestionnaireCompleted = false;
+    ctx.planningQuestionnaireAvailable = false;
+
+    await expect(
+      writeAppBlueprintTool.execute(
+        {
+          app_name: "Blocked Blueprint",
+          user_prompt: "Build me an app",
+          attachments: [],
+          design_direction: "Clean and minimal.",
+          primary_color: "#2563EB",
+          visuals: [
+            {
+              type: "logo",
+              description: "App logo",
+              prompt: "Minimal logo",
+            },
+          ],
+        },
+        ctx,
+      ),
+    ).rejects.toThrow(
+      "disabled in Settings → Agent Tools. Enable the Planning Questionnaire tool",
+    );
+
+    expect(getAppBlueprintForChat(ctx.chatId)).toBeUndefined();
+    expect(ctx.appBlueprintWrittenThisTurn).not.toBe(true);
+  });
+
   it("allows an existing unapproved blueprint to be updated without another questionnaire", async () => {
     const chatId = 1005;
     const initialCtx = createAgentContext(chatId);
@@ -132,6 +163,7 @@ describe("app blueprint tools", () => {
 
     const updateCtx = createAgentContext(chatId);
     updateCtx.appBlueprintQuestionnaireCompleted = false;
+    updateCtx.planningQuestionnaireAvailable = false;
     await writeAppBlueprintTool.execute(
       { ...args, app_name: "Updated Blueprint" },
       updateCtx,

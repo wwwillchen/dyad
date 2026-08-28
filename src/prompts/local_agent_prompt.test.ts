@@ -599,6 +599,35 @@ describe("local_agent_prompt", () => {
       "plan based on the understanding and clarification steps",
     );
   });
+
+  it("updates an existing unapproved blueprint without repeating the questionnaire", () => {
+    const prompt = constructLocalAgentPrompt(undefined, undefined, {
+      enableAppBlueprint: true,
+      hasAppBlueprint: true,
+    });
+
+    expect(prompt).toContain("an unapproved blueprint already exists");
+    expect(prompt).toContain("update the blueprint directly");
+    expect(prompt).toContain(
+      "Do not repeat it merely to update an existing unapproved blueprint",
+    );
+    expect(prompt).not.toContain(
+      "You MUST call this tool even when the initial request seems concrete",
+    );
+  });
+
+  it("surfaces an actionable recovery when the initial questionnaire is disabled", () => {
+    const prompt = constructLocalAgentPrompt(undefined, undefined, {
+      enableAppBlueprint: true,
+      planningQuestionnaireAvailable: false,
+    });
+
+    expect(prompt).toContain('state="questionnaire-disabled"');
+    expect(prompt).toContain(
+      "enable the Planning Questionnaire tool in Settings → Agent Tools",
+    );
+    expect(prompt).toContain("Do not call `write_app_blueprint`");
+  });
 });
 
 describe("build agent prompt", () => {

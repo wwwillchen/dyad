@@ -201,6 +201,16 @@ export const writeAppBlueprintTool: ToolDefinition<
     if (
       ctx.enableAppBlueprint !== false &&
       !existingBlueprint &&
+      ctx.planningQuestionnaireAvailable === false
+    ) {
+      throw new DyadError(
+        "The initial app blueprint requires planning_questionnaire, but that tool is disabled in Settings → Agent Tools. Enable the Planning Questionnaire tool, then retry this request.",
+        DyadErrorKind.Precondition,
+      );
+    }
+    if (
+      ctx.enableAppBlueprint !== false &&
+      !existingBlueprint &&
       !ctx.appBlueprintQuestionnaireCompleted
     ) {
       throw new DyadError(

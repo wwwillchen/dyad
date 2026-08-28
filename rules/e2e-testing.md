@@ -196,6 +196,8 @@ If every test in a run fails with `apiRequestContext.post: connect ECONNREFUSED 
 
 After changing `testing/fake-llm-server`, run its package build and restart the listener on port 3500 before rerunning Playwright. Local `reuseExistingServer` can otherwise keep serving stale compiled `dist` code, making the source fix appear ineffective.
 
+Request snapshots for remote-catalog models derive limits such as `max_output_tokens` from the fake catalog metadata. When a catalog fixture represents a local model, set its `maxOutputTokens` explicitly so regeneration does not silently drop the production limit from the request snapshot.
+
 If this happens:
 
 1. Verify whether the failure reproduces on an existing known-good E2E spec.

@@ -752,6 +752,8 @@ export const constructSystemPrompt = ({
   frameworkType,
   hasSupabaseProject,
   enableAppBlueprint,
+  hasAppBlueprint,
+  planningQuestionnaireAvailable,
   codeExplorerAvailable,
   historyExplorerAvailable,
   implementerAvailable,
@@ -785,6 +787,10 @@ export const constructSystemPrompt = ({
   hasSupabaseProject?: boolean;
   /** If false, omit the app blueprint block from the local-agent prompt. */
   enableAppBlueprint?: boolean;
+  /** Whether this chat already has an unapproved blueprint to update. */
+  hasAppBlueprint?: boolean;
+  /** Whether planning_questionnaire is exposed in this turn's tool set. */
+  planningQuestionnaireAvailable?: boolean;
   /**
    * If true, the local-agent prompt can use Code Explorer when the relevant
    * files are not already known or reasonably clear from available context.
@@ -821,6 +827,8 @@ export const constructSystemPrompt = ({
       frameworkType,
       hasSupabaseProject,
       enableAppBlueprint,
+      hasAppBlueprint,
+      planningQuestionnaireAvailable,
       codeExplorerAvailable,
       historyExplorerAvailable,
       implementerAvailable,
@@ -837,6 +845,8 @@ export const constructSystemPrompt = ({
       frameworkType,
       hasSupabaseProject,
       enableAppBlueprint,
+      hasAppBlueprint,
+      planningQuestionnaireAvailable,
       restartAppToolAvailable,
       reinstallAndRestartAppToolAvailable,
     });

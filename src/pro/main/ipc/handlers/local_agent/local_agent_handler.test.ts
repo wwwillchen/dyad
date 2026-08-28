@@ -396,6 +396,7 @@ import {
   buildExplorerSynthesisMessage,
   buildImplementerOutcomeNotices,
   handleLocalAgentStream as handleLocalAgentStreamImpl,
+  shouldStopAfterAppBlueprintWrite,
 } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { buildAgentToolSet } from "@/pro/main/ipc/handlers/local_agent/tool_definitions";
@@ -408,6 +409,22 @@ import type { AiMessagesJsonV6 } from "@/db/schema";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 
 type LocalAgentStreamParameters = Parameters<typeof handleLocalAgentStreamImpl>;
+
+describe("shouldStopAfterAppBlueprintWrite", () => {
+  it("stops only after a blueprint write succeeds", () => {
+    expect(shouldStopAfterAppBlueprintWrite({})).toBe(false);
+    expect(
+      shouldStopAfterAppBlueprintWrite({
+        appBlueprintWrittenThisTurn: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldStopAfterAppBlueprintWrite({
+        appBlueprintWrittenThisTurn: true,
+      }),
+    ).toBe(true);
+  });
+});
 type LocalAgentStreamOptions = LocalAgentStreamParameters[3];
 const handleLocalAgentStream = (
   event: LocalAgentStreamParameters[0],
