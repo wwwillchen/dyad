@@ -83,10 +83,10 @@ export class ModelPicker {
     }
   }
 
-  private async selectProviderSubmenuModel(model: string) {
-    const providerSubmenu = this.page
-      .locator('[data-testid^="other-provider-models-"]:visible')
-      .last();
+  private async selectProviderSubmenuModel(providerId: string, model: string) {
+    const providerSubmenu = this.page.getByTestId(
+      `other-provider-models-${providerId}`,
+    );
     await expect(providerSubmenu).toBeVisible();
     const modelItem = providerSubmenu
       .locator("[data-model-provider][data-model-name]")
@@ -123,8 +123,12 @@ export class ModelPicker {
       .getByRole("menuitem", { name: provider, exact: false })
       .first();
     if (await this.isVisibleSoon(providerItem)) {
+      const providerId = await providerItem.getAttribute("data-provider-id");
+      if (!providerId) {
+        throw new Error(`Provider menu item "${provider}" has no provider ID`);
+      }
       await providerItem.click();
-      await this.selectProviderSubmenuModel(model);
+      await this.selectProviderSubmenuModel(providerId, model);
       return;
     }
 

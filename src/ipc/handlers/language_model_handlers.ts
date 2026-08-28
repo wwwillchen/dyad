@@ -3,6 +3,7 @@ import type {
   LanguageModel,
   CreateCustomLanguageModelProviderParams,
   CreateCustomLanguageModelParams,
+  UpdateCustomLanguageModelParams,
 } from "@/ipc/types";
 import { createLoggedHandler } from "./safe_handle";
 import log from "electron-log";
@@ -158,6 +159,90 @@ export function registerLanguageModelHandlers() {
       return Number(result.lastInsertRowid);
     },
   );
+
+  handle(
+    "update-custom-language-model",
+    async (
+      _event: IpcMainInvokeEvent,
+      params: UpdateCustomLanguageModelParams,
+    ): Promise<number> => {
+      const {
+        id,
+        apiName,
+        displayName,
+        providerId,
+        description,
+        maxOutputTokens,
+        contextWindow,
+      } = params;
+
+      if (!apiName) {
+        throw new DyadError(
+          "Model API name is required",
+          DyadErrorKind.Validation,
+        );
+      }
+      if (!displayName) {
+        throw new DyadError(
+          "Model display name is required",
+          DyadErrorKind.Validation,
+        );
+      }
+      if (!providerId) {
+        throw new DyadError(
+          "Provider ID is required",
+          DyadErrorKind.Validation,
+        );
+      }
+
+      const providers = await getLanguageModelProviders();
+      const provider = providers.find(
+        (candidate) => candidate.id === providerId,
+      );
+      if (!provider) {
+        throw new DyadError(
+          `Provider with ID "${providerId}" not found`,
+          DyadErrorKind.NotFound,
+        );
+      }
+      if (provider.type === "local") {
+        throw new DyadError(
+          "Local models cannot be updated",
+          DyadErrorKind.Validation,
+        );
+      }
+
+      const result = db
+        .update(languageModelsSchema)
+        .set({
+          displayName,
+          apiName,
+          description: description || null,
+          max_output_tokens: maxOutputTokens || null,
+          context_window: contextWindow || null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(languageModelsSchema.id, id),
+            provider.type === "cloud"
+              ? eq(languageModelsSchema.builtinProviderId, providerId)
+              : eq(languageModelsSchema.customProviderId, providerId),
+          ),
+        )
+        .run();
+
+      if (result.changes === 0) {
+        throw new DyadError(
+          `Custom model with ID "${id}" was not found for provider "${providerId}"`,
+          DyadErrorKind.NotFound,
+        );
+      }
+
+      return id;
+    },
+  );
+
   handle(
     "edit-custom-language-model-provider",
     async (

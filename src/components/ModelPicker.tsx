@@ -584,41 +584,39 @@ export function ModelPicker() {
         : [];
     },
   );
-  const resolvedRecentModelIdentities = recentModelEntries.map(
-    (entry): LargeLanguageModel =>
-      entry.type === "cloud"
-        ? {
-            provider: entry.providerId,
-            name: entry.model.apiName,
-            ...(entry.model.type === "custom" && entry.model.id !== undefined
-              ? { customModelId: entry.model.id }
-              : {}),
-          }
-        : {
-            provider: entry.providerId,
-            name:
-              entry.type === "local" ? entry.model.modelName : entry.modelName,
-          },
-  );
   const recentModelsWithoutStaleEntries = effectiveRecentModels.filter(
     (recentModel) => {
-      const resolutionUnavailable =
-        recentModel.provider === "ollama"
-          ? Boolean(ollamaError)
-          : recentModel.provider === "lmstudio"
-            ? Boolean(lmStudioError)
-            : loading || Boolean(modelsByProvidersError || providersError);
-      return (
-        resolutionUnavailable ||
-        resolvedRecentModelIdentities.some((resolvedModel) =>
-          isSameModel(recentModel, resolvedModel),
-        )
+      if (recentModel.provider === "ollama") {
+        return (
+          Boolean(ollamaError) ||
+          !localProvidersLoaded.ollama ||
+          ollamaModels.some(
+            (candidate) => candidate.modelName === recentModel.name,
+          )
+        );
+      }
+      if (recentModel.provider === "lmstudio") {
+        return (
+          Boolean(lmStudioError) ||
+          !localProvidersLoaded.lmstudio ||
+          lmStudioModels.some(
+            (candidate) => candidate.modelName === recentModel.name,
+          )
+        );
+      }
+      if (loading || modelsByProvidersError || providersError) {
+        return true;
+      }
+      return (modelsByProviders?.[recentModel.provider] ?? []).some(
+        (candidate) =>
+          recentModel.customModelId !== undefined
+            ? candidate.type === "custom" &&
+              candidate.id === recentModel.customModelId
+            : candidate.apiName === recentModel.name,
       );
     },
   );
-  useEffect(() => {
-    resolvedRecentModelsRef.current = recentModelsWithoutStaleEntries;
-  }, [recentModelsWithoutStaleEntries]);
+  resolvedRecentModelsRef.current = recentModelsWithoutStaleEntries;
 
   const getProviderDisplayName = (providerId: string) => {
     const provider = providers?.find((p) => p.id === providerId);
@@ -1019,6 +1017,7 @@ export function ModelPicker() {
       <DropdownMenuSub key={providerId}>
         <DropdownMenuSubTrigger
           className="w-full font-normal"
+          data-provider-id={providerId}
           aria-label={[
             providerDisplayName,
             providerState,

@@ -83,14 +83,8 @@ export function EditCustomModelDialog({
       if (contextWindow && isNaN(newParams.contextWindow ?? NaN))
         throw new Error("Context Window must be a valid number");
 
-      // First delete the old model
-      await ipc.languageModel.deleteModel({
-        providerId,
-        modelApiName: model.apiName,
-      });
-
-      // Then create the new model
-      return ipc.languageModel.createCustomModel({
+      return ipc.languageModel.updateCustomModel({
+        id: model.id,
         providerId: newParams.providerId,
         displayName: newParams.displayName,
         apiName: newParams.apiName,

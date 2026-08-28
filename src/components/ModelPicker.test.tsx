@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   catalogLoading: false,
   catalogUnavailable: false,
   catalogError: null as Error | null,
+  settingsAvailable: true,
   settingsLoading: false,
   chatLoading: false,
   chat: null as null | {
@@ -115,7 +116,7 @@ vi.mock("@tanstack/react-query", () => ({
 
 vi.mock("@/hooks/useSettings", () => ({
   useSettings: () => ({
-    settings: mocks.settings,
+    settings: mocks.settingsAvailable ? mocks.settings : null,
     updateSettings: mocks.updateSettings,
     envVars: mocks.envVars,
     loading: mocks.settingsLoading,
@@ -519,6 +520,7 @@ describe("ModelPicker", () => {
     mocks.catalogLoading = false;
     mocks.catalogUnavailable = false;
     mocks.catalogError = null;
+    mocks.settingsAvailable = true;
     mocks.settingsLoading = false;
     mocks.chatLoading = false;
     mocks.chat = null;
@@ -642,6 +644,41 @@ describe("ModelPicker", () => {
         ],
       });
     });
+  });
+
+  it("preserves legacy custom and hidden catalog recents when selecting", async () => {
+    mocks.renderSubContent = true;
+    mocks.settings.recentModels = [
+      { provider: "custom", name: "shared-model" },
+      { provider: "openrouter", name: "openrouter/free" },
+    ];
+
+    render(<ModelPicker />);
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="xai"][data-model-name="grok-code-fast-1"]',
+      )!,
+    );
+
+    await waitFor(() => {
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        selectedModel: { provider: "xai", name: "grok-code-fast-1" },
+        recentModels: [
+          { provider: "xai", name: "grok-code-fast-1" },
+          { provider: "custom", name: "shared-model" },
+          { provider: "openrouter", name: "openrouter/free" },
+        ],
+      });
+    });
+  });
+
+  it("keeps hook order stable while settings load", () => {
+    mocks.settingsAvailable = false;
+    const { rerender } = render(<ModelPicker />);
+
+    mocks.settingsAvailable = true;
+    expect(() => rerender(<ModelPicker />)).not.toThrow();
+    expect(screen.getByTestId("model-picker")).toBeTruthy();
   });
 
   it("preserves the selected-model fallback when switching to Auto", async () => {

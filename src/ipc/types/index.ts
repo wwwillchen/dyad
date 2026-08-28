@@ -341,6 +341,7 @@ export type {
   LocalModel,
   CreateCustomLanguageModelProviderParams,
   CreateCustomLanguageModelParams,
+  UpdateCustomLanguageModelParams,
 } from "./language-model";
 
 // Prompt types
