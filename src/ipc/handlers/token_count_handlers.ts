@@ -44,6 +44,7 @@ import { estimateAgentToolTokens } from "@/pro/main/ipc/handlers/local_agent/too
 import { buildChatMessageHistory } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { getCachedMcpToolDefs } from "@/pro/main/ipc/handlers/local_agent/tools/mcp_type_defs";
 import { resolveRootDatabasePromptState } from "@/shared/database_provider";
+import { getAppBlueprintForChat } from "./app_blueprint_handlers";
 
 const logger = log.scope("token_count_handlers");
 
@@ -102,6 +103,9 @@ export function registerTokenCountHandlers() {
       const frameworkType = detectFrameworkType(getDyadAppPath(chat.app.path));
       const enableAppBlueprint =
         settings.enableAppBlueprint === true && chat.app.needsAppBlueprint;
+      const hasAppBlueprint = Boolean(getAppBlueprintForChat(chat.id));
+      const planningQuestionnaireAvailable =
+        settings.agentToolConsents?.["planning_questionnaire"] !== "never";
       let systemPrompt = constructSystemPrompt({
         aiRules: await readAiRules(getDyadAppPath(chat.app.path)),
         chatMode: selectedChatMode === "ask" ? "local-agent" : selectedChatMode,
@@ -116,6 +120,8 @@ export function registerTokenCountHandlers() {
           isImplementerSubagentEnabled(settings),
         testingEnabled: !!chat.app?.testingEnabled,
         enableAppBlueprint,
+        hasAppBlueprint,
+        planningQuestionnaireAvailable,
       });
       let supabaseContext = "";
       const supabaseProviderToolsAvailable = Boolean(

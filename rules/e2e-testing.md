@@ -126,6 +126,8 @@ description and JSON schema. After changing any of those inputs, rebuild the
 app and regenerate every affected request-dump snapshot; editing only the
 visibly related schema block can leave unrelated stale prompt text behind.
 
+Request snapshots for remote-catalog models derive limits such as `max_output_tokens` from the fake catalog metadata. When a catalog fixture represents a local model, set its `maxOutputTokens` explicitly so regeneration does not silently drop the production limit from the request snapshot.
+
 Keep modules reachable from Node-side E2E helpers Node-loadable. In particular,
 `dump-prettifier.ts` reaches the system and Local Agent prompt modules, so those
 modules must not import Vite-only assets such as Markdown `?raw` imports. Put
@@ -195,8 +197,6 @@ If Playwright's `config.webServer` exits while building `testing/fake-llm-server
 If every test in a run fails with `apiRequestContext.post: connect ECONNREFUSED ::1:3500`, the run likely reused a fake LLM server leaked from a previous (killed) Playwright run that then finished tearing down mid-run (`reuseExistingServer` is true locally). Kill whatever is listening on port 3500 (`lsof -nP -i :3500`) and rerun.
 
 After changing `testing/fake-llm-server`, run its package build and restart the listener on port 3500 before rerunning Playwright. Local `reuseExistingServer` can otherwise keep serving stale compiled `dist` code, making the source fix appear ineffective.
-
-Request snapshots for remote-catalog models derive limits such as `max_output_tokens` from the fake catalog metadata. When a catalog fixture represents a local model, set its `maxOutputTokens` explicitly so regeneration does not silently drop the production limit from the request snapshot.
 
 If this happens:
 
