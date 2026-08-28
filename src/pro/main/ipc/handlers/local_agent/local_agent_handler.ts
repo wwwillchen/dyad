@@ -134,7 +134,6 @@ import {
 import { addIntegrationTool } from "./tools/add_integration";
 import { writePlanTool } from "./tools/write_plan";
 import { exitPlanTool } from "./tools/exit_plan";
-import { writeAppBlueprintTool } from "./tools/write_app_blueprint";
 import { appendCancelledResponseNotice } from "@/shared/chatCancellation";
 import {
   isModelRefusal,
@@ -1303,11 +1302,12 @@ export async function handleLocalAgentStream(
               // Supabase/Neon context. The frontend auto-triggers a hidden
               // continuation message once the user clicks Continue.
               hasToolCall(addIntegrationTool.name),
-              // End the turn after the blueprint tool returns: approval may have
-              // renamed the app folder, so `ctx.appPath` is now stale. The
-              // renderer queues a follow-up user message that starts a fresh
-              // turn with a refreshed ctx (see pendingAppBlueprintImplementationAtom).
-              hasToolCall(writeAppBlueprintTool.name),
+              // End the turn only after the blueprint was persisted. A rejected
+              // initial call (for example, before a successful questionnaire)
+              // must leave room for the model to correct itself. After success,
+              // approval may rename the app folder, so the renderer starts a
+              // fresh turn with a refreshed ctx.
+              () => ctx.appBlueprintWrittenThisTurn === true,
               // In plan mode, also stop after writing a plan or exiting plan mode.
               ...(planModeOnly
                 ? [

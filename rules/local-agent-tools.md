@@ -240,6 +240,11 @@ Agent tool definitions live in `src/pro/main/ipc/handlers/local_agent/tools/`. E
 
 ## Prompt and request snapshots
 
+- When the app has already resolved a per-turn feature gate, state that resolved
+  requirement explicitly in the prompt instead of asking the model to infer it
+  again from the user's request. Keep the workflow text, affected tool
+  descriptions, and runtime preconditions consistent; if tool ordering is
+  mandatory, enforce it at runtime rather than relying on prompt compliance.
 - When changing local-agent prompt text or tool descriptions, update both prompt unit snapshots and E2E request snapshots; stale request snapshots can still contain old tool descriptions even after unit prompt snapshots pass.
 - Adding a tool to `TOOL_DEFINITIONS` also breaks two integration tests that assert the exact sorted tool-name arrays — `local_agent_request.integration.test.ts` (Pro toolset) and `local_agent_ask.integration.test.ts` (read-only toolset) — plus the E2E request baselines containing full tool lists (find them with `grep -rl set_chat_summary e2e-tests/snapshots/`). Regenerate the baselines with `npm run pre:e2e` then `npx playwright test <affected specs> --update-snapshots`.
 - Search all `e2e-tests/snapshots/` baselines for old tool-description text after regenerating request snapshots. Some request baselines are extensionless files such as `local_agent_explore_code.spec.ts_disabled`, not just `.txt` snapshots.

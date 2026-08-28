@@ -290,6 +290,14 @@ export interface AgentContext {
    */
   enableAppBlueprint?: boolean;
   /**
+   * True after planning_questionnaire successfully returns user answers during
+   * this turn. The initial app blueprint requires this turn-scoped latch so an
+   * invalid or dismissed questionnaire cannot be skipped by the model.
+   */
+  appBlueprintQuestionnaireCompleted?: boolean;
+  /** True after write_app_blueprint persists a blueprint during this turn. */
+  appBlueprintWrittenThisTurn?: boolean;
+  /**
    * Whether MCP tool search may be used this turn. Gates registration of the
    * search_mcp_tools and get_mcp_tool_schema tools. The handler sets this to
    * true if both of the following are true:

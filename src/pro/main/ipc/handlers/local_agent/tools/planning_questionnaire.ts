@@ -58,10 +58,10 @@ const DESCRIPTION = `Present a structured questionnaire to gather requirements f
 
 <when_to_use>
 Use this tool when:
-- The user wants to create a NEW app or project
+- Blueprint mode is enabled for a new app; in that case this tool is mandatory even when the request is concrete
 - The request is vague or open-ended
 - There are multiple reasonable interpretations
-Skip when the request is a specific, concrete change.
+Skip only when blueprint mode is not enabled and the request is a specific, concrete change.
 </when_to_use>
 
 <input_schema>
@@ -150,6 +150,8 @@ export const planningQuestionnaireTool: ToolDefinition<
     if (!answers) {
       return "The user dismissed the questionnaire without answering. Ask them how they'd like to proceed, or try asking questions in regular chat text.";
     }
+
+    ctx.appBlueprintQuestionnaireCompleted = true;
 
     const formattedAnswers = questions
       .map((q) => {

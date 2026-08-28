@@ -419,15 +419,20 @@ describe("local_agent_prompt", () => {
       enableAppBlueprint: true,
     });
     expect(prompt).toMatchSnapshot();
-    expect(prompt).toContain("<app_blueprint>");
-    expect(prompt).toContain("App Blueprint (new apps only)");
+    expect(prompt).toContain('<app_blueprint mode="required">');
+    expect(prompt).toContain("Required App Blueprint Gate");
+    expect(prompt).toContain(
+      "Blueprint mode is enabled for this turn. Dyad has already determined",
+    );
     expect(prompt).toContain("write_app_blueprint");
     expect(prompt).toContain("planning_questionnaire");
-    expect(prompt).toContain("ask up to 5 focused questions");
+    expect(prompt).toContain("Ask 1-5 focused questions (usually 2-3)");
     expect(prompt).toContain(
-      "Ask only the questions needed to resolve meaningful ambiguity",
+      "Every radio or checkbox question must have 1-3 options",
     );
-    expect(prompt).toContain("aim for 3-4 quick questions; never exceed 5");
+    expect(prompt).toContain(
+      "It must successfully return the user's answers before you continue",
+    );
     expect(prompt).toContain(
       "user-facing product requirements and high-level architectural needs",
     );
@@ -438,6 +443,8 @@ describe("local_agent_prompt", () => {
     expect(prompt).toContain(
       "Do not ask the user to choose implementation details such as frameworks, libraries, hosting platforms, database providers, authentication providers, or other technology-specific options",
     );
+    expect(prompt).not.toContain("**Clarify (when needed):**");
+    expect(prompt).not.toContain("**Implement:**");
   });
 
   it("basic agent mode system prompt with app blueprint enabled", () => {
@@ -446,8 +453,8 @@ describe("local_agent_prompt", () => {
       enableAppBlueprint: true,
     });
     expect(prompt).toMatchSnapshot();
-    expect(prompt).toContain("<app_blueprint>");
-    expect(prompt).toContain("App Blueprint (new apps only)");
+    expect(prompt).toContain('<app_blueprint mode="required">');
+    expect(prompt).toContain("Required App Blueprint Gate");
     expectGitContextGuidance(prompt);
   });
 
@@ -569,11 +576,13 @@ describe("local_agent_prompt", () => {
       enableAppBlueprint: false,
     });
     expect(prompt).toMatchSnapshot();
-    expect(prompt).not.toContain("<app_blueprint>");
-    expect(prompt).not.toContain("App Blueprint (new apps only)");
+    expect(prompt).not.toContain('<app_blueprint mode="required">');
+    expect(prompt).not.toContain("Required App Blueprint Gate");
     expect(prompt).not.toContain("write_app_blueprint");
     expect(prompt).toContain("1. **Understand:**");
-    expect(prompt).toContain("based on the understanding in steps 1-2");
+    expect(prompt).toContain(
+      "plan based on the understanding and clarification steps",
+    );
   });
 
   it("basic agent mode system prompt with app blueprint disabled", () => {
@@ -582,11 +591,13 @@ describe("local_agent_prompt", () => {
       enableAppBlueprint: false,
     });
     expect(prompt).toMatchSnapshot();
-    expect(prompt).not.toContain("<app_blueprint>");
-    expect(prompt).not.toContain("App Blueprint (new apps only)");
+    expect(prompt).not.toContain('<app_blueprint mode="required">');
+    expect(prompt).not.toContain("Required App Blueprint Gate");
     expect(prompt).not.toContain("write_app_blueprint");
     expect(prompt).toContain("1. **Understand:**");
-    expect(prompt).toContain("based on the understanding in steps 1-2");
+    expect(prompt).toContain(
+      "plan based on the understanding and clarification steps",
+    );
   });
 });
 
@@ -601,9 +612,10 @@ describe("build agent prompt", () => {
     expect(prompt).toContain("<tool_calling>");
     expect(prompt).toContain("`grep` and `list_files`");
     expect(prompt).toContain("`planning_questionnaire`");
-    expect(prompt).toContain("`update_todos`");
     expect(prompt).toContain("write_app_blueprint");
     expectBuildGitContextGuidance(prompt);
+    expect(prompt).toContain("Required App Blueprint Gate");
+    expect(prompt).not.toContain("**Implement:**");
     for (const unavailableTool of [
       "spawn_agent",
       "web_search",
@@ -618,5 +630,16 @@ describe("build agent prompt", () => {
     ]) {
       expect(prompt).not.toContain(unavailableTool);
     }
+  });
+
+  it("uses the normal Build workflow when app blueprint is disabled", () => {
+    const prompt = constructBuildAgentPrompt(undefined, undefined, {
+      enableAppBlueprint: false,
+    });
+
+    expect(prompt).not.toContain("Required App Blueprint Gate");
+    expect(prompt).not.toContain('<app_blueprint mode="required">');
+    expect(prompt).toContain("**Clarify (when needed):**");
+    expect(prompt).toContain("**Implement:**");
   });
 });

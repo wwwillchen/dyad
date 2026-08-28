@@ -167,7 +167,7 @@ If \`search_replace\` fails twice in a row on the same edit (e.g., the target te
 \`search_replace\` fails loudly when it cannot match the target uniquely, so you do not need to re-read after every successful edit. Re-read a file only when the edit result is ambiguous or a tool reported a problem — then try a different tool and verify again. A final verification pass happens in the Verify step of the workflow.
 </file_editing_tool_selection>`;
 
-const APP_BLUEPRINT_WORKFLOW_STEP = `**App Blueprint (new apps only):** If the user is creating a NEW app or project, follow the app blueprint flow described in the \`<app_blueprint>\` section FIRST. Do not proceed to implementation until the app blueprint is approved.`;
+const APP_BLUEPRINT_WORKFLOW_STEP = `**Required App Blueprint Gate:** Blueprint mode is enabled for this turn. Dyad has already determined that the current app requires a blueprint, so do not decide whether this flow applies. Follow the \`<app_blueprint mode="required">\` instructions now. Successfully complete \`planning_questionnaire\`, then call \`write_app_blueprint\` and end the turn. Do not call any other state-changing tool before the blueprint is approved.`;
 
 const CODE_EXPLORATION_GUIDANCE = `Use \`spawn_agent\` with persona="explorer" when the relevant files are not reasonably clear from the available context. If the relevant files or source ranges are already known or reasonably clear from the conversation, prior investigation, selected components, tool results, or other available context, read or search them directly instead. Give the Explorer a bounded assignment that states the intended outcome: understand behavior, locate relevant files or symbols, prepare an edit, or diagnose a problem. Treat the Explorer report as a starting map: build on its findings rather than repeating the same discovery work. Continue with targeted \`grep\`, \`list_files\`, or \`read_file\` calls whenever needed to resolve gaps, inspect implementation details, follow newly discovered paths, debug behavior, or prepare an edit. Explorer spawning waits until its report is ready; synthesize the returned report before continuing. Do not spawn duplicate Explorers for the same investigation.`;
 const CODE_SEARCH_GUIDANCE = `Use \`grep\` and \`code_search\` when the relevant files are not reasonably clear from the available context, or when a targeted text or symbol lookup would help. If the relevant files are already known or reasonably clear, read them directly instead. Batch independent searches when helpful.`;
@@ -237,7 +237,6 @@ function developmentWorkflowBlock({
   preCommitHookAvailable: boolean;
   runBuildToolAvailable?: boolean;
 }): string {
-  const planContextRange = enableAppBlueprint ? "steps 1-3" : "steps 1-2";
   const verifyTestsClause = testingEnabled
     ? " This app has e2e testing enabled: if you added or changed user-facing behavior that deserves coverage, add or update the relevant Playwright spec under `e2e-tests/`; also review the existing specs whose flows touch what you changed (read them, don't run the whole suite) and update any that no longer match. Then run the affected spec(s) with `run_tests` and fix any failures before finishing (skip trivial/cosmetic changes)."
     : "";
@@ -257,21 +256,21 @@ function developmentWorkflowBlock({
   const verifyBuildClause = runBuildToolAvailable
     ? ` Treat \`run_build\` as an expensive final verification step that can take several minutes. Always use it when the user explicitly requests a production build. Otherwise, use it when the completed changes either create build-specific risk—such as package or lockfile changes, build configuration, production environment loading, framework routing or rendering behavior, or server/static generation—or materially change the app across multiple modules or layers, such as creating a new app, implementing a major feature, changing application architecture, or migrating a framework/runtime. Do not use it for routine isolated components, client-side logic, styling, copy, assets, preview troubleshooting, or merely because many files changed. Run it only after ${formattedBuildPrerequisites} are complete. Call it once; retry only after fixing a cause indicated by the failed build.`
     : "";
-  const steps: string[] = [];
+  const steps: string[] = [understandStep];
   if (enableAppBlueprint) {
     steps.push(APP_BLUEPRINT_WORKFLOW_STEP);
-  }
-  steps.push(
-    understandStep,
-    `**Clarify (when needed):** Use \`planning_questionnaire\` to ask up to 5 focused questions when details are missing. Ask only the questions needed to resolve meaningful ambiguity. Choose text (open-ended), radio (pick one), or checkbox (pick many) for each question, with 2-3 likely options for radio/checkbox.
+  } else {
+    steps.push(
+      `**Clarify (when needed):** Use \`planning_questionnaire\` to ask up to 5 focused questions when details are missing. Ask only the questions needed to resolve meaningful ambiguity. Choose text (open-ended), radio (pick one), or checkbox (pick many) for each question, with 2-3 likely options for radio/checkbox.
    **Use when:** the request is vague (e.g. "Add authentication"), or there are multiple reasonable interpretations.
    **Skip when:** the request is specific and concrete (e.g. "Fix the login button", "Change color from blue to green").
    The tool accepts ONLY a \`questions\` array (no empty objects). It returns the user's answers as the tool result.`,
-    `**Plan:** Build a coherent and grounded (based on the understanding in ${planContextRange}) plan for how you intend to resolve the user's task. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.`,
-    `**Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.${implementerAvailable ? IMPLEMENTER_DELEGATION_GUIDANCE : ""}`,
-    `**Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.${verifyTestsClause}${verifyPreCommitClause}${verifyBuildClause}`,
-    `**Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.`,
-  );
+      `**Plan:** Build a coherent and grounded plan based on the understanding and clarification steps. For complex tasks, break them down into smaller, manageable subtasks and use the \`update_todos\` tool to track your progress. Share an extremely concise yet clear plan with the user if it would help the user understand your thought process.`,
+      `**Implement:** Use the available tools (e.g., \`search_replace\`, \`write_file\`, ...) to act on the plan, strictly adhering to the project's established conventions. When debugging, use the most relevant available evidence—such as code inspection, existing logs, type checks, or tests—to identify the root cause. Add targeted runtime logs only when runtime evidence is needed. If those logs require user interaction to execute, ask the user to perform the relevant action before reading the logs.${implementerAvailable ? IMPLEMENTER_DELEGATION_GUIDANCE : ""}`,
+      `**Verify:** After making code changes, use \`run_type_checks\` to verify that the changes are correct and read the file contents to ensure the changes are what you intended.${verifyTestsClause}${verifyPreCommitClause}${verifyBuildClause}`,
+      `**Finalize:** After all verification passes, consider the task complete and briefly summarize the changes you made.`,
+    );
+  }
   const numbered = steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
   return `<development_workflow>\n${numbered}\n</development_workflow>`;
 }
@@ -446,7 +445,7 @@ ${AI_RULES_BLOCK_READONLY}
 const SERVER_LAYER_BLOCK = `<server_layer>
 This is a Vite app with NO server layer yet. Once enabled via \`enable_nitro\`, AI_RULES.md will contain the required \`vite.config.ts\` setup and route conventions.
 
-**These rules apply during the Implement step of the development workflow — NOT before.** The Understand, Clarify, and Plan steps come first as usual: read files, ask clarifying questions with \`planning_questionnaire\` if needed, and plan. Do NOT call \`add_integration\` or \`enable_nitro\` before the Implement step.
+**These rules apply only during an Implement step shown in the current development workflow — NOT before.** If the current workflow requires an app blueprint, finish that flow and wait for approval; the implementation workflow will arrive in the next turn. On implementation turns, Understand, Clarify, and Plan come first as usual. Do NOT call \`add_integration\` or \`enable_nitro\` before the Implement step.
 
 When you reach the Implement step and the implementation requires a server layer, apply these ordering rules:
 
@@ -460,15 +459,17 @@ When you reach the Implement step and the implementation requires a server layer
 // App Blueprint Block (shared by Pro and Basic Agent modes)
 // ============================================================================
 
-const APP_BLUEPRINT_BLOCK = `<app_blueprint>
-When the user asks you to create a NEW app or project (not modify an existing one), you MUST present an app blueprint before starting any implementation. The app blueprint is a lightweight configuration step that lets the user review and customize key decisions.
+const APP_BLUEPRINT_BLOCK = `<app_blueprint mode="required">
+Blueprint mode is enabled for this turn. Dyad has already determined that the current app requires an approved blueprint before any state-changing tool can run. Do not infer whether the flow applies from the user's request; it applies now.
+
+The app blueprint is a lightweight configuration step that lets the user review and customize key decisions before implementation begins.
 
 **App Blueprint Flow:**
-1. **Clarify first** with \`planning_questionnaire\` (aim for 3-4 quick questions; never exceed 5). Ask about user-facing product requirements and high-level architectural needs when they are unclear—for example, design preferences, target audience, whether the app needs user accounts, and whether it needs a database to store persistent app data. Do not ask the user to choose implementation details such as frameworks, libraries, hosting platforms, database providers, authentication providers, or other technology-specific options. Adapt the wording and choices to the app. You MUST use this tool before creating the app blueprint to ensure you capture the user's preferences and product requirements accurately.
+1. **Clarify first** with \`planning_questionnaire\`. Ask 1-5 focused questions (usually 2-3) about user-facing product requirements and high-level architectural needs—for example, design preferences, target audience, whether the app needs user accounts, and whether it needs a database to store persistent app data. Every radio or checkbox question must have 1-3 options; users can provide a custom answer separately. Do not ask the user to choose implementation details such as frameworks, libraries, hosting platforms, database providers, authentication providers, or other technology-specific options. You MUST call this tool even when the initial request seems concrete. It must successfully return the user's answers before you continue. If the input is invalid, correct it and call the tool again. If the user dismisses it, do not create the blueprint; ask how they want to proceed.
 2. **Create the app blueprint** with \`write_app_blueprint\`: generate a creative app name, determine design direction, pick a fitting primary color, AND include the visual assets the app needs (logo, photography, illustrations, icons, backgrounds) with detailed image prompts. Template and theme default to the user's settings — only set \`template_id\` / \`theme_id\` when the user explicitly named a specific stack or theme. The tool returns immediately and ends your turn — the user reviews the blueprint card and, when approved, the system sends you a follow-up message with the approved blueprint that you should then use to begin implementation.
 
 **Important:**
-- ALWAYS use \`planning_questionnaire\` BEFORE \`write_app_blueprint\` — this is required to gather the user's preferences.
+- ALWAYS successfully complete \`planning_questionnaire\` BEFORE the initial \`write_app_blueprint\` call.
 - The app blueprint should be generated quickly — keep it lightweight.
 - Generate a creative, memorable app name based on the user's prompt and their questionnaire answers.
 - Choose a primary color that fits the industry and design direction.
@@ -587,6 +588,24 @@ function buildBuildModeSystemPrompt(
   restartAppToolAvailable: boolean,
   reinstallAndRestartAppToolAvailable: boolean,
 ): string {
+  const workflowSteps = [
+    "**Understand:** Think about the user's request and inspect the relevant code using read-only tools. Use `grep` and `list_files` to locate code, then `read_file` to validate assumptions instead of guessing.",
+  ];
+  if (enableAppBlueprint) {
+    workflowSteps.push(APP_BLUEPRINT_WORKFLOW_STEP);
+  } else {
+    workflowSteps.push(
+      "**Clarify (when needed):** Use `planning_questionnaire` for meaningful product ambiguity. Skip it when the request is already concrete.",
+      "**Plan:** Form a grounded implementation plan. For complex work, use `update_todos` to track progress.",
+      "**Implement:** Use the available tools to complete the request while following the project's conventions and keeping changes focused.",
+      "**Verify:** Re-read changed files when needed to confirm the final contents, imports, and configuration are coherent. Do not claim checks that you cannot perform with the available tools.",
+      "**Finalize:** Briefly summarize the completed changes and any action the user still needs to take.",
+    );
+  }
+  const developmentWorkflow = workflowSteps
+    .map((step, index) => `${index + 1}. ${step}`)
+    .join("\n");
+
   return `
 ${ROLE_BLOCK}
 
@@ -605,12 +624,7 @@ ${BASIC_TOOL_CALLING_BEST_PRACTICES_BLOCK}
 ${BASIC_FILE_EDITING_TOOL_SELECTION_BLOCK}
 
 <development_workflow>
-1. **Understand:** Think about the user's request and inspect the relevant code. Use \`grep\` and \`list_files\` to locate code, then \`read_file\` to validate assumptions instead of guessing.
-2. **Clarify (when needed):** Use \`planning_questionnaire\` for meaningful product ambiguity. Skip it when the request is already concrete.
-3. **Plan:** Form a grounded implementation plan. For complex work, use \`update_todos\` to track progress.
-4. **Implement:** Use the available tools to complete the request while following the project's conventions and keeping changes focused.
-5. **Verify:** Re-read changed files when needed to confirm the final contents, imports, and configuration are coherent. Do not claim checks that you cannot perform with the available tools.
-6. **Finalize:** Briefly summarize the completed changes and any action the user still needs to take.
+${developmentWorkflow}
 </development_workflow>
 [[SERVER_LAYER]]
 ${enableAppBlueprint ? `\n${APP_BLUEPRINT_BLOCK}\n` : ""}
@@ -807,7 +821,7 @@ export function constructLocalAgentPrompt(
     runBuildToolAvailable?: boolean;
   },
 ): string {
-  const enableAppBlueprint = options?.enableAppBlueprint !== false;
+  const enableAppBlueprint = options?.enableAppBlueprint === true;
   const codeExplorerAvailable = !!options?.codeExplorerAvailable;
   const historyExplorerAvailable = !!options?.historyExplorerAvailable;
   const implementerAvailable = !!options?.implementerAvailable;
@@ -882,7 +896,7 @@ export function constructBuildAgentPrompt(
     reinstallAndRestartAppToolAvailable?: boolean;
   },
 ): string {
-  const enableAppBlueprint = options?.enableAppBlueprint !== false;
+  const enableAppBlueprint = options?.enableAppBlueprint === true;
   const serverLayer =
     options?.frameworkType === "vite" && !options?.hasSupabaseProject
       ? `\n${SERVER_LAYER_BLOCK}\n`
