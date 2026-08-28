@@ -33,6 +33,7 @@ import {
   CloudSandboxApiError,
   createCloudSandbox,
   destroyCloudSandbox,
+  queueCloudSandboxSnapshotSync,
   registerRunningCloudSandbox,
   setCloudSandboxSyncUpdateListener,
   streamCloudSandboxLogs,
@@ -1264,6 +1265,10 @@ async function executeAppInCloud({
     appPath,
     sandboxId,
   });
+  // File-write notifications emitted during the initial snapshot are ignored
+  // until registration. Queue one non-blocking full sync now so an edit that
+  // raced that upload cannot leave the new preview permanently stale.
+  queueCloudSandboxSnapshotSync({ appId, fullSync: true, immediate: true });
 
   await ensureProxyForRunningApp({
     appId,
@@ -1508,9 +1513,20 @@ export function getAppRuntimeOperationResources(
   lifecycle: AppRuntimeLifecycle,
 ): AppOperationRequest["resources"] {
   if (lifecycle === "stop") return ["runtime"];
+
+  // Start, restart, and rebuild intentionally omit repository admission.
+  // Repository-only writers (checkpoints, commit/discard, branch operations,
+  // and agent/test writes) may therefore interleave throughout install and
+  // readiness. Preview-generated tracked changes may be checkpointed
+  // nondeterministically, and ensurePnpmAllowBuildsConfigured can replace
+  // pnpm-workspace.yaml from a stale read if another writer changes that exact
+  // file during its lookup (normally a narrow warm-cache/filesystem window,
+  // but up to the 5-second cold-fetch timeout). We accept these races so no
+  // preview lifecycle operation can block chat completion. Operations that
+  // also write runtime-config remain excluded; repository-only GitHub branch
+  // operations do not.
   return [
     readAppResource("app-path"),
-    readAppResource("repository"),
     "runtime",
     readAppResource("runtime-config"),
   ];

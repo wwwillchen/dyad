@@ -9,7 +9,10 @@ import {
   type AppRuntimeOutput,
   type AppRuntimeServiceDependencies,
 } from "./app_runtime_service";
-import { AppOperationCoordinator } from "./app_operation_coordinator";
+import {
+  AppOperationCoordinator,
+  readAppResource,
+} from "./app_operation_coordinator";
 
 const APP_ID = 42;
 const REF: AppRunInvocationRef = {
@@ -114,13 +117,14 @@ describe("AppRuntimeService", () => {
     expect(getAppRuntimeOperationResources("stop")).toEqual(["runtime"]);
     expect(getAppRuntimeOperationResources("start")).toEqual([
       { resource: "app-path", mode: "read" },
-      { resource: "repository", mode: "read" },
       "runtime",
       { resource: "runtime-config", mode: "read" },
     ]);
-    expect(getAppRuntimeOperationResources("restart")).toEqual(
-      getAppRuntimeOperationResources("start"),
-    );
+    expect(getAppRuntimeOperationResources("restart")).toEqual([
+      { resource: "app-path", mode: "read" },
+      "runtime",
+      { resource: "runtime-config", mode: "read" },
+    ]);
   });
 
   it("serializes start, restart, and stop through one lifecycle seam", async () => {
@@ -157,48 +161,53 @@ describe("AppRuntimeService", () => {
     ]);
   });
 
-  it("holds repository coordination until startup becomes ready", async () => {
-    const harness = createHarness();
-    const coordinator = new AppOperationCoordinator();
-    const { output } = createOutput();
-    let releaseReady!: () => void;
-    const ready = new Promise<void>((resolve) => {
-      releaseReady = resolve;
-    });
-    vi.mocked(harness.dependencies.waitForReady).mockImplementation(
-      async () => ready,
-    );
-    harness.dependencies.runSerialized = (appId, lifecycle, operation) =>
-      coordinator.run(
-        {
-          appId,
-          operation: `runtime:${lifecycle}`,
-          resources: getAppRuntimeOperationResources(lifecycle),
-        },
-        operation,
+  it.each(["start", "restart"] as const)(
+    "allows repository writers while %s becomes ready",
+    async (lifecycle) => {
+      const harness = createHarness();
+      const coordinator = new AppOperationCoordinator();
+      const { output } = createOutput();
+      let releaseReady!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        releaseReady = resolve;
+      });
+      vi.mocked(harness.dependencies.waitForReady).mockImplementation(
+        async () => ready,
+      );
+      harness.dependencies.runSerialized = (appId, lifecycle, operation) =>
+        coordinator.run(
+          {
+            appId,
+            operation: `runtime:${lifecycle}`,
+            resources: getAppRuntimeOperationResources(lifecycle),
+          },
+          operation,
+        );
+
+      const runtimeOperation = harness.service[lifecycle]({
+        appId: APP_ID,
+        output,
+      });
+      await vi.waitFor(() =>
+        expect(harness.dependencies.startProcess).toHaveBeenCalledOnce(),
       );
 
-    const start = harness.service.start({ appId: APP_ID, output });
-    await vi.waitFor(() =>
-      expect(harness.dependencies.startProcess).toHaveBeenCalledOnce(),
-    );
+      const repositoryWriter = vi.fn();
+      const write = coordinator.run(
+        {
+          appId: APP_ID,
+          operation: "chat-checkpoint",
+          resources: [readAppResource("app-path"), "repository"],
+        },
+        async () => repositoryWriter(),
+      );
+      await write;
+      expect(repositoryWriter).toHaveBeenCalledOnce();
 
-    const repositoryWriter = vi.fn();
-    const write = coordinator.run(
-      {
-        appId: APP_ID,
-        operation: "restore-version",
-        resources: ["repository"],
-      },
-      async () => repositoryWriter(),
-    );
-    await Promise.resolve();
-    expect(repositoryWriter).not.toHaveBeenCalled();
-
-    releaseReady();
-    await Promise.all([start, write]);
-    expect(repositoryWriter).toHaveBeenCalledOnce();
-  });
+      releaseReady();
+      await runtimeOperation;
+    },
+  );
 
   it("keeps a spawned process tracked when readiness times out", async () => {
     const harness = createHarness();
