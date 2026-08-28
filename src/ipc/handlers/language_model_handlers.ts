@@ -3,9 +3,10 @@ import type {
   LanguageModel,
   CreateCustomLanguageModelProviderParams,
   CreateCustomLanguageModelParams,
-  UpdateCustomLanguageModelParams,
 } from "@/ipc/types";
+import { languageModelContracts } from "@/ipc/types";
 import { createLoggedHandler } from "./safe_handle";
+import { createLoggedTypedHandler } from "./base";
 import log from "electron-log";
 import {
   CUSTOM_PROVIDER_PREFIX,
@@ -25,6 +26,7 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 const logger = log.scope("language_model_handlers");
 const handle = createLoggedHandler(logger);
+const handleTyped = createLoggedTypedHandler(logger);
 
 export function registerLanguageModelHandlers() {
   handle(
@@ -160,12 +162,9 @@ export function registerLanguageModelHandlers() {
     },
   );
 
-  handle(
-    "update-custom-language-model",
-    async (
-      _event: IpcMainInvokeEvent,
-      params: UpdateCustomLanguageModelParams,
-    ): Promise<number> => {
+  handleTyped(
+    languageModelContracts.updateCustomModel,
+    async (_event, params): Promise<number> => {
       const {
         id,
         apiName,
