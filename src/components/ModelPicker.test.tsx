@@ -431,7 +431,7 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuLabel: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
-  DropdownMenuSeparator: () => <hr />,
+  DropdownMenuSeparator: () => <hr data-slot="dropdown-menu-separator" />,
   DropdownMenuSub: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
@@ -754,6 +754,24 @@ describe("ModelPicker", () => {
     });
   });
 
+  it("identifies providers on pending Recent local model rows", () => {
+    mocks.settings.recentModels = [
+      { provider: "ollama", name: "shared-model" },
+      { provider: "lmstudio", name: "shared-model" },
+    ];
+
+    render(<ModelPicker />);
+
+    const ollamaRow = screen.getByLabelText(
+      "shared-model. Ollama. Loading local model",
+    );
+    const lmStudioRow = screen.getByLabelText(
+      "shared-model. LM Studio. Loading local model",
+    );
+    expect(within(ollamaRow).getByText("Ollama")).toBeTruthy();
+    expect(within(lmStudioRow).getByText("LM Studio")).toBeTruthy();
+  });
+
   it("hides cached local recents after the provider refresh fails", () => {
     mocks.ollamaModels = [
       {
@@ -825,12 +843,24 @@ describe("ModelPicker", () => {
   it("shows a cloud catalog error without hiding local models", () => {
     mocks.catalogUnavailable = true;
     mocks.catalogError = new Error("catalog unavailable");
-    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
     expect(screen.getByText("Couldn’t load cloud models")).toBeTruthy();
     expect(screen.getAllByText("Local models").length).toBeGreaterThan(0);
+  });
+
+  it("does not leave a trailing separator after Recent", () => {
+    mocks.settings.recentModels = [{ provider: "openai", name: "gpt-5" }];
+
+    render(<ModelPicker />);
+
+    const recentRow = document.querySelector(
+      '[data-model-provider="openai"][data-model-name="gpt-5"]',
+    );
+    expect(recentRow?.nextElementSibling?.getAttribute("data-slot")).not.toBe(
+      "dropdown-menu-separator",
+    );
   });
 
   it("keeps Ollama and LM Studio in a separate Local models submenu", () => {

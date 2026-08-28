@@ -1490,8 +1490,16 @@ export function ModelPicker() {
                           showPrice: false,
                         }),
                       )}
-                      <DropdownMenuSeparator />
+                      {recentModelEntries.length > 0 && (
+                        <DropdownMenuSeparator />
+                      )}
                     </>
+                  )}
+
+                  {cloudCatalogError && autoModels.length === 0 && (
+                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                      Couldn’t load cloud models
+                    </div>
                   )}
 
                   {recentModelEntries.length > 0 && (
@@ -1514,16 +1522,23 @@ export function ModelPicker() {
                             true,
                           );
                         }
+                        const providerDisplayName =
+                          entry.providerId === "ollama"
+                            ? "Ollama"
+                            : "LM Studio";
                         return (
                           <DropdownMenuItem
                             key={`${entry.providerId}-${entry.modelName}-loading`}
                             disabled
-                            aria-label={`${entry.modelName}. Loading local model`}
+                            aria-label={`${entry.modelName}. ${providerDisplayName}. Loading local model`}
                             className="py-1.5"
                           >
                             <ProviderIcon providerId={entry.providerId} />
                             <span className="min-w-0 truncate text-[13px]">
                               {entry.modelName}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {providerDisplayName}
                             </span>
                             <span className="ml-auto text-xs text-muted-foreground">
                               Loading...
@@ -1531,7 +1546,6 @@ export function ModelPicker() {
                           </DropdownMenuItem>
                         );
                       })}
-                      <DropdownMenuSeparator />
                     </>
                   )}
                 </>

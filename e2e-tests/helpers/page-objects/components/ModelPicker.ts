@@ -5,6 +5,8 @@
 
 import { expect, type Locator, Page } from "@playwright/test";
 
+const QUICK_VISIBILITY_TIMEOUT_MS = 1_000;
+
 export class ModelPicker {
   constructor(public page: Page) {}
 
@@ -59,11 +61,21 @@ export class ModelPicker {
 
   private async clickModel(provider: string, model: string) {
     const providerModelItem = this.getModelItem(provider, model);
-    const modelItem = (await providerModelItem.count())
+    const modelItem = (await this.isVisibleSoon(providerModelItem))
       ? providerModelItem
       : this.getEffortModelItem(model);
     await expect(modelItem).toBeVisible();
     await this.selectVisibleModel(modelItem, model);
+  }
+
+  private async isVisibleSoon(locator: Locator) {
+    return locator
+      .waitFor({
+        state: "visible",
+        timeout: QUICK_VISIBILITY_TIMEOUT_MS,
+      })
+      .then(() => true)
+      .catch(() => false);
   }
 
   private async selectProviderSubmenuModel(model: string) {
@@ -82,7 +94,7 @@ export class ModelPicker {
   async selectModel({ provider, model }: { provider: string; model: string }) {
     await this.page.getByTestId("model-picker").click();
     const directModel = this.getModelItem(provider, model);
-    if (await directModel.isVisible()) {
+    if (await this.isVisibleSoon(directModel)) {
       await this.selectVisibleModel(directModel, model);
       return;
     }
@@ -97,7 +109,7 @@ export class ModelPicker {
       await expect(loadingIndicator).toBeHidden();
     }
 
-    if (await directModel.isVisible()) {
+    if (await this.isVisibleSoon(directModel)) {
       await this.selectVisibleModel(directModel, model);
       return;
     }
@@ -105,7 +117,7 @@ export class ModelPicker {
     const providerItem = catalogMenu
       .getByRole("menuitem", { name: provider, exact: false })
       .first();
-    if (await providerItem.isVisible()) {
+    if (await this.isVisibleSoon(providerItem)) {
       await providerItem.click();
       await this.selectProviderSubmenuModel(model);
       return;
