@@ -133,6 +133,9 @@ const PRICE_TIERS: Tier[] = [
 const isFreeOpenRouterModelName = (apiName: string) =>
   apiName.endsWith(":free") || apiName.endsWith("/free");
 
+const formatModelCount = (count: number) =>
+  `${count} model${count === 1 ? "" : "s"}`;
+
 const isEffortChevronTarget = (target: EventTarget) =>
   (target as HTMLElement).closest("[data-effort-chevron]") !== null;
 
@@ -1021,7 +1024,7 @@ export function ModelPicker() {
           aria-label={[
             providerDisplayName,
             providerState,
-            `${visibleModels.length} models`,
+            formatModelCount(visibleModels.length),
             "Opens submenu",
           ]
             .filter(Boolean)
@@ -1041,7 +1044,7 @@ export function ModelPicker() {
               )}
             </div>
             <span className="text-xs text-muted-foreground">
-              {visibleModels.length} models
+              {formatModelCount(visibleModels.length)}
             </span>
           </div>
         </DropdownMenuSubTrigger>
@@ -1199,7 +1202,7 @@ export function ModelPicker() {
       : error
         ? "Error loading"
         : hasModels
-          ? `${models.length} models`
+          ? formatModelCount(models.length)
           : "None available";
 
     return (
@@ -1222,7 +1225,7 @@ export function ModelPicker() {
               </span>
             ) : (
               <span className="text-xs text-muted-foreground">
-                {models.length} models
+                {formatModelCount(models.length)}
               </span>
             )}
           </div>
@@ -1268,10 +1271,7 @@ export function ModelPicker() {
 
   const renderLocalModelsSubmenu = (testId: string) => (
     <DropdownMenuSub>
-      <DropdownMenuSubTrigger
-        className="w-full font-normal"
-        {...NAVIGATION_SUBMENU_HOVER_PROPS}
-      >
+      <DropdownMenuSubTrigger className="w-full font-normal">
         <span>Local models</span>
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="w-64" data-testid={testId}>
@@ -1445,10 +1445,7 @@ export function ModelPicker() {
               {renderLocalModelsSubmenu("local-models-submenu")}
 
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger
-                  className="w-full font-normal"
-                  {...NAVIGATION_SUBMENU_HOVER_PROPS}
-                >
+                <DropdownMenuSubTrigger className="w-full font-normal">
                   <span>All models</span>
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent

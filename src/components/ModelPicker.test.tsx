@@ -943,7 +943,7 @@ describe("ModelPicker", () => {
     expect(within(localModelsMenu).queryByText("xAI")).toBeNull();
   });
 
-  it("opens navigation submenus on hover with forgiving pointer timing", () => {
+  it("opens nested navigation submenus on hover with forgiving pointer timing", () => {
     mocks.renderSubContent = true;
 
     render(<ModelPicker />);
@@ -954,13 +954,7 @@ describe("ModelPicker", () => {
         .map((element) => element.closest("button"))
         .find((element): element is HTMLButtonElement => element !== null)!;
 
-    for (const label of [
-      "All models",
-      "Google Vertex AI",
-      "Local models",
-      "Ollama",
-      "LM Studio",
-    ]) {
+    for (const label of ["Google Vertex AI", "Ollama", "LM Studio"]) {
       const trigger = getTrigger(label);
       expect(trigger.dataset.openOnHover).toBe("true");
       expect(trigger.dataset.hoverDelay).toBe("120");
@@ -968,7 +962,7 @@ describe("ModelPicker", () => {
     }
 
     expect(getTrigger("Google Vertex AI").getAttribute("aria-label")).toBe(
-      "Google Vertex AI. 1 models. Opens submenu",
+      "Google Vertex AI. 1 model. Opens submenu",
     );
     expect(getTrigger("Ollama").getAttribute("aria-label")).toBe(
       "Ollama. None available. Opens submenu",
@@ -977,6 +971,10 @@ describe("ModelPicker", () => {
     expect(
       screen.getByText("GPT 5").closest("button")?.dataset.openOnHover,
     ).toBeUndefined();
+
+    for (const label of ["Local models", "All models"]) {
+      expect(getTrigger(label).dataset.openOnHover).toBeUndefined();
+    }
   });
 
   it("gives model-list menus room while keeping model metadata separate", () => {
