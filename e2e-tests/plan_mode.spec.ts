@@ -111,6 +111,11 @@ testSkipIfWindows(
       timeout: Timeout.MEDIUM,
     });
 
+    await expect(po.page.getByTestId("messages-list")).toContainText(
+      "[[dyad-dump-path=",
+      { timeout: Timeout.EXTRA_LONG },
+    );
+
     // Verify the request sent to the server contains the correctly formatted comments
     await po.snapshotServerDump("last-message");
   },

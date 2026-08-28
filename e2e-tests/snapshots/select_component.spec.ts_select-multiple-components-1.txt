@@ -25,3 +25,5 @@ Snippet:
         target="_blank"
         rel="noopener noreferrer"
 ```
+
+<system-reminder>Previous assistant message created no commit. Repository commit before that message: [[GIT_COMMIT]].</system-reminder>
