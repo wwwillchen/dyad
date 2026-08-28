@@ -613,6 +613,37 @@ describe("ModelPicker", () => {
     expect(screen.getAllByText("Auto Sidekick")).toHaveLength(1);
   });
 
+  it("drops unresolved history before adding a recent model", async () => {
+    mocks.renderSubContent = true;
+    mocks.settings.recentModels = [
+      { provider: "openai", name: "deleted-model" },
+      { provider: "openai", name: "gpt-5" },
+      { provider: "openai", name: "gpt-5-mini" },
+      { provider: "google", name: "gemini-2.5-pro" },
+      { provider: "google", name: "gemini-2.5-flash" },
+    ];
+
+    render(<ModelPicker />);
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="xai"][data-model-name="grok-code-fast-1"]',
+      )!,
+    );
+
+    await waitFor(() => {
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        selectedModel: { provider: "xai", name: "grok-code-fast-1" },
+        recentModels: [
+          { provider: "xai", name: "grok-code-fast-1" },
+          { provider: "openai", name: "gpt-5" },
+          { provider: "openai", name: "gpt-5-mini" },
+          { provider: "google", name: "gemini-2.5-pro" },
+          { provider: "google", name: "gemini-2.5-flash" },
+        ],
+      });
+    });
+  });
+
   it("preserves the selected-model fallback when switching to Auto", async () => {
     mocks.settings.selectedModel = { provider: "openai", name: "gpt-5" };
     mocks.settings.recentModels = undefined;

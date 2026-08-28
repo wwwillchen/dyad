@@ -11,7 +11,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { usePostHog } from "posthog-js/react";
 import { useLocalModels } from "@/hooks/useLocalModels";
@@ -173,6 +173,7 @@ export function ModelPicker() {
   const hasEstablishedChat = Boolean(
     chat && (chat.modelSelection || chat.messages.length > 0),
   );
+  const resolvedRecentModelsRef = useRef<LargeLanguageModel[] | null>(null);
 
   const onModelSelect = async ({
     model,
@@ -216,14 +217,24 @@ export function ModelPicker() {
       settings.recentModels,
       toRecentModelIdentity(selectedModel),
     );
+    const recentModelsWithoutStaleEntries = resolvedRecentModelsRef.current
+      ? effectiveRecentModels.filter((recentModel) =>
+          resolvedRecentModelsRef.current?.some((resolvedModel) =>
+            isSameModel(recentModel, resolvedModel),
+          ),
+        )
+      : effectiveRecentModels;
     const recentModelsUpdate =
       model.provider === "auto"
         ? settings.recentModels === undefined &&
-          effectiveRecentModels.length > 0
-          ? { recentModels: effectiveRecentModels }
+          recentModelsWithoutStaleEntries.length > 0
+          ? { recentModels: recentModelsWithoutStaleEntries }
           : {}
         : {
-            recentModels: addRecentModel(effectiveRecentModels, model),
+            recentModels: addRecentModel(
+              recentModelsWithoutStaleEntries,
+              model,
+            ),
           };
     if (hasEstablishedChat && chatId) {
       await setChatSelection({
@@ -499,77 +510,115 @@ export function ModelPicker() {
     )
     .filter(([, models]) => models.length > 0);
 
-  const recentModelEntries = getEffectiveRecentModels(
+  const effectiveRecentModels = getEffectiveRecentModels(
     settings.recentModels,
     toRecentModelIdentity(selectedModel),
-  ).flatMap<RecentModelEntry>((recentModel) => {
-    if (recentModel.provider === "ollama") {
-      if (ollamaError) {
-        return [];
-      }
-      const model = ollamaModels.find(
-        (candidate) => candidate.modelName === recentModel.name,
-      );
-      if (model) {
-        return [
-          { type: "local" as const, providerId: "ollama" as const, model },
-        ];
-      }
-      return localProvidersLoaded.ollama
-        ? []
-        : [
-            {
-              type: "local-loading" as const,
-              providerId: "ollama" as const,
-              modelName: recentModel.name,
-            },
+  );
+  const recentModelEntries = effectiveRecentModels.flatMap<RecentModelEntry>(
+    (recentModel) => {
+      if (recentModel.provider === "ollama") {
+        if (ollamaError) {
+          return [];
+        }
+        const model = ollamaModels.find(
+          (candidate) => candidate.modelName === recentModel.name,
+        );
+        if (model) {
+          return [
+            { type: "local" as const, providerId: "ollama" as const, model },
           ];
-    }
-    if (recentModel.provider === "lmstudio") {
-      if (lmStudioError) {
-        return [];
+        }
+        return localProvidersLoaded.ollama
+          ? []
+          : [
+              {
+                type: "local-loading" as const,
+                providerId: "ollama" as const,
+                modelName: recentModel.name,
+              },
+            ];
       }
-      const model = lmStudioModels.find(
-        (candidate) => candidate.modelName === recentModel.name,
-      );
-      if (model) {
-        return [
-          {
-            type: "local" as const,
-            providerId: "lmstudio" as const,
-            model,
-          },
-        ];
-      }
-      return localProvidersLoaded.lmstudio
-        ? []
-        : [
+      if (recentModel.provider === "lmstudio") {
+        if (lmStudioError) {
+          return [];
+        }
+        const model = lmStudioModels.find(
+          (candidate) => candidate.modelName === recentModel.name,
+        );
+        if (model) {
+          return [
             {
-              type: "local-loading" as const,
+              type: "local" as const,
               providerId: "lmstudio" as const,
-              modelName: recentModel.name,
+              model,
             },
           ];
-    }
+        }
+        return localProvidersLoaded.lmstudio
+          ? []
+          : [
+              {
+                type: "local-loading" as const,
+                providerId: "lmstudio" as const,
+                modelName: recentModel.name,
+              },
+            ];
+      }
 
-    const model = modelsByProviders?.[recentModel.provider]?.find(
-      (candidate) =>
-        isVisibleCatalogModel(recentModel.provider, candidate) &&
-        (recentModel.customModelId
-          ? candidate.type === "custom" &&
-            candidate.id === recentModel.customModelId
-          : candidate.apiName === recentModel.name),
-    );
-    return model
-      ? [
-          {
-            type: "cloud" as const,
-            providerId: recentModel.provider,
-            model,
+      const model = modelsByProviders?.[recentModel.provider]?.find(
+        (candidate) =>
+          isVisibleCatalogModel(recentModel.provider, candidate) &&
+          (recentModel.customModelId
+            ? candidate.type === "custom" &&
+              candidate.id === recentModel.customModelId
+            : candidate.apiName === recentModel.name),
+      );
+      return model
+        ? [
+            {
+              type: "cloud" as const,
+              providerId: recentModel.provider,
+              model,
+            },
+          ]
+        : [];
+    },
+  );
+  const resolvedRecentModelIdentities = recentModelEntries.map(
+    (entry): LargeLanguageModel =>
+      entry.type === "cloud"
+        ? {
+            provider: entry.providerId,
+            name: entry.model.apiName,
+            ...(entry.model.type === "custom" && entry.model.id !== undefined
+              ? { customModelId: entry.model.id }
+              : {}),
+          }
+        : {
+            provider: entry.providerId,
+            name:
+              entry.type === "local" ? entry.model.modelName : entry.modelName,
           },
-        ]
-      : [];
-  });
+  );
+  const recentModelsWithoutStaleEntries = effectiveRecentModels.filter(
+    (recentModel) => {
+      const resolutionUnavailable =
+        recentModel.provider === "ollama"
+          ? Boolean(ollamaError)
+          : recentModel.provider === "lmstudio"
+            ? Boolean(lmStudioError)
+            : loading || Boolean(modelsByProvidersError || providersError);
+      return (
+        resolutionUnavailable ||
+        resolvedRecentModelIdentities.some((resolvedModel) =>
+          isSameModel(recentModel, resolvedModel),
+        )
+      );
+    },
+  );
+  useEffect(() => {
+    resolvedRecentModelsRef.current = recentModelsWithoutStaleEntries;
+  }, [recentModelsWithoutStaleEntries]);
 
   const getProviderDisplayName = (providerId: string) => {
     const provider = providers?.find((p) => p.id === providerId);
