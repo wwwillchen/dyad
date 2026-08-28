@@ -79,7 +79,7 @@ describe("recent models", () => {
     ).toEqual([{ provider: "openai", name: "gpt-5" }]);
   });
 
-  it("replaces edited custom model ids and legacy id-less references", () => {
+  it("replaces only the exact edited custom model identity", () => {
     const replacement = {
       provider: "custom",
       name: "renamed-model",
@@ -98,7 +98,7 @@ describe("recent models", () => {
       ),
     ).toEqual([
       replacement,
-      replacement,
+      { provider: "custom", name: "old-model" },
       { provider: "custom", name: "old-model", customModelId: 5 },
     ]);
   });

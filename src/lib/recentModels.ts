@@ -52,8 +52,7 @@ export function replaceRecentModelIdentity(
   return recentModels?.map((model) =>
     model.provider === previous.provider &&
     model.name === previous.name &&
-    (model.customModelId === undefined ||
-      model.customModelId === previous.customModelId)
+    model.customModelId === previous.customModelId
       ? replacement
       : model,
   );
