@@ -77,6 +77,18 @@ consumer `onClick` runs. When only part of a submenu trigger should open the
 submenu, cancel Base UI's handler with `event.preventBaseUIHandler()` from both
 `onMouseDown` and `onClick` for the trigger's primary action.
 
+## Hover-open navigation submenus
+
+For navigation-only submenus, set `openOnHover`, `delay`, and `closeDelay` on
+`DropdownMenuSubTrigger`. Base UI enables its safe pointer corridor when
+`openOnHover` is true, so diagonal travel into the submenu does not close it.
+Keep hybrid rows click-only when the row selects an item and only its chevron
+opens configuration; hover-opening those rows makes selection ambiguous.
+
+Keep hover-open triggers stationary while async menu content loads. Render the
+trigger before dynamic rows or reserve its exact space so newly inserted rows
+cannot move the trigger beneath a stationary pointer and open it accidentally.
+
 ## Accordion (Base UI vs Radix/shadcn)
 
 The `Accordion` component in `src/components/ui/accordion.tsx` wraps `@base-ui/react/accordion`, **not** Radix or shadcn. The APIs differ:

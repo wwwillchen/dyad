@@ -1,4 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelPicker } from "./ModelPicker";
 
@@ -12,10 +19,17 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   posthogCapture: vi.fn(),
   openExternalUrl: vi.fn(),
+  loadOllamaModels: vi.fn(),
+  loadLMStudioModels: vi.fn(),
+  dropdownOpenChange: null as null | ((open: boolean) => void),
   preventBaseUIHandler: vi.fn(),
   selectedMode: "build",
   isTrial: false,
   renderSubContent: false,
+  catalogLoading: false,
+  catalogUnavailable: false,
+  catalogError: null as Error | null,
+  settingsAvailable: true,
   settingsLoading: false,
   chatLoading: false,
   chat: null as null | {
@@ -35,6 +49,13 @@ const mocks = vi.hoisted(() => ({
     modelName: string;
     displayName: string;
   }>,
+  ollamaError: null as Error | null,
+  lmStudioModels: [] as Array<{
+    provider: "lmstudio";
+    modelName: string;
+    displayName: string;
+  }>,
+  lmStudioError: null as Error | null,
   freeModelQuota: {
     quotaStatus: {
       messagesUsed: 3,
@@ -74,7 +95,14 @@ const mocks = vi.hoisted(() => ({
     selectedModel: {
       name: "auto",
       provider: "auto",
-    },
+    } as { name: string; provider: string; customModelId?: number },
+    recentModels: [] as
+      | Array<{
+          name: string;
+          provider: string;
+          customModelId?: number;
+        }>
+      | undefined,
     selectedChatMode: "build",
     defaultChatMode: "build",
   },
@@ -88,7 +116,7 @@ vi.mock("@tanstack/react-query", () => ({
 
 vi.mock("@/hooks/useSettings", () => ({
   useSettings: () => ({
-    settings: mocks.settings,
+    settings: mocks.settingsAvailable ? mocks.settings : null,
     updateSettings: mocks.updateSettings,
     envVars: mocks.envVars,
     loading: mocks.settingsLoading,
@@ -170,89 +198,121 @@ vi.mock("@/hooks/useFreeModelQuota", () => ({
 
 vi.mock("@/hooks/useLanguageModelsByProviders", () => ({
   useLanguageModelsByProviders: () => ({
-    isLoading: false,
-    data: {
-      auto: [
-        {
-          apiName: "auto",
-          displayName: "Auto",
-          description: "Automatically selects a model",
-          type: "cloud",
+    isLoading: mocks.catalogLoading,
+    error: mocks.catalogError,
+    data: mocks.catalogUnavailable
+      ? undefined
+      : {
+          auto: [
+            {
+              apiName: "auto",
+              displayName: "Auto",
+              description: "Automatically selects a model",
+              type: "cloud",
+            },
+            {
+              apiName: "free",
+              displayName: "Free (OpenRouter)",
+              description: "Free model",
+              type: "cloud",
+            },
+            {
+              apiName: "free-pro",
+              displayName: "Dyad Free",
+              description: "Free Pro model",
+              type: "cloud",
+              tag: "Free",
+            },
+          ],
+          openai: [
+            {
+              apiName: "gpt-5-mini",
+              displayName: "GPT 5 Mini",
+              description: "OpenAI smaller model",
+              dollarSigns: 2,
+              type: "cloud",
+            },
+            {
+              apiName: "gpt-5",
+              displayName: "GPT 5",
+              description: "OpenAI model",
+              dollarSigns: 3,
+              effortSettings: {
+                defaultEffortLevel: "minimal",
+                possibleEffortLevels: ["minimal", "xhigh"],
+              },
+              type: "cloud",
+            },
+          ],
+          google: [
+            {
+              apiName: "gemini-2.5-pro",
+              displayName: "Gemini 2.5 Pro",
+              description: "Google model",
+              dollarSigns: 2,
+              type: "cloud",
+            },
+            {
+              apiName: "gemini-2.5-flash",
+              displayName: "Gemini 2.5 Flash",
+              description: "Google flash model",
+              dollarSigns: 2,
+              type: "cloud",
+            },
+          ],
+          vertex: [
+            {
+              apiName: "gemini-2.5-pro",
+              displayName: "Vertex Gemini 2.5 Pro",
+              description: "Vertex model with price metadata",
+              dollarSigns: 3,
+              type: "cloud",
+            },
+          ],
+          openrouter: [
+            {
+              apiName: "openrouter/free",
+              displayName: "Free (OpenRouter)",
+              description: "Free OpenRouter model",
+              type: "cloud",
+            },
+            {
+              apiName: "anthropic/claude-sonnet-4.5",
+              displayName: "Claude Sonnet 4.5",
+              description: "OpenRouter paid model",
+              dollarSigns: 2,
+              type: "cloud",
+            },
+          ],
+          xai: [
+            {
+              apiName: "grok-code-fast-1",
+              displayName: "Grok Code Fast",
+              description: "xAI model",
+              type: "cloud",
+            },
+          ],
+          custom: [
+            {
+              id: 1,
+              apiName: "shared-model",
+              displayName: "Custom A",
+              type: "custom",
+            },
+            {
+              id: 2,
+              apiName: "shared-model",
+              displayName: "Custom B",
+              type: "custom",
+            },
+            {
+              id: 3,
+              apiName: "team/free",
+              displayName: "Custom Free",
+              type: "custom",
+            },
+          ],
         },
-        {
-          apiName: "free",
-          displayName: "Free (OpenRouter)",
-          description: "Free model",
-          type: "cloud",
-        },
-        {
-          apiName: "free-pro",
-          displayName: "Dyad Free",
-          description: "Free Pro model",
-          type: "cloud",
-          tag: "Free",
-        },
-      ],
-      openai: [
-        {
-          apiName: "gpt-5-mini",
-          displayName: "GPT 5 Mini",
-          description: "OpenAI smaller model",
-          dollarSigns: 2,
-          type: "cloud",
-        },
-        {
-          apiName: "gpt-5",
-          displayName: "GPT 5",
-          description: "OpenAI model",
-          dollarSigns: 3,
-          effortSettings: {
-            defaultEffortLevel: "minimal",
-            possibleEffortLevels: ["minimal", "xhigh"],
-          },
-          type: "cloud",
-        },
-      ],
-      google: [
-        {
-          apiName: "gemini-2.5-pro",
-          displayName: "Gemini 2.5 Pro",
-          description: "Google model",
-          dollarSigns: 2,
-          type: "cloud",
-        },
-        {
-          apiName: "gemini-2.5-flash",
-          displayName: "Gemini 2.5 Flash",
-          description: "Google flash model",
-          dollarSigns: 2,
-          type: "cloud",
-        },
-      ],
-      openrouter: [
-        {
-          apiName: "openrouter/free",
-          displayName: "Free (OpenRouter)",
-          description: "Free OpenRouter model",
-          type: "cloud",
-        },
-        {
-          apiName: "anthropic/claude-sonnet-4.5",
-          displayName: "Claude Sonnet 4.5",
-          description: "OpenRouter paid model",
-          dollarSigns: 2,
-          type: "cloud",
-        },
-      ],
-      xai: [
-        {
-          apiName: "grok-code-fast-1",
-          displayName: "Grok Code Fast",
-          description: "xAI model",
-          type: "cloud",
-        },
-      ],
-    },
   }),
 }));
 
@@ -285,6 +345,12 @@ vi.mock("@/hooks/useLanguageModelProviders", () => ({
         type: "cloud",
       },
       {
+        id: "vertex",
+        name: "Google Vertex AI",
+        type: "cloud",
+        secondary: true,
+      },
+      {
         id: "openrouter",
         name: "OpenRouter",
         type: "cloud",
@@ -295,6 +361,11 @@ vi.mock("@/hooks/useLanguageModelProviders", () => ({
         type: "cloud",
         secondary: true,
       },
+      {
+        id: "custom",
+        name: "Custom Provider",
+        type: "custom",
+      },
     ],
   }),
 }));
@@ -303,17 +374,17 @@ vi.mock("@/hooks/useLocalModels", () => ({
   useLocalModels: () => ({
     models: mocks.ollamaModels,
     loading: false,
-    error: null,
-    loadModels: vi.fn(),
+    error: mocks.ollamaError,
+    loadModels: mocks.loadOllamaModels,
   }),
 }));
 
 vi.mock("@/hooks/useLMStudioModels", () => ({
   useLocalLMSModels: () => ({
-    models: [],
+    models: mocks.lmStudioModels,
     loading: false,
-    error: null,
-    loadModels: vi.fn(),
+    error: mocks.lmStudioError,
+    loadModels: mocks.loadLMStudioModels,
   }),
 }));
 
@@ -328,9 +399,16 @@ vi.mock("@/components/ui/tooltip", () => ({
 }));
 
 vi.mock("@/components/ui/dropdown-menu", () => ({
-  DropdownMenu: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
+  DropdownMenu: ({
+    children,
+    onOpenChange,
+  }: {
+    children: React.ReactNode;
+    onOpenChange?: (open: boolean) => void;
+  }) => {
+    mocks.dropdownOpenChange = onOpenChange ?? null;
+    return <div>{children}</div>;
+  },
   DropdownMenuTrigger: ({
     children,
     ...props
@@ -354,19 +432,25 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuLabel: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
-  DropdownMenuSeparator: () => <hr />,
+  DropdownMenuSeparator: () => <hr data-slot="dropdown-menu-separator" />,
   DropdownMenuSub: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
   DropdownMenuSubTrigger: ({
     children,
     hideChevron: _hideChevron,
+    openOnHover,
+    delay,
+    closeDelay,
     onMouseDown,
     onClick,
     ...props
   }: {
     children: React.ReactNode;
     hideChevron?: boolean;
+    openOnHover?: boolean;
+    delay?: number;
+    closeDelay?: number;
     onMouseDown?: (
       event: React.MouseEvent<HTMLButtonElement> & {
         preventBaseUIHandler: () => void;
@@ -380,6 +464,9 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   }) => (
     <button
       {...props}
+      data-open-on-hover={openOnHover || undefined}
+      data-hover-delay={delay}
+      data-close-delay={closeDelay}
       onMouseDown={(event) =>
         onMouseDown?.(
           Object.assign(event, {
@@ -398,8 +485,12 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
       {children}
     </button>
   ),
-  DropdownMenuSubContent: ({ children }: { children: React.ReactNode }) =>
-    mocks.renderSubContent ? <div>{children}</div> : null,
+  DropdownMenuSubContent: ({
+    children,
+    ...props
+  }: {
+    children: React.ReactNode;
+  }) => (mocks.renderSubContent ? <div {...props}>{children}</div> : null),
 }));
 
 describe("ModelPicker", () => {
@@ -418,9 +509,18 @@ describe("ModelPicker", () => {
     mocks.navigate.mockReset();
     mocks.posthogCapture.mockReset();
     mocks.openExternalUrl.mockReset();
+    mocks.loadOllamaModels.mockReset();
+    mocks.loadOllamaModels.mockResolvedValue(undefined);
+    mocks.loadLMStudioModels.mockReset();
+    mocks.loadLMStudioModels.mockResolvedValue(undefined);
+    mocks.dropdownOpenChange = null;
     mocks.preventBaseUIHandler.mockReset();
     mocks.selectedMode = "build";
     mocks.renderSubContent = false;
+    mocks.catalogLoading = false;
+    mocks.catalogUnavailable = false;
+    mocks.catalogError = null;
+    mocks.settingsAvailable = true;
     mocks.settingsLoading = false;
     mocks.chatLoading = false;
     mocks.chat = null;
@@ -428,10 +528,14 @@ describe("ModelPicker", () => {
     mocks.search = {};
     mocks.envVars = {};
     mocks.ollamaModels = [];
+    mocks.ollamaError = null;
+    mocks.lmStudioModels = [];
+    mocks.lmStudioError = null;
     mocks.settings.enableDyadPro = true;
     mocks.settings.providerSettings.auto.apiKey.value = "dyad-pro-key";
     mocks.settings.providerSettings.openrouter.apiKey.value = "";
     mocks.settings.selectedModel = { name: "auto", provider: "auto" };
+    mocks.settings.recentModels = [];
     mocks.settings.selectedChatMode = "build";
     mocks.settings.defaultChatMode = "build";
     mocks.isTrial = false;
@@ -447,17 +551,16 @@ describe("ModelPicker", () => {
     };
   });
 
-  it("shows Pro users a flat primary cloud model list with provider grouping under More models", () => {
+  it("keeps the root menu focused on quick choices and catalog entry points", () => {
     render(<ModelPicker />);
 
     expect(screen.getByText("Auto Sidekick")).toBeTruthy();
     expect(
       screen.getByText("Auto Sidekick").closest("button")?.textContent,
     ).toContain("New");
-    expect(screen.getByText("GPT 5")).toBeTruthy();
-    expect(screen.queryByText("OpenAI")).toBeNull();
-    expect(screen.queryByText("GLM 4.7")).toBeNull();
-    expect(screen.queryByText("Kimi K2")).toBeNull();
+    expect(screen.queryByText("GPT 5")).toBeNull();
+    expect(screen.queryByText("Premium")).toBeNull();
+    expect(screen.getByText("Local models")).toBeTruthy();
     expect(screen.queryByText("Free (OpenRouter)")).toBeNull();
     expect(screen.getByText("Dyad Free")).toBeTruthy();
     expect(screen.getByText("2/5 left")).toBeTruthy();
@@ -468,11 +571,465 @@ describe("ModelPicker", () => {
         .closest("button")
         ?.getAttribute("aria-label"),
     ).toContain("2/5 left. Data sharing");
+    expect(screen.getByText("All models")).toBeTruthy();
+  });
+
+  it("keeps All models stationary while the cloud catalog loads", () => {
+    mocks.catalogLoading = true;
+    const { rerender } = render(<ModelPicker />);
+    const allModelsTrigger = screen.getByText("All models").closest("button");
+
+    mocks.catalogLoading = false;
+    rerender(<ModelPicker />);
+
+    expect(screen.getByText("All models").closest("button")).toBe(
+      allModelsTrigger,
+    );
+    expect(
+      allModelsTrigger?.compareDocumentPosition(
+        document.querySelector(
+          '[data-model-provider="auto"][data-model-name="auto"]',
+        )!,
+      ) ?? 0,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("puts common catalog navigation before local models and quick choices", () => {
+    render(<ModelPicker />);
+
+    const allModels = screen.getByText("All models").closest("button")!;
+    const localModels = screen.getByText("Local models").closest("button")!;
+    const localNavigationGroup = localModels.parentElement!;
+
+    expect(
+      allModels.compareDocumentPosition(localModels) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      localNavigationGroup.nextElementSibling?.getAttribute("data-slot"),
+    ).toBe("dropdown-menu-separator");
+  });
+
+  it("shows up to five persisted specific models in a Recent section", () => {
+    mocks.settings.recentModels = [
+      { provider: "openai", name: "gpt-5" },
+      {
+        provider: "openrouter",
+        name: "anthropic/claude-sonnet-4.5",
+      },
+      { provider: "auto", name: "auto-sidekick" },
+    ];
+
+    render(<ModelPicker />);
+
+    expect(screen.getByText("Recent")).toBeTruthy();
+    expect(screen.getByText("GPT 5")).toBeTruthy();
     expect(screen.getByText("Claude Sonnet 4.5")).toBeTruthy();
-    expect(screen.queryByText("Grok Code Fast")).toBeNull();
-    expect(screen.queryByText("xAI")).toBeNull();
-    expect(screen.getByText("More models")).toBeTruthy();
-    expect(screen.queryByText("Other AI providers")).toBeNull();
+    const gptRow = screen.getByText("GPT 5").closest("button")!;
+    expect(within(gptRow).getByText("OpenAI")).toBeTruthy();
+    expect(gptRow.getAttribute("aria-label")).toContain("GPT 5. OpenAI");
+    expect(screen.getAllByText("Auto Sidekick")).toHaveLength(1);
+  });
+
+  it("preserves unresolved cloud history when adding a recent model", async () => {
+    mocks.renderSubContent = true;
+    mocks.settings.recentModels = [
+      { provider: "openai", name: "deleted-model" },
+      { provider: "openai", name: "gpt-5" },
+      { provider: "openai", name: "gpt-5-mini" },
+      { provider: "google", name: "gemini-2.5-pro" },
+      { provider: "google", name: "gemini-2.5-flash" },
+    ];
+
+    render(<ModelPicker />);
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="xai"][data-model-name="grok-code-fast-1"]',
+      )!,
+    );
+
+    await waitFor(() => {
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        selectedModel: { provider: "xai", name: "grok-code-fast-1" },
+        recentModels: [
+          { provider: "xai", name: "grok-code-fast-1" },
+          { provider: "openai", name: "deleted-model" },
+          { provider: "openai", name: "gpt-5" },
+          { provider: "openai", name: "gpt-5-mini" },
+          { provider: "google", name: "gemini-2.5-pro" },
+        ],
+      });
+    });
+  });
+
+  it("normalizes legacy custom recents without duplicating them", async () => {
+    mocks.renderSubContent = true;
+    mocks.settings.selectedModel = {
+      provider: "custom",
+      name: "shared-model",
+    };
+    mocks.settings.recentModels = [
+      { provider: "custom", name: "shared-model" },
+      { provider: "openrouter", name: "openrouter/free" },
+    ];
+
+    render(<ModelPicker />);
+    const customARow = screen.getAllByLabelText(/Custom A.*Selected/)[0];
+    const customBRow = screen.getAllByLabelText(/^Custom B/)[0];
+    expect(customBRow.getAttribute("aria-label")).not.toContain("Selected");
+    fireEvent.click(customARow);
+
+    await waitFor(() => {
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        selectedModel: {
+          provider: "custom",
+          name: "shared-model",
+          customModelId: 1,
+        },
+        recentModels: [
+          {
+            provider: "custom",
+            name: "shared-model",
+            customModelId: 1,
+          },
+          { provider: "openrouter", name: "openrouter/free" },
+        ],
+      });
+    });
+  });
+
+  it("keeps hook order stable while settings load", () => {
+    mocks.settingsAvailable = false;
+    const { rerender } = render(<ModelPicker />);
+
+    mocks.settingsAvailable = true;
+    expect(() => rerender(<ModelPicker />)).not.toThrow();
+    expect(screen.getByTestId("model-picker")).toBeTruthy();
+  });
+
+  it("preserves the selected-model fallback when switching to Auto", async () => {
+    mocks.settings.selectedModel = { provider: "openai", name: "gpt-5" };
+    mocks.settings.recentModels = undefined;
+
+    render(<ModelPicker />);
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="auto"][data-model-name="auto"]',
+      )!,
+    );
+
+    await waitFor(() => {
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        selectedModel: { provider: "auto", name: "auto" },
+        recentModels: [{ provider: "openai", name: "gpt-5" }],
+      });
+    });
+  });
+
+  it("uses the active chat model to seed fallback recents", async () => {
+    mocks.pathname = "/chat";
+    mocks.search = { id: 42 };
+    mocks.settings.selectedModel = { provider: "auto", name: "auto" };
+    mocks.settings.recentModels = undefined;
+    mocks.chat = {
+      id: 42,
+      messages: [{ id: 1 }],
+      modelSelection: {
+        provider: "openai",
+        name: "gpt-5",
+        effortLevel: "minimal",
+      },
+    };
+
+    render(<ModelPicker />);
+    expect(screen.getAllByText("GPT 5")).toHaveLength(2);
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="auto"][data-model-name="auto"]',
+      )!,
+    );
+
+    await waitFor(() => {
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        recentModels: [{ provider: "openai", name: "gpt-5" }],
+      });
+    });
+  });
+
+  it("keeps custom model ids ending in /free visible for Pro users", () => {
+    mocks.settings.recentModels = [
+      { provider: "custom", name: "team/free", customModelId: 3 },
+    ];
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    expect(screen.getAllByText("Custom Free")).toHaveLength(2);
+    for (const row of document.querySelectorAll(
+      '[data-model-provider="custom"][data-model-name="team/free"]',
+    )) {
+      expect(row.getAttribute("aria-label")).not.toContain("Data sharing");
+      expect(within(row as HTMLElement).queryByText("Data sharing")).toBeNull();
+    }
+  });
+
+  it("filters hidden Pro models out of Recent", () => {
+    mocks.settings.recentModels = [
+      { provider: "openrouter", name: "openrouter/free" },
+    ];
+
+    render(<ModelPicker />);
+
+    expect(screen.queryByText("Recent")).toBeNull();
+    expect(screen.queryByText("Free (OpenRouter)")).toBeNull();
+  });
+
+  it("uses custom model ids for Recent keys and selection", () => {
+    mocks.settings.selectedModel = {
+      provider: "custom",
+      name: "shared-model",
+      customModelId: 2,
+    };
+    mocks.settings.recentModels = [
+      { provider: "custom", name: "shared-model", customModelId: 1 },
+      { provider: "custom", name: "shared-model", customModelId: 2 },
+    ];
+
+    render(<ModelPicker />);
+
+    const recentRows = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        'button[data-model-provider="custom"][data-model-name="shared-model"]',
+      ),
+    );
+    expect(recentRows).toHaveLength(2);
+    expect(recentRows[0].getAttribute("aria-label")).not.toContain("Selected");
+    expect(recentRows[1].getAttribute("aria-label")).toContain("Selected");
+  });
+
+  it("reserves recent local model rows while local catalogs load", () => {
+    mocks.settings.recentModels = [
+      { provider: "ollama", name: "qwen3-coder:30b" },
+    ];
+
+    render(<ModelPicker />);
+
+    expect(screen.getByText("Recent")).toBeTruthy();
+    expect(screen.getByText("qwen3-coder:30b")).toBeTruthy();
+    expect(screen.getByText("Loading...")).toBeTruthy();
+  });
+
+  it("resolves recent local rows independently by provider", async () => {
+    let resolveOllama: (() => void) | undefined;
+    mocks.loadOllamaModels.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveOllama = resolve;
+        }),
+    );
+    mocks.loadLMStudioModels.mockImplementationOnce(
+      () => new Promise<void>(() => undefined),
+    );
+    mocks.settings.recentModels = [
+      { provider: "ollama", name: "missing-ollama" },
+      { provider: "lmstudio", name: "missing-lmstudio" },
+    ];
+
+    render(<ModelPicker />);
+    act(() => mocks.dropdownOpenChange?.(true));
+    expect(screen.getAllByText("Loading...")).toHaveLength(2);
+
+    await act(async () => resolveOllama?.());
+
+    await waitFor(() => {
+      expect(screen.queryByText("missing-ollama")).toBeNull();
+      expect(screen.getByText("missing-lmstudio")).toBeTruthy();
+      expect(screen.getAllByText("Loading...")).toHaveLength(1);
+    });
+  });
+
+  it("identifies providers on pending Recent local model rows", () => {
+    mocks.settings.recentModels = [
+      { provider: "ollama", name: "shared-model" },
+      { provider: "lmstudio", name: "shared-model" },
+    ];
+
+    render(<ModelPicker />);
+
+    const ollamaRow = screen.getByLabelText(
+      "shared-model. Ollama. Loading local model",
+    );
+    const lmStudioRow = screen.getByLabelText(
+      "shared-model. LM Studio. Loading local model",
+    );
+    expect(within(ollamaRow).getByText("Ollama")).toBeTruthy();
+    expect(within(lmStudioRow).getByText("LM Studio")).toBeTruthy();
+  });
+
+  it("hides cached local recents after the provider refresh fails", () => {
+    mocks.ollamaModels = [
+      {
+        provider: "ollama",
+        modelName: "qwen3-coder:30b",
+        displayName: "Qwen3 Coder 30B",
+      },
+    ];
+    mocks.ollamaError = new Error("Ollama unavailable");
+    mocks.settings.recentModels = [
+      { provider: "ollama", name: "qwen3-coder:30b" },
+    ];
+
+    render(<ModelPicker />);
+
+    expect(screen.queryByText("Recent")).toBeNull();
+    expect(screen.queryByText("Qwen3 Coder 30B")).toBeNull();
+  });
+
+  it("identifies providers on ambiguous Recent local model rows", () => {
+    mocks.ollamaModels = [
+      {
+        provider: "ollama",
+        modelName: "shared-model",
+        displayName: "Shared Local",
+      },
+    ];
+    mocks.lmStudioModels = [
+      {
+        provider: "lmstudio",
+        modelName: "shared-model",
+        displayName: "Shared Local",
+      },
+    ];
+    mocks.settings.recentModels = [
+      { provider: "ollama", name: "shared-model" },
+      { provider: "lmstudio", name: "shared-model" },
+    ];
+
+    render(<ModelPicker />);
+
+    const ollamaRow = screen.getByLabelText(/Shared Local\. Ollama\./);
+    const lmStudioRow = screen.getByLabelText(/Shared Local\. LM Studio\./);
+    expect(
+      within(ollamaRow as HTMLElement).getByText("Ollama · shared-model"),
+    ).toBeTruthy();
+    expect(
+      within(lmStudioRow as HTMLElement).getByText("LM Studio · shared-model"),
+    ).toBeTruthy();
+    expect(ollamaRow.getAttribute("aria-label")).toContain(
+      "Shared Local. Ollama.",
+    );
+    expect(lmStudioRow.getAttribute("aria-label")).toContain(
+      "Shared Local. LM Studio.",
+    );
+  });
+
+  it("keeps local models reachable while the cloud catalog loads", () => {
+    mocks.catalogLoading = true;
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    expect(screen.getAllByText("All models").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Local models").length).toBeGreaterThan(0);
+    expect(screen.getByText("Loading cloud models...")).toBeTruthy();
+  });
+
+  it("shows a cloud catalog error without hiding local models", () => {
+    mocks.catalogUnavailable = true;
+    mocks.catalogError = new Error("catalog unavailable");
+
+    render(<ModelPicker />);
+
+    expect(screen.getByText("Couldn’t load cloud models")).toBeTruthy();
+    expect(screen.getAllByText("Local models").length).toBeGreaterThan(0);
+  });
+
+  it("does not leave a trailing separator after Recent", () => {
+    mocks.settings.recentModels = [{ provider: "openai", name: "gpt-5" }];
+
+    render(<ModelPicker />);
+
+    const recentRow = document.querySelector(
+      '[data-model-provider="openai"][data-model-name="gpt-5"]',
+    );
+    expect(recentRow).not.toBeNull();
+    expect(recentRow?.nextElementSibling?.getAttribute("data-slot")).not.toBe(
+      "dropdown-menu-separator",
+    );
+  });
+
+  it("keeps Ollama and LM Studio in a separate Local models submenu", () => {
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    const localModelsMenu = screen.getByTestId("local-models-submenu");
+    expect(within(localModelsMenu).getByText("Ollama")).toBeTruthy();
+    expect(within(localModelsMenu).getByText("LM Studio")).toBeTruthy();
+    expect(within(localModelsMenu).queryByText("xAI")).toBeNull();
+  });
+
+  it("opens nested navigation submenus on hover with forgiving pointer timing", () => {
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    const getTrigger = (label: string) =>
+      screen
+        .getAllByText(label)
+        .map((element) => element.closest("button"))
+        .find((element): element is HTMLButtonElement => element !== null)!;
+
+    for (const label of ["Google Vertex AI", "Ollama", "LM Studio"]) {
+      const trigger = getTrigger(label);
+      expect(trigger.dataset.openOnHover).toBe("true");
+      expect(trigger.dataset.hoverDelay).toBe("120");
+      expect(trigger.dataset.closeDelay).toBe("100");
+    }
+
+    expect(getTrigger("Google Vertex AI").getAttribute("aria-label")).toBe(
+      "Google Vertex AI. 1 model. Opens submenu",
+    );
+    expect(getTrigger("Ollama").getAttribute("aria-label")).toBe(
+      "Ollama. None available. Opens submenu",
+    );
+
+    expect(
+      screen.getByText("GPT 5").closest("button")?.dataset.openOnHover,
+    ).toBeUndefined();
+
+    for (const label of ["Local models", "All models"]) {
+      expect(getTrigger(label).dataset.openOnHover).toBeUndefined();
+    }
+  });
+
+  it("gives model-list menus room while keeping model metadata separate", () => {
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    expect(screen.getByTestId("more-models-submenu").className).toContain(
+      "w-[min(20rem,calc(100vw-1.5rem))]",
+    );
+
+    const modelName = screen.getAllByText("GPT 5")[0];
+    expect(modelName.className).toContain("block max-w-full truncate");
+    expect(modelName.getAttribute("title")).toBeNull();
+    expect(modelName.closest("button")?.firstElementChild?.className).toContain(
+      "grid-cols-[minmax(0,1fr)_auto]",
+    );
+  });
+
+  it("groups secondary providers under Other providers regardless of price", () => {
+    mocks.renderSubContent = true;
+
+    render(<ModelPicker />);
+
+    const vertexModels = screen.getByTestId("other-provider-models-vertex");
+    expect(
+      within(vertexModels).getByText("Vertex Gemini 2.5 Pro"),
+    ).toBeTruthy();
+    expect(screen.getAllByText("Vertex Gemini 2.5 Pro")).toHaveLength(1);
   });
 
   it("selects Auto Sidekick and moves Build mode to Agent", async () => {
@@ -522,20 +1079,24 @@ describe("ModelPicker", () => {
       "max-w-[220px]",
     );
     expect(screen.getByTestId("model-picker-dropdown").className).toContain(
-      "w-[320px]",
+      "w-[min(20rem,calc(100vw-1.5rem))]",
     );
     const gpt5Row = screen.getAllByText("GPT 5")[0].closest("button")!;
     expect(
       gpt5Row.querySelector("[data-effort-chevron]")?.previousElementSibling
         ?.textContent,
-    ).toBe("Minimal");
+    ).toBe("Min");
     expect(gpt5Row.getAttribute("aria-label")).toContain("Effort: Minimal");
+    expect(
+      gpt5Row.querySelector("[data-effort-level]")?.getAttribute("title"),
+    ).toBeNull();
     fireEvent.click(gpt5Row.querySelector("[data-effort-chevron]")!);
     fireEvent.click(screen.getAllByText("Xhigh")[0]);
 
     await waitFor(() => {
       expect(mocks.updateSettings).toHaveBeenCalledWith({
         selectedModel: { name: "gpt-5", provider: "openai" },
+        recentModels: [{ name: "gpt-5", provider: "openai" }],
         modelEffortPreferences: {
           '["openai","gpt-5",null]': "xhigh",
         },
@@ -565,6 +1126,12 @@ describe("ModelPicker", () => {
           name: "qwen3-coder:30b",
           provider: "ollama",
         },
+        recentModels: [
+          {
+            name: "qwen3-coder:30b",
+            provider: "ollama",
+          },
+        ],
         modelEffortPreferences: {
           '["ollama","qwen3-coder:30b",null]': "none",
         },
@@ -573,6 +1140,7 @@ describe("ModelPicker", () => {
   });
 
   it("only opens the effort submenu from its chevron", () => {
+    mocks.renderSubContent = true;
     render(<ModelPicker />);
 
     const gpt5Row = screen.getByText("GPT 5").closest("button")!;
@@ -623,10 +1191,17 @@ describe("ModelPicker", () => {
         },
       });
     });
+    expect(mocks.updateSettings).toHaveBeenCalledWith({
+      modelEffortPreferences: {
+        '["openai","gpt-5",null]': "xhigh",
+      },
+      recentModels: [{ name: "gpt-5", provider: "openai" }],
+    });
     expect(mocks.updateChat).not.toHaveBeenCalled();
   });
 
-  it("sorts the Pro flat list by price descending and groups same-price models by provider", () => {
+  it("sorts the All models catalog by price and provider", () => {
+    mocks.renderSubContent = true;
     render(<ModelPicker />);
 
     const modelNames = [
@@ -655,18 +1230,16 @@ describe("ModelPicker", () => {
     ]);
   });
 
-  it("shows non-Pro users the same tiered flat list with More models", () => {
+  it("keeps the non-Pro root compact while preserving its Dyad choices", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
 
     render(<ModelPicker />);
 
     expect(screen.queryByText("Auto Sidekick")).toBeNull();
-    expect(screen.getByText("GPT 5")).toBeTruthy();
-    expect(screen.queryByText("OpenAI")).toBeNull();
-    expect(screen.getByText("More models")).toBeTruthy();
+    expect(screen.queryByText("GPT 5")).toBeNull();
+    expect(screen.getByText("All models")).toBeTruthy();
     expect(screen.queryByText("Other AI providers")).toBeNull();
-    expect(screen.queryByText("Grok Code Fast")).toBeNull();
     expect(screen.queryByText("Dyad Free")).toBeNull();
     expect(screen.getByText("Free (OpenRouter)")).toBeTruthy();
   });
@@ -675,6 +1248,7 @@ describe("ModelPicker", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.settings.providerSettings.openrouter.apiKey.value = "openrouter-key";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -700,6 +1274,7 @@ describe("ModelPicker", () => {
   it("opens the unlock dialog instead of selecting a locked model", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -716,6 +1291,7 @@ describe("ModelPicker", () => {
   it("opens the Pro upgrade page from the unlock dialog", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -739,6 +1315,7 @@ describe("ModelPicker", () => {
   it("navigates to provider settings from the unlock dialog own-key link", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -756,23 +1333,33 @@ describe("ModelPicker", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.settings.providerSettings.openrouter.apiKey.value = "openrouter-key";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
     fireEvent.click(screen.getByText("Claude Sonnet 4.5").closest("button")!);
 
-    expect(mocks.updateSettings).toHaveBeenCalledWith({
-      selectedModel: expect.objectContaining({
-        name: "anthropic/claude-sonnet-4.5",
-        provider: "openrouter",
+    expect(mocks.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selectedModel: expect.objectContaining({
+          name: "anthropic/claude-sonnet-4.5",
+          provider: "openrouter",
+        }),
+        recentModels: [
+          {
+            name: "anthropic/claude-sonnet-4.5",
+            provider: "openrouter",
+          },
+        ],
       }),
-    });
+    );
   });
 
   it("does not lock models while settings and env vars are still loading", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.settingsLoading = true;
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -782,6 +1369,7 @@ describe("ModelPicker", () => {
   it("labels locked models for assistive tech", () => {
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
+    mocks.renderSubContent = true;
 
     render(<ModelPicker />);
 
@@ -797,10 +1385,10 @@ describe("ModelPicker", () => {
 
     render(<ModelPicker />);
 
-    // Index 0 is the top-level auto "Free (OpenRouter)" row (never locked);
-    // index 1 is the OpenRouter submenu's free model.
     fireEvent.click(
-      screen.getAllByText("Free (OpenRouter)")[1].closest("button")!,
+      document.querySelector(
+        '[data-model-provider="openrouter"][data-model-name="openrouter/free"]',
+      )!,
     );
 
     expect(mocks.posthogCapture).toHaveBeenCalledWith(
@@ -909,16 +1497,20 @@ describe("ModelPicker", () => {
   });
 
   it("selects flat Pro models with their source provider", async () => {
+    mocks.renderSubContent = true;
     render(<ModelPicker />);
 
     fireEvent.click(screen.getByText("GPT 5").closest("button")!);
 
-    expect(mocks.updateSettings).toHaveBeenCalledWith({
-      selectedModel: expect.objectContaining({
-        name: "gpt-5",
-        provider: "openai",
+    expect(mocks.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selectedModel: expect.objectContaining({
+          name: "gpt-5",
+          provider: "openai",
+        }),
+        recentModels: [{ name: "gpt-5", provider: "openai" }],
       }),
-    });
+    );
     await waitFor(() => {
       expect(mocks.invalidateQueries).toHaveBeenCalledTimes(1);
     });
@@ -939,7 +1531,7 @@ describe("ModelPicker", () => {
     expect(
       autoRow.querySelector("[data-effort-chevron]")?.previousElementSibling
         ?.textContent,
-    ).toBe("Medium");
+    ).toBe("Med");
   });
 
   it("does not select Dyad Free when quota is exhausted", () => {

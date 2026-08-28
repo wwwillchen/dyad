@@ -239,6 +239,7 @@ export function ModelsSection({ providerId }: ModelsSectionProps) {
         }}
         providerId={providerId}
         model={modelToEdit}
+        models={models}
       />
 
       <AlertDialog

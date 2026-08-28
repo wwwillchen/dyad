@@ -421,6 +421,7 @@ const BaseUserSettingsFields = {
   maxChatTurnsInContext: z.number().optional(),
   maxToolCallSteps: z.number().optional(),
   modelEffortPreferences: z.record(z.string(), EffortLevelSchema).optional(),
+  recentModels: z.array(LargeLanguageModelSchema).optional(),
   enableProLazyEditsMode: z.boolean().optional(),
   proLazyEditsMode: z.enum(["off", "v1", "v2"]).optional(),
   enableProSmartFilesContextMode: z.boolean().optional(),

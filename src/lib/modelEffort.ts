@@ -76,3 +76,25 @@ export function formatEffortLevel(effortLevel: string): string {
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
 }
+
+export function formatCompactEffortLevel(effortLevel: string): string {
+  const normalizedEffortLevel = effortLevel
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, "-");
+
+  const compactLabels: Record<string, string> = {
+    none: "None",
+    minimal: "Min",
+    low: "Low",
+    medium: "Med",
+    high: "High",
+    xhigh: "X-High",
+    "x-high": "X-High",
+    "extra-high": "X-High",
+    max: "Max",
+    maximum: "Max",
+  };
+
+  return compactLabels[normalizedEffortLevel] ?? formatEffortLevel(effortLevel);
+}

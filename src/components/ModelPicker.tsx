@@ -18,7 +18,7 @@ import { useLocalModels } from "@/hooks/useLocalModels";
 import { useLocalLMSModels } from "@/hooks/useLMStudioModels";
 import { useLanguageModelsByProviders } from "@/hooks/useLanguageModelsByProviders";
 
-import { ipc, type LanguageModel, LocalModel } from "@/ipc/types";
+import { ipc, type LanguageModel, type LocalModel } from "@/ipc/types";
 import { useLanguageModelProviders } from "@/hooks/useLanguageModelProviders";
 import { useSettings } from "@/hooks/useSettings";
 import { PriceBadge } from "@/components/PriceBadge";
@@ -58,10 +58,16 @@ import { useRouterState } from "@tanstack/react-router";
 import { useChatMode } from "@/hooks/useChatMode";
 import {
   createModelSelection,
+  formatCompactEffortLevel,
   formatEffortLevel,
   getEffortSettings,
   getModelPreferenceKey,
 } from "@/lib/modelEffort";
+import {
+  addRecentModel,
+  getEffectiveRecentModels,
+  isSameModel,
+} from "@/lib/recentModels";
 import {
   AUTO_SIDEKICK_CHAT_MODE,
   AUTO_SIDEKICK_DISPLAY_NAME,
@@ -70,6 +76,8 @@ import {
 } from "@/lib/autoSidekick";
 
 const SCROLL_AREA_CLASS = "max-h-100 overflow-y-auto scrollbar-on-hover";
+
+const MODEL_MENU_WIDTH_CLASS = "w-[min(20rem,calc(100vw-1.5rem))]";
 
 const PILL_CLASS =
   "text-[10px] leading-none px-1.5 py-1 rounded-full font-medium";
@@ -82,7 +90,31 @@ const PRO_PILL_CLASS = cn(
 const DYAD_PRO_UPGRADE_BASE_URL =
   "https://www.dyad.sh/pro?utm_source=dyad-app&utm_medium=app";
 
+const NAVIGATION_SUBMENU_HOVER_PROPS = {
+  openOnHover: true,
+  delay: 120,
+  closeDelay: 100,
+} as const;
+
 type Tier = { label: string; caption: string; min: number; max: number };
+type RecentModelEntry =
+  | { type: "cloud"; providerId: string; model: LanguageModel }
+  | {
+      type: "local";
+      providerId: "ollama" | "lmstudio";
+      model: LocalModel;
+    }
+  | {
+      type: "local-loading";
+      providerId: "ollama" | "lmstudio";
+      modelName: string;
+    };
+type ModelSelectParams = {
+  model: LargeLanguageModel;
+  catalogModel?: LanguageModel | null;
+  effortLevel?: string;
+  rememberEffort?: boolean;
+};
 const PRICE_TIERS: Tier[] = [
   {
     label: "Premium",
@@ -107,8 +139,21 @@ const PRICE_TIERS: Tier[] = [
 const isFreeOpenRouterModelName = (apiName: string) =>
   apiName.endsWith(":free") || apiName.endsWith("/free");
 
+const formatModelCount = (count: number) =>
+  `${count} model${count === 1 ? "" : "s"}`;
+
 const isEffortChevronTarget = (target: EventTarget) =>
   (target as HTMLElement).closest("[data-effort-chevron]") !== null;
+
+const toRecentModelIdentity = (
+  model: LargeLanguageModel,
+): LargeLanguageModel => ({
+  provider: model.provider,
+  name: model.name,
+  ...(model.customModelId !== undefined
+    ? { customModelId: model.customModelId }
+    : {}),
+});
 
 function tierFor(dollarSigns: number | undefined): Tier {
   const ds = dollarSigns ?? Number.NEGATIVE_INFINITY;
@@ -137,18 +182,13 @@ export function ModelPicker() {
   const hasEstablishedChat = Boolean(
     chat && (chat.modelSelection || chat.messages.length > 0),
   );
-
-  const onModelSelect = async ({
+  const performModelSelect = async ({
     model,
     catalogModel,
     effortLevel,
     rememberEffort = false,
-  }: {
-    model: LargeLanguageModel;
-    catalogModel?: LanguageModel | null;
-    effortLevel?: string;
-    rememberEffort?: boolean;
-  }) => {
+    recentModels,
+  }: ModelSelectParams & { recentModels: LargeLanguageModel[] }) => {
     if (!settings || (isChatRoute && chatId != null && chatLoading)) return;
     const modelSelection = createModelSelection({
       model,
@@ -176,18 +216,34 @@ export function ModelPicker() {
           },
         }
       : {};
+    const recentModelsUpdate =
+      model.provider === "auto"
+        ? settings.recentModels === undefined && recentModels.length > 0
+          ? { recentModels }
+          : {}
+        : {
+            recentModels: addRecentModel(recentModels, model),
+          };
     if (hasEstablishedChat && chatId) {
-      await Promise.all([
-        setChatSelection({
-          modelSelection,
-          ...(fallbackChatMode ? { chatMode: fallbackChatMode } : {}),
-        }),
-        rememberEffort ? updateSettings(preferenceUpdate) : Promise.resolve(),
-      ]);
+      await setChatSelection({
+        modelSelection,
+        ...(fallbackChatMode ? { chatMode: fallbackChatMode } : {}),
+      });
+      if (
+        rememberEffort ||
+        model.provider !== "auto" ||
+        "recentModels" in recentModelsUpdate
+      ) {
+        await updateSettings({
+          ...preferenceUpdate,
+          ...recentModelsUpdate,
+        });
+      }
     } else {
       await updateSettings({
         selectedModel: model,
         ...preferenceUpdate,
+        ...recentModelsUpdate,
         ...(fallbackChatMode ? { selectedChatMode: fallbackChatMode } : {}),
         ...(isFreeProModel(model) && settings.defaultChatMode === "build"
           ? { defaultChatMode: FREE_PRO_MODEL_FALLBACK_CHAT_MODE }
@@ -215,12 +271,16 @@ export function ModelPicker() {
   };
 
   // Cloud models from providers
-  const { data: modelsByProviders, isLoading: modelsByProvidersLoading } =
-    useLanguageModelsByProviders();
+  const {
+    data: modelsByProviders,
+    isLoading: modelsByProvidersLoading,
+    error: modelsByProvidersError,
+  } = useLanguageModelsByProviders();
 
   const {
     data: providers,
     isLoading: providersLoading,
+    error: providersError,
     isProviderSetup,
   } = useLanguageModelProviders();
 
@@ -241,12 +301,32 @@ export function ModelPicker() {
     error: lmStudioError,
     loadModels: loadLMStudioModels,
   } = useLocalLMSModels();
+  const [localProvidersLoaded, setLocalProvidersLoaded] = useState({
+    ollama: false,
+    lmstudio: false,
+  });
 
   // Load models when the dropdown opens
   useEffect(() => {
     if (open) {
-      loadOllamaModels();
-      loadLMStudioModels();
+      let active = true;
+      setLocalProvidersLoaded({ ollama: false, lmstudio: false });
+      void loadOllamaModels().finally(() => {
+        if (active) {
+          setLocalProvidersLoaded((loaded) => ({ ...loaded, ollama: true }));
+        }
+      });
+      void loadLMStudioModels().finally(() => {
+        if (active) {
+          setLocalProvidersLoaded((loaded) => ({
+            ...loaded,
+            lmstudio: true,
+          }));
+        }
+      });
+      return () => {
+        active = false;
+      };
     }
   }, [open, loadOllamaModels, loadLMStudioModels]);
 
@@ -336,22 +416,22 @@ export function ModelPicker() {
       )
     : catalogAutoModels;
 
-  // Determine availability of local models
-  const hasOllamaModels =
-    !ollamaLoading && !ollamaError && ollamaModels.length > 0;
-  const hasLMStudioModels =
-    !lmStudioLoading && !lmStudioError && lmStudioModels.length > 0;
-
   if (!settings) {
     return null;
   }
   const selectedCatalogModel = modelsByProviders?.[
     selectedModel.provider
   ]?.find((model) =>
-    selectedModel.customModelId
+    selectedModel.customModelId !== undefined
       ? model.type === "custom" && model.id === selectedModel.customModelId
       : model.apiName === selectedModel.name,
   );
+  const normalizedSelectedModel =
+    selectedModel.customModelId === undefined &&
+    selectedCatalogModel?.type === "custom" &&
+    selectedCatalogModel.id !== undefined
+      ? { ...selectedModel, customModelId: selectedCatalogModel.id }
+      : selectedModel;
   const selectedEffortLevel = createModelSelection({
     model: selectedModel,
     catalogModel: selectedCatalogModel,
@@ -372,37 +452,31 @@ export function ModelPicker() {
             getModelPreferenceKey({ name: "auto", provider: "auto" })
           ],
   }).effortLevel;
-  // Split providers into primary and secondary groups (excluding auto)
+  // The root menu is a quick switcher. The complete catalog is prepared here
+  // for the nested "All models" menu.
   const providerEntries =
     !loading && modelsByProviders
       ? Object.entries(modelsByProviders).filter(
           ([providerId]) => providerId !== "auto",
         )
       : [];
-  const primaryProviderEntries = providerEntries.filter(
-    ([providerId, models]) => {
-      if (models.length === 0) return false;
-      const provider = providers?.find((p) => p.id === providerId);
-      return !(provider && provider.secondary);
-    },
-  );
-  const primaryProviders: [string, LanguageModel[]][] = primaryProviderEntries;
-  const secondaryProviders = providerEntries.filter(([providerId, models]) => {
-    if (models.length === 0) return false;
-    const provider = providers?.find((p) => p.id === providerId);
-    return !!(provider && provider.secondary);
-  });
-  const groupedProviders: [string, LanguageModel[]][] = [
-    ...primaryProviders,
-    ...secondaryProviders,
-  ];
-  const flatModelEntries = primaryProviderEntries
+  const isVisibleCatalogModel = (providerId: string, model: LanguageModel) =>
+    !(
+      dyadProEnabled &&
+      providerId === "openrouter" &&
+      isFreeOpenRouterModelName(model.apiName)
+    );
+  const isOtherProvider = (providerId: string) => {
+    const provider = providers?.find(
+      (candidate) => candidate.id === providerId,
+    );
+    return provider?.secondary === true || provider?.type === "custom";
+  };
+  const primaryModelEntries = providerEntries
+    .filter(([providerId]) => !isOtherProvider(providerId))
     .flatMap(([providerId, models], providerIndex) =>
       models.flatMap((model, modelIndex) => {
-        // Free OpenRouter models stay out of the flat tier list: Pro routes to
-        // paid models, and non-Pro users reach them via the top-level Free row
-        // or the OpenRouter submenu under "More models".
-        if (isFreeOpenRouterModelName(model.apiName)) {
+        if (!isVisibleCatalogModel(providerId, model)) {
           return [];
         }
         return [{ providerId, model, providerIndex, modelIndex }];
@@ -419,6 +493,142 @@ export function ModelPicker() {
       }
       return a.modelIndex - b.modelIndex;
     });
+  const otherProviderEntries = providerEntries
+    .filter(([providerId]) => isOtherProvider(providerId))
+    .map(
+      ([providerId, models]) =>
+        [
+          providerId,
+          models.filter((model) => isVisibleCatalogModel(providerId, model)),
+        ] as [string, LanguageModel[]],
+    )
+    .filter(([, models]) => models.length > 0);
+
+  const effectiveRecentModels = getEffectiveRecentModels(
+    settings.recentModels,
+    toRecentModelIdentity(selectedModel),
+  );
+  const recentModelEntries = effectiveRecentModels.flatMap<RecentModelEntry>(
+    (recentModel) => {
+      if (recentModel.provider === "ollama") {
+        if (ollamaError) {
+          return [];
+        }
+        const model = ollamaModels.find(
+          (candidate) => candidate.modelName === recentModel.name,
+        );
+        if (model) {
+          return [
+            { type: "local" as const, providerId: "ollama" as const, model },
+          ];
+        }
+        return localProvidersLoaded.ollama
+          ? []
+          : [
+              {
+                type: "local-loading" as const,
+                providerId: "ollama" as const,
+                modelName: recentModel.name,
+              },
+            ];
+      }
+      if (recentModel.provider === "lmstudio") {
+        if (lmStudioError) {
+          return [];
+        }
+        const model = lmStudioModels.find(
+          (candidate) => candidate.modelName === recentModel.name,
+        );
+        if (model) {
+          return [
+            {
+              type: "local" as const,
+              providerId: "lmstudio" as const,
+              model,
+            },
+          ];
+        }
+        return localProvidersLoaded.lmstudio
+          ? []
+          : [
+              {
+                type: "local-loading" as const,
+                providerId: "lmstudio" as const,
+                modelName: recentModel.name,
+              },
+            ];
+      }
+
+      const model = modelsByProviders?.[recentModel.provider]?.find(
+        (candidate) =>
+          isVisibleCatalogModel(recentModel.provider, candidate) &&
+          (recentModel.customModelId
+            ? candidate.type === "custom" &&
+              candidate.id === recentModel.customModelId
+            : candidate.apiName === recentModel.name),
+      );
+      return model
+        ? [
+            {
+              type: "cloud" as const,
+              providerId: recentModel.provider,
+              model,
+            },
+          ]
+        : [];
+    },
+  );
+  const recentModelsWithoutStaleEntries = effectiveRecentModels.filter(
+    (recentModel) => {
+      if (recentModel.provider === "ollama") {
+        return (
+          Boolean(ollamaError) ||
+          !localProvidersLoaded.ollama ||
+          ollamaModels.some(
+            (candidate) => candidate.modelName === recentModel.name,
+          )
+        );
+      }
+      if (recentModel.provider === "lmstudio") {
+        return (
+          Boolean(lmStudioError) ||
+          !localProvidersLoaded.lmstudio ||
+          lmStudioModels.some(
+            (candidate) => candidate.modelName === recentModel.name,
+          )
+        );
+      }
+      if (loading || modelsByProvidersError || providersError) {
+        return true;
+      }
+      if (recentModel.customModelId === undefined) {
+        // The successful query can still contain the bundled fallback catalog,
+        // which is intentionally smaller than the remote catalog. Keep
+        // unresolved built-in identities persisted and merely omit their rows.
+        return true;
+      }
+      return (modelsByProviders?.[recentModel.provider] ?? []).some(
+        (candidate) =>
+          candidate.type === "custom" &&
+          candidate.id === recentModel.customModelId,
+      );
+    },
+  );
+  const normalizedRecentModels = recentModelsWithoutStaleEntries.map(
+    (recentModel) => {
+      if (recentModel.customModelId !== undefined) {
+        return recentModel;
+      }
+      const resolvedModel = modelsByProviders?.[recentModel.provider]?.find(
+        (candidate) => candidate.apiName === recentModel.name,
+      );
+      return resolvedModel?.type === "custom" && resolvedModel.id !== undefined
+        ? { ...recentModel, customModelId: resolvedModel.id }
+        : recentModel;
+    },
+  );
+  const onModelSelect = (params: ModelSelectParams) =>
+    performModelSelect({ ...params, recentModels: normalizedRecentModels });
 
   const getProviderDisplayName = (providerId: string) => {
     const provider = providers?.find((p) => p.id === providerId);
@@ -515,7 +725,7 @@ export function ModelPicker() {
       model: {
         name: model.apiName,
         provider: providerId,
-        customModelId,
+        ...(customModelId !== undefined ? { customModelId } : {}),
       },
       catalogModel: model,
       effortLevel,
@@ -535,13 +745,18 @@ export function ModelPicker() {
     showProvider?: boolean;
     showPrice?: boolean;
   }) => {
-    const isSelected =
-      selectedModel.provider === providerId &&
-      selectedModel.name === model.apiName;
+    const modelRef = {
+      name: model.apiName,
+      provider: providerId,
+      customModelId: model.type === "custom" ? model.id : undefined,
+    };
+    const isSelected = isSameModel(normalizedSelectedModel, modelRef);
+    const modelKey = `${providerId}-${model.apiName}-${modelRef.customModelId ?? "catalog"}`;
     const isLocked = isModelLocked(providerId);
     const isAutoProviderRow = providerId === "auto";
     const isFreeProRow = isFreeProLanguageModel(providerId, model.apiName);
-    const isFreeProviderRow = isFreeOpenRouterModelName(model.apiName);
+    const isFreeProviderRow =
+      providerId === "openrouter" && isFreeOpenRouterModelName(model.apiName);
     const isAutoOpenRouterFreeRow =
       isAutoProviderRow && model.apiName === "free";
     const shouldShowDataSharingDisclosure =
@@ -565,11 +780,6 @@ export function ModelPicker() {
         : freeModelQuota.error
           ? "Unavailable"
           : `${freeModelQuota.messagesRemaining}/${freeModelQuota.messagesLimit} left`;
-    const modelRef = {
-      name: model.apiName,
-      provider: providerId,
-      customModelId: model.type === "custom" ? model.id : undefined,
-    };
     const effortSettings = getEffortSettings(model);
     const currentEffort = isSelected
       ? selectedEffortLevel
@@ -580,6 +790,7 @@ export function ModelPicker() {
             settings.modelEffortPreferences?.[getModelPreferenceKey(modelRef)],
         }).effortLevel;
     const effortLabel = formatEffortLevel(currentEffort);
+    const compactEffortLabel = formatCompactEffortLevel(currentEffort);
     const unlockedAriaLabel = [
       model.displayName,
       showProvider ? getProviderDisplayName(providerId) : null,
@@ -599,28 +810,29 @@ export function ModelPicker() {
       .join(". ");
 
     const rowContent = (
-      <div className="flex justify-between items-center gap-2 w-full">
+      <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
         <span className="min-w-0 flex items-center gap-2">
           {!isAutoProviderRow && (
             <ProviderIcon providerId={providerId} apiName={model.apiName} />
           )}
           <span className="min-w-0 flex flex-col items-start">
             <span
+              title={model.description ? undefined : model.displayName}
               className={cn(
-                "text-[13px] truncate leading-tight",
+                "block max-w-full truncate text-[13px] leading-tight",
                 isLocked && "text-muted-foreground",
               )}
             >
               {model.displayName}
             </span>
             {showProvider && (
-              <span className="text-xs text-muted-foreground truncate">
+              <span className="block max-w-full truncate text-xs text-muted-foreground">
                 {getProviderDisplayName(providerId)}
               </span>
             )}
           </span>
         </span>
-        <span className="flex shrink-0 items-center gap-1.5">
+        <span className="flex min-w-fit items-center gap-1.5">
           {showPrice && <PriceBadge dollarSigns={model.dollarSigns} />}
           {model.tag && !isFreeProRow && (
             <span
@@ -678,8 +890,16 @@ export function ModelPicker() {
           )}
           {!isLocked && (
             <>
-              <span data-effort-level className="text-xs text-muted-foreground">
-                {effortLabel}
+              <span
+                data-effort-level
+                className="text-xs text-muted-foreground"
+                title={
+                  model.description
+                    ? undefined
+                    : `Reasoning effort: ${effortLabel}`
+                }
+              >
+                {compactEffortLabel}
               </span>
               <span
                 data-effort-chevron
@@ -710,7 +930,7 @@ export function ModelPicker() {
 
     const item = isLocked ? (
       <DropdownMenuItem
-        key={`${providerId}-${model.apiName}`}
+        key={modelKey}
         {...commonProps}
         aria-label={
           isFreeProviderRow
@@ -723,7 +943,7 @@ export function ModelPicker() {
       </DropdownMenuItem>
     ) : (
       <DropdownMenuSubTrigger
-        key={`${providerId}-${model.apiName}`}
+        key={modelKey}
         {...commonProps}
         aria-label={`${unlockedAriaLabel}.`}
         disabled={isFreeProRow && freeModelQuota.isQuotaExceeded}
@@ -745,7 +965,7 @@ export function ModelPicker() {
     );
 
     const itemWithTooltip = model.description ? (
-      <Tooltip key={`${providerId}-${model.apiName}`}>
+      <Tooltip key={modelKey}>
         <TooltipTrigger render={item} />
         <TooltipContent side="left" align="start">
           <span className="max-w-64">{model.description}</span>
@@ -760,7 +980,7 @@ export function ModelPicker() {
     }
 
     return (
-      <DropdownMenuSub key={`${providerId}-${model.apiName}`}>
+      <DropdownMenuSub key={modelKey}>
         {itemWithTooltip}
         <DropdownMenuSubContent className="w-52">
           <DropdownMenuLabel>Effort</DropdownMenuLabel>
@@ -790,21 +1010,36 @@ export function ModelPicker() {
     providerId: string,
     models: LanguageModel[],
   ) => {
-    const visibleModels = models.filter((model) => {
-      if (dyadProEnabled && isFreeOpenRouterModelName(model.apiName)) {
-        return false;
-      }
-      return true;
-    });
+    const visibleModels = models.filter((model) =>
+      isVisibleCatalogModel(providerId, model),
+    );
     if (visibleModels.length === 0) {
       return null;
     }
     const provider = providers?.find((p) => p.id === providerId);
     const providerDisplayName = getProviderDisplayName(providerId);
+    const providerState =
+      provider?.type === "custom"
+        ? "Custom provider"
+        : provider?.type === "cloud" && !provider.secondary && dyadProEnabled
+          ? "Pro"
+          : null;
 
     return (
       <DropdownMenuSub key={providerId}>
-        <DropdownMenuSubTrigger className="w-full font-normal">
+        <DropdownMenuSubTrigger
+          className="w-full font-normal"
+          data-provider-id={providerId}
+          aria-label={[
+            providerDisplayName,
+            providerState,
+            formatModelCount(visibleModels.length),
+            "Opens submenu",
+          ]
+            .filter(Boolean)
+            .join(". ")}
+          {...NAVIGATION_SUBMENU_HOVER_PROPS}
+        >
           <div className="flex flex-col items-start w-full">
             <div className="flex items-center gap-2">
               <span>{providerDisplayName}</span>
@@ -818,11 +1053,14 @@ export function ModelPicker() {
               )}
             </div>
             <span className="text-xs text-muted-foreground">
-              {visibleModels.length} models
+              {formatModelCount(visibleModels.length)}
             </span>
           </div>
         </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className={cn("w-64", SCROLL_AREA_CLASS)}>
+        <DropdownMenuSubContent
+          className={cn(MODEL_MENU_WIDTH_CLASS, SCROLL_AREA_CLASS)}
+          data-testid={`other-provider-models-${providerId}`}
+        >
           <DropdownMenuLabel>
             {providerDisplayName + " Models"}
           </DropdownMenuLabel>
@@ -838,6 +1076,7 @@ export function ModelPicker() {
   const renderLocalModelItem = (
     providerId: "ollama" | "lmstudio",
     model: LocalModel,
+    showProvider = false,
   ) => {
     const modelRef = { name: model.modelName, provider: providerId };
     const isSelected =
@@ -852,6 +1091,9 @@ export function ModelPicker() {
             settings.modelEffortPreferences?.[getModelPreferenceKey(modelRef)],
         }).effortLevel;
     const effortLabel = formatEffortLevel(currentEffort);
+    const compactEffortLabel = formatCompactEffortLevel(currentEffort);
+    const providerDisplayName =
+      providerId === "ollama" ? "Ollama" : "LM Studio";
     const selectLocalModel = (effortLevel?: string) => {
       void onModelSelect({
         model: modelRef,
@@ -865,7 +1107,7 @@ export function ModelPicker() {
       <DropdownMenuSub key={`${providerId}-${model.modelName}`}>
         <DropdownMenuSubTrigger
           hideChevron
-          aria-label={`${model.displayName}. Effort: ${effortLabel}. Press Enter to select; press Right Arrow to configure effort.`}
+          aria-label={`${model.displayName}.${showProvider ? ` ${providerDisplayName}.` : ""} Effort: ${effortLabel}. Press Enter to select; press Right Arrow to configure effort.`}
           className={cn(
             "relative py-1.5 w-full",
             isSelected &&
@@ -883,35 +1125,49 @@ export function ModelPicker() {
             }
           }}
         >
-          <div className="flex w-full items-center gap-2">
-            <ProviderIcon providerId={providerId} />
-            <div className="min-w-0 flex flex-col items-start">
-              <span className="text-[13px] leading-tight">
-                {model.displayName}
+          <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <ProviderIcon providerId={providerId} />
+              <div className="min-w-0 flex flex-col items-start">
+                <span
+                  className="block max-w-full truncate text-[13px] leading-tight"
+                  title={model.displayName}
+                >
+                  {model.displayName}
+                </span>
+                <span
+                  className="block max-w-full truncate text-xs text-muted-foreground"
+                  title={
+                    showProvider
+                      ? `${providerDisplayName} · ${model.modelName}`
+                      : model.modelName
+                  }
+                >
+                  {showProvider
+                    ? `${providerDisplayName} · ${model.modelName}`
+                    : model.modelName}
+                </span>
+              </div>
+            </div>
+            <div className="flex min-w-fit items-center gap-1.5">
+              {isSelected && (
+                <CheckIcon className="size-3.5 shrink-0 text-primary" />
+              )}
+              <span
+                data-effort-level
+                className="text-xs text-muted-foreground"
+                title={`Reasoning effort: ${effortLabel}`}
+              >
+                {compactEffortLabel}
               </span>
-              <span className="text-xs text-muted-foreground truncate">
-                {model.modelName}
+              <span
+                data-effort-chevron
+                className="-mr-1 flex size-6 items-center justify-center rounded-sm hover:bg-muted"
+                aria-hidden="true"
+              >
+                <ChevronRightIcon className="size-4" />
               </span>
             </div>
-            {isSelected && (
-              <CheckIcon className="ml-auto size-3.5 text-primary shrink-0" />
-            )}
-            <span
-              data-effort-level
-              className={cn(
-                "text-xs text-muted-foreground",
-                !isSelected && "ml-auto",
-              )}
-            >
-              {effortLabel}
-            </span>
-            <span
-              data-effort-chevron
-              className="-mr-1 flex size-6 items-center justify-center rounded-sm hover:bg-muted"
-              aria-hidden="true"
-            >
-              <ChevronRightIcon className="size-4" />
-            </span>
           </div>
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className="w-52">
@@ -936,6 +1192,132 @@ export function ModelPicker() {
     );
   };
 
+  const renderLocalProviderSubmenu = ({
+    providerId,
+    label,
+    models,
+    loading: localLoading,
+    error,
+  }: {
+    providerId: "ollama" | "lmstudio";
+    label: string;
+    models: LocalModel[];
+    loading: boolean;
+    error: Error | null;
+  }) => {
+    const hasModels = !localLoading && !error && models.length > 0;
+    const statusLabel = localLoading
+      ? "Loading"
+      : error
+        ? "Error loading"
+        : hasModels
+          ? formatModelCount(models.length)
+          : "None available";
+
+    return (
+      <DropdownMenuSub key={providerId}>
+        <DropdownMenuSubTrigger
+          disabled={localLoading && models.length === 0}
+          className="w-full font-normal"
+          aria-label={`${label}. ${statusLabel}. Opens submenu`}
+          {...NAVIGATION_SUBMENU_HOVER_PROPS}
+        >
+          <div className="flex flex-col items-start">
+            <span>{label}</span>
+            {localLoading ? (
+              <span className="text-xs text-muted-foreground">Loading...</span>
+            ) : error ? (
+              <span className="text-xs text-red-500">Error loading</span>
+            ) : !hasModels ? (
+              <span className="text-xs text-muted-foreground">
+                None available
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                {formatModelCount(models.length)}
+              </span>
+            )}
+          </div>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent
+          className={cn(MODEL_MENU_WIDTH_CLASS, SCROLL_AREA_CLASS)}
+        >
+          <DropdownMenuLabel>{label} Models</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {localLoading && models.length === 0 ? (
+            <div className="text-xs text-center py-2 text-muted-foreground">
+              Loading models...
+            </div>
+          ) : error ? (
+            <div className="px-2 py-1.5 text-sm text-red-600">
+              <div className="flex flex-col">
+                <span>Error loading models</span>
+                <span className="text-xs text-muted-foreground">
+                  {providerId === "ollama"
+                    ? "Is Ollama running?"
+                    : error.message}
+                </span>
+              </div>
+            </div>
+          ) : !hasModels ? (
+            <div className="px-2 py-1.5 text-sm">
+              <div className="flex flex-col">
+                <span>No local models found</span>
+                <span className="text-xs text-muted-foreground">
+                  {providerId === "ollama"
+                    ? "Ensure Ollama is running and models are pulled."
+                    : "Ensure LM Studio is running and models are loaded."}
+                </span>
+              </div>
+            </div>
+          ) : (
+            models.map((model) => renderLocalModelItem(providerId, model))
+          )}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    );
+  };
+
+  const renderLocalModelsSubmenu = (testId: string) => (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger className="w-full font-normal">
+        <span>Local models</span>
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="w-64" data-testid={testId}>
+        <DropdownMenuLabel>Local models</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {renderLocalProviderSubmenu({
+          providerId: "ollama",
+          label: "Ollama",
+          models: ollamaModels,
+          loading: ollamaLoading,
+          error: ollamaError,
+        })}
+        {renderLocalProviderSubmenu({
+          providerId: "lmstudio",
+          label: "LM Studio",
+          models: lmStudioModels,
+          loading: lmStudioLoading,
+          error: lmStudioError,
+        })}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+
+  const cloudCatalogGroups = PRICE_TIERS.map((tier) => ({
+    tier,
+    entries: primaryModelEntries
+      .filter((entry) => tierFor(entry.model.dollarSigns) === tier)
+      .sort(
+        (a, b) =>
+          (a.providerId === "openai" ? 0 : 1) -
+          (b.providerId === "openai" ? 0 : 1),
+      ),
+  })).filter((group) => group.entries.length > 0);
+  const hasCloudCatalogEntries =
+    cloudCatalogGroups.length > 0 || otherProviderEntries.length > 0;
+  const cloudCatalogError = modelsByProvidersError ?? providersError;
+
   return (
     <>
       <DropdownMenu open={open} onOpenChange={handleOpenChange}>
@@ -956,7 +1338,7 @@ export function ModelPicker() {
             {modelDisplayName}
           </span>
         </DropdownMenuTrigger>
-        <DropdownMenuContent className="w-[320px]" align="start">
+        <DropdownMenuContent className={MODEL_MENU_WIDTH_CLASS} align="start">
           {/* Trial user upgrade banner */}
           {isTrial && (
             <>
@@ -1017,8 +1399,9 @@ export function ModelPicker() {
                       <span
                         data-effort-level
                         className="text-xs text-muted-foreground"
+                        title={`Reasoning effort: ${formatEffortLevel(trialAutoEffort)}`}
                       >
-                        {formatEffortLevel(trialAutoEffort)}
+                        {formatCompactEffortLevel(trialAutoEffort)}
                       </span>
                       <span
                         data-effort-chevron
@@ -1065,241 +1448,164 @@ export function ModelPicker() {
             </>
           )}
 
-          {/* Cloud models - only show for non-trial users */}
-          {!isTrial &&
-            (loading ? (
-              <div className="text-xs text-center py-2 text-muted-foreground">
-                Loading models...
-              </div>
-            ) : !modelsByProviders ||
-              Object.keys(modelsByProviders).length === 0 ? (
-              <div className="text-xs text-center py-2 text-muted-foreground">
-                No cloud models available
-              </div>
-            ) : (
-              /* Cloud models loaded */
-              <>
-                {/* Auto models at top level if any */}
-                {autoModels.length > 0 && (
-                  <>
-                    {autoModels.map((model) =>
-                      renderCloudModelItem({
-                        providerId: "auto",
-                        model,
-                        showPrice: false,
-                      }),
-                    )}
-                    {Object.keys(modelsByProviders).length > 1 && (
-                      <DropdownMenuSeparator />
-                    )}
-                  </>
-                )}
-
-                {(() => {
-                  const groups = PRICE_TIERS.map((tier) => ({
-                    tier,
-                    entries: flatModelEntries
-                      .filter((e) => tierFor(e.model.dollarSigns) === tier)
-                      // Stable-sort OpenAI to the top of each tier.
-                      .sort(
-                        (a, b) =>
-                          (a.providerId === "openai" ? 0 : 1) -
-                          (b.providerId === "openai" ? 0 : 1),
-                      ),
-                  })).filter((g) => g.entries.length > 0);
-
-                  const nodes: ReactNode[] = [];
-                  groups.forEach(({ tier, entries }, i) => {
-                    if (i > 0) {
-                      nodes.push(
-                        <DropdownMenuSeparator
-                          key={`tier-sep-${tier.label}`}
-                        />,
-                      );
-                    }
-                    nodes.push(
-                      <div
-                        key={`tier-label-${tier.label}`}
-                        className="flex items-center gap-1.5 px-2 pt-1.5 pb-1"
-                      >
-                        <span className="text-[10px] uppercase tracking-wider font-medium text-muted-foreground shrink-0">
-                          {tier.label}
-                        </span>
-                        <span
-                          aria-hidden="true"
-                          className="size-[3px] rounded-full bg-muted-foreground/50 shrink-0"
-                        />
-                        <span className="text-[11px] text-muted-foreground/85 truncate">
-                          {tier.caption}
-                        </span>
-                      </div>,
-                    );
-                    entries.forEach(({ providerId, model }) => {
-                      nodes.push(renderCloudModelItem({ providerId, model }));
-                    });
-                  });
-                  return nodes;
-                })()}
-                {groupedProviders.length > 0 && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger className="w-full font-normal">
-                        <span>More models</span>
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent
-                        className={cn("w-64", SCROLL_AREA_CLASS)}
-                      >
-                        <DropdownMenuLabel>More models</DropdownMenuLabel>
-                        <DropdownMenuSeparator />
-                        {groupedProviders.map(([providerId, models]) =>
-                          renderProviderSubmenu(providerId, models),
-                        )}
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                  </>
-                )}
-              </>
-            ))}
-
-          {/* Local Models - only show for non-trial users */}
+          {/* Non-trial users get a compact quick switcher. */}
           {!isTrial && (
             <>
-              <DropdownMenuSeparator />
-              {/* Local Models Parent SubMenu */}
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger className="w-full font-normal">
-                  <span>Local models</span>
+                  <span>All models</span>
                 </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="w-64">
-                  {/* Ollama Models SubMenu */}
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger
-                      disabled={ollamaLoading && !hasOllamaModels} // Disable if loading and no models yet
-                      className="w-full font-normal"
-                    >
-                      <div className="flex flex-col items-start">
-                        <span>Ollama</span>
-                        {ollamaLoading ? (
-                          <span className="text-xs text-muted-foreground">
-                            Loading...
-                          </span>
-                        ) : ollamaError ? (
-                          <span className="text-xs text-red-500">
-                            Error loading
-                          </span>
-                        ) : !hasOllamaModels ? (
-                          <span className="text-xs text-muted-foreground">
-                            None available
-                          </span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">
-                            {ollamaModels.length} models
-                          </span>
-                        )}
-                      </div>
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent
-                      className={cn("w-64", SCROLL_AREA_CLASS)}
-                    >
-                      <DropdownMenuLabel>Ollama Models</DropdownMenuLabel>
-                      <DropdownMenuSeparator />
+                <DropdownMenuSubContent
+                  className={cn(MODEL_MENU_WIDTH_CLASS, SCROLL_AREA_CLASS)}
+                  data-testid="more-models-submenu"
+                  data-catalog-loading={loading}
+                >
+                  <DropdownMenuLabel>All models</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {loading ? (
+                    <div className="text-xs text-center py-2 text-muted-foreground">
+                      Loading cloud models...
+                    </div>
+                  ) : !hasCloudCatalogEntries ? (
+                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                      {cloudCatalogError
+                        ? "Couldn’t load cloud models"
+                        : "No cloud models available"}
+                    </div>
+                  ) : (
+                    <>
+                      {(() => {
+                        const nodes: ReactNode[] = [];
+                        cloudCatalogGroups.forEach(
+                          ({ tier, entries }, index) => {
+                            if (index > 0) {
+                              nodes.push(
+                                <DropdownMenuSeparator
+                                  key={`tier-sep-${tier.label}`}
+                                />,
+                              );
+                            }
+                            nodes.push(
+                              <div
+                                key={`tier-label-${tier.label}`}
+                                className="flex items-center gap-1.5 px-2 pt-1.5 pb-1"
+                              >
+                                <span className="text-[10px] uppercase tracking-wider font-medium text-muted-foreground shrink-0">
+                                  {tier.label}
+                                </span>
+                                <span
+                                  aria-hidden="true"
+                                  className="size-[3px] rounded-full bg-muted-foreground/50 shrink-0"
+                                />
+                                <span className="text-[11px] text-muted-foreground/85 truncate">
+                                  {tier.caption}
+                                </span>
+                              </div>,
+                            );
+                            entries.forEach(({ providerId, model }) => {
+                              nodes.push(
+                                renderCloudModelItem({ providerId, model }),
+                              );
+                            });
+                          },
+                        );
+                        return nodes;
+                      })()}
 
-                      {ollamaLoading && ollamaModels.length === 0 ? ( // Show loading only if no models are loaded yet
-                        <div className="text-xs text-center py-2 text-muted-foreground">
-                          Loading models...
-                        </div>
-                      ) : ollamaError ? (
-                        <div className="px-2 py-1.5 text-sm text-red-600">
-                          <div className="flex flex-col">
-                            <span>Error loading models</span>
-                            <span className="text-xs text-muted-foreground">
-                              Is Ollama running?
-                            </span>
+                      {otherProviderEntries.length > 0 && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <div className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-wider font-medium text-muted-foreground">
+                            Other providers
                           </div>
-                        </div>
-                      ) : !hasOllamaModels ? (
-                        <div className="px-2 py-1.5 text-sm">
-                          <div className="flex flex-col">
-                            <span>No local models found</span>
-                            <span className="text-xs text-muted-foreground">
-                              Ensure Ollama is running and models are pulled.
-                            </span>
-                          </div>
-                        </div>
-                      ) : (
-                        ollamaModels.map((model: LocalModel) =>
-                          renderLocalModelItem("ollama", model),
-                        )
+                          {otherProviderEntries.map(([providerId, models]) =>
+                            renderProviderSubmenu(providerId, models),
+                          )}
+                        </>
                       )}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-
-                  {/* LM Studio Models SubMenu */}
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger
-                      disabled={lmStudioLoading && !hasLMStudioModels} // Disable if loading and no models yet
-                      className="w-full font-normal"
-                    >
-                      <div className="flex flex-col items-start">
-                        <span>LM Studio</span>
-                        {lmStudioLoading ? (
-                          <span className="text-xs text-muted-foreground">
-                            Loading...
-                          </span>
-                        ) : lmStudioError ? (
-                          <span className="text-xs text-red-500">
-                            Error loading
-                          </span>
-                        ) : !hasLMStudioModels ? (
-                          <span className="text-xs text-muted-foreground">
-                            None available
-                          </span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">
-                            {lmStudioModels.length} models
-                          </span>
-                        )}
-                      </div>
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent
-                      className={cn("w-64", SCROLL_AREA_CLASS)}
-                    >
-                      <DropdownMenuLabel>LM Studio Models</DropdownMenuLabel>
-                      <DropdownMenuSeparator />
-
-                      {lmStudioLoading && lmStudioModels.length === 0 ? ( // Show loading only if no models are loaded yet
-                        <div className="text-xs text-center py-2 text-muted-foreground">
-                          Loading models...
-                        </div>
-                      ) : lmStudioError ? (
-                        <div className="px-2 py-1.5 text-sm text-red-600">
-                          <div className="flex flex-col">
-                            <span>Error loading models</span>
-                            <span className="text-xs text-muted-foreground">
-                              {lmStudioError.message}{" "}
-                              {/* Display specific error */}
-                            </span>
-                          </div>
-                        </div>
-                      ) : !hasLMStudioModels ? (
-                        <div className="px-2 py-1.5 text-sm">
-                          <div className="flex flex-col">
-                            <span>No loaded models found</span>
-                            <span className="text-xs text-muted-foreground">
-                              Ensure LM Studio is running and models are loaded.
-                            </span>
-                          </div>
-                        </div>
-                      ) : (
-                        lmStudioModels.map((model: LocalModel) =>
-                          renderLocalModelItem("lmstudio", model),
-                        )
-                      )}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
+                    </>
+                  )}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+
+              {renderLocalModelsSubmenu("local-models-submenu")}
+              <DropdownMenuSeparator />
+
+              {loading ? (
+                <div className="text-xs text-center py-2 text-muted-foreground">
+                  Loading models...
+                </div>
+              ) : (
+                <>
+                  {autoModels.length > 0 && (
+                    <>
+                      {autoModels.map((model) =>
+                        renderCloudModelItem({
+                          providerId: "auto",
+                          model,
+                          showPrice: false,
+                        }),
+                      )}
+                      {recentModelEntries.length > 0 && (
+                        <DropdownMenuSeparator />
+                      )}
+                    </>
+                  )}
+
+                  {cloudCatalogError && autoModels.length === 0 && (
+                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                      Couldn’t load cloud models
+                    </div>
+                  )}
+
+                  {recentModelEntries.length > 0 && (
+                    <>
+                      <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        Recent
+                      </DropdownMenuLabel>
+                      {recentModelEntries.map((entry) => {
+                        if (entry.type === "cloud") {
+                          return renderCloudModelItem({
+                            providerId: entry.providerId,
+                            model: entry.model,
+                            showProvider: true,
+                          });
+                        }
+                        if (entry.type === "local") {
+                          return renderLocalModelItem(
+                            entry.providerId,
+                            entry.model,
+                            true,
+                          );
+                        }
+                        const providerDisplayName =
+                          entry.providerId === "ollama"
+                            ? "Ollama"
+                            : "LM Studio";
+                        return (
+                          <DropdownMenuItem
+                            key={`${entry.providerId}-${entry.modelName}-loading`}
+                            disabled
+                            aria-label={`${entry.modelName}. ${providerDisplayName}. Loading local model`}
+                            className="py-1.5"
+                          >
+                            <ProviderIcon providerId={entry.providerId} />
+                            <span className="min-w-0 truncate text-[13px]">
+                              {entry.modelName}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {providerDisplayName}
+                            </span>
+                            <span className="ml-auto text-xs text-muted-foreground">
+                              Loading...
+                            </span>
+                          </DropdownMenuItem>
+                        );
+                      })}
+                    </>
+                  )}
+                </>
+              )}
             </>
           )}
 

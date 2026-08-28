@@ -4,7 +4,9 @@ import type {
   CreateCustomLanguageModelProviderParams,
   CreateCustomLanguageModelParams,
 } from "@/ipc/types";
+import { languageModelContracts } from "@/ipc/types";
 import { createLoggedHandler } from "./safe_handle";
+import { createLoggedTypedHandler } from "./base";
 import log from "electron-log";
 import {
   CUSTOM_PROVIDER_PREFIX,
@@ -24,6 +26,7 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 const logger = log.scope("language_model_handlers");
 const handle = createLoggedHandler(logger);
+const handleTyped = createLoggedTypedHandler(logger);
 
 export function registerLanguageModelHandlers() {
   handle(
@@ -102,7 +105,7 @@ export function registerLanguageModelHandlers() {
     async (
       event: IpcMainInvokeEvent,
       params: CreateCustomLanguageModelParams,
-    ): Promise<void> => {
+    ): Promise<number> => {
       const {
         apiName,
         displayName,
@@ -143,17 +146,102 @@ export function registerLanguageModelHandlers() {
       }
 
       // Insert the new model
-      await db.insert(languageModelsSchema).values({
-        displayName,
-        apiName,
-        builtinProviderId: provider.type === "cloud" ? providerId : undefined,
-        customProviderId: provider.type === "custom" ? providerId : undefined,
-        description: description || null,
-        max_output_tokens: maxOutputTokens || null,
-        context_window: contextWindow || null,
-      });
+      const result = db
+        .insert(languageModelsSchema)
+        .values({
+          displayName,
+          apiName,
+          builtinProviderId: provider.type === "cloud" ? providerId : undefined,
+          customProviderId: provider.type === "custom" ? providerId : undefined,
+          description: description || null,
+          max_output_tokens: maxOutputTokens || null,
+          context_window: contextWindow || null,
+        })
+        .run();
+      return Number(result.lastInsertRowid);
     },
   );
+
+  handleTyped(
+    languageModelContracts.updateCustomModel,
+    async (_event, params): Promise<number> => {
+      const {
+        id,
+        apiName,
+        displayName,
+        providerId,
+        description,
+        maxOutputTokens,
+        contextWindow,
+      } = params;
+
+      if (!apiName) {
+        throw new DyadError(
+          "Model API name is required",
+          DyadErrorKind.Validation,
+        );
+      }
+      if (!displayName) {
+        throw new DyadError(
+          "Model display name is required",
+          DyadErrorKind.Validation,
+        );
+      }
+      if (!providerId) {
+        throw new DyadError(
+          "Provider ID is required",
+          DyadErrorKind.Validation,
+        );
+      }
+
+      const providers = await getLanguageModelProviders();
+      const provider = providers.find(
+        (candidate) => candidate.id === providerId,
+      );
+      if (!provider) {
+        throw new DyadError(
+          `Provider with ID "${providerId}" not found`,
+          DyadErrorKind.NotFound,
+        );
+      }
+      if (provider.type === "local") {
+        throw new DyadError(
+          "Local models cannot be updated",
+          DyadErrorKind.Validation,
+        );
+      }
+
+      const result = db
+        .update(languageModelsSchema)
+        .set({
+          displayName,
+          apiName,
+          description: description || null,
+          max_output_tokens: maxOutputTokens || null,
+          context_window: contextWindow || null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(languageModelsSchema.id, id),
+            provider.type === "cloud"
+              ? eq(languageModelsSchema.builtinProviderId, providerId)
+              : eq(languageModelsSchema.customProviderId, providerId),
+          ),
+        )
+        .run();
+
+      if (result.changes === 0) {
+        throw new DyadError(
+          `Custom model with ID "${id}" was not found for provider "${providerId}"`,
+          DyadErrorKind.NotFound,
+        );
+      }
+
+      return id;
+    },
+  );
+
   handle(
     "edit-custom-language-model-provider",
     async (

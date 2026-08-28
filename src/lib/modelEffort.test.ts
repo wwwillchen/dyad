@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EffortSettingsSchema } from "@/ipc/types/language-model";
 import {
   createModelSelection,
+  formatCompactEffortLevel,
   formatEffortLevel,
   getEffortSettings,
   getModelPreferenceKey,
@@ -51,6 +52,15 @@ describe("model effort", () => {
       resolveEffortLevel({ catalogModel, preferredEffortLevel: "high" }),
     ).toBe("xhigh");
     expect(formatEffortLevel("very_high")).toBe("Very High");
+  });
+
+  it("formats common effort levels compactly without obscuring custom levels", () => {
+    expect(
+      ["none", "minimal", "low", "medium", "high", "xhigh", "maximum"].map(
+        formatCompactEffortLevel,
+      ),
+    ).toEqual(["None", "Min", "Low", "Med", "High", "X-High", "Max"]);
+    expect(formatCompactEffortLevel("very_high")).toBe("Very High");
   });
 
   it("preserves a persisted arbitrary effort while its model is unavailable", () => {

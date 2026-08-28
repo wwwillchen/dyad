@@ -3,7 +3,9 @@
  * Handles model and provider selection.
  */
 
-import { expect, type Locator, Page } from "@playwright/test";
+import { errors, expect, type Locator, Page } from "@playwright/test";
+
+const QUICK_VISIBILITY_TIMEOUT_MS = 1_000;
 
 export class ModelPicker {
   constructor(public page: Page) {}
@@ -27,27 +29,15 @@ export class ModelPicker {
       .first();
   }
 
-  private async clickMenuItemIfVisible(name: string, exact = true) {
-    const item = this.getMenuItem(name, exact);
-    if (
-      await item
-        .waitFor({ state: "visible", timeout: 1_000 })
-        .then(() => true)
-        .catch(() => false)
-    ) {
-      await item.click();
-      return true;
-    }
-    return false;
-  }
-
   private getModelItem(provider: string, model: string) {
     return this.page
       .locator("[data-model-provider][data-model-name]")
       .filter({
         has: this.page.getByText(model, { exact: true }),
       })
-      .and(this.page.locator(`[data-model-provider="${provider}"]`))
+      .and(
+        this.page.locator(`[data-model-provider="${provider.toLowerCase()}"]`),
+      )
       .first();
   }
 
@@ -71,9 +61,37 @@ export class ModelPicker {
 
   private async clickModel(provider: string, model: string) {
     const providerModelItem = this.getModelItem(provider, model);
-    const modelItem = (await providerModelItem.count())
+    const modelItem = (await this.isVisibleSoon(providerModelItem))
       ? providerModelItem
       : this.getEffortModelItem(model);
+    await expect(modelItem).toBeVisible();
+    await this.selectVisibleModel(modelItem, model);
+  }
+
+  private async isVisibleSoon(locator: Locator) {
+    try {
+      await locator.waitFor({
+        state: "visible",
+        timeout: QUICK_VISIBILITY_TIMEOUT_MS,
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof errors.TimeoutError) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async selectProviderSubmenuModel(providerId: string, model: string) {
+    const providerSubmenu = this.page.getByTestId(
+      `other-provider-models-${providerId}`,
+    );
+    await expect(providerSubmenu).toBeVisible();
+    const modelItem = providerSubmenu
+      .locator("[data-model-provider][data-model-name]")
+      .filter({ has: this.page.getByText(model, { exact: true }) })
+      .first();
     await expect(modelItem).toBeVisible();
     await this.selectVisibleModel(modelItem, model);
   }
@@ -81,35 +99,39 @@ export class ModelPicker {
   async selectModel({ provider, model }: { provider: string; model: string }) {
     await this.page.getByTestId("model-picker").click();
     const directModel = this.getModelItem(provider, model);
-    if (
-      await directModel
-        .waitFor({ state: "visible", timeout: 1_000 })
-        .then(() => true)
-        .catch(() => false)
-    ) {
+    if (await this.isVisibleSoon(directModel)) {
       await this.selectVisibleModel(directModel, model);
       return;
     }
-    const directEffortModel = this.getEffortModelItem(model);
-    if (
-      await directEffortModel
-        .waitFor({ state: "visible", timeout: 1_000 })
-        .then(() => true)
-        .catch(() => false)
-    ) {
-      await this.selectVisibleModel(directEffortModel, model);
+
+    await this.getMenuItem("All models").click();
+    const catalogMenu = this.page.getByTestId("more-models-submenu");
+    await expect(catalogMenu).toBeVisible();
+    await expect(catalogMenu).toHaveAttribute("data-catalog-loading", "false");
+
+    if (await this.isVisibleSoon(directModel)) {
+      await this.selectVisibleModel(directModel, model);
       return;
     }
 
-    if (!(await this.clickMenuItemIfVisible(provider, false))) {
-      await this.getMenuItem("More models").click();
-      await this.getMenuItem(provider, false).click();
+    const providerItem = catalogMenu
+      .locator("[data-provider-id]")
+      .filter({ hasText: provider })
+      .first();
+    if (await this.isVisibleSoon(providerItem)) {
+      const providerId = await providerItem.getAttribute("data-provider-id");
+      if (providerId) {
+        await providerItem.click();
+        await this.selectProviderSubmenuModel(providerId, model);
+        return;
+      }
     }
+
     await this.clickModel(provider, model);
   }
 
   async selectTestModel() {
-    // Custom provider models appear directly in the flat tier list.
+    // Custom provider models live in their provider submenu in All models.
     await this.selectModel({ provider: "test-provider", model: "test-model" });
   }
 
@@ -129,7 +151,7 @@ export class ModelPicker {
 
   async selectTestAzureModel() {
     await this.page.getByTestId("model-picker").click();
-    await this.getMenuItem("More models").click();
+    await this.getMenuItem("All models").click();
     await this.getMenuItem("Azure OpenAI", false).click();
     await this.clickModel("azure", "GPT-5");
   }

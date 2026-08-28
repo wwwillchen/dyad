@@ -87,6 +87,13 @@ export type CreateCustomLanguageModelParams = z.infer<
   typeof CreateCustomLanguageModelParamsSchema
 >;
 
+export const UpdateCustomLanguageModelParamsSchema =
+  CreateCustomLanguageModelParamsSchema.extend({ id: z.number() });
+
+export type UpdateCustomLanguageModelParams = z.infer<
+  typeof UpdateCustomLanguageModelParamsSchema
+>;
+
 export const DeleteCustomModelParamsSchema = z.object({
   providerId: z.string(),
   modelApiName: z.string(),
@@ -136,7 +143,13 @@ export const languageModelContracts = {
   createCustomModel: defineContract({
     channel: "create-custom-language-model",
     input: CreateCustomLanguageModelParamsSchema,
-    output: z.void(),
+    output: z.number(),
+  }),
+
+  updateCustomModel: defineContract({
+    channel: "update-custom-language-model",
+    input: UpdateCustomLanguageModelParamsSchema,
+    output: z.number(),
   }),
 
   deleteCustomModel: defineContract({

@@ -85,6 +85,8 @@ Before writing code to address PR review comments, run `git fetch <remote> <bran
 - Read the remote commit's diff before touching anything. If it addresses the same comments, `git reset --hard <remote>/<branch>` and replay only your genuinely new commits on top — do **not** force-push your duplicate over a version that has already been posted and had its threads resolved.
 - Verify the resolution status of the threads (`isResolved` in the `reviewThreads` GraphQL query) before assuming there is work left to do.
 
+Before running `pr_push.sh` from a worktree for an existing fork PR, make the local branch track the PR's actual head remote and ref. A differently named, untracked local branch stops matching the PR once it gains a new commit, so the helper can push that local name and open a duplicate PR instead of updating the intended one.
+
 ## Final automated-review audit
 
 An automated review workflow can finish successfully before its GitHub review
