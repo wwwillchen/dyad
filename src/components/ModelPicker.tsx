@@ -177,6 +177,7 @@ export function ModelPicker() {
     chat && (chat.modelSelection || chat.messages.length > 0),
   );
   const resolvedRecentModelsRef = useRef<LargeLanguageModel[] | null>(null);
+  const normalizedRecentModelsRef = useRef<LargeLanguageModel[] | null>(null);
 
   const onModelSelect = async ({
     model,
@@ -235,7 +236,8 @@ export function ModelPicker() {
           : {}
         : {
             recentModels: addRecentModel(
-              recentModelsWithoutStaleEntries,
+              normalizedRecentModelsRef.current ??
+                recentModelsWithoutStaleEntries,
               model,
             ),
           };
@@ -437,10 +439,16 @@ export function ModelPicker() {
   const selectedCatalogModel = modelsByProviders?.[
     selectedModel.provider
   ]?.find((model) =>
-    selectedModel.customModelId
+    selectedModel.customModelId !== undefined
       ? model.type === "custom" && model.id === selectedModel.customModelId
       : model.apiName === selectedModel.name,
   );
+  const normalizedSelectedModel =
+    selectedModel.customModelId === undefined &&
+    selectedCatalogModel?.type === "custom" &&
+    selectedCatalogModel.id !== undefined
+      ? { ...selectedModel, customModelId: selectedCatalogModel.id }
+      : selectedModel;
   const selectedEffortLevel = createModelSelection({
     model: selectedModel,
     catalogModel: selectedCatalogModel,
@@ -620,6 +628,19 @@ export function ModelPicker() {
     },
   );
   resolvedRecentModelsRef.current = recentModelsWithoutStaleEntries;
+  normalizedRecentModelsRef.current = recentModelsWithoutStaleEntries.map(
+    (recentModel) => {
+      if (recentModel.customModelId !== undefined) {
+        return recentModel;
+      }
+      const resolvedModel = modelsByProviders?.[recentModel.provider]?.find(
+        (candidate) => candidate.apiName === recentModel.name,
+      );
+      return resolvedModel?.type === "custom" && resolvedModel.id !== undefined
+        ? { ...recentModel, customModelId: resolvedModel.id }
+        : recentModel;
+    },
+  );
 
   const getProviderDisplayName = (providerId: string) => {
     const provider = providers?.find((p) => p.id === providerId);
@@ -741,7 +762,7 @@ export function ModelPicker() {
       provider: providerId,
       customModelId: model.type === "custom" ? model.id : undefined,
     };
-    const isSelected = isSameModel(selectedModel, modelRef);
+    const isSelected = isSameModel(normalizedSelectedModel, modelRef);
     const modelKey = `${providerId}-${model.apiName}-${modelRef.customModelId ?? "catalog"}`;
     const isLocked = isModelLocked(providerId);
     const isAutoProviderRow = providerId === "auto";
@@ -1442,8 +1463,6 @@ export function ModelPicker() {
           {/* Non-trial users get a compact quick switcher. */}
           {!isTrial && (
             <>
-              {renderLocalModelsSubmenu("local-models-submenu")}
-
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger className="w-full font-normal">
                   <span>All models</span>
@@ -1519,6 +1538,9 @@ export function ModelPicker() {
                   )}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+
+              {renderLocalModelsSubmenu("local-models-submenu")}
+              <DropdownMenuSeparator />
 
               {loading ? (
                 <div className="text-xs text-center py-2 text-muted-foreground">

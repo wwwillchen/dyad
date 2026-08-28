@@ -32,6 +32,11 @@ vi.mock("@/hooks/useSettings", () => ({
           name: "shared-api-name",
           customModelId: 12,
         },
+        {
+          provider: "openai",
+          name: "shared-api-name",
+          customModelId: 99,
+        },
       ],
     },
     updateSettings: mocks.updateSettings,
@@ -98,17 +103,39 @@ describe("EditCustomModelDialog", () => {
     fireEvent.change(screen.getByLabelText("Name*"), {
       target: { value: "Updated name" },
     });
+    fireEvent.change(screen.getByLabelText("Model ID*"), {
+      target: { value: "renamed-api-name" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Update Model" }));
 
     await waitFor(() => {
       expect(mocks.updateCustomModel).toHaveBeenCalledWith({
         id: 12,
-        apiName: "shared-api-name",
+        apiName: "renamed-api-name",
         displayName: "Updated name",
         providerId: "openai",
         description: undefined,
         maxOutputTokens: undefined,
         contextWindow: undefined,
+      });
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        selectedModel: {
+          provider: "openai",
+          name: "renamed-api-name",
+          customModelId: 12,
+        },
+        recentModels: [
+          {
+            provider: "openai",
+            name: "renamed-api-name",
+            customModelId: 12,
+          },
+          {
+            provider: "openai",
+            name: "shared-api-name",
+            customModelId: 99,
+          },
+        ],
       });
     });
   });

@@ -594,6 +594,22 @@ describe("ModelPicker", () => {
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
+  it("puts common catalog navigation before local models and quick choices", () => {
+    render(<ModelPicker />);
+
+    const allModels = screen.getByText("All models").closest("button")!;
+    const localModels = screen.getByText("Local models").closest("button")!;
+    const localNavigationGroup = localModels.parentElement!;
+
+    expect(
+      allModels.compareDocumentPosition(localModels) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      localNavigationGroup.nextElementSibling?.getAttribute("data-slot"),
+    ).toBe("dropdown-menu-separator");
+  });
+
   it("shows up to five persisted specific models in a Recent section", () => {
     mocks.settings.recentModels = [
       { provider: "openai", name: "gpt-5" },
@@ -646,26 +662,36 @@ describe("ModelPicker", () => {
     });
   });
 
-  it("preserves legacy custom and hidden catalog recents when selecting", async () => {
+  it("normalizes legacy custom recents without duplicating them", async () => {
     mocks.renderSubContent = true;
+    mocks.settings.selectedModel = {
+      provider: "custom",
+      name: "shared-model",
+    };
     mocks.settings.recentModels = [
       { provider: "custom", name: "shared-model" },
       { provider: "openrouter", name: "openrouter/free" },
     ];
 
     render(<ModelPicker />);
-    fireEvent.click(
-      document.querySelector(
-        '[data-model-provider="xai"][data-model-name="grok-code-fast-1"]',
-      )!,
-    );
+    const customARow = screen.getAllByLabelText(/Custom A.*Selected/)[0];
+    const customBRow = screen.getAllByLabelText(/^Custom B/)[0];
+    expect(customBRow.getAttribute("aria-label")).not.toContain("Selected");
+    fireEvent.click(customARow);
 
     await waitFor(() => {
       expect(mocks.updateSettings).toHaveBeenCalledWith({
-        selectedModel: { provider: "xai", name: "grok-code-fast-1" },
+        selectedModel: {
+          provider: "custom",
+          name: "shared-model",
+          customModelId: 1,
+        },
         recentModels: [
-          { provider: "xai", name: "grok-code-fast-1" },
-          { provider: "custom", name: "shared-model" },
+          {
+            provider: "custom",
+            name: "shared-model",
+            customModelId: 1,
+          },
           { provider: "openrouter", name: "openrouter/free" },
         ],
       });
