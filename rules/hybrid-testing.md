@@ -96,6 +96,10 @@ module-scope `DYAD_ENGINE_URL` constants and switch those call sites to
 - Suppress known-noisy test console output (React `act(...)` warnings,
   TanStack `useRouter` provider warnings) via `noisyConsolePatterns` in
   `vitest.config.ts` rather than letting it accumulate.
+- If a hybrid test triggers a success toast but does not assert toast behavior,
+  partially mock the relevant `@/lib/toast` helper. Sonner's auto-dismiss timer
+  can otherwise fire after happy-dom teardown on slower full-suite runs and
+  report `ReferenceError: window is not defined` from `sonner/dist/index.mjs`.
 
 Full `npm test` runs can fail inside the Codex sandbox before test logic runs
 when OAuth, proxy, or hybrid harness suites bind/connect to loopback ports. If

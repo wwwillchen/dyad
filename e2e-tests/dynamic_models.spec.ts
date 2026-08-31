@@ -90,6 +90,9 @@ testWithFallbackCatalog(
       po.page.getByText("GPT 5.2 Remote", { exact: true }),
     ).not.toBeVisible();
 
+    // The nested model menu is modal and intentionally blocks sidebar clicks.
+    await po.page.keyboard.press("Escape");
+
     await po.navigation.goToLibraryTab();
     await po.page.getByRole("link", { name: "Themes" }).click();
     await po.page.getByRole("button", { name: "New Theme" }).click();

@@ -352,24 +352,21 @@ export class PageObject {
   }
 
   async pinBuildChatModeForSetup() {
-    await this.page.evaluate(async () => {
-      await (window as any).electron.ipcRenderer.invoke("set-user-settings", {
+    await expect(async () => {
+      await this.page.evaluate(async () => {
+        await (window as any).electron.ipcRenderer.invoke("set-user-settings", {
+          selectedChatMode: "build",
+          defaultChatMode: "build",
+        });
+      });
+      expect({
+        selectedChatMode: this.settings.recordSettings().selectedChatMode,
+        defaultChatMode: this.settings.recordSettings().defaultChatMode,
+      }).toEqual({
         selectedChatMode: "build",
         defaultChatMode: "build",
       });
-    });
-    await expect
-      .poll(
-        () => ({
-          selectedChatMode: this.settings.recordSettings().selectedChatMode,
-          defaultChatMode: this.settings.recordSettings().defaultChatMode,
-        }),
-        { timeout: Timeout.MEDIUM },
-      )
-      .toEqual({
-        selectedChatMode: "build",
-        defaultChatMode: "build",
-      });
+    }).toPass({ timeout: Timeout.MEDIUM });
   }
 
   async setUp({
