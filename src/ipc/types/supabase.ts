@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CreateProjectRequestBody } from "@dyad-sh/supabase-management-js";
 import {
   defineContract,
   defineEvent,
@@ -98,6 +99,83 @@ export type SupabaseRedeployProgress = z.infer<
   typeof SupabaseRedeployProgressSchema
 >;
 
+/**
+ * Regions offered in the create-project picker. Hard-coded because the
+ * Management API has no endpoint that lists them. Supabase stays the authority
+ * on what is actually valid — see `SupabaseRegionSchema` — so a stale list only
+ * means a newly added region is missing from the dropdown.
+ */
+export const SUPABASE_REGIONS = [
+  { id: "us-east-1", label: "East US (North Virginia)" },
+  { id: "us-east-2", label: "East US (Ohio)" },
+  { id: "us-west-1", label: "West US (North California)" },
+  { id: "us-west-2", label: "West US (Oregon)" },
+  { id: "ca-central-1", label: "Canada (Central)" },
+  { id: "sa-east-1", label: "South America (Sao Paulo)" },
+  { id: "eu-west-1", label: "West EU (Ireland)" },
+  { id: "eu-west-2", label: "West EU (London)" },
+  { id: "eu-west-3", label: "West EU (Paris)" },
+  { id: "eu-central-1", label: "Central EU (Frankfurt)" },
+  { id: "eu-central-2", label: "Central EU (Zurich)" },
+  { id: "eu-north-1", label: "North EU (Stockholm)" },
+  { id: "ap-south-1", label: "South Asia (Mumbai)" },
+  { id: "ap-southeast-1", label: "Southeast Asia (Singapore)" },
+  { id: "ap-northeast-1", label: "Northeast Asia (Tokyo)" },
+  { id: "ap-northeast-2", label: "Northeast Asia (Seoul)" },
+  { id: "ap-southeast-2", label: "Oceania (Sydney)" },
+  { id: "ap-east-1", label: "East Asia (Hong Kong)" },
+] as const;
+
+export const DEFAULT_SUPABASE_REGION = "us-east-1";
+
+export const SUPABASE_PROJECT_NAME_MAX_LENGTH = 64;
+
+export type SupabaseRegionId = (typeof SUPABASE_REGIONS)[number]["id"];
+
+// Type-only, so nothing from the SDK reaches the renderer bundle. Fails the
+// typecheck naming the offender if the list above and the region enum in the
+// Management API spec ever diverge, in either direction.
+//
+// If a `@dyad-sh/supabase-management-js` bump fails the typecheck here, that is
+// this guard doing its job: Supabase added or renamed a region, and
+// `SUPABASE_REGIONS` above needs the same edit.
+type AssertNever<T extends never> = T;
+type _EveryApiRegionIsOffered = AssertNever<
+  Exclude<CreateProjectRequestBody["region"], SupabaseRegionId>
+>;
+type _NoRegionOfferedThatTheApiRejects = AssertNever<
+  Exclude<SupabaseRegionId, CreateProjectRequestBody["region"]>
+>;
+
+/**
+ * Deliberately not an enum over `SUPABASE_REGIONS`: that would make the local
+ * list a second gate, so a region Supabase added would be rejected here before
+ * it could ever be sent. Supabase rejects a bad region with an explanation the
+ * create path already surfaces.
+ */
+export const SupabaseRegionSchema = z.string().min(1);
+
+export const CreateSupabaseProjectParamsSchema = z.object({
+  appId: z.number(),
+  // Trimmed here too, not just in the form: a non-UI caller sending "   " would
+  // otherwise pass validation and reach Supabase as an empty name.
+  name: z.string().trim().min(1).max(SUPABASE_PROJECT_NAME_MAX_LENGTH),
+  organizationSlug: z.string().min(1),
+  region: SupabaseRegionSchema,
+});
+
+export type CreateSupabaseProjectParams = z.infer<
+  typeof CreateSupabaseProjectParamsSchema
+>;
+
+/**
+ * Set as the `code` on the create failure that leaves a real project behind,
+ * unlinked. `code` survives IPC, so the renderer can tell that one failure
+ * apart from every other way a create can fail.
+ */
+export const SUPABASE_PROJECT_CREATED_BUT_UNLINKED =
+  "supabase_project_created_but_unlinked";
+
 // =============================================================================
 // Supabase Contracts
 // =============================================================================
@@ -121,6 +199,35 @@ export const supabaseContracts = {
     output: z.array(SupabaseProjectSchema),
   }),
 
+  /**
+   * Creating and linking are one contract on purpose: a project created but not
+   * linked would be an orphan the user has to clean up in the dashboard, which
+   * is the trip this feature exists to avoid.
+   */
+  createProject: defineContract({
+    channel: "supabase:create-project",
+    input: CreateSupabaseProjectParamsSchema,
+    output: SupabaseProjectSchema,
+    // The mutation's onSuccess refreshes only the window that fired it, and the
+    // same app can be open in another. `apps` as well as `app` because the list
+    // decides which provider connector a window renders.
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+      // The project list itself gained an entry, so a peer window with the
+      // selector open would otherwise not offer the new project.
+      { family: "provider-status", provider: "supabase" },
+    ],
+    // The acting window already refreshes these in the mutation's onSuccess.
+    // Without this it would refetch the project list a second time, cancelling
+    // the one in flight, and invalidate settings for good measure.
+    originHandles: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+      { family: "provider-status", provider: "supabase" },
+    ],
+  }),
+
   listBranches: defineContract({
     channel: "supabase:list-branches",
     input: ListSupabaseBranchesParamsSchema,
@@ -133,16 +240,28 @@ export const supabaseContracts = {
     output: z.array(ConsoleEntrySchema),
   }),
 
+  // Same scopes as the Neon equivalents: these repoint an app's provider too,
+  // and a peer window that misses it keeps offering the other provider for an
+  // app that now has one. No `provider-status` here — repointing an app does
+  // not change the project list.
   setAppProject: defineContract({
     channel: "supabase:set-app-project",
     input: SetSupabaseAppProjectParamsSchema,
     output: z.void(),
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
   }),
 
   unsetAppProject: defineContract({
     channel: "supabase:unset-app-project",
     input: z.object({ app: z.number() }),
     output: z.void(),
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.app },
+    ],
   }),
 
   /**

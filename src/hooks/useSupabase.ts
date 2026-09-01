@@ -17,6 +17,8 @@ import {
   SupabaseProject,
   SupabaseBranch,
   SupabaseRedeployProgress,
+  CreateSupabaseProjectParams,
+  SUPABASE_PROJECT_CREATED_BUT_UNLINKED,
 } from "@/ipc/types";
 import { useSettings } from "./useSettings";
 import { isSupabaseConnected } from "@/lib/schemas";
@@ -24,6 +26,19 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useAppRunRemoteManager } from "@/app_run/AppRunRemoteProvider";
 
 const EDGE_LOGS_POLL_INTERVAL_MS = 5_000;
+
+/**
+ * Did a create fail *after* the project was created? Matched on the code the
+ * handler sets, which survives IPC. Not on the kind: `Internal` is the
+ * catch-all for bugs, so anything else raised on this path would otherwise
+ * tell the user a project was minted when none was.
+ */
+export function isCreatedButUnlinkedError(error: unknown): boolean {
+  return (
+    (error as { code?: unknown } | null)?.code ===
+    SUPABASE_PROJECT_CREATED_BUT_UNLINKED
+  );
+}
 
 export interface UseSupabaseOptions {
   branchesProjectId?: string | null;
@@ -92,6 +107,59 @@ export function useSupabase(options: UseSupabaseOptions = {}) {
       ]);
     },
     meta: { showErrorToast: true },
+  });
+
+  // Tracked per app rather than read off the mutation: a single observer only
+  // reports its most recent call, so with creates running for two apps the
+  // second one's variables would describe the first app's pending state.
+  // Counted rather than a membership set, so two creates for one app do not
+  // unlock the form as soon as the first settles.
+  const [creatingProjectAppIds, setCreatingProjectAppIds] = useState<
+    ReadonlyMap<number, number>
+  >(new Map());
+
+  // Mutation: Create a Supabase project and link it to an app.
+  // The handler does both, so a success here means the app is already
+  // connected; callers only need to refresh.
+  const createProjectMutation = useMutation<
+    SupabaseProject,
+    Error,
+    CreateSupabaseProjectParams
+  >({
+    mutationFn: async (params) => {
+      return ipc.supabase.createProject(params);
+    },
+    onMutate: ({ appId }) => {
+      setCreatingProjectAppIds((current) =>
+        new Map(current).set(appId, (current.get(appId) ?? 0) + 1),
+      );
+    },
+    onSettled: (_project, _error, { appId }) => {
+      setCreatingProjectAppIds((current) => {
+        const remaining = (current.get(appId) ?? 0) - 1;
+        const next = new Map(current);
+        if (remaining > 0) next.set(appId, remaining);
+        else next.delete(appId);
+        return next;
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.supabase.projects });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.all });
+    },
+    // Only for the created-but-unlinked case, whose error tells the user to
+    // pick the project from a list that is still the pre-create snapshot.
+    // Refetching after an ordinary failure would be worse than nothing:
+    // `listAllProjects` returns a partial list as a success, so an offline
+    // create would also replace a good cached list with an empty one.
+    onError: (error) => {
+      if (!isCreatedButUnlinkedError(error)) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.supabase.projects });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.all });
+    },
+    // The connector renders the failure inline next to the form, and a toast on
+    // top of that would say the same thing twice.
+    meta: { showErrorToast: false },
   });
 
   // Mutation: Associate a Supabase project with an app
@@ -260,6 +328,8 @@ export function useSupabase(options: UseSupabaseOptions = {}) {
     branchesError: branchesQuery.error,
 
     // Mutation states
+    isCreatingProjectForApp: (appId: number) =>
+      (creatingProjectAppIds.get(appId) ?? 0) > 0,
     isDeletingOrganization: deleteOrganizationMutation.isPending,
     isSettingAppProject:
       setAppProjectMutation.isPending || recoverAppProjectMutation.isPending,
@@ -271,6 +341,7 @@ export function useSupabase(options: UseSupabaseOptions = {}) {
     refetchProjects: projectsQuery.refetch,
     refetchBranches: branchesQuery.refetch,
     deleteOrganization: deleteOrganizationMutation.mutateAsync,
+    createProject: createProjectMutation.mutateAsync,
     setAppProject: setAppProjectMutation.mutateAsync,
     recoverAppProject: recoverAppProjectMutation.mutateAsync,
     unsetAppProject: unsetAppProjectMutation.mutateAsync,

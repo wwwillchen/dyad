@@ -289,6 +289,14 @@ export type {
   SetSupabaseAppProjectParams,
   ConsoleEntry,
   SupabaseRedeployProgress,
+  CreateSupabaseProjectParams,
+  SupabaseRegionId,
+} from "./supabase";
+export {
+  SUPABASE_REGIONS,
+  DEFAULT_SUPABASE_REGION,
+  SUPABASE_PROJECT_NAME_MAX_LENGTH,
+  SUPABASE_PROJECT_CREATED_BUT_UNLINKED,
 } from "./supabase";
 
 // Neon types

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { coolifyContracts } from "@/ipc/types/coolify";
+import { supabaseContracts } from "@/ipc/types/supabase";
 import { queryInvalidationScopeKey, type WindowSessionId } from "./types";
 import { RendererQueryInvalidationConsumer } from "./renderer_query_invalidation";
 
@@ -204,5 +205,67 @@ describe("Coolify contracts and the window that acted", () => {
   it("publishes project creation so other windows see the new project", () => {
     const { publishes } = handled("createProject", { name: "x" });
     expect(publishes).toContain("coolify");
+  });
+});
+
+/**
+ * What the Supabase create contract publishes and claims.
+ *
+ * Creating a project adds an entry to the project list, which peer windows
+ * render in their selector, so the provider scope has to be published. The
+ * acting window refreshes the same keys in the mutation's own onSuccess, so it
+ * claims them back — otherwise it refetches the list a second time and cancels
+ * the one already in flight.
+ */
+describe("Supabase create-project invalidation", () => {
+  const scopes = (
+    pick: (contract: {
+      originHandles?: (input: unknown) => Array<{ family: string }>;
+      invalidates?: (input: unknown) => Array<{ family: string }>;
+    }) => Array<{ family: string }> | undefined,
+  ) =>
+    (
+      pick(supabaseContracts.createProject as Parameters<typeof pick>[0]) ?? []
+    ).map((scope) => scope.family);
+
+  it("publishes the provider scope so peers see the new project", () => {
+    expect(scopes((c) => c.invalidates?.({ appId: 7 }))).toContain(
+      "provider-status",
+    );
+  });
+
+  it("claims back what the mutation already refreshes locally", () => {
+    expect(scopes((c) => c.originHandles?.({ appId: 7 }))).toContain(
+      "provider-status",
+    );
+  });
+
+  // Repointing an app changes that app, so peer windows have to hear about it —
+  // but not the project list, which is unchanged. Asserting the absence alone
+  // would pass just as well if the declaration were deleted outright.
+  it("publishes the app scopes, and only those, when the link changes", () => {
+    for (const [channel, input] of [
+      ["setAppProject", { appId: 7 }],
+      ["unsetAppProject", { app: 7 }],
+    ] as const) {
+      const contract = supabaseContracts[channel] as {
+        invalidates?: (input: unknown) => Array<{
+          family: string;
+          appId?: number;
+        }>;
+      };
+      const scopes = contract.invalidates?.(input) ?? [];
+
+      // Counted as well as matched: "only those" has to mean it, or a scope
+      // added by accident — the project list among them — would pass unnoticed.
+      // Not an ordered comparison, because order carries nothing downstream.
+      expect(scopes, `${channel}`).toHaveLength(2);
+      expect(scopes, `${channel}`).toEqual(
+        expect.arrayContaining([
+          { family: "apps" },
+          { family: "app", appId: 7 },
+        ]),
+      );
+    }
   });
 });

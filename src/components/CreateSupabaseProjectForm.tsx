@@ -1,0 +1,243 @@
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Loader2 } from "lucide-react";
+import {
+  DEFAULT_SUPABASE_REGION,
+  SUPABASE_PROJECT_NAME_MAX_LENGTH,
+  SUPABASE_REGIONS,
+  type CreateSupabaseProjectParams,
+  type SupabaseOrganizationInfo,
+  type SupabaseProject,
+  type SupabaseRegionId,
+} from "@/ipc/types";
+
+/**
+ * Creates a Supabase project from inside an app. The organization picker
+ * appears only when more than one is connected, matching Supabase's own
+ * new-project flow.
+ */
+export function CreateSupabaseProjectForm({
+  appId,
+  organizations,
+  defaultName,
+  createProject,
+  isCreatingProject,
+  error,
+  onCreated,
+  onFailed,
+  onClearError,
+  onCancel,
+}: {
+  appId: number;
+  organizations: SupabaseOrganizationInfo[];
+  defaultName: string;
+  // Threaded in from the connector's `useSupabase` rather than mounting a
+  // second copy, which would duplicate its queries and put the pending flag in
+  // a different instance than the parent reads.
+  createProject: (
+    params: CreateSupabaseProjectParams,
+  ) => Promise<SupabaseProject>;
+  isCreatingProject: boolean;
+  // Carries the app the create was launched for, which is not necessarily the
+  // app on screen when it settles.
+  onCreated: (
+    createdForAppId: number,
+    project: SupabaseProject,
+  ) => void | Promise<void>;
+  // Owned by the connector so it outlives this form, which unmounts on an app
+  // switch and is closed deliberately when a project was created but not
+  // linked to the app.
+  error: string | null;
+  onFailed: (createdForAppId: number, error: unknown) => void;
+  // Called on every edit: the error describes the values that were submitted,
+  // so any change to them stales it.
+  onClearError: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation(["home", "common"]);
+
+  // App names have no length limit, and `maxLength` on the input only stops
+  // typing — a longer seeded name would enable submit and then be rejected by
+  // the contract.
+  const [name, setName] = useState(() =>
+    defaultName.slice(0, SUPABASE_PROJECT_NAME_MAX_LENGTH),
+  );
+  const [organizationSlug, setOrganizationSlug] = useState(
+    organizations[0]?.organizationSlug ?? "",
+  );
+  const [region, setRegion] = useState<SupabaseRegionId>(
+    DEFAULT_SUPABASE_REGION,
+  );
+  const trimmedName = name.trim();
+  const canSubmit = !!trimmedName && !!organizationSlug && !isCreatingProject;
+
+  const handleCreate = async () => {
+    if (!canSubmit) return;
+    onClearError();
+    let project;
+    try {
+      project = await createProject({
+        appId,
+        name: trimmedName,
+        organizationSlug,
+        region,
+      });
+    } catch (err) {
+      onFailed(appId, err);
+      return;
+    }
+    // Its own catch, not the one above: anything this throws is a bug in the
+    // success handler, not a failed create, and reporting it through `onFailed`
+    // would tell the user a project they now own was never made. Swallowed
+    // rather than left to reject, since nothing owns this promise.
+    try {
+      await onCreated(appId, project);
+    } catch (err) {
+      console.error(
+        "Supabase project was created, but reporting it failed:",
+        err,
+      );
+    }
+  };
+
+  return (
+    <div className="space-y-3" data-testid="supabase-create-project-form">
+      <div className="space-y-2">
+        <Label htmlFor="supabase-new-project-name">
+          {t("integrations.supabase.projectName")}
+        </Label>
+        <Input
+          id="supabase-new-project-name"
+          data-testid="supabase-new-project-name"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            onClearError();
+          }}
+          placeholder="my-app"
+          maxLength={SUPABASE_PROJECT_NAME_MAX_LENGTH}
+          autoFocus
+          disabled={isCreatingProject}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void handleCreate();
+          }}
+        />
+      </div>
+
+      {organizations.length > 1 && (
+        <div className="space-y-2">
+          <Label htmlFor="supabase-new-project-org">
+            {t("integrations.supabase.organization")}
+          </Label>
+          <Select
+            value={organizationSlug}
+            onValueChange={(value) => {
+              // Same null handling as the region select below: keeping the
+              // current organization beats storing "" and disabling submit
+              // with nothing on screen explaining why.
+              if (value) setOrganizationSlug(value);
+              onClearError();
+            }}
+            disabled={isCreatingProject}
+          >
+            <SelectTrigger
+              id="supabase-new-project-org"
+              data-testid="supabase-new-project-org"
+            >
+              <SelectValue
+                placeholder={t("integrations.supabase.selectOrganization")}
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {organizations.map((org) => (
+                <SelectItem
+                  key={org.organizationSlug}
+                  value={org.organizationSlug}
+                >
+                  {org.name ||
+                    `Organization ${org.organizationSlug.slice(0, 8)}`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <Label htmlFor="supabase-new-project-region">
+          {t("integrations.supabase.region")}
+        </Label>
+        <Select
+          value={region}
+          onValueChange={(value) => {
+            // Base UI hands back null when a selection is cleared; keep the
+            // current region rather than storing null and failing validation.
+            if (value) setRegion(value as SupabaseRegionId);
+            onClearError();
+          }}
+          disabled={isCreatingProject}
+        >
+          <SelectTrigger
+            id="supabase-new-project-region"
+            data-testid="supabase-new-project-region"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {SUPABASE_REGIONS.map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {t("integrations.supabase.regionDescription")}
+        </p>
+      </div>
+
+      {error && (
+        <p role="alert" className="text-sm text-red-600">
+          {error}
+        </p>
+      )}
+
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          onClick={handleCreate}
+          disabled={!canSubmit}
+          data-testid="supabase-create-project-submit"
+        >
+          {isCreatingProject && (
+            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+          )}
+          {isCreatingProject
+            ? t("integrations.supabase.creatingProject")
+            : t("integrations.supabase.createProject")}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onCancel}
+          disabled={isCreatingProject}
+        >
+          {t("common:cancel")}
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {t("integrations.supabase.createProjectDescription")}
+      </p>
+    </div>
+  );
+}

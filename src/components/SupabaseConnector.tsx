@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   acknowledgeConnectionFlow,
   cancelConnectionFlow,
@@ -14,7 +14,12 @@ import { Label } from "@/components/ui/label";
 import { ipc, type SupabaseProject } from "@/ipc/types";
 import { toast } from "sonner";
 import { useSettings } from "@/hooks/useSettings";
-import { useRedeploySupabaseFunctions, useSupabase } from "@/hooks/useSupabase";
+import {
+  useRedeploySupabaseFunctions,
+  useSupabase,
+  isCreatedButUnlinkedError,
+} from "@/hooks/useSupabase";
+import { CreateSupabaseProjectForm } from "@/components/CreateSupabaseProjectForm";
 import {
   Select,
   SelectContent,
@@ -70,6 +75,12 @@ import {
 } from "@/lib/schemas";
 import { showError } from "@/lib/toast";
 
+/** A failed create, and whether it left a real project behind. */
+interface CreateError {
+  message: string;
+  isOrphan: boolean;
+}
+
 function findLinkedSupabaseProject(
   projects: SupabaseProject[],
   projectId: string,
@@ -117,13 +128,16 @@ export function SupabaseConnector({ appId }: { appId: number }) {
     isLoadingProjects,
     isFetchingProjects,
     isLoadingOrganizations,
+    isFetchingOrganizations,
     organizationsError,
     projectsError,
     isLoadingBranches,
     branchesError,
     isSettingAppProject,
+    isCreatingProjectForApp,
     refetchOrganizations,
     refetchProjects,
+    createProject,
     deleteOrganization,
     setAppProject,
     recoverAppProject,
@@ -132,6 +146,35 @@ export function SupabaseConnector({ appId }: { appId: number }) {
     branchesProjectId,
     branchesOrganizationSlug: app?.supabaseOrganizationSlug,
   });
+
+  // Which app the form is open for, not a bare "is it open". Some navigations
+  // (Copy App) swap `appId` without remounting, so a boolean would leave the
+  // previous app's half-typed form standing over the new one.
+  const [createFormAppId, setCreateFormAppId] = useState<number | null>(null);
+  const isCreateFormOpen = createFormAppId === appId;
+  // Keyed by app rather than a single slot: creates for two apps can be in
+  // flight at once, so one app's failure must not overwrite another's.
+  // `isOrphan` marks a failure that left a real project behind. Carried on the
+  // record rather than tracked alongside it, so the two cannot drift: only an
+  // orphan's message is worth surviving a cancel, since it holds the stranded
+  // project's id and nothing else in the UI does. An ordinary failure kept that
+  // long would just be a banner the user cannot get rid of.
+  const [createErrors, setCreateErrors] = useState<Record<number, CreateError>>(
+    {},
+  );
+
+  const dropKey =
+    (forAppId: number) => (current: Record<number, CreateError>) => {
+      // Returning the same object when there is nothing to drop keeps React's
+      // bailout: this runs on every keystroke, and a fresh one would re-render
+      // the connector for each character typed into the form.
+      if (!(forAppId in current)) return current;
+      const { [forAppId]: _cleared, ...rest } = current;
+      return rest;
+    };
+  const clearCreateError = () => setCreateErrors(dropKey(appId));
+
+  const linkedProjectId = app?.supabaseProjectId;
 
   // The connection flow lives in the main process; this component only
   // projects it. Timeouts (Supabase historically had none — a closed
@@ -234,6 +277,51 @@ export function SupabaseConnector({ appId }: { appId: number }) {
     }
   };
 
+  // No setAppProject or refetch here: the handler links the app itself, and the
+  // mutation's onSuccess already invalidates. A create can settle after the
+  // panel has moved to another app, so the functional updater closes only the
+  // form it belongs to, and the toast names the project rather than "this app".
+  const handleProjectCreated = (
+    createdForAppId: number,
+    project: SupabaseProject,
+  ) => {
+    setCreateFormAppId((open) => (open === createdForAppId ? null : open));
+    toast.success(
+      t("integrations.supabase.projectCreated", { name: project.name }),
+    );
+  };
+
+  // The failure is held here rather than inside the form so it outlives it:
+  // the form unmounts on an app switch, and for a created-but-unlinked project
+  // we close it deliberately so a second Create cannot mint another project.
+  const handleProjectCreateFailed = (
+    createdForAppId: number,
+    error: unknown,
+  ) => {
+    const isOrphan = isCreatedButUnlinkedError(error);
+    setCreateErrors((current) => ({
+      ...current,
+      [createdForAppId]: { message: getErrorMessage(error), isOrphan },
+    }));
+    if (isOrphan) {
+      setCreateFormAppId((open) => (open === createdForAppId ? null : open));
+    }
+  };
+
+  // Once the app has a project, a failed create for it says nothing useful: a
+  // double-submit settles as one success and one "already connected" failure,
+  // and the failure lands second. Keyed off the app rather than cleared by each
+  // success path, so it covers a link made from anywhere — this panel, the
+  // selector, or another window. Cannot touch a project created but not
+  // linked, which leaves the app unlinked and so never reaches this.
+  useEffect(() => {
+    if (linkedProjectId) {
+      setCreateErrors(dropKey(appId));
+    }
+  }, [linkedProjectId, appId]);
+
+  const createErrorForThisApp = createErrors[appId]?.message ?? null;
+
   // Group projects by organization for display
   const groupedProjects = projects.reduce(
     (acc, project) => {
@@ -309,6 +397,11 @@ export function SupabaseConnector({ appId }: { appId: number }) {
     try {
       await unsetAppProject(appId);
       toast.success(t("integrations.supabase.disconnectProject"));
+      // Covers the ordering the effect above cannot: a failure recorded while
+      // the app was already linked, which the effect has no change left to fire
+      // on. Disconnecting is what brings the selector card back, so it is the
+      // last point before such a message could be seen.
+      clearCreateError();
       await refreshApp();
     } catch (error) {
       console.error("Failed to disconnect project:", error);
@@ -418,7 +511,11 @@ export function SupabaseConnector({ appId }: { appId: number }) {
   // would strand the user on a generic account-connect screen.
   if (app?.supabaseProjectId && !isConnected) {
     return (
-      <Card className="mt-1" data-testid="supabase-reconnect-card">
+      <Card
+        key="supabase-reconnect"
+        className="mt-1"
+        data-testid="supabase-reconnect-card"
+      >
         <CardHeader>
           <CardTitle>{t("integrations.supabase.project")}</CardTitle>
           <div className="flex flex-col gap-1.5 text-sm text-muted-foreground">
@@ -496,10 +593,14 @@ export function SupabaseConnector({ appId }: { appId: number }) {
     );
   }
 
-  // Connected and has project set
+  // Connected and has project set.
+  //
+  // Each variant below carries a key. They are all a bare <Card> returned from
+  // the same position, so without one React reconciles a card for the previous
+  // app into the next and the Base UI selects keep its displayed value.
   if (isConnected && app?.supabaseProjectName) {
     return (
-      <Card className="mt-1">
+      <Card key="supabase-connected" className="mt-1">
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
             {t("integrations.supabase.project")}{" "}
@@ -666,7 +767,7 @@ export function SupabaseConnector({ appId }: { appId: number }) {
         : "";
 
     return (
-      <Card className="mt-1">
+      <Card key="supabase-selector" className="mt-1">
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
             {t("integrations.supabase.projects")}
@@ -724,7 +825,60 @@ export function SupabaseConnector({ appId }: { appId: number }) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {isLoadingProjects || isFetchingProjects ? (
+          {/* Above the loading and error branches below, not inside one of
+          them: a created-but-unlinked failure refetches the project list, so an
+          alert further down would be replaced by that refetch's skeleton, or
+          lost entirely if the refetch then errored. The form renders its own
+          copy, so this is only for when the form is shut. */}
+          {!isCreateFormOpen && createErrorForThisApp && (
+            <Alert
+              variant="destructive"
+              className="mb-4"
+              data-testid="supabase-create-project-error"
+            >
+              <Info className="h-4 w-4" />
+              {/* No `role` here: `Alert` already puts one on its wrapper, and
+              nesting a second live region inside it makes a role query match
+              twice. */}
+              <AlertDescription>{createErrorForThisApp}</AlertDescription>
+            </Alert>
+          )}
+
+          {/* The create form is checked before the loading and error branches:
+          a background refetch of the project list (window focus past the 60s
+          staleTime is enough) would otherwise unmount the form mid-edit and
+          discard what the user had typed. */}
+          {isCreateFormOpen ? (
+            <CreateSupabaseProjectForm
+              appId={appId}
+              organizations={organizations}
+              // Seeding the name from the app is what makes this a one-click
+              // path for the common case of one database per app.
+              defaultName={app?.name ?? ""}
+              createProject={createProject}
+              // Scoped to this app: a create still running for the app the
+              // user just navigated away from must not disable this app's form.
+              isCreatingProject={isCreatingProjectForApp(appId)}
+              error={createErrorForThisApp}
+              onClearError={clearCreateError}
+              onCreated={handleProjectCreated}
+              onFailed={handleProjectCreateFailed}
+              // Keeps a stranded project's message, for the same reason opening
+              // the form does: it is the only place that project's id appears,
+              // and backing out settles nothing about it. Every other failure
+              // goes, or cancelling would leave a banner with no way to
+              // dismiss it.
+              onCancel={() => {
+                setCreateFormAppId(null);
+                if (!createErrors[appId]?.isOrphan) {
+                  clearCreateError();
+                }
+              }}
+            />
+          ) : isLoadingProjects ||
+            isFetchingProjects ||
+            isLoadingOrganizations ||
+            isFetchingOrganizations ? (
             <div className="space-y-2">
               <Skeleton className="h-4 w-full" />
               <Skeleton className="h-10 w-full" />
@@ -826,6 +980,29 @@ export function SupabaseConnector({ appId }: { appId: number }) {
                     </SelectContent>
                   </Select>
                 </div>
+              )}
+
+              {/* Not offered at all without an organization to create in,
+              rather than offered and dead. Connecting can land here — if
+              listing organizations fails, the return handler stores the token
+              in the legacy fields with no organization — and the way out is the
+              Add Organization action above, not this button. */}
+              {organizations.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1"
+                  // Deliberately does not clear the last failure: for a project
+                  // created but not linked, that message is the only place its
+                  // id appears, and this button is the natural thing to click
+                  // after reading it. The form shows it and the first keystroke
+                  // drops it.
+                  onClick={() => setCreateFormAppId(appId)}
+                  data-testid="supabase-create-project-button"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("integrations.supabase.createProject")}
+                </Button>
               )}
             </div>
           )}
