@@ -21,7 +21,7 @@ import {
   rewriteRecoveredSafeStorageSecretsAfterKeychainUnlock,
 } from "@/main/settings";
 import { getUserDataPath } from "@/paths/paths";
-import { UserSettings } from "@/lib/schemas";
+import { forgottenCoolify, UserSettings } from "@/lib/schemas";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { getRemoteDesktopConfig } from "@/ipc/shared/remote_desktop_config";
 import {
@@ -1118,6 +1118,155 @@ describe("preserving undecryptable secrets", () => {
       value: "brand-new-token",
       encryptionType: "plaintext",
     });
+  });
+
+  it("hides a Coolify token that will not decrypt", () => {
+    // Handing the ciphertext through would have it sent to Coolify as the
+    // token, and it would be rejected with no way to tell why.
+    store[mockSettingsPath] = JSON.stringify({
+      coolify: {
+        instanceUrl: "http://203.0.113.5:8000",
+        accessToken: lockedSecret("coolify"),
+      },
+    });
+
+    const read = readSettings();
+    expect(read.coolify?.accessToken).toBeUndefined();
+    expect(read.coolify?.instanceUrl).toBe("http://203.0.113.5:8000");
+  });
+
+  it("puts the Coolify admin password through encryption", () => {
+    // Dyad made this one up and is the only thing holding it, which is a
+    // reason to keep it readable and not a reason to keep it in the clear.
+    writeSettings({
+      coolify: {
+        instanceUrl: "http://203.0.113.5:8000",
+        admin: {
+          email: "me@gmail.com",
+          password: { value: "invented-password" },
+          instanceUrl: "http://203.0.113.5:8000",
+        },
+      },
+    });
+
+    expect(readStoredFile().coolify.admin).toEqual({
+      email: "me@gmail.com",
+      password: { value: "invented-password", encryptionType: "plaintext" },
+      instanceUrl: "http://203.0.113.5:8000",
+    });
+  });
+
+  it("forgets a Coolify token that will not decrypt when signing out", () => {
+    // The preservation pass puts a secret back whenever the container it
+    // lives in is still there, treating an absent key as a consumer read that
+    // could not decrypt it rather than as a clear. An empty coolify object is
+    // still a container, so the one write whose whole job is to forget the
+    // instance would hand the token straight back.
+    store[mockSettingsPath] = JSON.stringify({
+      coolify: {
+        instanceUrl: "http://203.0.113.5:8000",
+        accessToken: lockedSecret("coolify"),
+      },
+    });
+
+    writeSettings({ coolify: forgottenCoolify() });
+
+    expect(readStoredFile().coolify).toEqual({});
+  });
+
+  it("clears again on a second sign-out", () => {
+    // writeSettings edits the object it was handed, so a shape kept at module
+    // scope would carry one write's edits into the next sign-out.
+    store[mockSettingsPath] = JSON.stringify({
+      coolify: {
+        instanceUrl: "http://203.0.113.5:8000",
+        accessToken: lockedSecret("coolify"),
+      },
+    });
+    writeSettings({ coolify: forgottenCoolify() });
+    expect(readStoredFile().coolify).toEqual({});
+
+    store[mockSettingsPath] = JSON.stringify({
+      coolify: {
+        instanceUrl: "http://203.0.113.5:8000",
+        accessToken: lockedSecret("coolify"),
+      },
+    });
+    writeSettings({ coolify: forgottenCoolify() });
+    expect(readStoredFile().coolify).toEqual({});
+  });
+
+  it("keeps a locked Coolify admin password across an unrelated write", () => {
+    // The preservation path hands the ciphertext back after encryption, having
+    // deleted it from the merged settings first. Reading the account and then
+    // reaching for its password without checking finds nothing there — and
+    // every settings write, Coolify or not, dies on it.
+    const locked = lockedSecret("coolify");
+    store[mockSettingsPath] = JSON.stringify({
+      coolify: {
+        instanceUrl: "http://203.0.113.5:8000",
+        admin: {
+          email: "me@gmail.com",
+          password: locked,
+          instanceUrl: "http://203.0.113.5:8000",
+        },
+      },
+    });
+
+    writeSettings({ enableAutoUpdate: false });
+
+    expect(readStoredFile().enableAutoUpdate).toBe(false);
+    expect(readStoredFile().coolify.admin.password).toEqual(locked);
+  });
+
+  it("keeps a locked admin password when a Coolify write rebuilds the object without it", () => {
+    // What `coolify:save-token` does: spread what readSettings could decrypt,
+    // then add the token. The account came back without its password, so
+    // without the container still standing there is nowhere to put the
+    // ciphertext back and the only copy of it goes.
+    const locked = lockedSecret("coolify");
+    store[mockSettingsPath] = JSON.stringify({
+      coolify: {
+        instanceUrl: "http://203.0.113.5:8000",
+        admin: {
+          email: "me@gmail.com",
+          password: locked,
+          instanceUrl: "http://203.0.113.5:8000",
+        },
+      },
+    });
+
+    writeSettings({
+      coolify: {
+        ...readSettings().coolify,
+        instanceUrl: "http://203.0.113.5:8000",
+        accessToken: { value: "1|fresh" },
+      },
+    });
+
+    expect(readStoredFile().coolify.admin.password).toEqual(locked);
+    expect(readStoredFile().coolify.admin.email).toBe("me@gmail.com");
+  });
+
+  it("hides an admin password that will not decrypt, keeping the account", () => {
+    // Handing the ciphertext through would put it on screen as the password,
+    // and it would not open anything. The account it belongs to stays, so a
+    // later write still has somewhere to put the ciphertext back.
+    store[mockSettingsPath] = JSON.stringify({
+      coolify: {
+        instanceUrl: "http://203.0.113.5:8000",
+        admin: {
+          email: "me@gmail.com",
+          password: lockedSecret("coolify"),
+          instanceUrl: "http://203.0.113.5:8000",
+        },
+      },
+    });
+
+    const read = readSettings();
+    expect(read.coolify?.admin?.password).toBeUndefined();
+    expect(read.coolify?.admin?.email).toBe("me@gmail.com");
+    expect(read.coolify?.admin?.instanceUrl).toBe("http://203.0.113.5:8000");
   });
 
   it("preserves a locked provider apiKey when a write rebuilds providerSettings without it", () => {

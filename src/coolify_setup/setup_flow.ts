@@ -1,0 +1,350 @@
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import type {
+  HostKeyVerifier,
+  SshSession,
+  SshTarget,
+} from "@/ipc/utils/ssh_client";
+import { buildAdminCredentials } from "./admin_credentials";
+import type { AdminCredentials } from "./admin_credentials";
+import {
+  installCoolify,
+  preflight,
+  waitForAdminSeeded,
+  waitForDashboard,
+} from "./install";
+import { SshError } from "@/ipc/utils/ssh_client";
+import { tryAutomaticAccess } from "./api_token";
+import { plainUrlFor, tryEnableHttps } from "./https_setup";
+import type { HttpsOutcome } from "./https_setup";
+
+/**
+ * Taking a bare server to a Coolify Dyad can deploy to.
+ *
+ * The order is not arbitrary: each step is the cheapest way to fail from where
+ * it sits. Looking at the server costs a second and rules out the two problems
+ * a user can fix immediately; installing costs minutes; and asking for a token
+ * only makes sense once there is an instance to ask about.
+ */
+
+export type SetupStep =
+  | "connecting"
+  | "checking-server"
+  | "installing"
+  | "waiting-for-dashboard"
+  | "verifying-account"
+  | "securing"
+  | "creating-token"
+  | "done";
+
+export interface SetupProgress {
+  step: SetupStep;
+  /** Installer output, forwarded so a long step does not look like a hang. */
+  output?: string;
+}
+
+export interface SetupResult {
+  dashboardUrl: string;
+  /** Whether the address above is encrypted. */
+  secure: boolean;
+  /** Present when HTTPS was attempted and could not be had. */
+  insecureReason?: string;
+  credentials: AdminCredentials;
+  /**
+   * Absent when Coolify was installed but its API could not be opened.
+   *
+   * Not an error: the server is set up and usable either way, and the caller
+   * asks for a token by hand rather than throwing away a working install.
+   */
+  token: string | null;
+  /**
+   * Whether Coolify's API was switched on, which outlives a failed mint.
+   *
+   * Not the same question as whether a token came back: Dyad turns the API on
+   * first, so telling the user to go and enable it is wrong from that point
+   * onward whatever happens next.
+   */
+  apiEnabled: boolean;
+  version: string | null;
+  /** Present when token is null, phrased for the user. */
+  tokenUnavailableReason?: string;
+}
+
+/**
+ * How long the after-a-failure question may take.
+ *
+ * It goes to a server that has just failed and may be frozen. The connection
+ * now notices a peer that stops answering, but only after its own keepalive
+ * has run out — minutes, against a question worth seconds. Bounded here so
+ * the answer arrives while the failure it is about is still on screen.
+ */
+const RECOVERY_PROBE_TIMEOUT_MS = 15_000;
+
+export interface SetupOptions {
+  target: SshTarget;
+  adminEmail: string;
+  verifyHostKey: HostKeyVerifier;
+  onProgress?: (progress: SetupProgress) => void;
+  signal?: AbortSignal;
+  /** Injected so the flow can be exercised without a server. */
+  connect: (
+    target: SshTarget,
+    verify: HostKeyVerifier,
+    signal?: AbortSignal,
+  ) => Promise<SshSession>;
+  waitForDashboardImpl?: typeof waitForDashboard;
+  waitForAdminSeededImpl?: typeof waitForAdminSeeded;
+  tryEnableHttpsImpl?: typeof tryEnableHttps;
+  /** Bounded so a frozen server cannot hold the setup open. */
+  recoveryProbeTimeoutMs?: number;
+  /** A domain the user owns, used instead of one derived from the address. */
+  customDomain?: string | null;
+  /**
+   * The account exists on the user's server from here on.
+   *
+   * Dyad invented this password and never showed it, so anything that fails
+   * after this point and takes the password with it leaves the user locked out
+   * of a Coolify that is installed and running. Called again once the address
+   * settles, since HTTPS can change it.
+   */
+  onAccountKnown?: (account: {
+    credentials: AdminCredentials;
+    dashboardUrl: string;
+  }) => void;
+  /**
+   * The password Dyad is about to give the server, before it is given.
+   *
+   * Dyad invents this rather than discovering it, so it is knowable a moment
+   * earlier than the account is — and the installer writes it into Coolify's
+   * own .env partway through a run that takes minutes. Quitting in between
+   * would otherwise leave a server nobody has the password for, which
+   * preflight then refuses to install over.
+   */
+  onCredentialsBuilt?: (account: {
+    credentials: AdminCredentials;
+    dashboardUrl: string;
+  }) => void;
+}
+
+export async function runServerSetup({
+  target,
+  adminEmail,
+  verifyHostKey,
+  onProgress,
+  signal,
+  connect,
+  onAccountKnown,
+  onCredentialsBuilt,
+  recoveryProbeTimeoutMs = RECOVERY_PROBE_TIMEOUT_MS,
+  waitForDashboardImpl = waitForDashboard,
+  waitForAdminSeededImpl = waitForAdminSeeded,
+  tryEnableHttpsImpl = tryEnableHttps,
+  customDomain,
+}: SetupOptions): Promise<SetupResult> {
+  const report = (step: SetupStep, output?: string) =>
+    onProgress?.({ step, output });
+
+  report("connecting");
+  const session = await connect(target, verifyHostKey, signal);
+
+  try {
+    report("checking-server");
+    const checks = await preflight(session, { signal });
+    if (!checks.ready) {
+      throw new DyadError(
+        checks.reason ?? "This server cannot be set up automatically.",
+        DyadErrorKind.Precondition,
+      );
+    }
+
+    const credentials = buildAdminCredentials(adminEmail);
+    // Before the installer, not after it. What it is about to write into the
+    // server's .env is already decided here, and the run that writes it is
+    // where a crash costs the only copy.
+    onCredentialsBuilt?.({
+      credentials,
+      dashboardUrl: plainUrlFor(target.host),
+    });
+
+    report("installing");
+    try {
+      await installCoolify(session, credentials, {
+        signal,
+        onOutput: (chunk) => report("installing", chunk),
+      });
+    } catch (error) {
+      // The installer writes this password into Coolify's own .env and brings
+      // the stack up partway through its run, so a failure after that point
+      // leaves an account nobody else knows the password for — and preflight
+      // refuses to install again once the container exists. Asked without the
+      // signal, because a cancel is one of the ways to arrive here.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const after = await Promise.race([
+          preflight(session, {}),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("The server did not answer.")),
+              recoveryProbeTimeoutMs,
+            );
+          }),
+        ]);
+        // Or could not tell. "Docker is wedged, I cannot say" comes back
+        // from preflight as the same `alreadyInstalled: false` as an empty
+        // server, and only one of those means the password opens nothing.
+        if (after.alreadyInstalled || !after.installedKnown) {
+          onAccountKnown?.({
+            credentials,
+            dashboardUrl: plainUrlFor(target.host),
+          });
+        }
+      } catch {
+        // The probe never answered — it timed out, or the connection went
+        // with it. That is not an answer of "nothing was installed", and
+        // treating it as one takes the account off. Keeping a password that
+        // opens nothing is a nuisance the user can sign out of; dropping the
+        // only copy of one that does is not recoverable from here.
+        onAccountKnown?.({
+          credentials,
+          dashboardUrl: plainUrlFor(target.host),
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+      throw error;
+    }
+
+    // Once the installer has finished, because only then is this password
+    // certainly on the machine: install.sh writes it into Coolify's own .env
+    // and the account is seeded from there. Before the checks below, because
+    // every one of them can fail on a server that is running fine — the
+    // dashboard poll runs on the user's side of their firewall — and Dyad is
+    // the only thing that knows what it invented.
+    onAccountKnown?.({
+      credentials,
+      dashboardUrl: plainUrlFor(target.host),
+    });
+
+    report("waiting-for-dashboard");
+    const answered = await waitForDashboardImpl(target.host, { signal });
+    if (!answered) {
+      throw new DyadError(
+        "Coolify was installed, but nothing answered on port 8000. That is " +
+          "usually a firewall or security group blocking the port rather than " +
+          "Coolify itself. Open it, then sign in at " +
+          `${plainUrlFor(target.host)} — Coolify is already on the server, so ` +
+          "starting over would be refused.",
+        DyadErrorKind.External,
+      );
+    }
+
+    // Waited for rather than checked once: the account is created by a startup
+    // service that runs after the dashboard starts answering, so asking
+    // immediately says no about a server that is only still starting.
+    report("verifying-account");
+    const seeded = await waitForAdminSeededImpl(session, credentials.email, {
+      signal,
+    });
+    if (!seeded.seeded) {
+      // The way out belongs in both, and the one with a reason is the one
+      // people reach — an address Coolify will not take is the ordinary cause.
+      // Saying only what it objected to leaves an installed server, no
+      // account, and a preflight that refuses to install again.
+      throw new DyadError(
+        (seeded.reason
+          ? `Coolify would not create its admin account: ${seeded.reason} `
+          : `Coolify has not created an admin account for ${credentials.email}. `) +
+          `The server is installed — open ${plainUrlFor(target.host)} to ` +
+          `finish setting it up there.`,
+        DyadErrorKind.External,
+      );
+    }
+
+    // Before the token, so what gets stored is the address the token will
+    // travel to. It carries root abilities and goes over the wire on every
+    // deploy, not once at setup, which is what makes plain HTTP worth this.
+    report("securing");
+    let https: HttpsOutcome;
+    try {
+      https = await tryEnableHttpsImpl(session, target.host, {
+        customDomain,
+        signal,
+        onProgress: (message) => report("securing", message),
+      });
+    } catch (error) {
+      // This improves a server that already works, so it must not be able to
+      // throw one away. A domain left set with no certificate still leaves
+      // port 8000 serving.
+      if ((error as { kind?: string }).kind === "user_cancelled") throw error;
+      // Whatever it could not put back comes with it. The run goes on and
+      // succeeds from here, so this is the only place that note can still
+      // reach the finished screen — the failed state it would otherwise
+      // travel on is never reached.
+      const leftBehind = (error as Error & { warning?: string }).warning;
+      const said =
+        error instanceof Error
+          ? error.message
+          : "HTTPS could not be set up on this server.";
+      https = {
+        instanceUrl: plainUrlFor(target.host),
+        secure: false,
+        // Two sentences, not a run-on: the message is the library's or
+        // Coolify's and may or may not end in a stop of its own.
+        reason: leftBehind
+          ? `${said.replace(/\s*[.:;,]?\s*$/, "")}. ${leftBehind}`
+          : said,
+      };
+    }
+    onAccountKnown?.({ credentials, dashboardUrl: https.instanceUrl });
+
+    report("creating-token");
+    const result: SetupResult = {
+      dashboardUrl: https.instanceUrl,
+      secure: https.secure,
+      insecureReason: https.reason,
+      credentials,
+      token: null,
+      apiEnabled: false,
+      version: null,
+    };
+    try {
+      const access = await tryAutomaticAccess(session, credentials.email, {
+        signal,
+        onApiEnabled: () => {
+          result.apiEnabled = true;
+        },
+      });
+      if (access) {
+        result.token = access.token;
+        result.version = access.version;
+      } else {
+        result.tokenUnavailableReason =
+          "This version of Coolify could not be set up automatically.";
+      }
+    } catch (error) {
+      // The install stands whatever happened here, so this reports rather than
+      // throws: losing a working server because the last step failed would be
+      // the worse outcome by far.
+      if ((error as { kind?: string }).kind === "user_cancelled") throw error;
+      // A lost link is reported as one. Handing back the transport's own
+      // words would tell the user about a socket when what they need to know
+      // is that the server stopped answering and the rest is theirs to do.
+      result.tokenUnavailableReason =
+        error instanceof SshError
+          ? // Which step the link died on decides what to say. The API is
+            // opened first, so once that has taken effect the loss belongs to
+            // the token step — and naming the API would sit over guidance
+            // that rightly no longer mentions it.
+            result.apiEnabled
+            ? "Coolify stopped answering while Dyad was making a token."
+            : "Coolify did not answer while Dyad was opening its API."
+          : error instanceof Error
+            ? error.message
+            : "Coolify's API could not be opened automatically.";
+    }
+
+    report("done");
+    return result;
+  } finally {
+    session.end();
+  }
+}

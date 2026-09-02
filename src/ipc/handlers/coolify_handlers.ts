@@ -1,12 +1,13 @@
 import { BrowserWindow } from "electron";
 import { eq } from "drizzle-orm";
 import log from "electron-log";
-import * as dns from "node:dns/promises";
 import { createHash } from "node:crypto";
 import { db } from "../../db";
 import { apps } from "../../db/schema";
+import { resolveBoth } from "../utils/dns_resolve";
 import { readSettings, writeSettings } from "../../main/settings";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { forgottenCoolify } from "@/lib/schemas";
 import {
   getClient,
   readConnectionState,
@@ -26,7 +27,7 @@ import {
   isLoopbackAddress,
   isNonRoutableAddress,
   isDeferredIpv6,
-} from "@/coolify_deploy/domain_check";
+} from "@/shared/domain_check";
 import {
   applyCoolifyConnectionChange,
   isHostMove,
@@ -45,56 +46,6 @@ async function getApp(appId: number) {
     throw new DyadError(`App ${appId} not found`, DyadErrorKind.NotFound);
   }
   return app;
-}
-
-/** A resolver saying "no such record" — anything else is our problem, not DNS's. */
-const NO_RECORD_CODES = new Set(["ENOTFOUND", "ENODATA", "NOTFOUND"]);
-
-/**
- * Bounded, because Save waits on it.
- *
- * The check is advisory, so a resolver that never answers must not be able to
- * hold the button indefinitely. The bound is per attempt per configured
- * nameserver, so the wait scales with how many the machine has: six seconds
- * against a single stub resolver, and proportionally more where several are
- * listed. Two tries rather than the default four keeps that multiple small. A
- * timeout still arrives as an error code the caller reads as "could not ask"
- * rather than as a missing record.
- */
-const resolver = new dns.Resolver({ timeout: 3_000, tries: 2 });
-
-/**
- * Both families, distinguishing "no record" from "could not ask".
- *
- * A timeout or an unreachable resolver must not be reported as a missing
- * record: telling someone to fix DNS that is already correct is exactly the
- * confident-but-wrong advice the unknown verdict exists to avoid.
- */
-async function resolveBoth(
-  hostname: string,
-): Promise<{ addresses: string[]; failed: boolean }> {
-  const attempt = async (fn: (h: string) => Promise<string[]>) => {
-    try {
-      return { addresses: await fn(hostname), failed: false };
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code ?? "";
-      return { addresses: [] as string[], failed: !NO_RECORD_CODES.has(code) };
-    }
-  };
-  const [v4, v6] = await Promise.all([
-    attempt((h) => resolver.resolve4(h)),
-    attempt((h) => resolver.resolve6(h)),
-  ]);
-  return {
-    addresses: [...v4.addresses, ...v6.addresses],
-    // One family answering is enough. But a definitive "no such record" from
-    // one and a failed lookup from the other is not the same as no records:
-    // the family we could not reach may hold the one that works.
-    failed:
-      v4.addresses.length === 0 &&
-      v6.addresses.length === 0 &&
-      (v4.failed || v6.failed),
-  };
 }
 
 /** The app's stored connection, or nothing when it has none. */
@@ -152,6 +103,7 @@ export function registerCoolifyHandlers() {
       hasToken: Boolean(token),
       tokenId: token ? tokenFingerprint(token) : null,
       instanceUrl: settings.coolify?.instanceUrl ?? null,
+      serverUrl: settings.coolify?.admin?.instanceUrl ?? null,
       connection: readConnection(state),
       appUrl: deployed?.appUrl ?? null,
       lastDeployedAt: deployed?.lastDeployedAt.getTime() ?? null,
@@ -177,8 +129,9 @@ export function registerCoolifyHandlers() {
       await probe.listServers();
       const normalized = instanceUrl.replace(/\/+$/, "");
       const previous = readSettings().coolify?.instanceUrl;
-      // Spread, as clearToken does: a field added to CoolifySchema later
-      // should not be dropped by whichever of the two happens to run.
+      // Spread: the admin account for a server Dyad just installed is set
+      // before there is any token for it, and this is the call that supplies
+      // the token. Replacing would drop the password on the way in.
       writeSettings({
         coolify: {
           ...readSettings().coolify,
@@ -210,22 +163,26 @@ export function registerCoolifyHandlers() {
   });
 
   createTypedHandler(coolifyContracts.clearToken, async () => {
-    // Only the token. Every app reads as disconnected without one, so there is
-    // nothing to gain by clearing their rows — and doing so would throw away
-    // each app's Coolify application id, which is the one value that cannot be
-    // re-entered. The next deploy would then build a second application beside
-    // the one already running and lose a fight with it over the domain.
+    // Every field, not just the token. Dyad holds one Coolify at a time, so
+    // an address or an admin account left behind belongs to an instance
+    // nothing is connected to any more — and the next connection would put a
+    // stranger's password under its address. The screen that reaches this
+    // shows all of it one last time and asks the user to confirm, because
+    // Dyad invented the password and is the only thing that has it.
     //
-    // The instance URL stays so that saveToken can still tell whether the next
-    // token points somewhere else. Even then the rows are kept: those ids name
-    // applications still running on the old instance, and nothing in Dyad
-    // could reach them again once they were gone.
+    // Every field named rather than an empty object: an absent key reads to
+    // writeSettings as one a consumer read could not decrypt, and it hands
+    // the ciphertext back — so an empty coolify would return the token this
+    // is here to forget. forgottenCoolify names them all and stops
+    // compiling when CoolifySchema grows one more.
+    //
+    // The apps' rows are not touched. They read as disconnected without a
+    // token anyway, and they carry each app's Coolify application id — the
+    // one value that cannot be typed back in. Losing it would make the next
+    // deploy build a second application beside the one already running and
+    // lose a fight with it over the domain.
     coolifyDeployRegistry.cancelAll();
-    // The address survives; only the token goes. Spread rather than replaced,
-    // so a field added to CoolifySchema later is not silently dropped here.
-    writeSettings({
-      coolify: { ...readSettings().coolify, accessToken: undefined },
-    });
+    writeSettings({ coolify: forgottenCoolify() });
   });
 
   createTypedHandler(coolifyContracts.createProject, async (_, { name }) => {

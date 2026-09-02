@@ -413,6 +413,19 @@ export function writeSettings(settings: Partial<UserSettings>): void {
         accessToken: encrypt(newSettings.coolify.accessToken.value),
       };
     }
+    // Guarded on the password rather than the account, because the two do not
+    // arrive together: the preservation pass above strips a password it means
+    // to write back verbatim, leaving the account here with none.
+    const coolifyAdmin = newSettings.coolify?.admin;
+    if (coolifyAdmin?.password) {
+      newSettings.coolify = {
+        ...newSettings.coolify,
+        admin: {
+          ...coolifyAdmin,
+          password: encrypt(coolifyAdmin.password.value),
+        },
+      };
+    }
     if (newSettings.supabase) {
       // Encrypt legacy tokens (kept for backwards compat)
       if (newSettings.supabase.accessToken) {
@@ -683,6 +696,29 @@ function readExistingSettingsFile(
       // decrypt, so the user is not asked to retype what Dyad still knows.
       const { accessToken: _dropped, ...rest } = combinedSettings.coolify;
       combinedSettings.coolify = rest;
+    }
+  }
+  const admin = combinedSettings.coolify?.admin;
+  const adminPassword = admin?.password;
+  if (admin && adminPassword) {
+    const resolved = resolveStoredSecret(
+      adminPassword,
+      "Coolify admin password",
+      ["coolify", "admin", "password"],
+      ctx,
+    );
+    if (resolved) {
+      combinedSettings.coolify = {
+        ...combinedSettings.coolify,
+        admin: { ...admin, password: resolved },
+      };
+    } else {
+      // Only the password. The account stays so that the ciphertext has a
+      // container to be written back into on the next write — dropping it
+      // whole reads to the write path as the user having deleted the account,
+      // and throws away a password a repaired keychain could still open.
+      const { password: _dropped, ...rest } = admin;
+      combinedSettings.coolify = { ...combinedSettings.coolify, admin: rest };
     }
   }
   for (const provider in combinedSettings.providerSettings) {

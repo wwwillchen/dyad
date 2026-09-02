@@ -1,0 +1,1141 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+// The mocked class, so the handler recognises what it is handed.
+import { SshError } from "../utils/ssh_client";
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import {
+  SETUP_MACHINE_REPORTED,
+  SetupResultSchema,
+} from "@/ipc/types/coolify_setup";
+
+const h = vi.hoisted(() => ({
+  settings: {} as Record<string, unknown>,
+  written: [] as Array<Record<string, unknown>>,
+  serverKey: { publicKey: "ssh-ed25519 AAAAPUB dyad", privateKey: "PRIVATE" },
+  setupResult: null as unknown,
+  setupError: null as unknown,
+  lastSetupOptions: null as Record<string, unknown> | null,
+  sessionEnded: 0,
+  reportsAccount: true,
+  runCalls: 0,
+  verifiedAgainst: [] as string[],
+  writeThrows: false,
+  /** How many writes fail before the store comes back. */
+  writeFailures: 0,
+  /**
+   * Writes that succeed before the failures above start.
+   *
+   * The record written on the way in is the first write, and failing it now
+   * refuses the run outright — so a case about the writes that come after the
+   * account exists has to let that one through.
+   */
+  writeOkFirst: 0,
+  reportsAccountTwice: false,
+  failsBeforeCredentials: false,
+  onRunStarted: null as null | (() => void),
+  preflightThrows: false,
+  preflightReady: true,
+  fingerprint: "SHA256:fingerprint",
+  lastConnectTarget: null as null | { host: string },
+  /** What the SSH connect throws, for the cases about a failed connect. */
+  connectError: null as unknown,
+}));
+
+vi.mock("electron", () => ({ BrowserWindow: { getAllWindows: () => [] } }));
+
+const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+vi.mock("./base", () => ({
+  createTypedHandler: (
+    contract: { channel: string },
+    handler: (...args: unknown[]) => Promise<unknown>,
+  ) => handlers.set(contract.channel, handler),
+}));
+
+vi.mock("@/main/settings", () => ({
+  readSettings: () => h.settings,
+  writeSettings: (value: Record<string, unknown>) => {
+    if (h.writeOkFirst > 0) {
+      h.writeOkFirst -= 1;
+      h.written.push(value);
+      Object.assign(h.settings, value);
+      return;
+    }
+    if (h.writeFailures > 0) {
+      h.writeFailures -= 1;
+      throw new Error("keychain is unavailable");
+    }
+    if (h.writeThrows) throw new Error("keychain is unavailable");
+    h.written.push(value);
+    Object.assign(h.settings, value);
+  },
+}));
+
+vi.mock("@/coolify_setup/server_key", () => ({
+  ensureServerKey: () => h.serverKey,
+}));
+
+vi.mock("../utils/ssh_client", () => ({
+  // The real client runs the verifier during the handshake, which is what
+  // reports the fingerprint. A mock that skipped it would leave the handler
+  // looking correct while reporting nothing.
+  connectSsh: vi.fn(
+    async (target: { host: string }, verify: (fp: string) => boolean) => {
+      h.lastConnectTarget = target;
+      if (h.connectError) throw h.connectError;
+      verify(h.fingerprint);
+      return {
+        run: vi.fn(),
+        end: () => {
+          h.sessionEnded += 1;
+        },
+      };
+    },
+  ),
+  trustOnFirstUse: (onSeen: (fp: string) => void) => (fingerprint: string) => {
+    onSeen(fingerprint);
+    return true;
+  },
+  // Recorded where it is built, not where it is called: the flow is mocked
+  // here, so what this proves is which verifier the handler chose.
+  expectFingerprint: (expected: string) => {
+    h.verifiedAgainst.push(expected);
+    return (fingerprint: string) => fingerprint === expected;
+  },
+  // Close enough to the real class for what this file asserts: the failure,
+  // the kind, the errno, and the name `sshFailureOf` matches on. It is not a DyadError,
+  // so a case about what survives serialization would need more than this.
+  //
+  // The failure and the kind are asserted on for opposite reasons. The
+  // failure is read here and goes no further: it is what drops an unreachable server from
+  // telemetry, as the user's own network rather than a fault here, and the
+  // serialized error has no such field. The kind is not read for this
+  // failure — the filter has already answered on the failure — and it does
+  // cross. Between them they pin the error as the one the client threw.
+  SshError: class SshError extends Error {
+    constructor(
+      readonly failure: string,
+      message: string,
+      readonly kind?: string,
+      readonly systemCode?: string,
+    ) {
+      super(message);
+      this.name = "SshError";
+    }
+  },
+}));
+
+vi.mock("@/coolify_setup/install", () => ({
+  preflight: vi.fn(async () => {
+    if (h.preflightThrows) throw new Error("docker never answered");
+    return {
+      ready: h.preflightReady,
+      reason: h.preflightReady ? undefined : "It already has Coolify on it.",
+      alreadyInstalled: !h.preflightReady,
+      memoryMb: 1967,
+    };
+  }),
+}));
+
+vi.mock("@/coolify_setup/setup_flow", () => ({
+  runServerSetup: vi.fn(async (options: Record<string, unknown>) => {
+    h.runCalls += 1;
+    h.lastSetupOptions = options;
+    // Connecting and the preflight both come before the password is handed
+    // over, and either can end the run.
+    if (h.failsBeforeCredentials) throw h.setupError;
+    // The real flow hands over the password before the installer runs, since
+    // it invented it rather than discovering it.
+    (
+      options.onCredentialsBuilt as (a: {
+        credentials: { email: string; password: string };
+        dashboardUrl: string;
+      }) => void
+    )({
+      credentials: { email: "me@gmail.com", password: "Abc123@xyz" },
+      dashboardUrl: "http://203.0.113.5:8000",
+    });
+    // The real flow reports the account the moment it exists, before the
+    // steps that can still fail.
+    if (h.reportsAccount) {
+      (
+        options.onAccountKnown as (a: {
+          credentials: { email: string; password: string };
+          dashboardUrl: string;
+        }) => void
+      )({
+        credentials: { email: "me@gmail.com", password: "Abc123@xyz" },
+        dashboardUrl: "http://203.0.113.5:8000",
+      });
+      // And again once HTTPS has settled the address it is reachable at.
+      if (h.reportsAccountTwice) {
+        (
+          options.onAccountKnown as (a: {
+            credentials: { email: string; password: string };
+            dashboardUrl: string;
+          }) => void
+        )({
+          credentials: { email: "me@gmail.com", password: "Abc123@xyz" },
+          dashboardUrl: "https://203.0.113.5.sslip.io",
+        });
+      }
+    }
+    // Something else writing while the run is in flight.
+    h.onRunStarted?.();
+    if (h.setupError) throw h.setupError;
+    return h.setupResult;
+  }),
+}));
+
+const { registerCoolifySetupHandlers, resetCoolifySetupStateForTests } =
+  await import("./coolify_setup_handlers");
+
+/** Install requires a check first, so this is what "run it" means now. */
+async function checkThenRun(input: Record<string, unknown> = TARGET) {
+  await call("coolify-setup:inspect", input);
+  return call("coolify-setup:run", input);
+}
+
+function call(channel: string, input?: unknown) {
+  const handler = handlers.get(channel);
+  if (!handler) throw new Error(`No handler for ${channel}`);
+  return handler({}, input);
+}
+
+const TARGET = {
+  host: "203.0.113.5",
+  username: "root",
+  adminEmail: "me@gmail.com",
+};
+
+const RESULT = {
+  dashboardUrl: "http://203.0.113.5:8000",
+  // The ordinary end of a run: a certificate arrived. Named rather than left
+  // out, because a token for an address that is not encrypted is held for the
+  // user to agree to rather than stored, and omitting this reads as that.
+  secure: true,
+  credentials: {
+    username: "dyad-admin",
+    email: "me@gmail.com",
+    password: "Abc123@xyz",
+  },
+  token: "1|abc",
+  // A token comes from a mint, and Dyad opens the API to reach one.
+  apiEnabled: true,
+  version: "4.3.2",
+};
+
+beforeEach(() => {
+  handlers.clear();
+  h.settings = {};
+  h.written.length = 0;
+  h.setupResult = RESULT;
+  h.setupError = null;
+  h.lastSetupOptions = null;
+  h.sessionEnded = 0;
+  h.reportsAccount = true;
+  h.failsBeforeCredentials = false;
+  h.lastConnectTarget = null;
+  h.connectError = null;
+  h.onRunStarted = null;
+  h.runCalls = 0;
+  h.verifiedAgainst.length = 0;
+  h.writeThrows = false;
+  h.writeFailures = 0;
+  h.writeOkFirst = 0;
+  h.reportsAccountTwice = false;
+  h.preflightThrows = false;
+  h.preflightReady = true;
+  h.fingerprint = "SHA256:fingerprint";
+  resetCoolifySetupStateForTests();
+  registerCoolifySetupHandlers();
+});
+
+describe("getServerKey", () => {
+  it("hands over only the public half", async () => {
+    // The private key is what reaches the user's server; it belongs in the
+    // main process, exactly like the API token.
+    const result = (await call("coolify-setup:get-server-key")) as Record<
+      string,
+      unknown
+    >;
+    expect(result).toEqual({ publicKey: h.serverKey.publicKey });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE");
+  });
+});
+
+describe("inspect", () => {
+  it("reports the fingerprint it saw", async () => {
+    const result = (await call("coolify-setup:inspect", TARGET)) as Record<
+      string,
+      unknown
+    >;
+    expect(result.hostFingerprint).toBe("SHA256:fingerprint");
+    expect(result.ready).toBe(true);
+  });
+
+  it("closes the connection it opened", async () => {
+    await call("coolify-setup:inspect", TARGET);
+    expect(h.sessionEnded).toBe(1);
+  });
+
+  /**
+   * What the client reports for a name that does not resolve.
+   *
+   * Written out rather than shortened: a connect the socket reports as failed
+   * does not arrive raw — `classify` turns those into an SshError with words
+   * of its own — so a fixture shaped like the library's own message would be
+   * a shape this path does not produce, and would let the hint be built
+   * against text the user never sees.
+   *
+   * A function rather than a constant, because the handler rewrites the
+   * message of the error it is given: one shared instance would carry the
+   * previous case's hint into the next one.
+   */
+  const UNREACHABLE = () =>
+    new SshError(
+      "unreachable",
+      "Could not reach the server (ENOTFOUND). Check the address and that " +
+        "port 22 is open.",
+      DyadErrorKind.External,
+      "ENOTFOUND",
+    );
+
+  it("says what to type instead, before anything else", async () => {
+    // The other way in — a token for a Coolify that already exists — asks for
+    // exactly that shape, so it is the likeliest wrong answer. What the client
+    // says on its own names the address as one of two suspects; the other is a
+    // port nobody is listening on, and that is the one people go and look at.
+    h.connectError = UNREACHABLE();
+
+    await expect(
+      call("coolify-setup:inspect", {
+        ...TARGET,
+        host: "https://203.0.113.5:8000",
+      }),
+    ).rejects.toThrow(/^Enter just the server address[\s\S]*ENOTFOUND/);
+  });
+
+  it("says it for an address with a path on it, too", async () => {
+    // The half with no scheme in it — an address someone put a path onto,
+    // copied out of a page that documented one. Worth its own case because
+    // this is where calling it "a URL" would have been a guess: the message
+    // states the rule instead, so it is true of both.
+    h.connectError = UNREACHABLE();
+
+    await expect(
+      call("coolify-setup:inspect", { ...TARGET, host: "203.0.113.5/coolify" }),
+    ).rejects.toThrow(/Enter just the server address/);
+  });
+
+  it("keeps the fault it was given, and what it was", async () => {
+    // Added to the error rather than replacing it. The code is the one part
+    // of what the client said that a bug report needs — the sentence around
+    // it offers a closed port, which the hint has just ruled out — and the
+    // failure decides, in this process before any of it is serialized,
+    // whether this is reported at all.
+    h.connectError = UNREACHABLE();
+
+    await expect(
+      call("coolify-setup:inspect", { ...TARGET, host: "203.0.113.5/coolify" }),
+    ).rejects.toMatchObject({
+      failure: "unreachable",
+      kind: DyadErrorKind.External,
+      // Ends there: the sentence the client wrapped the code in offers a
+      // closed port as the other suspect, and keeping it would put a second
+      // answer under the one this just gave.
+      message: expect.stringMatching(/\(ENOTFOUND\)$/),
+    });
+  });
+
+  it("falls back to the failure when the system named nothing", async () => {
+    // Only some of `classify`'s branches have an errno to pass on. The rest
+    // still carry a failure, which is a word rather than the sentence they
+    // wrote — and that sentence is the one offering a closed port, which the
+    // instruction it is appended to has just ruled out.
+    h.connectError = new SshError(
+      "timeout",
+      "The server did not answer in time. Check the address and that port " +
+        "22 is reachable.",
+      DyadErrorKind.External,
+    );
+
+    await expect(
+      call("coolify-setup:inspect", { ...TARGET, host: "203.0.113.5/coolify" }),
+    ).rejects.toThrow(/in it\. \(timeout\)$/);
+  });
+
+  it("says nothing about the address once the connection is open", async () => {
+    // Only the connect is covered, and nothing but this says so. Past it the
+    // address reached something, so what failed is the server — and the hint
+    // would be advice the connection that just succeeded has disproved.
+    h.preflightThrows = true;
+
+    await expect(
+      call("coolify-setup:inspect", { ...TARGET, host: "203.0.113.5/coolify" }),
+    ).rejects.toThrow(/^docker never answered$/);
+  });
+
+  it("says only the instruction when the error carries neither", async () => {
+    // Nothing to add is not a reason to add the message back: what is left
+    // is the one sentence that tells the user what to do.
+    h.connectError = new Error("something went wrong");
+
+    await expect(
+      call("coolify-setup:inspect", { ...TARGET, host: "203.0.113.5/coolify" }),
+    ).rejects.toThrow(/no \/ characters in it\.$/);
+  });
+
+  it("says nothing about an address it does not recognise", async () => {
+    // The whole point of adding this after the failure rather than before the
+    // connect. An address shaped like nothing in particular — a single-label
+    // name, an IPv6 literal — is none of its business, and a hint here would
+    // be a confident wrong answer on top of a real fault.
+    //
+    // Given the same failure as the cases that do get the hint, so the
+    // address is the only thing separating them from this one: a plainer
+    // error here would let an implementation that hints on every SshError
+    // pass this untouched.
+    for (const host of ["fe80::1", "coolify", "my_server.local"]) {
+      h.connectError = UNREACHABLE();
+      await expect(
+        call("coolify-setup:inspect", { ...TARGET, host }),
+      ).rejects.toThrow(/^Could not reach the server \(ENOTFOUND\)\./);
+    }
+  });
+});
+
+describe("run", () => {
+  it("refuses an address Coolify will not accept, before doing anything", async () => {
+    // Its seeder resolves the domain. Finding out afterwards costs the whole
+    // install and leaves an instance with no account on it.
+    await expect(
+      call("coolify-setup:run", { ...TARGET, adminEmail: "admin@dyad.test" }),
+    ).rejects.toMatchObject({ kind: "validation" });
+  });
+
+  it("holds the install to the identity the inspection saw", async () => {
+    // The panel shows that fingerprint and asks the user to commit minutes to
+    // it. Without the pin, the install accepts whatever answers the address by
+    // the time it starts.
+    await checkThenRun();
+
+    expect(h.verifiedAgainst).toContain("SHA256:fingerprint");
+  });
+
+  it("does not hold one port to what another on the same address showed", async () => {
+    // Two services on one address are two servers. Keyed by address alone,
+    // the second is checked against the first one's fingerprint and refused.
+    await call("coolify-setup:inspect", { ...TARGET, port: 22 });
+
+    await expect(
+      call("coolify-setup:run", { ...TARGET, port: 2222 }),
+    ).rejects.toThrow(/Check the server/);
+  });
+
+  it("does not hold one server to what another one showed", async () => {
+    // Addresses are remembered as themselves. Read as URLs, everything shaped
+    // like fe80::1 parses as a scheme with no hostname and shares one entry,
+    // so a second server would be refused for the first one's key.
+    await call("coolify-setup:inspect", { ...TARGET, host: "fe80::1" });
+
+    await expect(
+      call("coolify-setup:run", { ...TARGET, host: "fe80::2" }),
+    ).rejects.toThrow(/Check the server/);
+  });
+
+  it("says the identity changed rather than reporting a cancellation", async () => {
+    // host-key-rejected is how a user declining is reported too, and that
+    // reads as "nothing happened" — which is the wrong thing to say when a
+    // server has been swapped underneath the address.
+    await call("coolify-setup:inspect", TARGET);
+    h.setupError = new SshError(
+      "host-key-rejected",
+      "The server's identity was not accepted, so nothing was sent to it.",
+      DyadErrorKind.UserCancelled,
+    );
+
+    await expect(checkThenRun()).rejects.toThrow(/identity has changed/);
+  });
+
+  it("does not start an install it cannot record the password for", async () => {
+    // Before the installer, so nothing has been done to the server and this
+    // costs a retry. Carrying on would put an account on a machine whose
+    // password Dyad never managed to keep — and preflight then refuses to
+    // install again, so there is no way back to it.
+    h.writeThrows = true;
+
+    const error = (await checkThenRun().catch((e: unknown) => e)) as Error;
+
+    expect(error.message).toMatch(/could not save the admin/);
+    // What the keychain said is logged, not handed to a screen that already
+    // carries a password this run invented.
+    expect(error.message).not.toMatch(/Abc123@xyz/);
+    expect(error.message).not.toMatch(/keychain is unavailable/);
+    // And nothing was left behind to hold up the next attempt.
+    expect(
+      (h.settings.coolify as { admin?: unknown } | undefined)?.admin,
+    ).toBeUndefined();
+  });
+
+  it("finishes when the account cannot be written down", async () => {
+    // The account is on the server either way, and a retry is refused because
+    // Coolify is installed now — so ending the run here would lose the only
+    // copy of a password Dyad invented. The record on the way in lands: that
+    // one failing refuses the run instead, before anything is installed.
+    h.writeOkFirst = 1;
+    h.writeThrows = true;
+
+    const result = (await checkThenRun()) as {
+      adminPassword: string;
+      tokenStored: boolean;
+      tokenUnavailableReason: string;
+    };
+
+    expect(result.adminPassword).toBe("Abc123@xyz");
+    // Nothing was written, so the next screen has no token to use — saying
+    // otherwise sends the user to a panel that cannot work.
+    expect(result.tokenStored).toBe(false);
+    // Where the password actually is. The screen puts the card above this
+    // message, and on this path it is the only copy — so the direction is
+    // the part that matters, and it is written here rather than there.
+    expect(result.tokenUnavailableReason).toContain("could not save");
+    expect(result.tokenUnavailableReason).toContain("password above");
+  });
+
+  it("refuses a server it has not looked at", async () => {
+    // The form disables Install until the check has run, but this is the call
+    // that sends the credentials, so it says no on its own account.
+    await expect(call("coolify-setup:run", TARGET)).rejects.toThrow(
+      /Check the server/,
+    );
+  });
+
+  it("refuses a server whose check never finished", async () => {
+    // Neither the key nor the pass is recorded until a check has finished, so
+    // a connection that opened leaves nothing for an install to go on.
+    h.preflightThrows = true;
+    await expect(call("coolify-setup:inspect", TARGET)).rejects.toThrow();
+
+    await expect(call("coolify-setup:run", TARGET)).rejects.toThrow(
+      /Check the server/,
+    );
+    expect(h.runCalls).toBe(0);
+  });
+
+  it("refuses a server the check turned down", async () => {
+    h.preflightReady = false;
+    await call("coolify-setup:inspect", TARGET);
+
+    await expect(call("coolify-setup:run", TARGET)).rejects.toThrow(
+      /Check the server/,
+    );
+    expect(h.runCalls).toBe(0);
+  });
+
+  it("keeps the answer that stands when a re-check does not finish", async () => {
+    // The handshake happens before preflight, so recording the key there left
+    // the new machine's key beside the old machine's pass — an install onto a
+    // server whose check never came back.
+    await call("coolify-setup:inspect", TARGET);
+
+    // A different machine answers the address, and its check does not finish.
+    h.fingerprint = "SHA256:someone-else";
+    h.preflightThrows = true;
+    await expect(call("coolify-setup:inspect", TARGET)).rejects.toThrow();
+    h.preflightThrows = false;
+
+    // The pass from the finished check still stands, and it is still paired
+    // with the key that check saw — not with the one nobody approved.
+    await call("coolify-setup:run", TARGET);
+    expect(h.verifiedAgainst).toEqual(["SHA256:fingerprint"]);
+  });
+
+  it("drops a pass the next check takes back", async () => {
+    // A server that was ready and has since had Coolify put on it is not one
+    // to install onto, and the second answer is the true one.
+    await call("coolify-setup:inspect", TARGET);
+    h.preflightReady = false;
+    await call("coolify-setup:inspect", TARGET);
+
+    await expect(call("coolify-setup:run", TARGET)).rejects.toThrow(
+      /Check the server/,
+    );
+  });
+
+  it("leaves the one-at-a-time refusal unmarked", async () => {
+    // That refusal comes from the machine declining to start, not from a run
+    // it took on — so it has nothing on screen of its own, and the panel has
+    // to say it. What keeps it unmarked is where start() sits.
+    h.reportsAccount = false;
+    let release!: () => void;
+    h.setupResult = new Promise((resolve) => {
+      release = () => resolve(RESULT);
+    });
+    const first = checkThenRun();
+
+    await expect(checkThenRun()).rejects.not.toMatchObject({
+      code: SETUP_MACHINE_REPORTED,
+    });
+
+    release();
+    await first;
+  });
+
+  it("leaves an error that carries its own code alone", async () => {
+    // A system error names itself — ENOTFOUND and the like — and overwriting
+    // that loses what went wrong. Said twice is better than said wrongly.
+    h.setupError = Object.assign(new Error("getaddrinfo ENOTFOUND"), {
+      code: "ENOTFOUND",
+    });
+
+    await expect(checkThenRun()).rejects.toMatchObject({ code: "ENOTFOUND" });
+  });
+
+  it("stores the account on the way out when the first attempt failed", async () => {
+    // Coolify has the account either way, and preflight refuses to install
+    // over it — so a password stored nowhere is a server nobody can sign into.
+    // The record on the way in lands — failing that refuses the run — and
+    // the account's own write is the one that does not, so the retry runs.
+    h.writeOkFirst = 1;
+    h.writeFailures = 1;
+    h.reportsAccount = true;
+    h.setupError = new DyadError("exit 1", DyadErrorKind.External);
+
+    await expect(checkThenRun()).rejects.toThrow("exit 1");
+
+    const saved = h.written.at(-1) as {
+      coolify: { admin: { password: { value: string } } };
+    };
+    expect(saved.coolify.admin.password.value).toBe("Abc123@xyz");
+  });
+
+  it("does not put back an address a later write replaced", async () => {
+    // The account is reported twice — once when it exists, and again once
+    // HTTPS has settled where it answers. A copy kept from the first would
+    // write the earlier address back over the later one on the way out.
+    // The record on the way in lands, and the first of the two accounts does
+    // not — so the copy left behind is the one holding the old address.
+    h.writeOkFirst = 1;
+    h.writeFailures = 1;
+    h.reportsAccount = true;
+    h.reportsAccountTwice = true;
+    h.setupError = new DyadError("exit 1", DyadErrorKind.External);
+
+    await expect(checkThenRun()).rejects.toThrow("exit 1");
+
+    const saved = h.written.at(-1) as {
+      coolify: { admin: { instanceUrl: string } };
+    };
+    expect(saved.coolify.admin.instanceUrl).toBe(
+      "https://203.0.113.5.sslip.io",
+    );
+  });
+
+  it("reports what went wrong, not what the retry did", async () => {
+    // A write that fails again must not become the failure the user is told
+    // about — the install is what they were watching. The record on the way
+    // in lands, since failing that refuses the run before it starts.
+    h.writeOkFirst = 1;
+    h.writeThrows = true;
+    h.reportsAccount = true;
+    h.setupError = new DyadError("exit 1", DyadErrorKind.External);
+
+    await expect(checkThenRun()).rejects.toThrow("exit 1");
+  });
+
+  it("marks a failure the machine already put on screen", async () => {
+    // The panel suppresses what carries this and shows everything else, so
+    // the mark is what stops one failure being reported twice.
+    h.setupError = new DyadError("exit 1", DyadErrorKind.External);
+
+    await expect(checkThenRun()).rejects.toMatchObject({
+      code: SETUP_MACHINE_REPORTED,
+    });
+  });
+
+  it("leaves a refusal that never started unmarked", async () => {
+    // Nothing reached the machine, so nothing is on screen — and an unmarked
+    // error is the one the panel says out loud.
+    await expect(call("coolify-setup:run", TARGET)).rejects.not.toMatchObject({
+      code: SETUP_MACHINE_REPORTED,
+    });
+  });
+
+  it("stores the token it minted", async () => {
+    await checkThenRun();
+    const saved = h.written.at(-1) as {
+      coolify: { accessToken: { value: string }; instanceUrl: string };
+    };
+    expect(saved.coolify.accessToken.value).toBe("1|abc");
+    expect(saved.coolify.instanceUrl).toBe("http://203.0.113.5:8000");
+  });
+
+  it("stores the admin password, so the user is not locked out later", async () => {
+    // Dyad invented this password for a machine the user owns. Storing the
+    // token but not this leaves them unable to sign in to their own server.
+    await checkThenRun();
+    const saved = h.written.at(-1) as {
+      coolify: { admin?: { password: { value: string }; email: string } };
+    };
+    expect(saved.coolify.admin?.password.value).toBe("Abc123@xyz");
+    expect(saved.coolify.admin?.email).toBe("me@gmail.com");
+  });
+
+  it("records which instance the account is on", async () => {
+    // Connecting Dyad to a different Coolify later has to know this account
+    // does not come along.
+    await checkThenRun();
+    const saved = h.written.at(-1) as {
+      coolify: { admin?: { instanceUrl: string } };
+    };
+    expect(saved.coolify.admin?.instanceUrl).toBe("http://203.0.113.5:8000");
+  });
+
+  it("returns the password so it can be shown once", async () => {
+    const result = (await checkThenRun()) as Record<string, unknown>;
+    expect(result.adminPassword).toBe("Abc123@xyz");
+    expect(result.tokenStored).toBe(true);
+  });
+
+  it("answers in the shape the channel says it will", async () => {
+    // These cases mock the wrapper that parses this on the way out, so
+    // nothing else here would notice the answer drifting from the contract,
+    // or the fixture above drifting from what the flow now returns.
+    const result = await checkThenRun();
+    expect(SetupResultSchema.safeParse(result)).toMatchObject({
+      success: true,
+    });
+  });
+
+  it("keeps the install when no token could be created", async () => {
+    h.setupResult = {
+      ...RESULT,
+      token: null,
+      tokenUnavailableReason: "too old",
+    };
+    const result = (await checkThenRun()) as Record<string, unknown>;
+
+    expect(result.tokenStored).toBe(false);
+    expect(result.tokenUnavailableReason).toBe("too old");
+    expect(result.adminPassword).toBe("Abc123@xyz");
+
+    // The account is kept even though the token is not: this is the one case
+    // where the user has to sign in to Coolify themselves, so throwing the
+    // password away here would take away the only way to do it.
+    const saved = h.written.at(-1) as {
+      coolify: {
+        admin?: { password: { value: string } };
+        accessToken?: unknown;
+        instanceUrl?: string;
+      };
+    };
+    expect(saved.coolify.admin?.password.value).toBe("Abc123@xyz");
+    // No token and no address, because there is no instance Dyad can talk to.
+    expect(saved.coolify.accessToken).toBeUndefined();
+    expect(saved.coolify.instanceUrl).toBeUndefined();
+  });
+
+  it("keeps the password when the install fails after the account exists", async () => {
+    // The dashboard never answering does not un-create the account. Dyad is
+    // the only thing that knows the password it invented, so failing here
+    // without storing it locks the user out of a server that is running.
+    h.setupError = new Error(
+      "Coolify was installed but its dashboard did not start.",
+    );
+    await checkThenRun().catch(() => {});
+
+    const saved = h.written.at(-1) as {
+      coolify: {
+        admin?: { password: { value: string }; instanceUrl: string };
+      };
+    };
+    expect(saved.coolify.admin?.password.value).toBe("Abc123@xyz");
+    expect(saved.coolify.admin?.instanceUrl).toBe("http://203.0.113.5:8000");
+  });
+
+  it("leaves no account behind for a server that never got one", async () => {
+    // The password goes down before the installer runs, so a run that ends
+    // without ever seeding an account has to take it back off — it opens
+    // nothing, and leaving it would stand in the way of installing again.
+    h.reportsAccount = false;
+    h.setupError = new Error("This server cannot be set up automatically.");
+    await checkThenRun().catch(() => {});
+
+    const saved = h.written.at(-1) as { coolify: { admin?: unknown } };
+    expect(saved.coolify.admin).toBeUndefined();
+  });
+
+  it("has the password down before the installer is finished with it", async () => {
+    // The installer writes it into Coolify's own .env partway through a run
+    // that takes minutes. Quitting in between is what loses the only copy.
+    h.reportsAccount = false;
+    h.setupError = new Error("boom");
+    await checkThenRun().catch(() => {});
+
+    const early = h.written[0] as {
+      coolify: { admin?: { password?: { value: string } } };
+    };
+    expect(early.coolify.admin?.password?.value).toBeTruthy();
+  });
+
+  it("hands ssh2 an address it recognises, brackets or not", async () => {
+    // [2001:db8::1] is how documentation writes a v6 literal, and how anyone
+    // would paste one. ssh2 reads the brackets as part of a hostname and
+    // looks it up, so a reachable server reports as unreachable.
+    await call("coolify-setup:inspect", {
+      ...TARGET,
+      host: "[2001:db8::1]",
+    });
+
+    expect(h.lastConnectTarget?.host).toBe("2001:db8::1");
+  });
+
+  it("does not put back a record something else replaced mid-run", async () => {
+    // Minutes of installing sit between the record going down and the way
+    // out. Signing out in another window during that time is a newer answer
+    // than anything this run knows, and clearing on the way out would write
+    // over whatever that left.
+    h.reportsAccount = false;
+    h.setupError = new Error("boom");
+    h.onRunStarted = () => {
+      // As another window connecting to a Coolify would leave it. The admin
+      // record matters more than the token: clearing on the way out spreads
+      // what it read and names only admin, so a token would survive either
+      // way and prove nothing about the guard.
+      h.settings.coolify = {
+        instanceUrl: "https://elsewhere.example.com",
+        accessToken: { value: "1|theirs" },
+        admin: {
+          email: "other@gmail.com",
+          password: { value: "Other123@xyz" },
+          instanceUrl: "https://elsewhere.example.com",
+        },
+      };
+    };
+    await checkThenRun().catch(() => {});
+
+    // Untouched: what is there is newer than anything this run knows, and it
+    // is the only copy of that server's password.
+    const coolify = h.settings.coolify as {
+      accessToken?: { value: string };
+      admin?: { password?: { value: string } };
+    };
+    expect(coolify.accessToken?.value).toBe("1|theirs");
+    expect(coolify.admin?.password?.value).toBe("Other123@xyz");
+  });
+
+  it("takes its own record back off even if the keychain relocked meanwhile", async () => {
+    // readSettings drops a password it cannot decrypt and keeps the account,
+    // so this run's own record comes back without one. That is it gone
+    // unreadable rather than somebody else's writing — and leaving it behind
+    // holds a password that opens nothing, which is what refuses the next
+    // install.
+    h.reportsAccount = false;
+    h.setupError = new Error("boom");
+    h.onRunStarted = () => {
+      const coolify = h.settings.coolify as { admin?: Record<string, unknown> };
+      expect(coolify.admin).toBeTruthy();
+      delete coolify.admin!.password;
+    };
+    await checkThenRun().catch(() => {});
+
+    expect(
+      (h.settings.coolify as { admin?: unknown } | undefined)?.admin,
+    ).toBeUndefined();
+  });
+
+  it("refuses a second setup on a different machine", async () => {
+    // Two installs at once would interleave their output, and the second
+    // machine's run has nothing to do with the first's.
+    h.reportsAccount = false;
+    let release!: () => void;
+    h.setupResult = new Promise((resolve) => {
+      release = () => resolve(RESULT);
+    });
+    const first = checkThenRun();
+    // No account seeded by the first run, so the refusal below is the
+    // one-at-a-time rule rather than the gate that asks for a check or the
+    // one that holds an account — all three refuse the same way.
+    await call("coolify-setup:inspect", { ...TARGET, host: "198.51.100.7" });
+    await expect(
+      call("coolify-setup:run", { ...TARGET, host: "198.51.100.7" }),
+    ).rejects.toThrow(/already being set up/);
+    release();
+    await first;
+  });
+
+  it("refuses a second setup on the same machine too", async () => {
+    // Nobody needs to press Install to get back to a run any more: the panel
+    // asks what is going on and shows it. So a second press is a genuine
+    // second request, and two installs on one machine would fight.
+    h.reportsAccount = false;
+    let release!: () => void;
+    h.setupResult = new Promise((resolve) => {
+      release = () => resolve(RESULT);
+    });
+    const first = checkThenRun();
+    await expect(checkThenRun()).rejects.toMatchObject({
+      kind: "precondition",
+    });
+    release();
+    await first;
+  });
+
+  it("hands back what is going on, so a panel can show it", async () => {
+    h.reportsAccount = false;
+    let release!: () => void;
+    h.setupResult = new Promise((resolve) => {
+      release = () => resolve(RESULT);
+    });
+    await call("coolify-setup:inspect", TARGET);
+    const running = call("coolify-setup:run", TARGET);
+
+    const snapshot = (await call("coolify-setup:snapshot")) as {
+      type: string;
+      host: string;
+    };
+    expect(snapshot.type).toBe("running");
+    expect(snapshot.host).toBe("203.0.113.5");
+
+    release();
+    await running;
+    expect(
+      ((await call("coolify-setup:snapshot")) as { type: string }).type,
+    ).toBe("done");
+  });
+
+  it("puts the finished screen away when the user moves on", async () => {
+    await checkThenRun();
+    await call("coolify-setup:dismiss");
+
+    expect(
+      ((await call("coolify-setup:snapshot")) as { type: string }).type,
+    ).toBe("idle");
+  });
+
+  it("refuses to install over an account Dyad is holding", async () => {
+    // The screen that offers this stands aside while a failure is being
+    // reported, so its message and log stay reachable — and the form comes
+    // with it. Retrying that same server is refused by preflight once Coolify
+    // is on it, so what is left here is a different one, whose run would
+    // write its own account over the only copy of this one's password.
+    h.settings = {
+      coolify: {
+        admin: {
+          email: "me@gmail.com",
+          password: { value: "TheEarlierOne" },
+          instanceUrl: "http://198.51.100.9:8000",
+        },
+      },
+    } as Record<string, unknown>;
+
+    await expect(checkThenRun()).rejects.toThrow(/Sign out of Coolify first/);
+    expect(h.runCalls).toBe(0);
+  });
+
+  it("frees the slot even when setup failed", async () => {
+    // No account seeded, so nothing is held afterwards and the next run is
+    // admitted — the slot is the machine's, not the account's.
+    h.reportsAccount = false;
+    h.setupError = new Error("boom");
+    await checkThenRun().catch(() => {});
+    h.setupError = null;
+    await expect(checkThenRun()).resolves.toBeTruthy();
+  });
+});
+
+describe("a token for an unencrypted address", () => {
+  it("is not stored by the run that made it", async () => {
+    // Held instead, so closing the screen, quitting or crashing leaves Dyad
+    // unconnected rather than connected to something nobody agreed to.
+    h.setupResult = { ...(RESULT as object), secure: false, token: "1|abc" };
+    await checkThenRun();
+
+    const saved = h.written.at(-1) as {
+      coolify: { accessToken?: unknown; instanceUrl?: string };
+    };
+    expect(saved.coolify.accessToken).toBeUndefined();
+    expect(saved.coolify.instanceUrl).toBeUndefined();
+  });
+
+  it("reaches disk only once it has been agreed to", async () => {
+    h.setupResult = { ...(RESULT as object), secure: false, token: "1|abc" };
+    await checkThenRun();
+
+    await call("coolify-setup:accept-insecure-token");
+
+    const saved = h.written.at(-1) as {
+      coolify: { accessToken?: { value: string }; instanceUrl?: string };
+    };
+    expect(saved.coolify.accessToken?.value).toBe("1|abc");
+    expect(saved.coolify.instanceUrl).toBeTruthy();
+  });
+
+  it("is gone once the screen is put away without a word", async () => {
+    h.setupResult = { ...(RESULT as object), secure: false, token: "1|abc" };
+    await checkThenRun();
+    await call("coolify-setup:dismiss");
+
+    const before = h.written.length;
+    await call("coolify-setup:accept-insecure-token");
+
+    expect(h.written).toHaveLength(before);
+  });
+
+  it("is not left behind for the next case to accept", async () => {
+    // The third thing this module owns across a process. A case that ends an
+    // insecure run without accepting or dismissing would otherwise leave one
+    // here, and the next could store a credential the previous one made.
+    h.setupResult = { ...(RESULT as object), secure: false, token: "1|abc" };
+    await checkThenRun();
+
+    resetCoolifySetupStateForTests();
+    registerCoolifySetupHandlers();
+    const before = h.written.length;
+    await call("coolify-setup:accept-insecure-token");
+
+    expect(h.written).toHaveLength(before);
+  });
+
+  it("stores a token for an encrypted address without asking", async () => {
+    // Nothing crosses the network in the clear, so there is nothing to agree
+    // to and nothing held.
+    await checkThenRun();
+
+    const saved = h.written.at(-1) as {
+      coolify: { accessToken?: { value: string } };
+    };
+    expect(saved.coolify.accessToken?.value).toBeTruthy();
+  });
+});
+
+describe("revealCredentials", () => {
+  const ADMIN = {
+    email: "me@gmail.com",
+    password: { value: "Abc123@xyz" },
+    instanceUrl: "http://203.0.113.5:8000",
+  };
+
+  it("hands back what Dyad knows about getting in", async () => {
+    h.settings = {
+      coolify: {
+        instanceUrl: "http://203.0.113.5:8000",
+        accessToken: { value: "1|abc" },
+        admin: ADMIN,
+      },
+    };
+    const result = (await call("coolify-setup:reveal-credentials")) as Record<
+      string,
+      unknown
+    >;
+    expect(result).toEqual({
+      instance: { url: "http://203.0.113.5:8000", apiToken: "1|abc" },
+      server: {
+        url: "http://203.0.113.5:8000",
+        email: "me@gmail.com",
+        password: "Abc123@xyz",
+      },
+    });
+  });
+
+  it("describes a server installed before any token as a server alone", async () => {
+    // Nothing was ever connected, so there is no instance — but the machine
+    // Dyad built is still named by the account it made on it.
+    h.settings = { coolify: { admin: ADMIN } };
+    const result = (await call("coolify-setup:reveal-credentials")) as Record<
+      string,
+      unknown
+    >;
+    expect(result.instance).toBeNull();
+    expect(result.server).toEqual({
+      url: "http://203.0.113.5:8000",
+      email: "me@gmail.com",
+      password: "Abc123@xyz",
+    });
+  });
+
+  it("keeps each address with what it opens when they are different", async () => {
+    // Installed a server whose token could not be minted, then connected to a
+    // different Coolify. One address over both would put the installed
+    // server's password under the other one's address.
+    h.settings = {
+      coolify: {
+        instanceUrl: "https://someone-elses.example.com",
+        accessToken: { value: "1|for-the-other-one" },
+        admin: ADMIN,
+      },
+    };
+    const result = (await call("coolify-setup:reveal-credentials")) as {
+      instance: { url: string; apiToken: string };
+      server: { url: string; password: string };
+    };
+    expect(result.instance.url).toBe("https://someone-elses.example.com");
+    expect(result.instance.apiToken).toBe("1|for-the-other-one");
+    expect(result.server.url).toBe("http://203.0.113.5:8000");
+    expect(result.server.password).toBe("Abc123@xyz");
+  });
+
+  it("hides a password it cannot read, keeping the server it belongs to", async () => {
+    h.settings = {
+      coolify: {
+        admin: { email: "me@gmail.com", instanceUrl: "http://h:8000" },
+      },
+    };
+    const result = (await call("coolify-setup:reveal-credentials")) as {
+      server: { url: string; email: string; password: string | null };
+    };
+    expect(result.server.password).toBeNull();
+    expect(result.server.email).toBe("me@gmail.com");
+  });
+
+  it("has nothing to hand back once the instance is forgotten", async () => {
+    h.settings = { coolify: {} };
+    const result = (await call("coolify-setup:reveal-credentials")) as Record<
+      string,
+      unknown
+    >;
+    expect(result).toEqual({ instance: null, server: null });
+  });
+
+  it("answers a null server for an instance Dyad did not set up", async () => {
+    // Connected by pasting a token, so there is no account Dyad created.
+    h.settings = {
+      coolify: {
+        instanceUrl: "https://coolify.example.com",
+        accessToken: { value: "1|abc" },
+      },
+    };
+    const result = (await call("coolify-setup:reveal-credentials")) as Record<
+      string,
+      unknown
+    >;
+    expect(result.server).toBeNull();
+    expect(result.instance).toEqual({
+      url: "https://coolify.example.com",
+      apiToken: "1|abc",
+    });
+  });
+});
+
+describe("cancel", () => {
+  it("aborts the running setup", async () => {
+    h.reportsAccount = false;
+    let release!: () => void;
+    h.setupResult = new Promise((resolve) => {
+      release = () => resolve(RESULT);
+    });
+    await call("coolify-setup:inspect", TARGET);
+    const running = call("coolify-setup:run", TARGET);
+    // The flow is handed a signal; cancelling is what trips it.
+    const signal = h.lastSetupOptions?.signal as AbortSignal;
+    expect(signal.aborted).toBe(false);
+
+    await call("coolify-setup:cancel");
+    expect(signal.aborted).toBe(true);
+    release();
+    await running;
+  });
+
+  it("does nothing when nothing is running", async () => {
+    await expect(call("coolify-setup:cancel")).resolves.toBeUndefined();
+  });
+});

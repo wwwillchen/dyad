@@ -10,6 +10,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const settings: Record<string, unknown> = {};
+
+/** The settings fixture is untyped, and these assertions are about secrets. */
+function storedCoolify() {
+  return (settings.coolify ?? {}) as {
+    accessToken?: { value: string };
+    admin?: { email: string; password: { value: string }; instanceUrl: string };
+  };
+}
 const rows: Record<string, unknown>[] = [];
 
 vi.mock("../../main/settings", () => ({
@@ -220,6 +228,28 @@ describe("naming the stored token", () => {
     expect(JSON.stringify(status)).not.toContain("super-secret");
   });
 
+  it("names a server Dyad set up, so the panel can hold the address to it", async () => {
+    settings.coolify = {
+      ...(settings.coolify as Record<string, unknown>),
+      admin: {
+        email: "me@gmail.com",
+        password: { value: "Abc123@xyz" },
+        instanceUrl: "http://203.0.113.5:8000",
+      },
+    };
+    const status: any = await call("coolify:get-status", { appId: 1 });
+
+    expect(status.serverUrl).toBe("http://203.0.113.5:8000");
+    // The address, and nothing that opens it.
+    expect(JSON.stringify(status)).not.toContain("Abc123@xyz");
+  });
+
+  it("has no server address when Dyad set nothing up", async () => {
+    const status: any = await call("coolify:get-status", { appId: 1 });
+
+    expect(status.serverUrl).toBeNull();
+  });
+
   it("is absent when there is no token", async () => {
     settings.coolify = { instanceUrl: "https://coolify.example.com" };
     const status: any = await call("coolify:get-status", { appId: 1 });
@@ -240,6 +270,25 @@ describe("clearing the token", () => {
     expect(updateSet).not.toHaveBeenCalled();
   });
 
+  it("forgets every stored detail of the instance", async () => {
+    // Dyad holds one Coolify at a time, so anything surviving here belongs to
+    // an instance nothing is connected to — and the next connection would put
+    // a stranger's password under its address. The dialog in front of this
+    // shows all of it and asks the user to confirm before it goes.
+    settings.coolify = {
+      ...(settings.coolify as Record<string, unknown>),
+      admin: {
+        email: "me@gmail.com",
+        password: { value: "Abc123@xyz" },
+        instanceUrl: "https://coolify.example.com",
+      },
+    };
+
+    await call("coolify:clear-token");
+
+    expect(storedCoolify()).toEqual({});
+  });
+
   it("still reports the app as disconnected", async () => {
     await call("coolify:clear-token");
 
@@ -250,8 +299,9 @@ describe("clearing the token", () => {
     };
     expect(status.hasToken).toBe(false);
     expect(status.connection).toBeNull();
-    // Remembered so the token form does not make the user retype it.
-    expect(status.instanceUrl).toBe("https://coolify.example.com");
+    // The address is part of the instance being forgotten, not a leftover
+    // convenience. It was on screen with a copy button on the way out.
+    expect(status.instanceUrl).toBeNull();
   });
 
   it("lets the same instance pick up where it left off", async () => {
@@ -303,6 +353,41 @@ describe("clearing the token", () => {
 
     expect(connection?.applicationUuid).toBe("app-1");
     expect(connection?.serverUuid).toBe("srv-1");
+  });
+});
+
+describe("the admin account Dyad created", () => {
+  beforeEach(() => {
+    settings.coolify = {
+      ...(settings.coolify as Record<string, unknown>),
+      admin: {
+        email: "me@gmail.com",
+        password: { value: "Abc123@xyz" },
+        instanceUrl: "https://coolify.example.com",
+      },
+    };
+  });
+
+  it("survives the token for it being saved", async () => {
+    // Setting up a server writes the account before there is any token, and
+    // this is the call that supplies one. Replacing rather than merging here
+    // would drop the password on the way in, and Dyad has the only copy.
+    await call("coolify:save-token", {
+      instanceUrl: "https://coolify.example.com",
+      token: "tok-2",
+      acknowledgedInsecure: false,
+    });
+
+    expect(storedCoolify().admin?.email).toBe("me@gmail.com");
+    expect(storedCoolify().admin?.password.value).toBe("Abc123@xyz");
+  });
+
+  it("goes when the instance is forgotten", async () => {
+    // The account only opens the instance being signed out of, so keeping it
+    // would leave a password for a Coolify nothing is connected to.
+    await call("coolify:clear-token");
+
+    expect(storedCoolify().admin).toBeUndefined();
   });
 });
 

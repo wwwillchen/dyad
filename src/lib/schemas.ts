@@ -216,6 +216,45 @@ export type SupabaseOrganizationCredentials = z.infer<
 >;
 
 /**
+ * The admin account on a server Dyad set up itself.
+ *
+ * Its own shape rather than fields on the instance below, because it is a
+ * fact about a machine Dyad built rather than about the Coolify Dyad talks
+ * to. Usually the same server; not always.
+ */
+export const CoolifyAdminSchema = z.object({
+  email: z.string(),
+  /**
+   * Optional only because it can become unreadable, never because it was not
+   * written: a keychain that cannot open it leaves the account behind without
+   * it. Required here instead would make the account itself vanish, and the
+   * ciphertext on disk has nowhere to be put back into once it has.
+   */
+  password: SecretSchema.optional(),
+  /**
+   * The address of the server this account opens.
+   *
+   * There are two addresses stored, and they are usually the same one. This
+   * is the machine Dyad installed Coolify on. `instanceUrl` on the object
+   * below is the Coolify Dyad is currently talking to.
+   *
+   * They come apart in one case. Coolify has no API for making API tokens, so
+   * Dyad mints one through a workaround, and that workaround can fail. The
+   * install still succeeded, so the finished screen hands over this account
+   * and says to make a token by hand — and the next screen offers the token
+   * form with this address already filled in. Someone who instead points that
+   * form at a different Coolify they already had ends up with this account
+   * for one server and a token for another.
+   *
+   * Keeping the address next to the account is what lets the panel put each
+   * secret under the server it actually opens. One address over both would
+   * have to pick, and picking wrong shows this password under the other
+   * server's name, which reads as a way into it and is not one.
+   */
+  instanceUrl: z.string(),
+});
+
+/**
  * A Coolify instance Dyad can deploy to.
  *
  * One object rather than two loose fields: the address and the token are only
@@ -226,8 +265,48 @@ export type SupabaseOrganizationCredentials = z.infer<
 export const CoolifySchema = z.object({
   instanceUrl: z.string().optional(),
   accessToken: SecretSchema.optional(),
+  /**
+   * The admin account on a server Dyad set up itself.
+   *
+   * Kept because Dyad invented this password on the user's behalf, for their
+   * own machine — showing it once and forgetting it leaves them locked out of
+   * a server they own. Encrypted like the token, and like the token it
+   * reaches the renderer whenever settings are read, not only when the panel
+   * asks to show it.
+   *
+   * One object rather than three fields, because they are only ever
+   * meaningful together: an account without the address it opens is a
+   * password for nothing, and they are written and forgotten at once.
+   */
+  admin: CoolifyAdminSchema.optional(),
 });
 export type Coolify = z.infer<typeof CoolifySchema>;
+
+/**
+ * Every field of a Coolify, named and empty.
+ *
+ * writeSettings reads an absent key as a field some consumer read could not
+ * decrypt and hands the stored ciphertext back, so forgetting an instance by
+ * writing an empty object returns the token instead of clearing it. Only a
+ * key that is present and undefined reads as a deliberate clear.
+ *
+ * Typed so that a field added to CoolifySchema later fails to compile until
+ * it is named here too, which is what an empty object was reaching for.
+ *
+ * Built fresh each call rather than shared. writeSettings merges one level
+ * deep and then edits what it merged by path, so a single object handed to it
+ * is the object it edits — and one kept at module scope would carry another
+ * write's edits into every sign-out after it.
+ */
+export function forgottenCoolify(): {
+  [K in keyof Required<Coolify>]: undefined;
+} {
+  return {
+    instanceUrl: undefined,
+    accessToken: undefined,
+    admin: undefined,
+  };
+}
 
 export const SupabaseSchema = z.object({
   // Map keyed by organizationSlug -> organization credentials

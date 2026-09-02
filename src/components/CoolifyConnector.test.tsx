@@ -1,3 +1,6 @@
+import React, { useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +11,63 @@ const toastMock = vi.hoisted(() => ({
   success: vi.fn(),
 }));
 vi.mock("sonner", () => ({ toast: toastMock }));
+
+// Stubbed so these tests stay about the connector. The real one fetches
+// secrets through its own mutation, which would drag a query client into every
+// case here for something none of them are checking.
+vi.mock("@/components/CoolifyCredentials", () => ({
+  CoolifyCredentials: ({ showTitle }: { showTitle?: boolean }) => (
+    <div data-testid="coolify-credentials-stub">
+      {showTitle ? "Your Coolify server" : null}
+    </div>
+  ),
+}));
+
+// Stubbed down to its two edges — that it is open, and the way to confirm —
+// so these cases can check the wiring without the checkbox gating, which is
+// the dialog's own test's job.
+vi.mock("@/components/CoolifySignOutDialog", () => ({
+  CoolifySignOutDialog: ({
+    open,
+    onConfirm,
+  }: {
+    open: boolean;
+    onConfirm: () => void;
+  }) =>
+    open ? (
+      <button data-testid="confirm-sign-out" onClick={onConfirm}>
+        confirm
+      </button>
+    ) : null,
+}));
+
+// The real installer fetches a key and runs mutations of its own, none of
+// which these cases are about.
+vi.mock("@/components/CoolifyServerSetup", () => ({
+  CoolifyServerSetup: ({
+    children,
+    onUseExisting,
+    heldServerUrl,
+  }: {
+    children?: React.ReactNode;
+    onUseExisting?: (url?: string) => void;
+    heldServerUrl?: string | null;
+  }) => (
+    <div data-testid="coolify-server-setup-stub">
+      {/* Shown so the wiring is observable. The panel refuses to install
+          while this is set, and nothing else here would notice it being
+          dropped on the way in. */}
+      <span data-testid="stub-held-server">{heldServerUrl ?? ""}</span>
+      <button
+        type="button"
+        onClick={() => onUseExisting?.("https://installed.example.com")}
+      >
+        hand over
+      </button>
+      {children}
+    </div>
+  ),
+}));
 
 /**
  * What the panel shows before it has an answer.
@@ -55,11 +115,76 @@ const loadedApp = vi.hoisted(() => ({
 vi.mock("@/hooks/useLoadApp", () => ({
   useLoadApp: () => ({ app: loadedApp.value, loading: false }),
 }));
+const setup = vi.hoisted(() => ({ state: { type: "idle" } as unknown }));
+const dismissMock = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("@/ipc/types", () => ({
-  ipc: { system: { openExternalUrl: vi.fn() } },
+  ipc: {
+    system: { openExternalUrl: vi.fn() },
+    coolifySetup: {
+      snapshot: () => Promise.resolve(setup.state),
+      dismiss: dismissMock,
+    },
+    events: { coolifySetup: { onChanged: () => () => {} } },
+  },
 }));
 
-const { CoolifyConnector } = await import("./CoolifyConnector");
+const { CoolifyConnector: Panel } = await import("./CoolifyConnector");
+
+// The installer's state is the main process's, shared by every window — so
+// each case has to say what it is, or it inherits the last one's.
+beforeEach(() => {
+  setup.state = { type: "idle" };
+  dismissMock.mockClear();
+});
+
+function CoolifyConnector(props: { appId: number | null }) {
+  // One client for the life of the test, so a rerender keeps the cache it
+  // built — a fresh one per render would throw away anything a test invalidated
+  // or cached and quietly pass on the re-seed below.
+  const [client] = useState(
+    () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  );
+  // Seeded rather than fetched: what the main process is doing is present on
+  // the first render in the app too, once any window has asked. Waiting for
+  // it here would make an "it is not shown" assertion pass before the answer
+  // arrived, which is no assertion at all.
+  client.setQueryData(queryKeys.coolify.setup, setup.state);
+  return (
+    <QueryClientProvider client={client}>
+      <Panel {...props} />
+    </QueryClientProvider>
+  );
+}
+
+describe("an install that is going on", () => {
+  it("is shown even when this app's own status cannot be read", async () => {
+    // The install belongs to the machine, not to the app being looked at. Put
+    // behind that read, a multi-minute run is replaced by an error about
+    // something else, with its Cancel button out of reach.
+    deploy.value = {
+      status: undefined,
+      statusError: new Error("could not read the app"),
+    };
+    setup.state = {
+      type: "running",
+      host: "203.0.113.5",
+      invocationRef: {
+        kind: "coolify-setup",
+        entityKey: "203.0.113.5",
+        operationId: "op-1",
+      },
+      step: "installing",
+      log: "",
+      stopping: false,
+    };
+    render(<CoolifyConnector appId={1} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("coolify-server-setup-stub")).toBeTruthy(),
+    );
+    expect(screen.queryByTestId("coolify-status-error")).toBeNull();
+  });
+});
 
 describe("before the status query has answered", () => {
   it("waits rather than claiming a failure when it is merely paused", () => {
@@ -85,6 +210,630 @@ describe("before the status query has answered", () => {
   });
 });
 
+/**
+ * Two things share this panel and they are not the same thing.
+ *
+ * The Coolify instance is the user's and outlives any app; where an app
+ * deploys is per app. Kept apart so the instance — and the way back into it —
+ * is readable without opening one app's settings.
+ */
+describe("the instance and the app are separate sections", () => {
+  function connected(connection: Record<string, unknown> | null) {
+    deploy.value = {
+      status: {
+        hasToken: true,
+        instanceUrl: "https://coolify.test",
+        connection,
+        appUrl: null,
+        lastDeployedAt: null,
+      },
+      discovery: { servers: [], projects: [] },
+    };
+  }
+
+  it("shows the instance section while picking where an app deploys", async () => {
+    connected(null);
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("coolify-instance-section")).toBeTruthy();
+    expect(screen.getByTestId("coolify-credentials-stub")).toBeTruthy();
+    expect(screen.getByText("Where this app deploys")).toBeTruthy();
+  });
+
+  it("shows it once the app has somewhere to deploy too", async () => {
+    // Previously it appeared only while editing, so the instance details were
+    // reachable only by opening one app's settings.
+    connected({
+      instanceUrl: "https://coolify.test",
+      serverUuid: "srv-1",
+      projectUuid: "prj-1",
+      environmentName: "production",
+      domain: null,
+    });
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("coolify-instance-section")).toBeTruthy();
+    expect(screen.getByTestId("coolify-credentials-stub")).toBeTruthy();
+  });
+
+  it("offers signing out from the instance section, not the app one", async () => {
+    connected(null);
+    render(<CoolifyConnector appId={1} />);
+
+    const section = screen.getByTestId("coolify-instance-section");
+    expect(section.textContent).toContain("Sign out of Coolify");
+  });
+
+  /** The default mock builds a fresh one per render, so nothing can watch it. */
+  function watchClearToken() {
+    const mutateAsync = vi.fn();
+    deploy.value.clearToken = { mutateAsync, isPending: false };
+    return mutateAsync;
+  }
+
+  it("asks before forgetting anything", async () => {
+    // Signing out throws away the password Dyad invented, and pressing the
+    // button is not the same as having read that.
+    connected(null);
+    const clearToken = watchClearToken();
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Sign out of Coolify" }),
+    );
+
+    expect(clearToken).not.toHaveBeenCalled();
+    expect(screen.getByTestId("confirm-sign-out")).toBeTruthy();
+  });
+
+  it("forgets the instance once that is confirmed", async () => {
+    connected(null);
+    const clearToken = watchClearToken();
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Sign out of Coolify" }),
+    );
+    await user.click(screen.getByTestId("confirm-sign-out"));
+
+    expect(clearToken).toHaveBeenCalled();
+    expect(toastMock.success).toHaveBeenCalled();
+  });
+});
+
+/** With no token, installing is the landing screen; this is the other route. */
+async function openTokenForm(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(
+    screen.getByRole("button", { name: "I already have Coolify installed" }),
+  );
+}
+
+const NO_TOKEN = {
+  status: {
+    hasToken: false,
+    tokenId: null,
+    instanceUrl: null,
+    serverUrl: null,
+    connection: null,
+    appUrl: null,
+    lastDeployedAt: null,
+  },
+};
+
+/** Installed, and its API token could not be minted — so no token, but a
+    server whose account Dyad is the only holder of. */
+const SERVER_NO_TOKEN = {
+  status: { ...NO_TOKEN.status, serverUrl: "http://203.0.113.5:8000" },
+};
+
+describe("a server Dyad set up but has no token for", () => {
+  it("will not set up another over the top of it", async () => {
+    // Installing again replaces the only copy of this one's password, so it
+    // is not something a screen offers on the way past.
+    deploy.value = SERVER_NO_TOKEN;
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("coolify-already-has-server")).toBeTruthy();
+    expect(screen.queryByTestId("coolify-server-setup-stub")).toBeNull();
+  });
+
+  it("offers signing out as the way to a different Coolify", async () => {
+    // The only state where Dyad holds a Coolify and has no token to give up,
+    // so without this there is nothing here that reaches the account.
+    deploy.value = SERVER_NO_TOKEN;
+    render(<CoolifyConnector appId={1} />);
+
+    expect(
+      screen.getByRole("button", { name: "Sign out of Coolify" }),
+    ).toBeTruthy();
+  });
+
+  it("pins the address to that server", async () => {
+    // A token typed against another address would leave the account naming
+    // one machine and the token another.
+    deploy.value = SERVER_NO_TOKEN;
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Enter an API token" }),
+    );
+    const field = screen.getByTestId(
+      "coolify-instance-url",
+    ) as HTMLInputElement;
+    expect(field.readOnly).toBe(true);
+    await user.type(field, "https://somewhere-else.example.com");
+    expect(field.value).toBe("http://203.0.113.5:8000");
+  });
+
+  it("still refuses a new install after one was cancelled", async () => {
+    // Cancelling rests the machine in failed with nothing to report and no
+    // way to clear it, so treating that as a failure to make room for would
+    // hand the installer back for as long as the app is open.
+    deploy.value = SERVER_NO_TOKEN;
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      message: "Cancelled",
+      cancelled: true,
+      log: "",
+    };
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("coolify-already-has-server")).toBeTruthy();
+    expect(screen.queryByTestId("coolify-server-setup-stub")).toBeNull();
+  });
+
+  it("does not stand in front of an install that failed", async () => {
+    // The account is written partway through, so a failure after that point
+    // has one stored. The message, the log and the way to clear it are the
+    // installer's, and retrying is the ordinary thing to do next.
+    deploy.value = SERVER_NO_TOKEN;
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      message: "boom",
+      cancelled: false,
+      log: "",
+    };
+    render(<CoolifyConnector appId={1} />);
+    expect({
+      failureVisible: Boolean(
+        screen.queryByTestId("coolify-server-setup-stub"),
+      ),
+      refusalCard: Boolean(screen.queryByTestId("coolify-already-has-server")),
+      // Installing again is refused while the account is stored, and the
+      // refusal says to sign out first — which has to be doable from here.
+      signOut: Boolean(
+        screen.queryByRole("button", { name: "Sign out of Coolify" }),
+      ),
+    }).toEqual({ failureVisible: true, refusalCard: false, signOut: true });
+  });
+
+  it("says a cancelled install may have left something behind", async () => {
+    // Cancel reads as an undo, and it is not one: the installer may already
+    // have put Docker and Coolify on the server, which is why checking it
+    // again can answer that Coolify is already there. Saying nothing leaves
+    // that refusal looking like it came from nowhere.
+    deploy.value = NO_TOKEN;
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      invocationRef: {
+        kind: "coolify-setup",
+        entityKey: "203.0.113.5",
+        operationId: "op-1",
+      },
+      message: "Cancelled.",
+      log: "3/6 Pulling coolify...",
+      cancelled: true,
+    };
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("coolify-setup-warning").textContent).toContain(
+      "Docker and Coolify may be on the server",
+    );
+  });
+
+  it("says nothing about a cancel that never got started", async () => {
+    // No output means the installer never ran, so the server is as it was.
+    // Telling that user Docker might be on it would be a new untruth.
+    deploy.value = NO_TOKEN;
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      invocationRef: {
+        kind: "coolify-setup",
+        entityKey: "203.0.113.5",
+        operationId: "op-1",
+      },
+      message: "Cancelled.",
+      log: "",
+      cancelled: true,
+    };
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.queryByTestId("coolify-setup-warning")).toBeNull();
+  });
+
+  it("keeps a terminal run's notice when this app's status cannot be read", async () => {
+    // The run belongs to the machine. A status query that fails is about one
+    // app, and must not take the only note about what the run left behind.
+    deploy.value = {
+      status: undefined,
+      statusError: new Error("could not read the app"),
+    };
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      invocationRef: {
+        kind: "coolify-setup",
+        entityKey: "203.0.113.5",
+        operationId: "op-1",
+      },
+      message: "Cancelled.",
+      log: "3/6 Pulling coolify...",
+      cancelled: true,
+    };
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("coolify-status-error")).toBeTruthy();
+    expect(screen.getByTestId("coolify-setup-warning")).toBeTruthy();
+  });
+
+  it("says what a cancelled run left on the server", async () => {
+    // A cancel hands the screen back to the card below rather than to the
+    // installer, so the panel that would otherwise carry this is not on
+    // screen at all. The domain is still pointing at the server either way.
+    deploy.value = SERVER_NO_TOKEN;
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      invocationRef: {
+        kind: "coolify-setup",
+        entityKey: "203.0.113.5",
+        operationId: "op-1",
+      },
+      message: "Cancelled.",
+      log: "",
+      cancelled: true,
+      warning: "Coolify may still be configured for 203.0.113.5.sslip.io.",
+    };
+    render(<CoolifyConnector appId={1} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("coolify-setup-warning").textContent).toContain(
+        "may still be configured",
+      ),
+    );
+    // The card a cancel lands on, not the installer panel.
+    expect(screen.getByTestId("coolify-already-has-server")).toBeTruthy();
+    expect(screen.queryByTestId("coolify-server-setup-stub")).toBeNull();
+  });
+
+  it("says it on the token form too, where another window may be sitting", async () => {
+    // The run belongs to the machine, not to a window. One that had already
+    // moved on to entering a token still needs to know what was left behind.
+    deploy.value = NO_TOKEN;
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      invocationRef: {
+        kind: "coolify-setup",
+        entityKey: "203.0.113.5",
+        operationId: "op-1",
+      },
+      message: "Cancelled.",
+      log: "",
+      cancelled: true,
+      warning: "Coolify may still be configured for 203.0.113.5.sslip.io.",
+    };
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "I already have Coolify installed" }),
+    );
+    expect(screen.getByTestId("coolify-setup-warning").textContent).toContain(
+      "may still be configured",
+    );
+  });
+
+  it("gives a cancelled run's warning a way off the screen", async () => {
+    // Nothing else dismisses a cancelled run — the panel's own Dismiss went
+    // with the panel — so without this it would sit there for good.
+    deploy.value = SERVER_NO_TOKEN;
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      invocationRef: {
+        kind: "coolify-setup",
+        entityKey: "203.0.113.5",
+        operationId: "op-1",
+      },
+      message: "Cancelled.",
+      log: "",
+      cancelled: true,
+      warning: "Coolify may still be configured for 203.0.113.5.sslip.io.",
+    };
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("coolify-setup-dismiss-warning")).toBeTruthy(),
+    );
+    await user.click(screen.getByTestId("coolify-setup-dismiss-warning"));
+    expect(dismissMock).toHaveBeenCalled();
+  });
+
+  it("tells the installer which server it is already holding", async () => {
+    // The panel cannot ask: it never receives coolify status. Without this
+    // it offers an install the handler answers only with "sign out first".
+    deploy.value = SERVER_NO_TOKEN;
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      message: "boom",
+      cancelled: false,
+      log: "",
+    };
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("stub-held-server").textContent).toBe(
+      "http://203.0.113.5:8000",
+    );
+  });
+
+  it("has nothing to sign out of when the run never got that far", async () => {
+    // A failure before the account was written leaves Dyad holding nothing,
+    // so the way to forget it is an offer to forget what does not exist.
+    deploy.value = NO_TOKEN;
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      message: "boom",
+      cancelled: false,
+      log: "",
+    };
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("coolify-server-setup-stub")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Sign out of Coolify" }),
+    ).toBeNull();
+  });
+
+  it("can be connected to from the card that refuses a new install", async () => {
+    // The address cannot be typed into here, so a form that never filled it
+    // in would leave signing out — which forgets the password Dyad is the
+    // only holder of — as the only way on from that card.
+    deploy.value = SERVER_NO_TOKEN;
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Enter an API token" }),
+    );
+    await user.type(screen.getByTestId("coolify-token"), "1|abc");
+    // A freshly installed server answers on http until it has a certificate,
+    // so this is the ordinary way through rather than an unusual one.
+    await user.click(screen.getByTestId("coolify-acknowledge-insecure"));
+
+    expect(
+      (screen.getByTestId("coolify-save-token") as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it("keeps the way back to a failure the installer is reporting", async () => {
+    // That screen carries the message, the output and the only control that
+    // clears the run, so the token form must not be a one-way door into it.
+    deploy.value = SERVER_NO_TOKEN;
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      message: "boom",
+      cancelled: false,
+      log: "",
+    };
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "I already have Coolify installed" }),
+    );
+    // Named for where it goes. Dyad set this server up, so offering to set
+    // one up "yet" describes somebody else's situation.
+    expect(screen.getByTestId("coolify-no-instance").textContent).toBe(
+      "Back to the installer",
+    );
+    expect(screen.queryByText(/No Coolify server yet/i)).toBeNull();
+  });
+
+  it("does not offer the installer as a way out of the token form", async () => {
+    deploy.value = SERVER_NO_TOKEN;
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Enter an API token" }),
+    );
+    expect(screen.queryByTestId("coolify-no-instance")).toBeNull();
+  });
+});
+
+describe("where someone with no Coolify lands", () => {
+  it("offers to install one rather than asking for a token", async () => {
+    // The token form asks about a Coolify that already exists. Landing on it
+    // tells everyone else they are in the wrong place.
+    deploy.value = NO_TOKEN;
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("coolify-server-setup-stub")).toBeTruthy();
+    expect(screen.queryByTestId("coolify-instance-url")).toBeNull();
+  });
+
+  it("reaches the token form from there, and back again", async () => {
+    deploy.value = NO_TOKEN;
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    await openTokenForm(user);
+    expect(screen.getByTestId("coolify-instance-url")).toBeTruthy();
+
+    await user.click(screen.getByTestId("coolify-no-instance"));
+    expect(screen.getByTestId("coolify-server-setup-stub")).toBeTruthy();
+  });
+
+  it("puts the way out under what it knows, not against Install", async () => {
+    deploy.value = NO_TOKEN;
+    render(<CoolifyConnector appId={1} />);
+
+    const text = screen.getByTestId("coolify-server-setup-stub").textContent;
+    expect(text?.indexOf("Your Coolify server")).toBeLessThan(
+      text?.indexOf("I already have Coolify installed") ?? -1,
+    );
+  });
+
+  it("still shows what it knows about a server with no token yet", async () => {
+    // Installing a server whose token could not be minted lands here, and the
+    // account Dyad made is the only way into it.
+    deploy.value = NO_TOKEN;
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("coolify-credentials-stub").textContent).toBe(
+      "Your Coolify server",
+    );
+    await openTokenForm(user);
+    expect(screen.getByTestId("coolify-credentials-stub")).toBeTruthy();
+  });
+});
+
+describe("what the installer leaves on screen", () => {
+  const DONE = {
+    type: "done",
+    host: "203.0.113.5",
+    invocationRef: {
+      kind: "coolify-setup",
+      entityKey: "203.0.113.5",
+      operationId: "op-1",
+    },
+    result: {
+      dashboardUrl: "http://203.0.113.5:8000",
+      secure: false,
+      insecureReason: "No certificate arrived.",
+      adminEmail: "me@gmail.com",
+      adminPassword: "Abc123@xyz",
+      tokenStored: true,
+      apiEnabled: true,
+      tokenUnavailableReason: null,
+      version: "4.3.2",
+    },
+  };
+
+  const CONNECTED = {
+    status: {
+      hasToken: true,
+      instanceUrl: "http://203.0.113.5:8000",
+      connection: null,
+      appUrl: null,
+      lastDeployedAt: null,
+    },
+    discovery: { servers: [], projects: [] },
+  };
+
+  it("keeps a finished install up even once a token exists", async () => {
+    // The install stores a token, so the panel would otherwise be replaced by
+    // the connected view — taking with it the only notice that the server
+    // ended up unencrypted.
+    setup.state = DONE;
+    deploy.value = CONNECTED;
+    render(<CoolifyConnector appId={1} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("coolify-server-setup-stub")).toBeTruthy(),
+    );
+  });
+
+  it("moves on once the user has read it", async () => {
+    // Dismissing is what ends it, and that is recorded where the install is:
+    // in the main process, not in a flag this panel could lose.
+    setup.state = { type: "idle" };
+    deploy.value = CONNECTED;
+    render(<CoolifyConnector appId={1} />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Where this app deploys")).toBeTruthy(),
+    );
+    expect(screen.queryByTestId("coolify-server-setup-stub")).toBeNull();
+  });
+
+  it("shows a running install rather than the form", async () => {
+    setup.state = {
+      type: "running",
+      host: "203.0.113.5",
+      invocationRef: {
+        kind: "coolify-setup",
+        entityKey: "203.0.113.5",
+        operationId: "op-1",
+      },
+      step: "installing",
+      log: "",
+      stopping: false,
+    };
+    deploy.value = CONNECTED;
+    render(<CoolifyConnector appId={1} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("coolify-server-setup-stub")).toBeTruthy(),
+    );
+  });
+
+  it("does not hold the panel open after a failure", async () => {
+    // A failure leaves the form up with the installer's output under it, and
+    // holding the view there made the token form unreachable.
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      invocationRef: {
+        kind: "coolify-setup",
+        entityKey: "203.0.113.5",
+        operationId: "op-1",
+      },
+      message: "Installing Coolify failed (exit 1).",
+      log: "dpkg: error",
+      cancelled: false,
+    };
+    deploy.value = CONNECTED;
+    render(<CoolifyConnector appId={1} />);
+
+    // Waited for something positive: an absence is true before the answer
+    // arrives, so asserting only that would pass without proving anything.
+    await waitFor(() =>
+      expect(screen.getByText("Where this app deploys")).toBeTruthy(),
+    );
+    expect(screen.queryByTestId("coolify-server-setup-stub")).toBeNull();
+  });
+
+  it("is about the server, so it does not change with the app", async () => {
+    // Deliberate: the install is about a machine, not about one app, and it
+    // stays until the user has read it and moved on.
+    setup.state = DONE;
+    deploy.value = CONNECTED;
+    const { rerender } = render(<CoolifyConnector appId={1} />);
+    await waitFor(() =>
+      expect(screen.getByTestId("coolify-server-setup-stub")).toBeTruthy(),
+    );
+
+    rerender(<CoolifyConnector appId={2} />);
+    await waitFor(() =>
+      expect(screen.getByTestId("coolify-server-setup-stub")).toBeTruthy(),
+    );
+  });
+});
+
 describe("consent to an unencrypted address", () => {
   it("does not carry over to an address it was not given for", async () => {
     // Ticked for one plain-HTTP host, then the host is edited. The token would
@@ -101,6 +850,7 @@ describe("consent to an unencrypted address", () => {
     };
     const user = userEvent.setup();
     render(<CoolifyConnector appId={1} />);
+    await openTokenForm(user);
 
     const url = screen.getByTestId("coolify-instance-url");
     await user.type(url, "http://box.local:8000");
@@ -132,6 +882,7 @@ describe("consent to an unencrypted address", () => {
     };
     const user = userEvent.setup();
     const { rerender } = render(<CoolifyConnector appId={1} />);
+    await openTokenForm(user);
 
     const url = screen.getByTestId("coolify-instance-url");
     await user.clear(url);
@@ -249,6 +1000,37 @@ describe("naming the target in the connected view", () => {
     appUrl: "https://demo.example.com",
     lastDeployedAt: 1,
   };
+
+  it("still says what a cancelled run left behind", () => {
+    // The run belongs to the machine, not to a window or to one app. An app
+    // that already has somewhere to deploy is the easiest tab to be sitting
+    // on when a cancel lands, and it is the same server underneath.
+    setup.state = {
+      type: "failed",
+      host: "203.0.113.5",
+      invocationRef: {
+        kind: "coolify-setup",
+        entityKey: "203.0.113.5",
+        operationId: "op-1",
+      },
+      message: "Cancelled.",
+      log: "",
+      cancelled: true,
+      warning: "Coolify may still be configured for 203.0.113.5.sslip.io.",
+    };
+    deploy.value = {
+      status: CONNECTED,
+      discovery: {
+        servers: [{ uuid: "srv-1", name: "production-box" }],
+        projects: [{ uuid: "prj-1", name: "storefront" }],
+      },
+    };
+    render(<CoolifyConnector appId={1} />);
+
+    expect(screen.getByTestId("coolify-setup-warning").textContent).toContain(
+      "may still be configured",
+    );
+  });
 
   it("names the server and project once discovery has answered", () => {
     deploy.value = {
@@ -376,6 +1158,19 @@ describe("editing while the saved connection changes", () => {
     expect(
       (screen.getByLabelText("Domain (optional)") as HTMLInputElement).value,
     ).toBe("typed.example.com");
+  });
+
+  it("keeps Cancel with Save, since they answer the same form", async () => {
+    // Up by the refresh control it read as cancelling something in progress.
+    deploy.value = statusWith(CONNECTION);
+    const user = userEvent.setup();
+    render(<CoolifyConnector appId={1} />);
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const save = screen.getByTestId("coolify-save-connection");
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+
+    expect(save.parentElement).toBe(cancel.parentElement);
   });
 
   it("puts the saved values back when the edit is abandoned", async () => {

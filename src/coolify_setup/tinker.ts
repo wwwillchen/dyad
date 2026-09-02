@@ -1,0 +1,189 @@
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import type { SshSession } from "@/ipc/utils/ssh_client";
+
+/**
+ * Running PHP inside the Coolify container.
+ *
+ * Coolify has no supported interface for what setup needs — turning the API
+ * on, minting a token, creating and finding the first user, setting the
+ * instance domain, reading the version before the API is reachable — so each
+ * is done by driving Laravel directly. That is a workaround, not an interface:
+ * every caller carries a TODO naming what an official API would replace.
+ */
+
+/**
+ * Marks where our output starts and stops.
+ *
+ * tinker echoes every line it is fed, prefixed `> `, and the first line of real
+ * output lands on the same line as the last prompt. So the transcript contains
+ * the marker twice: once in the echo of the line that prints it, once as the
+ * output itself. Looking for the marker anywhere on a line would take the
+ * echo, so the match is anchored to a whole line — which the echo cannot be,
+ * because it carries the script around the marker.
+ */
+const START = "__DYAD_OUT_START__";
+const END = "__DYAD_OUT_END__";
+
+/**
+ * The command that feeds a script to tinker.
+ *
+ * `-i` matters: without it docker does not attach stdin, the script is never
+ * read, and the whole thing succeeds having done nothing.
+ */
+export function tinkerCommand(container = "coolify"): string {
+  assertSafeContainer(container);
+  return `docker exec -i ${container} php artisan tinker --no-ansi`;
+}
+
+/** Docker's own grammar. The name is interpolated into a root command. */
+function assertSafeContainer(container: string): void {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(container)) {
+    throw new DyadError(
+      `Refusing to run against an unsafe container name: ${container}`,
+      DyadErrorKind.Validation,
+    );
+  }
+}
+
+/**
+ * Wraps a script so its output can be found in the transcript.
+ *
+ * The closing marker starts with a newline of its own because a script whose
+ * last echo omits PHP_EOL would otherwise leave the marker stuck to the end of
+ * the value — `yes__DYAD_OUT_END__` — and nothing would find it. Putting the
+ * break here means callers do not have to remember.
+ */
+export function wrapScript(body: string): string {
+  return [
+    `echo "${START}" . PHP_EOL;`,
+    body.trim(),
+    `echo PHP_EOL . "${END}" . PHP_EOL;`,
+  ].join("\n");
+}
+
+/**
+ * Pulls our output back out of a tinker transcript.
+ *
+ * The opening marker is matched with the prompt it shares a line with, because
+ * that is what distinguishes the real output from the echo of the line that
+ * produced it. The prompt is allowed to be absent or repeated: it is an
+ * artefact of psysh flushing a prompt before the output arrives, and nothing
+ * here should turn a change in that into every call failing. Either way the
+ * echoed line cannot match, because it carries the script around the marker.
+ */
+const START_LINE = new RegExp(`^(?:>\\s*)*${START}$`);
+
+export function extractOutput(transcript: string): string | null {
+  const lines = transcript.split(/\r?\n/);
+  const startAt = lines.findIndex((line) => START_LINE.test(line.trim()));
+  if (startAt === -1) return null;
+  const rest = lines.slice(startAt + 1);
+  const endAt = rest.findIndex((line) => line.trimEnd() === END);
+  if (endAt === -1) return null;
+  return rest.slice(0, endAt).join("\n").trim();
+}
+
+/**
+ * Finds the answer among whatever else the region carries.
+ *
+ * Insurance rather than something observed: two real transcripts, 4.3.2 and
+ * 4.3.14, both came back with nothing but the answer between the markers. But
+ * a notice from Coolify would only have to happen once for a reader that
+ * demands the whole region to report a working server as broken, and reading
+ * a line at a time costs nothing when there is only one.
+ *
+ * Exactly per line rather than anywhere in it, so a notice that mentions the
+ * answer is not taken for it. Trimmed per line because psysh writes a
+ * carriage return mid-transcript when it redraws a long echo — the region's
+ * own trim only reaches the ends.
+ */
+export function answerLine(
+  region: string,
+  matches: (line: string) => boolean,
+): string | null {
+  for (const line of region.split(/\r?\n/)) {
+    const said = line.trim();
+    if (said && matches(said)) return said;
+  }
+  return null;
+}
+
+export interface TinkerOptions {
+  /**
+   * Values the script reads with getenv().
+   *
+   * Secrets travel this way rather than being written into the script, so they
+   * never have to survive PHP's parser as well as the shell's. They are still
+   * single-quoted into the docker command — sshd forwards almost no environment
+   * by default, so there is no way to hand them over out of band.
+   */
+  env?: Record<string, string>;
+  container?: string;
+  signal?: AbortSignal;
+  /** Passed through: a tinker one-liner has a short honest answer. */
+  timeoutMs?: number;
+}
+
+/**
+ * Renders values as docker -e arguments.
+ *
+ * Rejects rather than escapes: a value carrying a quote or a backslash would
+ * end the quoting, and getting that subtly wrong runs arbitrary text as a
+ * command on the user's server. Everything passed here is generated by Dyad,
+ * so a rejection is a bug on our side rather than something a user hits.
+ */
+function envArgs(env: Record<string, string>): string {
+  return Object.entries(env)
+    .map(([name, value]) => {
+      if (!/^[A-Z][A-Z0-9_]*$/.test(name)) {
+        throw new DyadError(
+          `Unsafe environment variable name: ${name}`,
+          DyadErrorKind.Internal,
+        );
+      }
+      if (/['\\`$\n\r]/.test(value)) {
+        throw new DyadError(
+          `Value for ${name} contains a character that cannot be passed safely`,
+          DyadErrorKind.Internal,
+        );
+      }
+      return `-e ${name}='${value}'`;
+    })
+    .join(" ");
+}
+
+/**
+ * Runs a PHP script in the Coolify container and returns what it printed.
+ *
+ * Throws rather than returning an empty string when the markers are missing,
+ * because that means the script did not run — a container that is not up yet,
+ * or a tinker that died — and a caller reading "" as "no token" would go on to
+ * do something worse than stopping.
+ */
+export async function runTinker(
+  session: SshSession,
+  script: string,
+  { env = {}, container = "coolify", signal, timeoutMs }: TinkerOptions = {},
+): Promise<string> {
+  assertSafeContainer(container);
+  const names = envArgs(env);
+  const command = names
+    ? `docker exec -i ${names} ${container} php artisan tinker --no-ansi`
+    : tinkerCommand(container);
+
+  const result = await session.run(command, {
+    input: wrapScript(script) + "\n",
+    signal,
+    timeoutMs,
+  });
+
+  const output = extractOutput(result.stdout);
+  if (output === null) {
+    throw new DyadError(
+      "Coolify did not answer as expected while being set up. It may still be " +
+        "starting — wait a moment and try again.",
+      DyadErrorKind.External,
+    );
+  }
+  return output;
+}

@@ -6,6 +6,7 @@ import {
 } from "@/errors/dyad_error";
 import { isGenericFetchFailedError } from "@/lib/posthogTelemetry";
 import { TelemetryEventPayload } from "@/ipc/types";
+import { sshFailureOf } from "@/shared/ssh_failure";
 import {
   COOLIFY_REQUEST_ERROR_NAME,
   COOLIFY_TRANSPORT_ERROR_NAME,
@@ -79,11 +80,21 @@ export function sendTelemetryException(
   });
 }
 
-/** Channels that talk to a server the user runs, rather than to Dyad's own. */
+/**
+ * Channels that talk to a server the user runs, rather than to Dyad's own.
+ *
+ * Every prefix a self-hosted surface uses has to be listed. Setting a server up
+ * is the same class as deploying to one and carries more: its failures quote
+ * the installer's own output, the address, and the address the user signs in
+ * with.
+ */
+const SELF_HOSTED_CHANNEL_PREFIXES = ["coolify:", "coolify-setup:"];
+
 function isSelfHostedChannel(context?: Record<string, unknown>): boolean {
-  return (
-    typeof context?.ipc_channel === "string" &&
-    context.ipc_channel.startsWith("coolify:")
+  const channel = context?.ipc_channel;
+  if (typeof channel !== "string") return false;
+  return SELF_HOSTED_CHANNEL_PREFIXES.some((prefix) =>
+    channel.startsWith(prefix),
   );
 }
 
@@ -114,6 +125,16 @@ export function shouldFilterTelemetryException(error: unknown): boolean {
   // fails with the host in its message — "getaddrinfo ENOTFOUND <their box>" —
   // and its kind is External, which is not otherwise filtered.
   if (error instanceof Error && error.name === COOLIFY_TRANSPORT_ERROR_NAME) {
+    return true;
+  }
+
+  // The same thing again over SSH rather than HTTP: an address that does not
+  // answer, or a port nobody is listening on, is the user's own network being
+  // reported as a fault here — and the message carries whatever they typed.
+  // Only the two that say what went wrong. "unknown" is the bucket for a
+  // failure nothing here recognised, which is what telemetry is for.
+  const sshFailure = sshFailureOf(error);
+  if (sshFailure === "unreachable" || sshFailure === "timeout") {
     return true;
   }
 

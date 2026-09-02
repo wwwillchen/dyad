@@ -24,6 +24,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ipc } from "@/ipc/types";
+import type { SetupSnapshot } from "@/ipc/types";
+import { CoolifyServerSetup } from "@/components/CoolifyServerSetup";
+import { useCoolifySetupSnapshot } from "@/hooks/useCoolifySetupSnapshot";
+import { CoolifyCredentials } from "@/components/CoolifyCredentials";
+import { CoolifySignOutDialog } from "@/components/CoolifySignOutDialog";
 import { useLoadApp } from "@/hooks/useLoadApp";
 import { useCoolifyDeploy } from "@/hooks/useCoolifyDeploy";
 import { selectCoolifyDeployCapabilities } from "@/coolify_deploy/capabilities";
@@ -94,6 +99,11 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
     disconnect,
   } = useCoolifyDeploy(appId);
 
+  // What the main process is doing with a server, if anything. Asked for
+  // rather than remembered: an install outlives this panel, and the panel
+  // being replaced — by a spinner, by a status error — must not lose it.
+  const { data: setupSnapshot } = useCoolifySetupSnapshot();
+
   const serverSelectId = useId();
   const projectSelectId = useId();
   const instanceUrlId = useId();
@@ -104,6 +114,10 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
   // A saved connection otherwise hides the only form that can change the
   // server, project or domain — and the only way to sign out.
   const [isEditingConnection, setIsEditingConnection] = useState(false);
+  // Installing is where this lands, so the flag is the other way round: it
+  // records having said "I already have Coolify".
+  const [isEnteringToken, setIsEnteringToken] = useState(false);
+  const [isConfirmingSignOut, setIsConfirmingSignOut] = useState(false);
   const [token, setToken] = useState("");
   const [serverUuid, setServerUuid] = useState("");
   const [projectUuid, setProjectUuid] = useState("");
@@ -121,7 +135,13 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
     // Leaving the edit refills, since this keys on that too.
     if (isEditingConnection) return;
     const connection = status?.connection;
-    setInstanceUrl(connection?.instanceUrl ?? status?.instanceUrl ?? "");
+    // The server Dyad set up wins, because that is the case where the field is
+    // pinned and nothing else can fill it in. It is also the one address that
+    // is right there: a stored token names the instance it opens, which is not
+    // necessarily the machine whose account Dyad is holding.
+    setInstanceUrl(
+      status?.serverUrl ?? connection?.instanceUrl ?? status?.instanceUrl ?? "",
+    );
     setServerUuid(connection?.serverUuid ?? "");
     setProjectUuid(connection?.projectUuid ?? "");
     setDomain(connection?.domain ?? "");
@@ -129,7 +149,13 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
     // only on keystrokes left a tick given for a typed address sitting over the
     // remembered one this puts back.
     setAcknowledgedInsecure(false);
-  }, [appId, status?.connection, status?.instanceUrl, isEditingConnection]);
+  }, [
+    appId,
+    status?.connection,
+    status?.instanceUrl,
+    status?.serverUrl,
+    isEditingConnection,
+  ]);
 
   // Only on an app change. Keying this to the connection would close the form
   // under the user whenever a background refetch handed back a new object.
@@ -137,13 +163,135 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
     setIsEditingConnection(false);
   }, [appId, status?.hasToken]);
 
+  // On both screens below. A server Dyad installed but could not mint a token
+  // for is named by its admin account and nothing else, and these are the two
+  // states that leaves the user in.
+  const newServerCredentials = <CoolifyCredentials showTitle />;
+
+  // One element, not one per branch: rendering a second copy elsewhere in the
+  // tree would remount the panel and lose the result it is being kept for.
+  const setupState: SetupSnapshot = setupSnapshot ?? { type: "idle" };
+  /**
+   * A failure the installer has something to say about.
+   *
+   * Cancelling is the user's own decision rather than a fault, so it carries
+   * no message and no way to clear itself — the machine simply rests in
+   * `failed` until the next run. Treating that as something to make room for
+   * would hand the installer back for good.
+   */
+  const isReportingFailure =
+    setupState.type === "failed" && !setupState.cancelled;
+
+  /**
+   * What a terminal run left for the user to know about.
+   *
+   * Two things, and the panel would otherwise say neither. A domain the run
+   * put on and could not take back off is theirs to clear; and a cancel that
+   * got as far as running the installer may have left Docker and Coolify on
+   * the server, which is why checking it again can answer that Coolify is
+   * already there.
+   *
+   * Here rather than in the installer panel because a cancelled run hands the
+   * screen back to the card below instead of to that panel, and above the
+   * status guards because this belongs to the machine rather than to one
+   * app's view of it. It carries its own way out: the panel's Dismiss goes
+   * with the panel, and nothing else clears a cancelled run.
+   */
+  const stoppedAfterInstalling =
+    setupState.type === "failed" &&
+    setupState.cancelled &&
+    // The log only takes output from the installer onwards, so an empty one
+    // is a run that stopped before it could change anything. Saying Docker
+    // might be on the server would be a new untruth.
+    setupState.log.trim() !== "";
+  const terminalNotice =
+    setupState.type === "failed" &&
+    (setupState.warning || stoppedAfterInstalling) ? (
+      <div
+        className="flex items-start justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3"
+        data-testid="coolify-setup-warning"
+      >
+        <div className="space-y-1 text-sm text-amber-600 dark:text-amber-400">
+          {stoppedAfterInstalling && (
+            <p>
+              Setting up Coolify was stopped. The installer had already started,
+              so Docker and Coolify may be on the server — if checking it again
+              says Coolify is already there, that is why.
+            </p>
+          )}
+          {setupState.warning && <p>{setupState.warning}</p>}
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            void ipc.coolifySetup
+              .dismiss()
+              .catch((error) => toast.error(getErrorMessage(error)))
+          }
+          data-testid="coolify-setup-dismiss-warning"
+        >
+          Dismiss
+        </Button>
+      </div>
+    ) : null;
+
+  const serverSetup = (
+    <CoolifyServerSetup
+      // Installing is refused while this is set, so the panel needs it to
+      // avoid offering a press that can only come back as an error.
+      heldServerUrl={status?.serverUrl ?? null}
+      onUseExisting={(url) => {
+        if (url) setInstanceUrl(url);
+        setIsEnteringToken(true);
+      }}
+    >
+      {newServerCredentials}
+
+      {/* Last, under anything Dyad already knows about a Coolify: this is the
+          exit for the people the installer does not apply to, not another
+          control on it. */}
+      <div className="border-t pt-3">
+        <button
+          type="button"
+          className="text-sm font-medium underline underline-offset-4 hover:no-underline"
+          onClick={() => setIsEnteringToken(true)}
+          data-testid="coolify-setup-use-existing"
+        >
+          I already have Coolify installed
+        </button>
+      </div>
+    </CoolifyServerSetup>
+  );
+
+  // Before the token check: an install that is going on, or has something to
+  // say about how it went, outranks anything else this panel could show. Read
+  // from the main process rather than remembered here, so leaving the screen
+  // and coming back finds it again.
+  // A failure is not one of them: it leaves the form on screen with the
+  // installer's output under it, which is the panel the user would land on
+  // anyway, and holding the view there puts the token form out of reach.
+  if (setupState.type === "running" || setupState.type === "done") {
+    return (
+      <div className="space-y-3" data-testid="coolify-connector">
+        {serverSetup}
+      </div>
+    );
+  }
+
   // A query react-query has paused — the renderer is offline — is pending
   // with no data and no error, which is not a failure and must not read as
   // one. It is waiting, so it shows as waiting.
   if (appId === null || isStatusLoading || (!status && !statusError)) {
     return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" /> Loading...
+      <div className="space-y-3">
+        {/* Above the two guards below, not inside the branches after them: a
+            run that ended belongs to the machine, and this app's status
+            being slow or unreadable is no reason to take back what it said. */}
+        {terminalNotice}
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading...
+        </div>
       </div>
     );
   }
@@ -153,20 +301,23 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
     // so the panel stayed empty until a remount. The discovery query beside
     // it has said so properly all along.
     return (
-      <div
-        className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200"
-        data-testid="coolify-status-error"
-      >
-        <p className="font-medium">Could not read this app's Coolify setup</p>
-        <p className="mt-1">{getErrorMessage(statusError)}</p>
-        <Button
-          variant="outline"
-          size="sm"
-          className="mt-2"
-          onClick={() => refetchStatus()}
+      <div className="space-y-3">
+        {terminalNotice}
+        <div
+          className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200"
+          data-testid="coolify-status-error"
         >
-          Try again
-        </Button>
+          <p className="font-medium">Could not read this app's Coolify setup</p>
+          <p className="mt-1">{getErrorMessage(statusError)}</p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={() => refetchStatus()}
+          >
+            Try again
+          </Button>
+        </div>
       </div>
     );
   }
@@ -261,8 +412,93 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
     </div>
   );
 
-  // --- Step 1: instance URL + API token ---
+  // --- Step 1: get a Coolify, or connect to one ---
+  // The one control that makes Dyad forget a Coolify: the address, the token,
+  // and the admin account for a server it set up. Available wherever Dyad
+  // holds any of those, because holding an account without a token is still
+  // holding a Coolify — and it is what has to be given up to reach a
+  // different one.
+  const signOut = (
+    <>
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={clearToken.isPending}
+        onClick={() => setIsConfirmingSignOut(true)}
+      >
+        Sign out of Coolify
+      </Button>
+      <CoolifySignOutDialog
+        open={isConfirmingSignOut}
+        onOpenChange={setIsConfirmingSignOut}
+        onConfirm={async () => {
+          try {
+            await clearToken.mutateAsync();
+            // The component is not remounted when the token goes, so without
+            // this the form comes back holding the credential just forgotten —
+            // and pressing Connect would silently store it again, which is
+            // the opposite of what signing out to rotate a token is for.
+            setToken("");
+            setAcknowledgedInsecure(false);
+            toast.success(
+              "Signed out of Coolify. Your server keeps running and your apps keep their settings.",
+            );
+          } catch (error) {
+            toast.error(getErrorMessage(error));
+          }
+        }}
+      />
+    </>
+  );
+
   if (!status.hasToken) {
+    // Installing comes first: the token form asks for an address and a token,
+    // which is a question about a Coolify that already exists. Landing on it
+    // told everyone else they were in the wrong place.
+    if (!isEnteringToken) {
+      // Dyad already has a server. Setting up another would replace the only
+      // copy of its password, so the way to one is through giving this one up
+      // deliberately rather than through starting again over the top of it.
+      //
+      // Not over a failure the installer is reporting. Its message, output and
+      // the way to clear it are all on that screen, and standing in front of
+      // it leaves the run both unexplained and impossible to dismiss. Retrying
+      // is also the ordinary thing to do next, and it lands on the same server.
+      if (status.serverUrl && !isReportingFailure) {
+        return (
+          <div className="space-y-3" data-testid="coolify-connector">
+            {terminalNotice}
+            <div
+              className="rounded-md border p-3 text-sm"
+              data-testid="coolify-already-has-server"
+            >
+              <p className="font-medium">Dyad already set up a server</p>
+              <p className="text-muted-foreground">
+                Its details are below. Finish connecting to it, or sign out to
+                set up a different one — signing out forgets these.
+              </p>
+            </div>
+            <Button onClick={() => setIsEnteringToken(true)}>
+              Enter an API token
+            </Button>
+            {newServerCredentials}
+            {signOut}
+          </div>
+        );
+      }
+      return (
+        <div className="space-y-3" data-testid="coolify-connector">
+          {terminalNotice}
+          {serverSetup}
+          {/* Installing again is refused while Dyad still holds an admin
+              password, and that refusal says to sign out first. Behind the
+              failure report is the one place it could be said without the way
+              to do it being on screen. */}
+          {status.serverUrl && signOut}
+        </div>
+      );
+    }
+
     const trimmedUrl = instanceUrl.trim();
     // A stock Coolify serves plain HTTP until it has a domain and certificate,
     // so this is the common case rather than an unusual one.
@@ -281,6 +517,7 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
     const isInsecure = hasUsableScheme && !isSecureInstanceUrl(trimmedUrl);
     return (
       <div className="space-y-3" data-testid="coolify-connector">
+        {terminalNotice}
         <p className="text-sm text-muted-foreground">
           Deploy this app to a Coolify instance you run. In Coolify, enable the
           API under Settings → Advanced → API Access, then create a token under
@@ -295,6 +532,11 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
             data-testid="coolify-instance-url"
             placeholder="https://coolify.example.com"
             value={instanceUrl}
+            // Fixed to the server Dyad set up while it holds that server's
+            // account. A token typed against another address would leave the
+            // account describing one machine and the token another, which is
+            // a pairing nothing downstream can tell apart from a way in.
+            readOnly={Boolean(status.serverUrl)}
             onChange={(e) => {
               setInstanceUrl(e.target.value);
               // The consent was given for the address that was on screen at
@@ -303,6 +545,12 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
               setAcknowledgedInsecure(false);
             }}
           />
+          {status.serverUrl && (
+            <p className="text-muted-foreground text-xs">
+              The server Dyad set up. Sign out to connect to a different
+              Coolify.
+            </p>
+          )}
         </div>
         <div>
           <Label htmlFor={tokenId}>API token</Label>
@@ -335,6 +583,7 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
                 onCheckedChange={(checked) =>
                   setAcknowledgedInsecure(checked === true)
                 }
+                data-testid="coolify-acknowledge-insecure"
               />
               <span>Connect anyway</span>
             </label>
@@ -369,9 +618,54 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
           )}
           Connect
         </Button>
+
+        {newServerCredentials}
+
+        {/* Back to the installer, for someone who came here by mistake, and
+            the only way back to a failure it is reporting. Not offered while
+            Dyad holds a server's account and has nothing to report: that
+            screen refuses to set up another anyway, and signing out is the
+            way there. */}
+        {status.serverUrl && !isReportingFailure ? (
+          <div className="border-t pt-3">{signOut}</div>
+        ) : (
+          <div className="border-t pt-3">
+            <p className="text-sm text-muted-foreground">
+              {/* The other way in here is a run that failed on a server Dyad
+                  did set up. Offering to set one up "yet" over the top of it
+                  describes somebody else's situation. */}
+              {status.serverUrl
+                ? "Dyad set up a server here and the run has something to say about it. "
+                : "No Coolify server yet? "}
+              <button
+                type="button"
+                className="font-medium text-foreground underline underline-offset-4 hover:no-underline"
+                onClick={() => setIsEnteringToken(false)}
+                data-testid="coolify-no-instance"
+              >
+                {status.serverUrl ? "Back to the installer" : "Set one up"}
+              </button>
+              {status.serverUrl ? "." : " on a server you already have."}
+            </p>
+          </div>
+        )}
       </div>
     );
   }
+
+  // Two things are on this screen and they are not the same thing: the
+  // Coolify the user connected to, which is theirs and outlives any app, and
+  // where this one app deploys. Kept apart so the instance and its way back
+  // in are readable without opening the app's settings.
+  const coolifySection = (
+    <div className="space-y-2" data-testid="coolify-instance-section">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-semibold">Coolify</div>
+        {signOut}
+      </div>
+      <CoolifyCredentials />
+    </div>
+  );
 
   // --- Step 2: server, project, domain ---
   if (!status.connection || isEditingConnection) {
@@ -380,39 +674,18 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
     // is isFetching and so also covers background refetches over a list the
     // user is already reading.
     const awaitingDiscovery = isDiscoveryPending;
-    // The only control that removes the stored instance URL and token. It used
-    // to live solely inside the discovery-error card, so rotating a token or
-    // moving to another instance meant first breaking discovery on purpose.
-    const disconnectEverything = (
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled={clearToken.isPending}
-        onClick={async () => {
-          try {
-            await clearToken.mutateAsync();
-            // The component is not remounted when the token goes, so without
-            // this the form comes back holding the credential just revoked —
-            // and pressing Connect would silently store it again, which is
-            // the opposite of what signing out to rotate a token is for.
-            setToken("");
-            setAcknowledgedInsecure(false);
-            toast.success(
-              "Signed out of Coolify. Your apps keep their settings; enter a token to use them again.",
-            );
-          } catch (error) {
-            toast.error(getErrorMessage(error));
-          }
-        }}
-      >
-        Sign out of Coolify
-      </Button>
-    );
     const duplicateProjectName = projects.some(
       (p) => p.name.toLowerCase() === newProjectName.trim().toLowerCase(),
     );
     return (
       <div className="space-y-3" data-testid="coolify-connector">
+        {terminalNotice}
+        {coolifySection}
+
+        <div className="border-t pt-3 text-sm font-semibold">
+          Where this app deploys
+        </div>
+
         {discoveryError && (
           <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
             <p className="font-medium">Could not load servers and projects</p>
@@ -450,23 +723,6 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
               <RefreshCw className="h-4 w-4" />
             )}
           </Button>
-        </div>
-
-        <div className="flex justify-end gap-1">
-          {isEditingConnection && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                // Only the flag. The prefill effect waits on it and puts
-                // every field back, the address and its consent included.
-                setIsEditingConnection(false);
-              }}
-            >
-              Cancel
-            </Button>
-          )}
-          {disconnectEverything}
         </div>
 
         {/* A project belongs to the Coolify instance, not to this app, so it
@@ -636,100 +892,117 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
           {insecureWarningBlock}
         </div>
 
-        <Button
-          disabled={
-            saveConnection.isPending ||
-            checkDomain.isPending ||
-            !serverUuid ||
-            !projectUuid ||
-            !can.canEditConnection
-          }
-          data-testid="coolify-save-connection"
-          onClick={async () => {
-            try {
-              const trimmed = domain.trim();
-              // Whether a domain may be cleared is the handler's to answer:
-              // it turns on whether an application exists in Coolify, which
-              // the status contract does not carry. A copy here was wrong
-              // twice — first missing the moving case, then missing the
-              // never-provisioned one — so there is no copy. The catch below
-              // surfaces the handler's message.
-              // Checked before saving, because a save that succeeds should not
-              // then be followed by a lookup the user waits on. Reported only
-              // after, because every one of these warnings says the connection
-              // was saved anyway — and the save can still be refused, by an
-              // invalid domain or by a deploy that started in another window.
-              // Announcing "saved anyway" and then "not saved" leaves the user
-              // to work out which of the two toasts to believe.
-              let warn: (() => void) | null = null;
-              if (trimmed) {
-                // Advisory only: if the check itself fails, say so and still
-                // let the user save rather than trapping them behind it.
-                try {
-                  const dns = await checkDomain.mutateAsync({
-                    serverUuid,
-                    domain: trimmed,
-                  });
-                  // Only speak up about something actually detected: an
-                  // "unknown" verdict means the check could not run, and a
-                  // warning that appears when nothing is wrong gets ignored.
-                  //
-                  // The deploy itself succeeds; it is HTTPS that breaks, so
-                  // say that rather than implying the build fails.
-                  const consequence =
-                    "The app will still deploy, but HTTPS will not work.";
-                  if (dns.verdict === "points-elsewhere") {
-                    // A proxied domain deliberately resolves to the proxy
-                    // rather than the origin, so the mismatch is what a
-                    // correct setup looks like there. We cannot tell one from
-                    // the other — a CDN address is public like any other — so
-                    // the reading is offered rather than the instruction.
+        <div className="flex items-center gap-2">
+          <Button
+            disabled={
+              saveConnection.isPending ||
+              checkDomain.isPending ||
+              !serverUuid ||
+              !projectUuid ||
+              !can.canEditConnection
+            }
+            data-testid="coolify-save-connection"
+            onClick={async () => {
+              try {
+                const trimmed = domain.trim();
+                // Whether a domain may be cleared is the handler's to answer:
+                // it turns on whether an application exists in Coolify, which
+                // the status contract does not carry. A copy here was wrong
+                // twice — first missing the moving case, then missing the
+                // never-provisioned one — so there is no copy. The catch below
+                // surfaces the handler's message.
+                // Checked before saving, because a save that succeeds should not
+                // then be followed by a lookup the user waits on. Reported only
+                // after, because every one of these warnings says the connection
+                // was saved anyway — and the save can still be refused, by an
+                // invalid domain or by a deploy that started in another window.
+                // Announcing "saved anyway" and then "not saved" leaves the user
+                // to work out which of the two toasts to believe.
+                let warn: (() => void) | null = null;
+                if (trimmed) {
+                  // Advisory only: if the check itself fails, say so and still
+                  // let the user save rather than trapping them behind it.
+                  try {
+                    const dns = await checkDomain.mutateAsync({
+                      serverUuid,
+                      domain: trimmed,
+                    });
+                    // Only speak up about something actually detected: an
+                    // "unknown" verdict means the check could not run, and a
+                    // warning that appears when nothing is wrong gets ignored.
+                    //
+                    // The deploy itself succeeds; it is HTTPS that breaks, so
+                    // say that rather than implying the build fails.
+                    const consequence =
+                      "The app will still deploy, but HTTPS will not work.";
+                    if (dns.verdict === "points-elsewhere") {
+                      // A proxied domain deliberately resolves to the proxy
+                      // rather than the origin, so the mismatch is what a
+                      // correct setup looks like there. We cannot tell one from
+                      // the other — a CDN address is public like any other — so
+                      // the reading is offered rather than the instruction.
+                      warn = () =>
+                        toast.warning(
+                          `${dns.hostname} points at ${dns.actualIps.join(", ")}, not your server at ${dns.expectedIp}.`,
+                          {
+                            description: `Saved anyway. If your domain is behind a proxy or CDN, this is expected. Otherwise the app will still deploy, but HTTPS will not work — point it at ${dns.expectedIp} and redeploy.`,
+                          },
+                        );
+                    } else if (dns.verdict === "no-records") {
+                      // Where to point it is only named when it is known. A
+                      // server on a private address has no address a public
+                      // record could use, but the domain still has no records.
+                      const where = dns.expectedIp
+                        ? ` point a DNS record at ${dns.expectedIp} and redeploy.`
+                        : " point a DNS record at your server and redeploy.";
+                      warn = () =>
+                        toast.warning(
+                          `${dns.hostname} has no DNS record yet.`,
+                          {
+                            description: `${consequence} Saved anyway;${where}`,
+                          },
+                        );
+                    }
+                  } catch {
                     warn = () =>
                       toast.warning(
-                        `${dns.hostname} points at ${dns.actualIps.join(", ")}, not your server at ${dns.expectedIp}.`,
-                        {
-                          description: `Saved anyway. If your domain is behind a proxy or CDN, this is expected. Otherwise the app will still deploy, but HTTPS will not work — point it at ${dns.expectedIp} and redeploy.`,
-                        },
+                        `Could not check where ${trimmed} points; saved anyway.`,
                       );
-                  } else if (dns.verdict === "no-records") {
-                    // Where to point it is only named when it is known. A
-                    // server on a private address has no address a public
-                    // record could use, but the domain still has no records.
-                    const where = dns.expectedIp
-                      ? ` point a DNS record at ${dns.expectedIp} and redeploy.`
-                      : " point a DNS record at your server and redeploy.";
-                    warn = () =>
-                      toast.warning(`${dns.hostname} has no DNS record yet.`, {
-                        description: `${consequence} Saved anyway;${where}`,
-                      });
                   }
-                } catch {
-                  warn = () =>
-                    toast.warning(
-                      `Could not check where ${trimmed} points; saved anyway.`,
-                    );
                 }
+                await saveConnection.mutateAsync({
+                  serverUuid,
+                  projectUuid,
+                  environmentName,
+                  domain: trimmed || null,
+                });
+                warn?.();
+                // Only now: a failed save has to leave the form open with the
+                // user's edits still in it.
+                setIsEditingConnection(false);
+              } catch (error) {
+                toast.error(getErrorMessage(error));
               }
-              await saveConnection.mutateAsync({
-                serverUuid,
-                projectUuid,
-                environmentName,
-                domain: trimmed || null,
-              });
-              warn?.();
-              // Only now: a failed save has to leave the form open with the
-              // user's edits still in it.
-              setIsEditingConnection(false);
-            } catch (error) {
-              toast.error(getErrorMessage(error));
-            }
-          }}
-        >
-          {(saveConnection.isPending || checkDomain.isPending) && (
-            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            }}
+          >
+            {(saveConnection.isPending || checkDomain.isPending) && (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            )}
+            Save
+          </Button>
+          {isEditingConnection && (
+            <Button
+              variant="ghost"
+              onClick={() => {
+                // Only the flag. The prefill effect waits on it and puts every
+                // field back, the address and its consent included.
+                setIsEditingConnection(false);
+              }}
+            >
+              Cancel
+            </Button>
           )}
-          Save
-        </Button>
+        </div>
       </div>
     );
   }
@@ -763,6 +1036,13 @@ export function CoolifyConnector({ appId }: { appId: number | null }) {
 
   return (
     <div className="space-y-3" data-testid="coolify-connector">
+      {terminalNotice}
+      {coolifySection}
+
+      <div className="border-t pt-3 text-sm font-semibold">
+        Where this app deploys
+      </div>
+
       {belongsElsewhere && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
           <p>

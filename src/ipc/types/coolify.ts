@@ -89,8 +89,15 @@ export const CoolifyStatusSchema = z.object({
    * tell that the token changed without ever being told what it is.
    */
   tokenId: z.string().nullable(),
-  /** Remembered across a token clear, so re-entering a token does not retype it. */
+  /** The Coolify Dyad is connected to, or null once it has been forgotten. */
   instanceUrl: z.string().nullable(),
+  /**
+   * The address of a server Dyad set up and holds an admin account for, or
+   * null. Not a secret, and the panel needs it without the password: while
+   * this is set the only Coolify Dyad will connect to is this one, so it
+   * pins the address field and stands in the way of setting up another.
+   */
+  serverUrl: z.string().nullable(),
   connection: CoolifyConnectionSchema.nullable(),
   appUrl: z.string().nullable(),
   /** Epoch millis of the last successful deploy, or null if never deployed. */
