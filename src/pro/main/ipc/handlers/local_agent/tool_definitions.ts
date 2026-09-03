@@ -85,6 +85,7 @@ import { asSchema } from "ai";
 import {
   escapeXmlAttr,
   escapeXmlContent,
+  resolveToolDescription,
   type ToolDefinition,
   type AgentContext,
   type ToolResult,
@@ -493,6 +494,7 @@ export async function estimateAgentToolTokens({
   canUseExplorerSubagent = false,
   canUseImplementerSubagent = false,
   canUseAdvancedSubagentTools = false,
+  runTypeScriptForWholeProject = false,
   preCommitHookAvailable = false,
   reinstallAndRestartAppToolAvailable = true,
   mcpToolDefs = [],
@@ -514,6 +516,7 @@ export async function estimateAgentToolTokens({
   canUseExplorerSubagent?: boolean;
   canUseImplementerSubagent?: boolean;
   canUseAdvancedSubagentTools?: boolean;
+  runTypeScriptForWholeProject?: boolean;
   preCommitHookAvailable?: boolean;
   reinstallAndRestartAppToolAvailable?: boolean;
   mcpToolDefs?: McpToolDef[];
@@ -531,6 +534,7 @@ export async function estimateAgentToolTokens({
     canUseExplorerSubagent,
     canUseImplementerSubagent,
     canUseAdvancedSubagentTools,
+    runTypeScriptForWholeProject,
     preCommitHookAvailable,
     reinstallAndRestartAppToolAvailable,
     sandboxWriteFileHostEnabled: !readOnly && !planModeOnly,
@@ -561,8 +565,10 @@ export async function estimateAgentToolTokens({
     ).map(async (definition) => ({
       type: "function" as const,
       name: definition.name,
-      description: definition.description,
-      inputSchema: await asSchema(definition.inputSchema).jsonSchema,
+      description: resolveToolDescription(definition, estimateContext),
+      inputSchema: await asSchema(
+        definition.getInputSchema?.(estimateContext) ?? definition.inputSchema,
+      ).jsonSchema,
     })),
   );
 
@@ -775,7 +781,7 @@ export function buildAgentToolSet(
     }
 
     toolSet[tool.name] = {
-      description: tool.description,
+      description: resolveToolDescription(tool, ctx),
       inputSchema: tool.getInputSchema?.(ctx) ?? tool.inputSchema,
       execute: async (
         args: any,

@@ -42,6 +42,7 @@ import { useSetAtom } from "jotai";
 import { activeSettingsSectionAtom } from "@/atoms/viewAtoms";
 import { SECTION_IDS, SETTING_IDS } from "@/lib/settingsSearchIndex";
 import { SubagentSettings } from "@/components/settings/SubagentSettings";
+import { RunTypeScriptForWholeProjectSwitch } from "@/components/RunTypeScriptForWholeProjectSwitch";
 
 const hint = "text-[13px] leading-relaxed text-muted-foreground";
 
@@ -351,6 +352,8 @@ export default function SettingsPage() {
                 a compiler-backed code graph.
               </p>
             </div>
+
+            <RunTypeScriptForWholeProjectSwitch />
 
             <SubagentSettings />
           </SettingsSection>

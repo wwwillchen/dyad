@@ -25,6 +25,26 @@ const runTypeChecksSchema = z.object({
     ),
 });
 
+const projectWideRunTypeChecksSchema = z.object({});
+
+const scopedDescription = `Run TypeScript type checks on the current workspace. You can provide paths to specific files or directories, or omit the argument to get diagnostics for all files.
+
+- If a file path is provided, returns diagnostics for that file and discloses whether the project has errors elsewhere
+- If a directory path is provided, returns diagnostics for that directory and discloses whether the project has errors elsewhere
+- If no path is provided, returns diagnostics for all files in the workspace
+- Project configuration errors are always returned because they can prevent the requested files from being checked
+- Prefer paths for small, isolated changes so the returned diagnostics stay focused
+- Omit paths for final verification after multi-file or cross-cutting changes, or after changing shared types, TypeScript configuration, dependencies, generated types, or global declarations
+- Project-wide results may include pre-existing errors; normally focus only on errors introduced by or related to your changes
+- If the user explicitly asks to fix all type-check or build problems, omit paths and treat every reported TypeScript diagnostic as in scope. Fix them iteratively and rerun this tool until it passes; use run_build separately to verify build problems
+- NEVER request a file path unless you've edited the file or are about to edit it`;
+
+const projectWideDescription = `Run TypeScript type checks on the whole current workspace and return diagnostics for all files.
+
+- Always returns diagnostics for all files in the workspace
+- Project configuration errors are always returned because they can prevent files from being checked
+- Results may include pre-existing errors; normally act only on errors introduced by or related to your changes unless the user asks for a full cleanup`;
+
 /**
  * Check if a problem file matches any of the specified paths.
  * Matches if the problem file equals the path (file match) or
@@ -134,15 +154,16 @@ export const runTypeChecksTool: ToolDefinition<
   z.infer<typeof runTypeChecksSchema>
 > = {
   name: "run_type_checks",
-  description: `Run TypeScript type checks on the current workspace. You can provide paths to specific files or directories, or omit the argument to get diagnostics for all files.
-
-- If a file path is provided, returns diagnostics for that file and discloses whether the project has errors elsewhere
-- If a directory path is provided, returns diagnostics for that directory and discloses whether the project has errors elsewhere
-- If no path is provided, returns diagnostics for all files in the workspace
-- Project configuration errors are always returned because they can prevent the requested files from being checked
-- This tool can return type errors that were already present before your edits, so avoid calling it with a very wide scope of files
-- NEVER call this tool on a file unless you've edited it or are about to edit it`,
+  description: scopedDescription,
+  getDescription: (ctx) =>
+    ctx.runTypeScriptForWholeProject
+      ? projectWideDescription
+      : scopedDescription,
   inputSchema: runTypeChecksSchema,
+  getInputSchema: (ctx) =>
+    ctx.runTypeScriptForWholeProject
+      ? projectWideRunTypeChecksSchema
+      : runTypeChecksSchema,
   defaultConsent: "always",
 
   getConsentPreview: (args) =>
@@ -151,10 +172,11 @@ export const runTypeChecksTool: ToolDefinition<
       : "Check types for all files",
 
   execute: async (args, ctx: AgentContext) => {
+    const paths = ctx.runTypeScriptForWholeProject ? undefined : args.paths;
     // Stream initial XML with in-progress state
     const title =
-      args.paths && args.paths.length > 0
-        ? `Type checking: ${args.paths.join(", ")}`
+      paths && paths.length > 0
+        ? `Type checking: ${paths.join(", ")}`
         : "Type checking all files";
     ctx.onXmlStream(
       `<dyad-status title="${escapeXmlAttr(title)}"></dyad-status>`,
@@ -212,10 +234,8 @@ export const runTypeChecksTool: ToolDefinition<
     let matchingProblems = allProblems;
 
     // Filter by paths if specified
-    if (args.paths && args.paths.length > 0) {
-      matchingProblems = allProblems.filter((p) =>
-        matchesPaths(p.file, args.paths!),
-      );
+    if (paths && paths.length > 0) {
+      matchingProblems = allProblems.filter((p) => matchesPaths(p.file, paths));
     }
 
     const result =
@@ -224,7 +244,7 @@ export const runTypeChecksTool: ToolDefinition<
         : formatProblems({
             allProblems,
             matchingProblems,
-            paths: args.paths,
+            paths,
           });
     const completedTitle = getCompletedTitle(outcome);
     const completedState = outcome === "incomplete" ? "warning" : "finished";

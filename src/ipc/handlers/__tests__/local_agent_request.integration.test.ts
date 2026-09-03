@@ -140,6 +140,20 @@ describe("local-agent default request (integration)", () => {
     // getServerDump masks the system message; read the raw dump to assert the
     // unmasked prompt is the Pro agent-mode prompt (not ask, not basic).
     const raw = JSON.parse(fs.readFileSync(req.dumpPath, "utf-8"));
+    const rawTypeCheckTool = raw.body.tools.find(
+      (tool: { function?: { name?: string } }) =>
+        tool.function?.name === "run_type_checks",
+    ).function;
+    expect(rawTypeCheckTool.description).toContain(
+      "You can provide paths to specific files or directories",
+    );
+    expect(rawTypeCheckTool.description).toContain(
+      "Omit paths for final verification after multi-file or cross-cutting changes",
+    );
+    expect(rawTypeCheckTool.description).toContain(
+      "If the user explicitly asks to fix all type-check or build problems, omit paths",
+    );
+    expect(rawTypeCheckTool.parameters.properties).toHaveProperty("paths");
     const systemMessage = raw.body.messages.find(
       (m: { role: string }) => m.role === "system",
     );
