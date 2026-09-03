@@ -60,6 +60,7 @@ import {
 } from "./controller";
 import { SUBAGENT_NONTERMINAL_STATUSES, subagentLifecycleState } from "./state";
 import type { SubagentLifecycleEvent } from "./transition";
+import type { ImplementerJoinSummary } from "./subagent_failure_reporting";
 
 export { SUBAGENT_NONTERMINAL_STATUSES } from "./state";
 
@@ -371,18 +372,7 @@ export async function getSubagentActivities(
     where: eq(agentActivities.threadId, threadId),
     orderBy: [asc(agentActivities.sequence)],
   });
-  return rows.map((row) => ({
-    id: row.id,
-    threadId: row.threadId,
-    sequence: row.sequence,
-    toolCallId: row.toolCallId,
-    toolName: row.toolName,
-    status: row.status,
-    presentationXml: row.presentationXml,
-    error: row.error,
-    startedAt: row.startedAt,
-    completedAt: row.completedAt,
-  }));
+  return rows.map(toActivitySummary);
 }
 
 export async function updateSubagentActivity(params: {
@@ -1363,7 +1353,7 @@ export async function waitForOwnedSubagentsAndSealTurn(
   threadIds: string[],
   turnId: string,
   abortSignal?: AbortSignal,
-): Promise<SubagentThreadSummary[]> {
+): Promise<ImplementerJoinSummary[]> {
   const deadlineAt = Date.now() + ROOT_FINALIZATION_MAX_WAIT_MS;
   while (true) {
     assertFinalizationWaitActive(abortSignal, deadlineAt, turnId);
@@ -1409,7 +1399,23 @@ export async function waitForOwnedSubagentsAndSealTurn(
         return tryBeginTurnFinalization(turnId);
       },
     });
-    if (finalized) return summaries;
+    if (finalized) {
+      return Promise.all(
+        summaries.map(async (summary) => {
+          if (isAcceptableImplementerJoinStatus(summary.status)) {
+            return { ...summary, latestActivity: null };
+          }
+          const activity = await db.query.agentActivities.findFirst({
+            where: eq(agentActivities.threadId, summary.id),
+            orderBy: [desc(agentActivities.sequence)],
+          });
+          return {
+            ...summary,
+            latestActivity: activity ? toActivitySummary(activity) : null,
+          };
+        }),
+      );
+    }
     await waitForAbortableDelay(250, abortSignal);
   }
 }
@@ -2377,6 +2383,23 @@ function toSummary(
     startedAt: row.startedAt,
     completedAt: row.completedAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function toActivitySummary(
+  row: typeof agentActivities.$inferSelect,
+): SubagentActivity {
+  return {
+    id: row.id,
+    threadId: row.threadId,
+    sequence: row.sequence,
+    toolCallId: row.toolCallId,
+    toolName: row.toolName,
+    status: row.status,
+    presentationXml: row.presentationXml,
+    error: row.error,
+    startedAt: row.startedAt,
+    completedAt: row.completedAt,
   };
 }
 

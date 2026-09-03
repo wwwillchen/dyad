@@ -90,6 +90,7 @@ import {
   withTrackedMutation,
   type MutationActivityOwner,
 } from "./subagents/mutation_activity_tracker";
+import { buildImplementerFailureReport } from "./subagents/subagent_failure_reporting";
 import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
 import { COMPLETED_PLANNING_QUESTIONNAIRE_RESULT_PREFIX } from "./tools/planning_questionnaire";
 
@@ -2071,10 +2072,14 @@ export async function handleLocalAgentStream(
         (thread) => !isAcceptableImplementerJoinStatus(thread.status),
       );
       if (unsuccessful.length > 0) {
+        const failureReport = buildImplementerFailureReport(unsuccessful);
+        if (failureReport.telemetryProperties) {
+          sendTelemetryEvent("local_agent:implementer_failed", {
+            ...failureReport.telemetryProperties,
+          });
+        }
         throw new DyadError(
-          `Implementer sub-agent did not complete successfully: ${unsuccessful
-            .map((thread) => `${thread.taskName} (${thread.status})`)
-            .join(", ")}`,
+          failureReport.displayMessage,
           DyadErrorKind.Precondition,
         );
       }
