@@ -357,6 +357,34 @@ describe("app naming handlers", () => {
       ).rejects.toMatchObject({ kind: DyadErrorKind.Conflict });
     });
 
+    it("includes safe filesystem details when copying fails", async () => {
+      const sourceId = seedAppWithFolder("Source", "source");
+      const copyError = Object.assign(
+        new Error(
+          "EACCES: permission denied, copyfile '/Users/alice/Dyad/source/private.txt' -> '/Users/alice/Dyad/copy/private.txt'",
+        ),
+        { code: "EACCES" },
+      );
+      const copySpy = vi
+        .spyOn(fs.promises, "cp")
+        .mockRejectedValueOnce(copyError);
+
+      await expect(
+        harness.invokeHandler("copy-app", {
+          appId: sourceId,
+          newAppName: "Copy",
+          withHistory: false,
+        }),
+      ).rejects.toMatchObject({
+        message:
+          "Failed to copy app directory.\nEACCES: permission denied, copyfile '[redacted path]' -> '[redacted path]'",
+        kind: DyadErrorKind.External,
+        cause: copyError,
+      });
+
+      expect(copySpy).toHaveBeenCalledOnce();
+    });
+
     it("waits for recording isolation to restore env before copying", async () => {
       const sourceId = seedAppWithFolder("Source", "source");
       const sourceEnv = path.join(TEMP_BASE, "source", ".env.local");

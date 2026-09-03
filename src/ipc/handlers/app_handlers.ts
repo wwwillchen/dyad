@@ -169,6 +169,7 @@ import { githubOpsService } from "../services/github_ops_service";
 import { versionPreviewActorService } from "../services/version_preview_actor_service";
 import { appDeletionQueue } from "../services/app_deletion_queue";
 import { versionPreviewService } from "../services/version_preview_service";
+import { safeGithubOpsErrorMessage } from "../services/github_ops_safe_error";
 import {
   beginChatActorDeletion,
   settleChatActorsForDeletion,
@@ -274,6 +275,25 @@ async function copyDir(
       return true;
     },
   });
+}
+
+const MAX_COPY_APP_ERROR_MESSAGE_LENGTH = 2_000;
+const COPY_APP_ERROR_TRUNCATION_NOTICE = "\n… [error details truncated]";
+
+function formatCopyAppDirectoryError(error: unknown): string {
+  const summary = "Failed to copy app directory.";
+  // Filesystem errors commonly contain the useful errno/reason alongside full
+  // local paths. Reuse the hardened renderer projection so the cause is useful
+  // without exposing paths, credentials, remotes, or unbounded output.
+  const details = safeGithubOpsErrorMessage(error, "");
+  if (!details) return summary;
+
+  const message = `${summary}\n${details}`;
+  if (message.length <= MAX_COPY_APP_ERROR_MESSAGE_LENGTH) return message;
+  return `${message.slice(
+    0,
+    MAX_COPY_APP_ERROR_MESSAGE_LENGTH - COPY_APP_ERROR_TRUNCATION_NOTICE.length,
+  )}${COPY_APP_ERROR_TRUNCATION_NOTICE}`;
 }
 
 async function searchAppFilesWithRipgrep({
@@ -1052,8 +1072,9 @@ export function registerAppHandlers() {
         } catch (error) {
           logger.error("Failed to copy app directory:", error);
           throw new DyadError(
-            "Failed to copy app directory.",
+            formatCopyAppDirectoryError(error),
             DyadErrorKind.External,
+            { cause: error },
           );
         }
 

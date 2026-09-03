@@ -59,6 +59,8 @@ After installation, verify that `node_modules/.bin/oxfmt` exists before running 
 
 A worktree's `node_modules` can also be _sparsely_ populated — every package directory exists, so `npm install` exits 0 and repairs nothing, but files inside are missing (`Cannot find module '.../oxfmt/dist/cli.js'`, `oxlint/dist/cli.js`, or a dangling `.bin/tsgo` symlink). Deleting the broken package directories and rerunning `npm install` then aborts at the `better-sqlite3` native rebuild (`gyp ERR! not ok`) before any JS package is written. Use `npm install --ignore-scripts` to restore the JS toolchain; it skips the native rebuild, which `npm run fmt` / `lint` / `ts` do not need. If you subsequently need `npm run build`, run `npm rebuild dugite` first; otherwise Electron Forge packaging fails with `ENOENT: no such file or directory, lstat 'node_modules/dugite/git'`.
 
+After `npm install --ignore-scripts`, unit tests that import Electron or open a test database also need `npm rebuild electron better-sqlite3`; otherwise they fail with “Electron failed to install correctly” or “Could not locate the bindings file.”
+
 Also run `npm install` in `testing/fake-llm-server/` before `npm run ts` in a fresh worktree. Otherwise the root type-check reports missing declarations for that package's local `express` and `cors` dependencies.
 
 If you symlink a worktree's `node_modules` at a shared install instead of installing into it, see [rules/git-workflow.md](rules/git-workflow.md) for why `.gitignore` must keep listing `node_modules` without a trailing slash.
