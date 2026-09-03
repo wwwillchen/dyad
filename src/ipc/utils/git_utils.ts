@@ -25,6 +25,11 @@ import {
   selectTextLineRange,
 } from "@/utils/dotenv_redaction";
 import { runBufferedProcess } from "./buffered_process";
+import {
+  collectGitLaunchDiagnostics,
+  getGitLaunchTelemetryProperties,
+} from "./git_launch_diagnostics";
+import { sendTelemetryEvent } from "./telemetry";
 
 export { GIT_ERROR_CODES } from "@/shared/git_error_codes";
 
@@ -33,6 +38,7 @@ const logger = log.scope("git_utils");
 const GIT_STATE_FINGERPRINT_TIMEOUT_MS = 30_000;
 const GIT_STATE_FINGERPRINT_MAX_PATH_BYTES = 16 * 1024 * 1024;
 const GIT_STATE_FINGERPRINT_MAX_UNTRACKED_PATHS = 10_000;
+let didReportGitLaunchFailure = false;
 
 function isUserVisibleGitPath(filePath: string) {
   return !filePath.startsWith(".dyad/") && filePath !== "pnpm-workspace.yaml";
@@ -203,10 +209,40 @@ export async function execGit(
   path: string,
   options?: IGitStringExecutionOptions,
 ): Promise<IGitStringResult> {
-  return exec(args, path, {
-    ...options,
-    env: getSanitizedGitEnv(options?.env),
-  });
+  const env = getSanitizedGitEnv(options?.env);
+  try {
+    return await exec(args, path, {
+      ...options,
+      env,
+    });
+  } catch (error) {
+    if (error instanceof ExecError && error.code === "ENOENT") {
+      try {
+        const { env: gitEnv, gitLocation } = setupEnvironment(env);
+        const diagnostics = await collectGitLaunchDiagnostics({
+          gitLocation,
+          cwd: path,
+          localGitDirectory: gitEnv.LOCAL_GIT_DIRECTORY,
+          error,
+        });
+
+        if (!didReportGitLaunchFailure) {
+          didReportGitLaunchFailure = true;
+          logger.error("Git process failed to launch", diagnostics);
+          sendTelemetryEvent(
+            "git:launch_error",
+            getGitLaunchTelemetryProperties(diagnostics),
+          );
+        }
+      } catch (diagnosticError) {
+        logger.warn(
+          "Failed to collect Git launch diagnostics",
+          diagnosticError,
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 async function hashGitOutput(
