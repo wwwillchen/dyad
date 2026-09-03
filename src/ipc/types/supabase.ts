@@ -67,6 +67,7 @@ export const ConsoleEntrySchema = z.object({
   timestamp: z.number(),
   sourceName: z.string().optional(),
   appId: z.number(),
+  runtimeBoundary: z.enum(["start", "restart", "rebuild"]).optional(),
 });
 
 export type ConsoleEntry = z.infer<typeof ConsoleEntrySchema>;
