@@ -755,6 +755,9 @@ NEON_AUTH_COOKIE_SECRET=${staleSecret}`);
       expect(
         envVars.find((envVar) => envVar.key === "NEON_AUTH_COOKIE_SECRET"),
       ).toBeUndefined();
+      expect(
+        envVars.find((envVar) => envVar.key === "NEON_AUTH_COOKIE_MODE")?.value,
+      ).toBe("http");
     });
 
     it("does not rotate NEON_AUTH_COOKIE_SECRET on Vite apps even when auth URL changes", async () => {
@@ -825,7 +828,8 @@ NEON_AUTH_COOKIE_SECRET=${existingSecret}`);
 DATABASE_URL=postgres://localhost:5432/mydb
 POSTGRES_URL=postgresql://test:test@test-preview.neon.tech/test
 NEON_AUTH_BASE_URL=https://test-preview.neonauth.us-east-2.aws.neon.tech/neondb/auth
-NEON_AUTH_COOKIE_SECRET=${"c".repeat(64)}`);
+NEON_AUTH_COOKIE_SECRET=${"c".repeat(64)}
+NEON_AUTH_COOKIE_MODE=http`);
 
       await removeNeonEnvVars({ appPath: "my-app" });
 

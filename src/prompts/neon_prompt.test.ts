@@ -98,6 +98,8 @@ describe("getNeonAvailableSystemPrompt", () => {
       );
       expect(guide).toContain("seenPreviewCookieNames.has(restoredName)");
       expect(guide).toContain('process.env.NEON_AUTH_COOKIE_MODE === "http"');
+      expect(guide).toContain("if (USE_HTTP_COOKIE_NAMES)");
+      expect(guide).not.toContain("useHttpCookieNames: boolean");
       expect(guide).toContain("getSessionFromCookie(cookie)");
       expect(guide).not.toContain(
         "getSessionFromCookie(cookie, getRequestURL(event).protocol",
