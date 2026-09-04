@@ -68,18 +68,18 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
 
   const providerOptions = [
     {
-      id: "neon" as const,
-      name: t("integrations.databaseSetup.providers.neon.name"),
-      description: t("integrations.databaseSetup.providers.neon.description"),
-      url: "https://neon.tech",
-    },
-    {
       id: "supabase" as const,
       name: t("integrations.databaseSetup.providers.supabase.name"),
       description: t(
         "integrations.databaseSetup.providers.supabase.description",
       ),
       url: "https://supabase.com",
+    },
+    {
+      id: "neon" as const,
+      name: t("integrations.databaseSetup.providers.neon.name"),
+      description: t("integrations.databaseSetup.providers.neon.description"),
+      url: "https://neon.tech",
     },
   ];
 
@@ -90,7 +90,7 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
     userSelectedProvider ??
     requestedProvider ??
     pendingIntegration?.provider ??
-    "neon";
+    "supabase";
 
   const lockedProvider = requestedProvider ?? pendingIntegration?.provider;
 
@@ -108,8 +108,8 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
       }
       return providerOptions.filter((p) => p.id === lockedProvider);
     }
-    // Keep the intended Neon-first choice visible while framework support is
-    // unknown, but do not let the user commit until app metadata has loaded.
+    // Keep both choices visible while framework support is unknown, but do not
+    // let the user commit until app metadata has loaded.
     if (isAppLoading) return providerOptions;
     // No provider specified: show neon only for frameworks that support it
     if (!isNeonSupported) {
@@ -403,7 +403,7 @@ export const DyadAddIntegration: React.FC<DyadAddIntegrationProps> = ({
                         <span className="text-sm font-semibold text-foreground">
                           {option.name}
                         </span>
-                        {option.id === "neon" && (
+                        {option.id === "supabase" && (
                           <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/60 dark:text-blue-200">
                             {t("integrations.databaseSetup.recommended")}
                           </span>
