@@ -73,6 +73,8 @@ const CatalogModelSchema = z.object({
     .optional(),
 });
 
+const ApiProtocolSchema = z.enum(["responses", "chat-completions", "messages"]);
+
 const KNOWN_BUILTIN_MODEL_ALIASES = [
   "dyad/theme-generator/google",
   "dyad/theme-generator/anthropic",
@@ -81,6 +83,7 @@ const KNOWN_BUILTIN_MODEL_ALIASES = [
   "dyad/auto/anthropic",
   "dyad/auto/google",
   "dyad/auto/openrouter",
+  "dyad/auto/balanced",
   "dyad/help-bot/default",
 ] as const;
 
@@ -100,6 +103,7 @@ const LanguageModelCatalogResponseSchema = z.object({
       }),
       displayName: z.string().optional(),
       purpose: z.enum(["theme-generation", "auto-mode", "help-bot"]).optional(),
+      apiProtocol: ApiProtocolSchema.optional(),
     }),
   ),
   curatedSelections: z
@@ -126,6 +130,7 @@ type BuiltinLanguageModelCatalog = {
 type ResolvedBuiltinModel = {
   providerId: string;
   apiName: string;
+  apiProtocol?: z.infer<typeof ApiProtocolSchema>;
 };
 
 let builtinCatalogCache: BuiltinLanguageModelCatalog | null = null;
@@ -237,6 +242,16 @@ function buildFallbackCatalog(): BuiltinLanguageModelCatalog {
         },
         displayName: "Auto OpenRouter",
         purpose: "auto-mode",
+      },
+      {
+        id: "dyad/auto/balanced",
+        resolvedModel: {
+          providerId: "openrouter",
+          apiName: "x-ai/grok-4.6",
+        },
+        displayName: "Auto (balanced)",
+        purpose: "auto-mode",
+        apiProtocol: "responses",
       },
       {
         id: "dyad/help-bot/default",
@@ -486,9 +501,10 @@ export async function resolveBuiltinModelAlias(
   aliasId: BuiltinModelAlias | string,
 ): Promise<ResolvedBuiltinModel | null> {
   const catalog = await getBuiltinLanguageModelCatalog();
-  const resolvedModel =
-    catalog.aliases.find((alias) => alias.id === aliasId)?.resolvedModel ??
-    null;
+  const alias = catalog.aliases.find((candidate) => candidate.id === aliasId);
+  const resolvedModel = alias
+    ? { ...alias.resolvedModel, apiProtocol: alias.apiProtocol }
+    : null;
 
   logger.info("Resolved builtin model alias", {
     aliasId,
@@ -496,6 +512,7 @@ export async function resolveBuiltinModelAlias(
     version: catalog.version,
     resolvedProviderId: resolvedModel?.providerId,
     resolvedApiName: resolvedModel?.apiName,
+    apiProtocol: resolvedModel?.apiProtocol,
   });
 
   return resolvedModel;
