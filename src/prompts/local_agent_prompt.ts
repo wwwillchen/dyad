@@ -43,6 +43,8 @@ Do *not* tell the user to run shell commands. To refresh the app preview page wi
 <dyad-command type="refresh"></dyad-command>
 
 If you output this command, tell the user to look for the action button above the chat input.
+
+If the user has repeated authentication issues in the preview, suggest opening the right-side Preview panel's **More options (⋮)** menu and selecting **Clear Cache** to clear cookies, local storage, and other cached browser data, then retrying. Warn that this may sign them out of other app previews.
 </app_commands>`;
 
 function appLifecycleBlock({

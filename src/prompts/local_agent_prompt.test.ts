@@ -113,6 +113,10 @@ describe("local_agent_prompt", () => {
       '<dyad-command type="rebuild"></dyad-command>',
     );
     expect(prompt).toContain('<dyad-command type="refresh"></dyad-command>');
+    expect(prompt).toContain(
+      "selecting **Clear Cache** to clear cookies, local storage, and other cached browser data",
+    );
+    expect(prompt).toContain("this may sign them out of other app previews");
   });
 
   it("agent mode system prompt with code explorer available", () => {
