@@ -86,7 +86,7 @@ describe("getNeonAvailableSystemPrompt", () => {
       );
       const nullCheckIndex = guide.indexOf("if (!cookieHeader) return null;");
       const sessionNormalizationIndex = guide.indexOf(
-        "const cookie = normalizeAuthCookieHeader(cookieHeader);",
+        "const cookie = normalizeAuthCookieHeader(cookieHeader, isHttp);",
       );
 
       expect(allowlistIndex).toBeGreaterThan(-1);
@@ -97,12 +97,11 @@ describe("getNeonAvailableSystemPrompt", () => {
         'name.startsWith("__Secure-") || name.startsWith("__Host-")',
       );
       expect(guide).toContain("seenPreviewCookieNames.has(restoredName)");
-      expect(guide).toContain('process.env.NEON_AUTH_COOKIE_MODE === "http"');
-      expect(guide).toContain("if (USE_HTTP_COOKIE_NAMES)");
-      expect(guide).not.toContain("useHttpCookieNames: boolean");
-      expect(guide).toContain("getSessionFromCookie(cookie)");
-      expect(guide).not.toContain(
-        "getSessionFromCookie(cookie, getRequestURL(event).protocol",
+      expect(guide).not.toContain("NEON_AUTH_COOKIE_MODE");
+      expect(guide).toContain("if (isHttp)");
+      expect(guide).toContain("isHttp: boolean");
+      expect(guide).toContain(
+        "getSessionFromCookie(cookie, getRequestURL(event).protocol === 'http:')",
       );
     });
   });

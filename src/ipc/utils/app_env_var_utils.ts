@@ -239,13 +239,6 @@ export async function updateNeonEnvVars({
 
   if (neonAuthBaseUrl) {
     upsertEnvVar(envVars, "NEON_AUTH_BASE_URL", neonAuthBaseUrl);
-    if (frameworkType === "vite-nitro") {
-      // Dyad previews run over plain HTTP. The generated Nitro proxy uses this
-      // server-only switch to translate Neon's secure cookie names.
-      upsertEnvVar(envVars, "NEON_AUTH_COOKIE_MODE", "http");
-    } else {
-      envVars = envVars.filter((v) => v.key !== "NEON_AUTH_COOKIE_MODE");
-    }
     if (cookieSecretUsed) {
       if (cookieSecret) {
         upsertEnvVar(envVars, "NEON_AUTH_COOKIE_SECRET", cookieSecret);
@@ -260,9 +253,7 @@ export async function updateNeonEnvVars({
     // remove stale auth env vars so the old branch's values don't linger.
     envVars = envVars.filter(
       (v) =>
-        v.key !== "NEON_AUTH_BASE_URL" &&
-        v.key !== "NEON_AUTH_COOKIE_SECRET" &&
-        v.key !== "NEON_AUTH_COOKIE_MODE",
+        v.key !== "NEON_AUTH_BASE_URL" && v.key !== "NEON_AUTH_COOKIE_SECRET",
     );
   }
 
@@ -278,7 +269,6 @@ export async function updateNeonEnvVars({
 const NEON_ONLY_ENV_VAR_KEYS = [
   "NEON_AUTH_BASE_URL",
   "NEON_AUTH_COOKIE_SECRET",
-  "NEON_AUTH_COOKIE_MODE",
 ];
 
 /** Generic DB keys that should only be removed if their value looks Neon-owned. */

@@ -595,7 +595,6 @@ function warnIfBranchLacksSchema({
 async function resolveDatabaseEnv(
   app: typeof apps.$inferSelect,
   report: DeployReporter,
-  cookieMode: "http" | "secure",
 ): Promise<{
   vars: Array<{ key: string; value: string }>;
   /** The branch being deployed, whether or not auth is in play. */
@@ -632,11 +631,6 @@ async function resolveDatabaseEnv(
         key: "NEON_AUTH_COOKIE_SECRET",
         value: resolved.neonAuthCookieSecret,
       });
-    }
-    if (!resolved.isNextJs) {
-      // Always overwrite this value so switching a deployment from HTTP to
-      // HTTPS cannot leave the proxy in its preview-cookie mode.
-      vars.push({ key: "NEON_AUTH_COOKIE_MODE", value: cookieMode });
     }
   }
   return {
@@ -779,24 +773,19 @@ export async function runDeployPipeline({
 
   // A deploy that silently lacks its database reports success and then fails
   // on the first query, so a failure here fails the whole deployment.
-  const cookieMode = connection.domain?.toLowerCase().startsWith("https://")
-    ? "secure"
-    : "http";
-  const database = await resolveDatabaseEnv(app, report, cookieMode).catch(
-    (error) => {
-      // Neon classifies its own failures — a missing development branch is a
-      // Precondition, an expired token is Auth — and rules/dyad-errors.md keeps
-      // those out of telemetry. Rewrapping them as External would report every
-      // one of them as a crash.
-      if (isDyadError(error)) throw error;
-      throw new DyadError(
-        `Could not resolve this app's database connection details: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        DyadErrorKind.External,
-      );
-    },
-  );
+  const database = await resolveDatabaseEnv(app, report).catch((error) => {
+    // Neon classifies its own failures — a missing development branch is a
+    // Precondition, an expired token is Auth — and rules/dyad-errors.md keeps
+    // those out of telemetry. Rewrapping them as External would report every
+    // one of them as a crash.
+    if (isDyadError(error)) throw error;
+    throw new DyadError(
+      `Could not resolve this app's database connection details: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      DyadErrorKind.External,
+    );
+  });
   if (database.branchId) {
     warnIfBranchLacksSchema({
       app,

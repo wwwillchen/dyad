@@ -1069,32 +1069,7 @@ describe("database env vars", () => {
     expect(envCalls()).toEqual([
       { key: "DATABASE_URL", value: "postgres://prod" },
       { key: "NEON_AUTH_BASE_URL", value: "https://auth.neon.test/db/auth" },
-      { key: "NEON_AUTH_COOKIE_MODE", value: "http" },
     ]);
-  });
-
-  it("uses secure cookie names for an HTTPS custom domain", async () => {
-    const app = await seedApp({
-      neonProjectId: "proj-1",
-      connection: { domain: "https://demo.example.com" },
-    });
-    happyPathRoutes();
-    const clock = createFakeClock();
-
-    await drive(
-      clock,
-      runDeployPipeline({
-        appId: app.id,
-        signal: new AbortController().signal,
-        report: recorder(),
-        clock,
-      }),
-    );
-
-    expect(envCalls()).toContainEqual({
-      key: "NEON_AUTH_COOKIE_MODE",
-      value: "secure",
-    });
   });
 
   it("honours the branch the user picked for deployment", async () => {

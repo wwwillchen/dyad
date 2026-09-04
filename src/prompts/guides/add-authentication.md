@@ -200,8 +200,8 @@ This project is a Vite SPA (React Router) with a Nitro server layer at `server/`
 - **must-use-same-origin-baseURL**: When constructing `createAuthClient`, pass an **absolute URL pointing at the same origin** — e.g. `${window.location.origin}/api/auth`. Better Auth's `assertHasProtocol` validator throws `Invalid base URL: /api/auth` for bare paths (a relative `'/api/auth'` is rejected at runtime), so the protocol is required.
 - **must-mount-catchall-route**: The Nitro proxy MUST be a catch-all so every Better Auth path (sign-in, sign-up, get-session, sign-out, callback, etc.) reaches the handler. Use `server/routes/api/auth/[...all].ts` — a single file. Do NOT hand-write per-endpoint files.
 - **must-strip-proxy-transport-headers**: The Nitro `/api/auth/*` proxy is an application-level proxy to hosted Neon Auth, not a transparent reverse proxy. When forwarding to `${NEON_AUTH_BASE_URL}`, do NOT forward `host`, `content-length`, `forwarded`, `x-forwarded-*`, `x-real-ip`, or `x-vercel-*` headers. These headers describe the browser → Vercel/app hop, not the app → Neon Auth hop. Better Auth gives `x-forwarded-host` precedence when resolving the request host, so forwarding Vercel's `x-forwarded-host` can make hosted Neon Auth validate the app hostname as if it were the Neon Auth server hostname and fail with invalid hostname. Forward only browser/auth headers such as `accept`, `accept-language`, `authorization`, `content-type`, `cookie`, `origin`, `referer`, and `user-agent`.
-- **must-rewrite-secure-cookies-for-http-dev**: Neon Auth's session cookie is named `__Secure-neon-auth.session_token`. Cookies whose names start with `__Secure-` or `__Host-` require the `Secure` attribute and are normally rejected on HTTP origins. Chromium treats `http://localhost` as a potentially trustworthy origin and can retain a correctly attributed secure-prefixed cookie there; this exception is also how a hyphen-form cookie from another localhost app can survive in Dyad's shared Electron cookie jar. Do not depend on that browser-specific exception: Dyad injects the server-only `NEON_AUTH_COOKIE_MODE=http` variable for its plain-HTTP preview and sets the mode for Coolify deployments, and the proxy must use that explicit mode in both directions. In HTTP-cookie mode, on the way down rename `__Secure-` → `__Secure_` and `__Host-` → `__Host_`, strip `Secure`, strip `Partitioned`, strip `Domain=...`, and rewrite `SameSite=None` → `SameSite=Lax`; on the way up, normalize the incoming `Cookie` header with the helper below before forwarding upstream. Only the exact value `http` enables rewriting, so missing or secure-mode configuration fails closed to Neon Auth's genuine secure cookies.
-- **must-reject-foreign-cookie-prefixes**: The Dyad preview's Electron cookie jar is shared by apps on `localhost`, so HTTP-cookie-mode requests can contain a stale upstream-form cookie such as `__Secure-neon-auth.session_token=old`, with or without the current preview-safe cookie `__Secure_neon-auth.session_token=new`. The generated proxy never writes hyphen-form secure cookies in this mode, so every `__Secure-` and `__Host-` cookie received there is stale or foreign and MUST be discarded unconditionally. Restore only underscore-form preview cookies, and forward at most the first occurrence of each restored name so cookies with different `Path` values cannot recreate a duplicate-name ambiguity. Outside HTTP-cookie mode, discard underscore-form cookies and preserve genuine secure hyphen-form cookies. This does not isolate two current apps that both store the same underscore-form cookie at `Path=/` on shared localhost; one can overwrite the other until the user clears the preview's cookies/browser data. Separate per-app preview origins are the long-term fix.
+- **must-rewrite-secure-cookies-for-http-dev**: Neon Auth's session cookie is named `__Secure-neon-auth.session_token`. Cookies whose names start with `__Secure-` or `__Host-` require the `Secure` attribute and are normally rejected on HTTP origins. Chromium treats `http://localhost` as a potentially trustworthy origin and can retain a correctly attributed secure-prefixed cookie there; this exception is also how a hyphen-form cookie from another localhost app can survive in Dyad's shared Electron cookie jar. Do not depend on that browser-specific exception: determine whether to rewrite cookies from `getRequestURL(event).protocol === "http:"` and use that result in both directions. For HTTP requests, on the way down rename `__Secure-` → `__Secure_` and `__Host-` → `__Host_`, strip `Secure`, strip `Partitioned`, strip `Domain=...`, and rewrite `SameSite=None` → `SameSite=Lax`; on the way up, normalize the incoming `Cookie` header with the helper below before forwarding upstream. For HTTPS requests, preserve Neon's genuine secure cookie names and attributes.
+- **must-reject-foreign-cookie-prefixes**: The Dyad preview's Electron cookie jar is shared by apps on `localhost`, so HTTP requests can contain a stale upstream-form cookie such as `__Secure-neon-auth.session_token=old`, with or without the current preview-safe cookie `__Secure_neon-auth.session_token=new`. The generated proxy never writes hyphen-form secure cookies over HTTP, so every `__Secure-` and `__Host-` cookie received there is stale or foreign and MUST be discarded unconditionally. Restore only underscore-form preview cookies, and forward at most the first occurrence of each restored name so cookies with different `Path` values cannot recreate a duplicate-name ambiguity. On HTTPS, discard underscore-form cookies and preserve genuine secure hyphen-form cookies. This does not isolate two current apps that both store the same underscore-form cookie at `Path=/` on shared localhost; one can overwrite the other until the user clears the preview's cookies/browser data. Separate per-app preview origins are the long-term fix.
 - **must-wire-react-router-into-provider**: `NeonAuthUIProvider` defaults its `navigate`/`replace`/`Link` to `window.location.href`, which causes a full page reload after sign-in/sign-up. The reload races the session cookie write and frequently leaves the user stuck on the auth page. You MUST pass `navigate`, `replace`, and `Link` from `react-router-dom` into `NeonAuthUIProvider`, AND pass `redirectTo="/"` (or the app's home route) on `<AuthView>`.
 - **no-nitro-auto-imports-in-templates**: Always write explicit `import` statements in server code. Nitro's auto-import is opt-in and not enabled in the default Dyad scaffolding; relying on it will fail type-checking and (often) runtime.
 - **must-avoid-regex-pitfalls-in-proxy**: Past LLM-generated proxies have repeatedly emitted broken regex literals like `/^/api/auth/` (the second `/` ends the regex; `api` becomes flags) or `/(^|;s*)/` (the `\s` got mangled to bare `s`). To prevent this, follow these rules in the proxy and session helper: (1) use `String.prototype.startsWith` + `slice` for the `/api/auth` prefix strip — do NOT use a regex; (2) for fixed-string substitutions in an individual cookie name or `Set-Cookie` string, such as `__Secure_` ↔ `__Secure-`, `__Host_` ↔ `__Host-`, `; Secure`, `; Partitioned`, and `; SameSite=None` → `; SameSite=Lax`, use string operations — do NOT run a blind replacement over the complete incoming `Cookie` header; (3) the only place a regex is required is stripping `; Domain=<value>` from a `Set-Cookie`, where the value is variable. For that single regex, use `/;[ ]*Domain=[^;]*/gi` — note the literal-space character class `[ ]*` instead of `\s*` (resists `\s`-loss bugs), and no slashes inside the pattern.
@@ -259,12 +259,15 @@ The handler must:
     forwardedHeaders.set(headerName, value);
   }
   ```
-- Import `normalizeAuthCookieHeader` and `USE_HTTP_COOKIE_NAMES` from `"../../../utils/session"`. **After** the allowlist loop, normalize the copied cookie exactly once using this sequence. Normalizing before the loop is incorrect because the loop would overwrite the normalized value with the raw incoming header:
+- Import `normalizeAuthCookieHeader` from `"../../../utils/session"`. **After** the allowlist loop, normalize the copied cookie exactly once using the request protocol. Normalizing before the loop is incorrect because the loop would overwrite the normalized value with the raw incoming header:
 
   ```ts
   const cookieHeader = forwardedHeaders.get("cookie");
   if (cookieHeader) {
-    const normalizedCookie = normalizeAuthCookieHeader(cookieHeader);
+    const normalizedCookie = normalizeAuthCookieHeader(
+      cookieHeader,
+      url.protocol === "http:",
+    );
     if (normalizedCookie) {
       forwardedHeaders.set("cookie", normalizedCookie);
     } else {
@@ -275,7 +278,7 @@ The handler must:
 - Read the body via `readRawBody(event, false)` (returns `Buffer`) for everything except `GET` and `HEAD`; pass it to `fetch` as `BodyInit`.
 - `fetch` the upstream with `method`, `forwardedHeaders`, `body`, and `redirect: 'manual'`.
 - Build the response `Headers` by copying every upstream header **except** `set-cookie`. For `set-cookie`, call `upstream.headers.getSetCookie?.() ?? []` to get the array (the standard `forEach` collapses duplicates).
-- **HTTP-cookie-mode rewrite (way down)**: if `USE_HTTP_COOKIE_NAMES`, rewrite each `Set-Cookie` string with the following exact sequence (string literals first, one regex only for the variable `Domain=` value). Use the same explicit environment mode in both directions; do not derive cookie mode from `NODE_ENV`, forwarded headers, or `getRequestURL(event).protocol`. `NODE_ENV` cannot distinguish HTTPS production from supported HTTP-only production, while request protocol can be changed by a reverse proxy:
+- **HTTP rewrite (way down)**: if `url.protocol === "http:"`, rewrite each `Set-Cookie` string with the following exact sequence (string literals first, one regex only for the variable `Domain=` value). Use the same request URL in both directions; do not derive cookie handling from `NODE_ENV` or untrusted forwarded headers:
   1. `c = c.replaceAll('__Secure-', '__Secure_').replaceAll('__Host-', '__Host_')` — restore the underscored placeholder so the browser will accept the cookie over HTTP.
   2. `c = c.replaceAll('; Secure', '').replaceAll(';Secure', '').replaceAll('; Partitioned', '').replaceAll(';Partitioned', '')` — use these `replaceAll` string calls; **do NOT use regex**.
   3. `c = c.replace(/;[ ]*Domain=[^;]*/gi, '')` — the **only** required regex. Use the literal-space character class `[ ]*` (NOT `\s*`, which has been mangled to bare `s` by past LLM emissions) and no slashes inside the pattern.
@@ -291,8 +294,7 @@ The module must:
 
 - Read `process.env.NEON_AUTH_BASE_URL` at module scope.
 - Export a `Session` type: `{ user: { id: string; name: string; email: string; emailVerified: boolean } } | null`.
-- Export `USE_HTTP_COOKIE_NAMES`, based on an explicit, fail-closed server setting: `process.env.NEON_AUTH_COOKIE_MODE === "http"`. HTTP previews and deliberately HTTP-only deployments opt into preview-safe underscore names; HTTPS deployments use any value other than `http` (Dyad writes `secure`) and genuine secure names. Do not infer this mode from `NODE_ENV`, forwarded request headers, or the request URL.
-- Export `normalizeAuthCookieHeader(cookieHeader: string): string` using this exact implementation. It reads `USE_HTTP_COOKIE_NAMES` directly, trims every pair, splits at the first `=`, rewrites cookie names without touching values, discards foreign prefix forms for the active mode, and keeps only the first preview cookie for each restored name:
+- Export `normalizeAuthCookieHeader(cookieHeader: string, isHttp: boolean): string` using this exact implementation. It trims every pair, splits at the first `=`, rewrites cookie names without touching values, discards foreign prefix forms for the request protocol, and keeps only the first preview cookie for each restored name:
 
   ```ts
   function restoreUpstreamCookieName(name: string): string {
@@ -305,10 +307,10 @@ The module must:
     return name;
   }
 
-  export const USE_HTTP_COOKIE_NAMES =
-    process.env.NEON_AUTH_COOKIE_MODE === "http";
-
-  export function normalizeAuthCookieHeader(cookieHeader: string): string {
+  export function normalizeAuthCookieHeader(
+    cookieHeader: string,
+    isHttp: boolean,
+  ): string {
     const parts = cookieHeader
       .split(";")
       .map((part) => part.trim())
@@ -326,7 +328,7 @@ The module must:
       const isSecureCookie =
         name.startsWith("__Secure-") || name.startsWith("__Host-");
 
-      if (USE_HTTP_COOKIE_NAMES) {
+      if (isHttp) {
         if (isSecureCookie) {
           continue;
         }
@@ -349,15 +351,16 @@ The module must:
     return normalized.join("; ");
   }
   ```
-- Export `getSessionFromCookie(cookieHeader: string | null): Promise<Session>` using this execution order. Check both the nullable input and the possibly-empty normalized output before fetching. Search for and update every existing `getSessionFromCookie` call site when adopting this helper; callers should not determine cookie mode themselves.
+- Export `getSessionFromCookie(cookieHeader: string | null, isHttp: boolean): Promise<Session>` using this execution order. Check both the nullable input and the possibly-empty normalized output before fetching. Search for and update every existing `getSessionFromCookie` call site when adopting this helper; callers must pass whether the current request URL uses HTTP.
 
   ```ts
   export async function getSessionFromCookie(
     cookieHeader: string | null,
+    isHttp: boolean,
   ): Promise<Session> {
     if (!cookieHeader) return null;
 
-    const cookie = normalizeAuthCookieHeader(cookieHeader);
+    const cookie = normalizeAuthCookieHeader(cookieHeader, isHttp);
     if (!cookie) return null;
 
     const res = await fetch(`${NEON_AUTH_BASE_URL}/get-session`, {
@@ -379,14 +382,14 @@ It must:
 - Import `defineHandler` from `"nitro"`, and `createError`, `getRequestHeader`, `getRequestURL` from `"nitro/h3"`. Import `getSessionFromCookie` from `../utils/session`.
 - Define `PUBLIC_PREFIXES = ['/api/auth/', '/auth/']`.
 - Read `pathname` from `getRequestURL(event)`. If it starts with any public prefix, `return` (allow). If it does not start with `/api/`, `return` (SPA routes are gated client-side).
-- Read the cookie via `getRequestHeader(event, 'cookie') ?? null`, then call `getSessionFromCookie(cookie)`. If there is no `session?.user`, `throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })`. Otherwise stash `session.user.id` on `event.context.userId` for downstream handlers.
+- Read the cookie via `getRequestHeader(event, 'cookie') ?? null`, then call `getSessionFromCookie(cookie, getRequestURL(event).protocol === 'http:')`. If there is no `session?.user`, `throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })`. Otherwise stash `session.user.id` on `event.context.userId` for downstream handlers.
 
 ### Server: reading session inside Nitro handlers
 
 For any protected route file (e.g. `server/routes/api/me.get.ts`):
 
-- Import `defineHandler` from `"nitro"`, and `createError` and `getRequestHeader` from `"nitro/h3"`, and `getSessionFromCookie` from the session helper.
-- In the handler, call `getSessionFromCookie(getRequestHeader(event, 'cookie') ?? null)`. Throw a 401 via `createError` if there is no `session?.user`. Otherwise return the data the route needs (e.g. `{ id, name }`).
+- Import `defineHandler` from `"nitro"`, and `createError`, `getRequestHeader`, and `getRequestURL` from `"nitro/h3"`, and `getSessionFromCookie` from the session helper.
+- In the handler, call `getSessionFromCookie(getRequestHeader(event, 'cookie') ?? null, getRequestURL(event).protocol === 'http:')`. Throw a 401 via `createError` if there is no `session?.user`. Otherwise return the data the route needs (e.g. `{ id, name }`).
 
 (In practice the middleware has already enforced auth, so handlers can also read `event.context.userId` directly if they only need the id.)
 
@@ -429,12 +432,11 @@ If you do prefer the prebuilt `<UserButton />`, import it from `"@neondatabase/a
 
 ### Environment Variables (`.env.local`)
 
-`NEON_AUTH_BASE_URL` is required. Dyad injects the server-only `NEON_AUTH_COOKIE_MODE=http` variable for its HTTP preview and sets `http` or `secure` when deploying through Coolify. If configuring another host manually, use `http` only for an intentionally HTTP-only deployment; omit it or use `secure` for HTTPS. Only the exact `http` value opts into rewriting, so missing configuration fails closed. `NEON_AUTH_COOKIE_SECRET` is **not used** by the proxy path — it only matters for the Next.js `createNeonAuth` integration's optional `session_data` cache cookie. Never prefix these variables with `VITE_`.
+`NEON_AUTH_BASE_URL` is required. `NEON_AUTH_COOKIE_SECRET` is **not used** by the proxy path — it only matters for the Next.js `createNeonAuth` integration's optional `session_data` cache cookie. Never prefix these variables with `VITE_`.
 
 The file should contain (server-only):
 
 - `DATABASE_URL` — Neon Postgres connection string, injected by Dyad.
 - `NEON_AUTH_BASE_URL` — copy from Neon Console → Auth settings (e.g. `https://ep-xxx.neonauth.us-east-1.aws.neon.tech/neondb/auth`).
-- `NEON_AUTH_COOKIE_MODE=http` — injected by Dyad for local preview; use `http` for HTTP-only deployments and `secure` (or omit it) for HTTPS.
 
 </vite-nitro-only>
