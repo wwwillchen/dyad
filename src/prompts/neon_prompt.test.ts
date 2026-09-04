@@ -81,6 +81,9 @@ describe("getNeonAvailableSystemPrompt", () => {
       const allowlistIndex = guide.indexOf(
         "const forwardedHeaders = new Headers();",
       );
+      const allowlistLoopEndIndex = guide.indexOf(
+        "    forwardedHeaders.set(headerName, value);\n  }",
+      );
       const normalizationIndex = guide.indexOf(
         'const cookieHeader = forwardedHeaders.get("cookie");',
       );
@@ -90,7 +93,8 @@ describe("getNeonAvailableSystemPrompt", () => {
       );
 
       expect(allowlistIndex).toBeGreaterThan(-1);
-      expect(normalizationIndex).toBeGreaterThan(allowlistIndex);
+      expect(allowlistLoopEndIndex).toBeGreaterThan(allowlistIndex);
+      expect(normalizationIndex).toBeGreaterThan(allowlistLoopEndIndex);
       expect(nullCheckIndex).toBeGreaterThan(-1);
       expect(sessionNormalizationIndex).toBeGreaterThan(nullCheckIndex);
       expect(guide).toContain(
