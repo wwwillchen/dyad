@@ -84,14 +84,20 @@ describe("getNeonAvailableSystemPrompt", () => {
       const normalizationIndex = guide.indexOf(
         'const cookieHeader = forwardedHeaders.get("cookie");',
       );
+      const nullCheckIndex = guide.indexOf("if (!cookieHeader) return null;");
+      const sessionNormalizationIndex = guide.indexOf(
+        "const cookie = normalizeAuthCookieHeader(cookieHeader);",
+      );
 
       expect(allowlistIndex).toBeGreaterThan(-1);
       expect(normalizationIndex).toBeGreaterThan(allowlistIndex);
+      expect(nullCheckIndex).toBeGreaterThan(-1);
+      expect(sessionNormalizationIndex).toBeGreaterThan(nullCheckIndex);
       expect(guide).toContain(
         'name.startsWith("__Secure-") || name.startsWith("__Host-")',
       );
       expect(guide).toContain("seenPreviewCookieNames.has(restoredName)");
-      expect(guide).toContain('process.env.NODE_ENV !== "production"');
+      expect(guide).toContain('process.env.NEON_AUTH_COOKIE_MODE === "http"');
       expect(guide).toContain("getSessionFromCookie(cookie)");
       expect(guide).not.toContain(
         "getSessionFromCookie(cookie, getRequestURL(event).protocol",
