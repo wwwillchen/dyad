@@ -2113,7 +2113,7 @@ The handler must:
 - Read the body via \`readRawBody(event, false)\` (returns \`Buffer\`) for everything except \`GET\` and \`HEAD\`; pass it to \`fetch\` as \`BodyInit\`.
 - \`fetch\` the upstream with \`method\`, \`forwardedHeaders\`, \`body\`, and \`redirect: 'manual'\`.
 - Build the response \`Headers\` by copying every upstream header **except** \`set-cookie\`. For \`set-cookie\`, call \`upstream.headers.getSetCookie?.() ?? []\` to get the array (the standard \`forEach\` collapses duplicates).
-- **HTTP rewrite (way down)**: if \`url.protocol === "http:"\`, rewrite each \`Set-Cookie\` string with the following exact sequence (string literals first, one regex only for the variable \`Domain=\` value). Use the same request URL in both directions; do not derive cookie handling from untrusted forwarded headers:
+- **HTTP rewrite (way down)**: if \`url.protocol === "http:"\`, rewrite each \`Set-Cookie\` string with the following exact sequence (string literals first, one regex only for the variable \`Domain=\` value). Use the same request URL in both directions:
   1. \`c = c.replaceAll('__Secure-', '__Secure_').replaceAll('__Host-', '__Host_')\` — restore the underscored placeholder so the browser will accept the cookie over HTTP.
   2. \`c = c.replaceAll('; Secure', '').replaceAll(';Secure', '').replaceAll('; Partitioned', '').replaceAll(';Partitioned', '')\` — use these \`replaceAll\` string calls; **do NOT use regex**.
   3. \`c = c.replace(/;[ ]*Domain=[^;]*/gi, '')\` — the **only** required regex. Use the literal-space character class \`[ ]*\` (NOT \`\\s*\`, which has been mangled to bare \`s\` by past LLM emissions) and no slashes inside the pattern.
@@ -2731,7 +2731,7 @@ The handler must:
 - Read the body via \`readRawBody(event, false)\` (returns \`Buffer\`) for everything except \`GET\` and \`HEAD\`; pass it to \`fetch\` as \`BodyInit\`.
 - \`fetch\` the upstream with \`method\`, \`forwardedHeaders\`, \`body\`, and \`redirect: 'manual'\`.
 - Build the response \`Headers\` by copying every upstream header **except** \`set-cookie\`. For \`set-cookie\`, call \`upstream.headers.getSetCookie?.() ?? []\` to get the array (the standard \`forEach\` collapses duplicates).
-- **HTTP rewrite (way down)**: if \`url.protocol === "http:"\`, rewrite each \`Set-Cookie\` string with the following exact sequence (string literals first, one regex only for the variable \`Domain=\` value). Use the same request URL in both directions; do not derive cookie handling from untrusted forwarded headers:
+- **HTTP rewrite (way down)**: if \`url.protocol === "http:"\`, rewrite each \`Set-Cookie\` string with the following exact sequence (string literals first, one regex only for the variable \`Domain=\` value). Use the same request URL in both directions:
   1. \`c = c.replaceAll('__Secure-', '__Secure_').replaceAll('__Host-', '__Host_')\` — restore the underscored placeholder so the browser will accept the cookie over HTTP.
   2. \`c = c.replaceAll('; Secure', '').replaceAll(';Secure', '').replaceAll('; Partitioned', '').replaceAll(';Partitioned', '')\` — use these \`replaceAll\` string calls; **do NOT use regex**.
   3. \`c = c.replace(/;[ ]*Domain=[^;]*/gi, '')\` — the **only** required regex. Use the literal-space character class \`[ ]*\` (NOT \`\\s*\`, which has been mangled to bare \`s\` by past LLM emissions) and no slashes inside the pattern.
@@ -3299,7 +3299,7 @@ The handler must:
 - Read the body via \`readRawBody(event, false)\` (returns \`Buffer\`) for everything except \`GET\` and \`HEAD\`; pass it to \`fetch\` as \`BodyInit\`.
 - \`fetch\` the upstream with \`method\`, \`forwardedHeaders\`, \`body\`, and \`redirect: 'manual'\`.
 - Build the response \`Headers\` by copying every upstream header **except** \`set-cookie\`. For \`set-cookie\`, call \`upstream.headers.getSetCookie?.() ?? []\` to get the array (the standard \`forEach\` collapses duplicates).
-- **HTTP rewrite (way down)**: if \`url.protocol === "http:"\`, rewrite each \`Set-Cookie\` string with the following exact sequence (string literals first, one regex only for the variable \`Domain=\` value). Use the same request URL in both directions; do not derive cookie handling from untrusted forwarded headers:
+- **HTTP rewrite (way down)**: if \`url.protocol === "http:"\`, rewrite each \`Set-Cookie\` string with the following exact sequence (string literals first, one regex only for the variable \`Domain=\` value). Use the same request URL in both directions:
   1. \`c = c.replaceAll('__Secure-', '__Secure_').replaceAll('__Host-', '__Host_')\` — restore the underscored placeholder so the browser will accept the cookie over HTTP.
   2. \`c = c.replaceAll('; Secure', '').replaceAll(';Secure', '').replaceAll('; Partitioned', '').replaceAll(';Partitioned', '')\` — use these \`replaceAll\` string calls; **do NOT use regex**.
   3. \`c = c.replace(/;[ ]*Domain=[^;]*/gi, '')\` — the **only** required regex. Use the literal-space character class \`[ ]*\` (NOT \`\\s*\`, which has been mangled to bare \`s\` by past LLM emissions) and no slashes inside the pattern.
@@ -4018,7 +4018,7 @@ The handler must:
 - Read the body via \`readRawBody(event, false)\` (returns \`Buffer\`) for everything except \`GET\` and \`HEAD\`; pass it to \`fetch\` as \`BodyInit\`.
 - \`fetch\` the upstream with \`method\`, \`forwardedHeaders\`, \`body\`, and \`redirect: 'manual'\`.
 - Build the response \`Headers\` by copying every upstream header **except** \`set-cookie\`. For \`set-cookie\`, call \`upstream.headers.getSetCookie?.() ?? []\` to get the array (the standard \`forEach\` collapses duplicates).
-- **HTTP rewrite (way down)**: if \`url.protocol === "http:"\`, rewrite each \`Set-Cookie\` string with the following exact sequence (string literals first, one regex only for the variable \`Domain=\` value). Use the same request URL in both directions; do not derive cookie handling from untrusted forwarded headers:
+- **HTTP rewrite (way down)**: if \`url.protocol === "http:"\`, rewrite each \`Set-Cookie\` string with the following exact sequence (string literals first, one regex only for the variable \`Domain=\` value). Use the same request URL in both directions:
   1. \`c = c.replaceAll('__Secure-', '__Secure_').replaceAll('__Host-', '__Host_')\` — restore the underscored placeholder so the browser will accept the cookie over HTTP.
   2. \`c = c.replaceAll('; Secure', '').replaceAll(';Secure', '').replaceAll('; Partitioned', '').replaceAll(';Partitioned', '')\` — use these \`replaceAll\` string calls; **do NOT use regex**.
   3. \`c = c.replace(/;[ ]*Domain=[^;]*/gi, '')\` — the **only** required regex. Use the literal-space character class \`[ ]*\` (NOT \`\\s*\`, which has been mangled to bare \`s\` by past LLM emissions) and no slashes inside the pattern.
