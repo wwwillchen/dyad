@@ -72,6 +72,31 @@ describe("getNeonAvailableSystemPrompt", () => {
         }),
       ).toMatchSnapshot();
     });
+
+    it("orders and constrains preview cookie normalization", () => {
+      const guide = filterGuideByFramework(
+        addAuthenticationGuide,
+        "vite-nitro",
+      );
+      const allowlistIndex = guide.indexOf(
+        "const forwardedHeaders = new Headers();",
+      );
+      const normalizationIndex = guide.indexOf(
+        'const cookieHeader = forwardedHeaders.get("cookie");',
+      );
+
+      expect(allowlistIndex).toBeGreaterThan(-1);
+      expect(normalizationIndex).toBeGreaterThan(allowlistIndex);
+      expect(guide).toContain(
+        'name.startsWith("__Secure-") || name.startsWith("__Host-")',
+      );
+      expect(guide).toContain("seenPreviewCookieNames.has(restoredName)");
+      expect(guide).toContain('process.env.NODE_ENV !== "production"');
+      expect(guide).toContain("getSessionFromCookie(cookie)");
+      expect(guide).not.toContain(
+        "getSessionFromCookie(cookie, getRequestURL(event).protocol",
+      );
+    });
   });
 
   it("plain vite falls back to the generic framework path", () => {
