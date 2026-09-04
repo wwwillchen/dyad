@@ -106,9 +106,14 @@ async function editAndSaveFile(
 // SINGLE commit containing both files (previously each save was its own commit).
 test("editor commit menu commits multiple staged files at once", async ({
   po,
-}) => {
+}, testInfo) => {
+  testInfo.setTimeout(Timeout.EXTRA_LONG * 4);
   await po.setUp({ autoApprove: true });
   await po.sendPrompt("foo");
+  // CodeView intentionally stays in its runtime-loading state while the first
+  // app start installs dependencies. That install can exceed the UI timeout
+  // on Windows, so wait on the underlying readiness signal first.
+  await po.appManagement.ensurePnpmInstall();
 
   const appPath = await po.appManagement.getCurrentAppPath();
   if (!appPath) {

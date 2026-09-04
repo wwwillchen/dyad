@@ -1,5 +1,6 @@
-import { expect, type TestInfo } from "@playwright/test";
+import { expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -24,14 +25,19 @@ const SOCKET_FIREWALL_TEST_TIMEOUT = process.env.CI
   ? 360_000
   : Timeout.EXTRA_LONG * 2;
 
-async function configurePackageManagerCache(userDataDir: string) {
+async function configurePackageManagerCache(
+  userDataDir: string,
+  { isolateNpmCache = true }: { isolateNpmCache?: boolean } = {},
+) {
   const npmCacheDir = path.join(userDataDir, "npm-cache");
   const pnpmStoreDir = path.join(userDataDir, "pnpm-store");
 
-  await fs.mkdir(npmCacheDir, { recursive: true });
+  if (isolateNpmCache) {
+    await fs.mkdir(npmCacheDir, { recursive: true });
+    process.env.npm_config_cache = npmCacheDir;
+  }
   await fs.mkdir(pnpmStoreDir, { recursive: true });
 
-  process.env.npm_config_cache = npmCacheDir;
   process.env.npm_config_store_dir = pnpmStoreDir;
   process.env.pnpm_config_store_dir = pnpmStoreDir;
 }
@@ -104,12 +110,24 @@ async function createSupportedPnpmShim(userDataDir: string) {
   process.env.PATH = `${fakeBinDir}${path.delimiter}${process.env.PATH ?? ""}`;
 }
 
-function warmSocketFirewallCache() {
+function warmSocketFirewallCache(authMarkerPath: string) {
   const maxAttempts = process.env.CI ? 8 : 5;
+  rmSync(authMarkerPath, { force: true });
   const warmupEnv = {
     ...process.env,
     npm_config_store_dir: undefined,
     pnpm_config_store_dir: undefined,
+    ...(process.env.SFW_GITHUB_TOKEN
+      ? {
+          NODE_OPTIONS: [
+            process.env.NODE_OPTIONS,
+            `--require=${path.resolve("e2e-tests/helpers/github_api_auth_preload.cjs")}`,
+          ]
+            .filter(Boolean)
+            .join(" "),
+          SFW_GITHUB_AUTH_MARKER: authMarkerPath,
+        }
+      : {}),
   };
   let lastError: unknown;
 
@@ -139,6 +157,12 @@ function warmSocketFirewallCache() {
     }
   }
 
+  if (process.env.SFW_GITHUB_TOKEN && !existsSync(authMarkerPath)) {
+    throw new Error(
+      "Socket Firewall warmup failed without authenticating its GitHub API request",
+      { cause: lastError },
+    );
+  }
   throw lastError;
 }
 
@@ -188,12 +212,13 @@ async function restorePackageManagerCache() {
 }
 
 const testSkipIfWindows = testWithConfigSkipIfWindows({
+  testTimeout: SOCKET_FIREWALL_TEST_TIMEOUT,
   preLaunchHook: async ({ userDataDir, fakeLlmPort }) => {
-    await configurePackageManagerCache(userDataDir);
+    await configurePackageManagerCache(userDataDir, { isolateNpmCache: false });
     await createSupportedPnpmShim(userDataDir);
     process.env.DYAD_TEST_PNPM_VERSION = "11.1.2";
     process.env.DYAD_DEFAULT_APPROVE_BUILDS_URL = `http://localhost:${fakeLlmPort}/api/default-approve-builds.txt`;
-    warmSocketFirewallCache();
+    warmSocketFirewallCache(path.join(userDataDir, "sfw-github-authenticated"));
   },
   postLaunchHook: restorePackageManagerCache,
 });
@@ -321,15 +346,9 @@ async function addLocalDependencyWithIgnoredBuild(appPath: string) {
   );
 }
 
-function extendSocketFirewallTestTimeout(testInfo: TestInfo) {
-  testInfo.setTimeout(SOCKET_FIREWALL_TEST_TIMEOUT);
-}
-
 testSkipIfWindows(
   "build mode - safe npm package installs through the real socket firewall path",
-  async ({ po }, testInfo) => {
-    extendSocketFirewallTestTimeout(testInfo);
-
+  async ({ po }) => {
     const { packageJsonPath, pnpmLockPath, pnpmWorkspacePath } =
       await openMinimalBuildChat(po);
     const initialPackageJson = await fs.readFile(packageJsonPath, "utf8");
@@ -374,9 +393,7 @@ testSkipIfWindows(
 
 testSkipIfWindows(
   "build mode - blocked unsafe npm package shows the real socket verdict and preserves app files",
-  async ({ po }, testInfo) => {
-    extendSocketFirewallTestTimeout(testInfo);
-
+  async ({ po }) => {
     const { packageJsonPath, pnpmLockPath } = await openMinimalBuildChat(po);
     const initialPackageJson = await fs.readFile(packageJsonPath, "utf8");
     const initialPnpmLock = await fs.readFile(pnpmLockPath, "utf8");
