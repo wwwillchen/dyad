@@ -114,7 +114,7 @@ describe("local_agent_prompt", () => {
     );
     expect(prompt).toContain('<dyad-command type="refresh"></dyad-command>');
     expect(prompt).toContain(
-      "selecting **Clear Cache** to clear cookies, local storage, and other cached browser data",
+      "selecting **Clear Cache** to clear cookies, local storage, service workers, and cached data",
     );
     expect(prompt).toContain("this may sign them out of other app previews");
   });
