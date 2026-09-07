@@ -94,7 +94,10 @@ export function getOpenAIProviderOptions(
 ) {
   const effort = getModelEffort(modelSelection);
 
-  if (settings.selectedChatMode === "local-agent") {
+  if (
+    modelSelection.provider === "openai" ||
+    settings.selectedChatMode === "local-agent"
+  ) {
     return {
       reasoning: {
         summary: "detailed",

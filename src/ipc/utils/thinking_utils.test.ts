@@ -24,24 +24,31 @@ describe("getModelEffort", () => {
 });
 
 describe("getOpenAIProviderOptions", () => {
-  it("maps effort to reasoning_effort for build mode", () => {
-    expect(getOpenAIProviderOptions(baseSettings, selection("medium"))).toEqual(
-      { reasoning_effort: "medium" },
-    );
+  it("preserves chat reasoning options for the Value alias in build mode", () => {
+    expect(
+      getOpenAIProviderOptions(baseSettings, {
+        provider: "auto",
+        name: "value",
+        effortLevel: "medium",
+      }),
+    ).toEqual({ reasoning_effort: "medium" });
   });
 
-  it("maps effort to reasoning options for local-agent mode", () => {
-    expect(
-      getOpenAIProviderOptions(
-        { ...baseSettings, selectedChatMode: "local-agent" },
-        selection("high"),
-      ),
-    ).toEqual({
-      reasoning: { summary: "detailed", effort: "high" },
-      include: ["reasoning.encrypted_content"],
-      store: false,
-    });
-  });
+  it.each(["local-agent", "ask", "plan", "build", undefined] as const)(
+    "maps OpenAI effort to Responses options in %s mode",
+    (mode) => {
+      expect(
+        getOpenAIProviderOptions(
+          { ...baseSettings, selectedChatMode: mode },
+          selection("high"),
+        ),
+      ).toEqual({
+        reasoning: { summary: "detailed", effort: "high" },
+        include: ["reasoning.encrypted_content"],
+        store: false,
+      });
+    },
+  );
 });
 
 describe("getExtraProviderOptions", () => {
@@ -52,7 +59,11 @@ describe("getExtraProviderOptions", () => {
         baseSettings,
         selection("low"),
       ),
-    ).toEqual({ reasoning_effort: "low" });
+    ).toEqual({
+      reasoning: { summary: "detailed", effort: "low" },
+      include: ["reasoning.encrypted_content"],
+      store: false,
+    });
   });
 
   it("returns Anthropic engine body thinking options", () => {

@@ -485,8 +485,9 @@ async function getProModelClient({
     };
   }
   if (
-    settings.selectedChatMode === "local-agent" &&
-    usesOpenAIResponsesApiInLocalAgent(model)
+    model.provider === "openai" ||
+    (settings.selectedChatMode === "local-agent" &&
+      usesOpenAIResponsesApiInLocalAgent(model))
   ) {
     return {
       model: provider.responses(modelId, {
