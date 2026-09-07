@@ -411,23 +411,19 @@ describe("getModelClient", () => {
     });
   });
 
-  test.each([
-    ...(["local-agent", "ask", "plan", "build", undefined] as const).flatMap(
-      (mode) =>
-        ["gpt-6-astra", "gpt-5.5"].map((name) => ({
+  test.each(
+    (["local-agent", "ask", "plan", "build", undefined] as const).flatMap(
+      (mode) => [
+        ...["gpt-6-astra", "gpt-5.5"].map((name) => ({
           provider: "openai",
           name,
           mode,
           modelId: name,
         })),
+        { provider: "auto", name: "value", mode, modelId: "dyad/value" },
+      ],
     ),
-    {
-      provider: "auto",
-      name: "value",
-      mode: "local-agent" as const,
-      modelId: "dyad/value",
-    },
-  ])(
+  )(
     "routes $provider/$name through Responses in $mode mode",
     async ({ provider, name, mode, modelId }) => {
       let capturedUrl: string | undefined;

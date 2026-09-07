@@ -1,4 +1,4 @@
-export function usesOpenAIResponsesApiInLocalAgent(model: {
+export function usesOpenAIResponsesApi(model: {
   provider: string;
   name: string;
 }): boolean {

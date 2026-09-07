@@ -24,14 +24,18 @@ describe("getModelEffort", () => {
 });
 
 describe("getOpenAIProviderOptions", () => {
-  it("preserves chat reasoning options for the Value alias in build mode", () => {
+  it("uses Responses reasoning options for the Value alias in build mode", () => {
     expect(
       getOpenAIProviderOptions(baseSettings, {
         provider: "auto",
         name: "value",
         effortLevel: "medium",
       }),
-    ).toEqual({ reasoning_effort: "medium" });
+    ).toEqual({
+      reasoning: { summary: "detailed", effort: "medium" },
+      include: ["reasoning.encrypted_content"],
+      store: false,
+    });
   });
 
   it.each(["local-agent", "ask", "plan", "build", undefined] as const)(

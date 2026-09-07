@@ -1,3 +1,4 @@
+import { usesOpenAIResponsesApi } from "./openai_responses_utils";
 import { PROVIDERS_THAT_SUPPORT_THINKING as GEMINI_PROVIDERS } from "../shared/language_model_constants";
 import type { AnthropicProviderOptions } from "@ai-sdk/anthropic";
 import type { ModelSelection, UserSettings } from "../../lib/schemas";
@@ -95,7 +96,7 @@ export function getOpenAIProviderOptions(
   const effort = getModelEffort(modelSelection);
 
   if (
-    modelSelection.provider === "openai" ||
+    usesOpenAIResponsesApi(modelSelection) ||
     settings.selectedChatMode === "local-agent"
   ) {
     return {
