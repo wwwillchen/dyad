@@ -2,7 +2,7 @@ import { AI_MESSAGES_SDK_VERSION, AiMessagesJsonV6 } from "@/db/schema";
 import type { ModelMessage } from "ai";
 import { createHash } from "node:crypto";
 import log from "electron-log";
-import { usesOpenAIResponsesApiInLocalAgent } from "./openai_responses_utils";
+import { usesOpenAIResponsesApi } from "./openai_responses_utils";
 
 const logger = log.scope("ai_messages_utils");
 
@@ -24,7 +24,7 @@ export function shouldNormalizeToolCallIdsForOpenAIResponses(
     // path working across provider switches; a rare same-turn fallback to
     // Gemini may lose its encoded thought signature after normalization.
     (selectedProviderId === "auto" && selectedModelName === "auto") ||
-    usesOpenAIResponsesApiInLocalAgent({
+    usesOpenAIResponsesApi({
       provider: selectedProviderId,
       name: selectedModelName,
     })

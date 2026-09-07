@@ -44,7 +44,7 @@ import { getOpenRouterAppAttributionHeaders } from "./openrouter_attribution";
 import { resolveModelSelection } from "./model_effort";
 import { getModelPreferenceKey } from "@/lib/modelEffort";
 import { getAutoSidekickRuntimeModel } from "@/lib/autoSidekick";
-import { usesOpenAIResponsesApiInLocalAgent } from "./openai_responses_utils";
+import { usesOpenAIResponsesApi } from "./openai_responses_utils";
 
 // The test-only fetch seam lives in ./test_fetch_override (dependency-free,
 // so secondary factories can use it without import cycles). Re-exported here
@@ -484,10 +484,7 @@ async function getProModelClient({
       builtinProviderId: "openai",
     };
   }
-  if (
-    settings.selectedChatMode === "local-agent" &&
-    usesOpenAIResponsesApiInLocalAgent(model)
-  ) {
+  if (usesOpenAIResponsesApi(model)) {
     return {
       model: provider.responses(modelId, {
         providerId: "openai",

@@ -411,79 +411,97 @@ describe("getModelClient", () => {
     });
   });
 
-  test("routes the Value model through the Responses API in local agent mode", async () => {
-    let capturedUrl: string | undefined;
-    let capturedBody: Record<string, unknown> | undefined;
-    setModelClientFetchForTesting(
-      vi.fn(async (url, init) => {
-        capturedUrl = url.toString();
-        capturedBody = JSON.parse(init?.body as string);
-        return new Response(
-          JSON.stringify({
-            id: "resp-test",
-            created_at: 1_700_000_000,
-            model: "dyad/value",
-            output: [
-              {
-                type: "message",
-                role: "assistant",
-                id: "msg-test",
-                content: [
-                  {
-                    type: "output_text",
-                    text: "ok",
-                    annotations: [],
-                  },
-                ],
+  test.each(
+    (["local-agent", "ask", "plan", "build", undefined] as const).flatMap(
+      (mode) => [
+        ...["gpt-6-astra", "gpt-5.5"].map((name) => ({
+          provider: "openai",
+          name,
+          mode,
+          modelId: name,
+        })),
+        { provider: "auto", name: "value", mode, modelId: "dyad/value" },
+      ],
+    ),
+  )(
+    "routes $provider/$name through Responses in $mode mode",
+    async ({ provider, name, mode, modelId }) => {
+      let capturedUrl: string | undefined;
+      let capturedBody: Record<string, unknown> | undefined;
+      setModelClientFetchForTesting(
+        vi.fn(async (url, init) => {
+          capturedUrl = url.toString();
+          capturedBody = JSON.parse(init?.body as string);
+          return new Response(
+            JSON.stringify({
+              id: "resp-test",
+              created_at: 1_700_000_000,
+              model: modelId,
+              output: [
+                {
+                  type: "message",
+                  role: "assistant",
+                  id: "msg-test",
+                  content: [
+                    {
+                      type: "output_text",
+                      text: "ok",
+                      annotations: [],
+                    },
+                  ],
+                },
+              ],
+              usage: {
+                input_tokens: 1,
+                output_tokens: 1,
               },
-            ],
-            usage: {
-              input_tokens: 1,
-              output_tokens: 1,
-            },
-          }),
-          { headers: { "Content-Type": "application/json" } },
-        );
-      }),
-    );
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }),
+      );
 
-    const { modelClient } = await getModelClient(
-      {
-        provider: "auto",
-        name: "value",
-      },
-      {
-        enableDyadPro: true,
-        selectedChatMode: "local-agent",
-        providerSettings: {
-          auto: {
-            apiKey: {
-              value: "dyad-pro-key",
+      const { modelClient } = await getModelClient(
+        {
+          provider,
+          name,
+        },
+        {
+          enableDyadPro: true,
+          selectedChatMode: mode,
+          providerSettings: {
+            auto: {
+              apiKey: {
+                value: "dyad-pro-key",
+              },
             },
           },
+        } as unknown as UserSettings,
+      );
+
+      await generateText({
+        model: modelClient.model,
+        prompt: "hi",
+        maxOutputTokens: 128000,
+        maxRetries: 0,
+      });
+
+      expect(capturedUrl).toMatch(/\/v1\/responses$/);
+      expect(capturedBody).not.toHaveProperty("max_tokens");
+      expect(capturedBody).not.toHaveProperty("reasoning_effort");
+      expect(capturedBody).toMatchObject({
+        model: modelId,
+        max_output_tokens: 128000,
+        reasoning: {
+          summary: "detailed",
+          effort: "medium",
         },
-      } as unknown as UserSettings,
-    );
-
-    await generateText({
-      model: modelClient.model,
-      prompt: "hi",
-      maxRetries: 0,
-    });
-
-    expect(capturedUrl).toMatch(/\/v1\/responses$/);
-    expect(capturedBody).toMatchObject({
-      reasoning: {
-        summary: "detailed",
-        effort: "medium",
-      },
-      include: ["reasoning.encrypted_content"],
-      store: false,
-    });
-    expect((modelClient.model as { modelId: string }).modelId).toBe(
-      "dyad/value",
-    );
-  });
+        include: ["reasoning.encrypted_content"],
+        store: false,
+      });
+      expect((modelClient.model as { modelId: string }).modelId).toBe(modelId);
+    },
+  );
 
   test("sends OpenRouter app attribution headers", async () => {
     let capturedHeaders: Headers | undefined;
