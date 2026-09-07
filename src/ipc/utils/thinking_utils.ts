@@ -1,20 +1,15 @@
-import { usesOpenAIResponsesApi } from "./openai_responses_utils";
 import { PROVIDERS_THAT_SUPPORT_THINKING as GEMINI_PROVIDERS } from "../shared/language_model_constants";
 import type { AnthropicProviderOptions } from "@ai-sdk/anthropic";
-import type { ModelSelection, UserSettings } from "../../lib/schemas";
+import type { ModelSelection } from "../../lib/schemas";
 
 export function getModelEffort(modelSelection: ModelSelection): string {
   return modelSelection.effortLevel;
 }
 
-// The Dyad Engine is backed by LiteLLM using the
-// OpenAI-compatible chat completions API. This means
-// we need to configure thinking differently depending
-// on whether user is enabling Dyad Pro (uses engine)
-// or uses the regular AI-SDK provider.
+// The engine fetch wrapper adds reasoning options for the resolved provider
+// family. OpenAI requests use the Responses API body format.
 export function getExtraProviderOptionsForEngine(
   providerId: string | undefined,
-  settings: UserSettings,
   modelSelection: ModelSelection,
 ): Record<string, any> {
   if (!providerId) {
@@ -23,7 +18,7 @@ export function getExtraProviderOptionsForEngine(
   if (providerId === "openai") {
     // OpenAI uses the same provider options because the Dyad Engine
     // is implemented as an OpenAI-compatible provider.
-    return getOpenAIProviderOptions(settings, modelSelection);
+    return getOpenAIProviderOptions(modelSelection);
   }
   if (providerId === "anthropic") {
     return getAnthropicEngineThinkingOptions(modelSelection);
@@ -89,25 +84,15 @@ export function getAnthropicProviderOptions(
   };
 }
 
-export function getOpenAIProviderOptions(
-  settings: UserSettings,
-  modelSelection: ModelSelection,
-) {
+export function getOpenAIProviderOptions(modelSelection: ModelSelection) {
   const effort = getModelEffort(modelSelection);
 
-  if (
-    usesOpenAIResponsesApi(modelSelection) ||
-    settings.selectedChatMode === "local-agent"
-  ) {
-    return {
-      reasoning: {
-        summary: "detailed",
-        effort,
-      },
-      include: ["reasoning.encrypted_content"],
-      store: false,
-    };
-  }
-
-  return { reasoning_effort: effort };
+  return {
+    reasoning: {
+      summary: "detailed",
+      effort,
+    },
+    include: ["reasoning.encrypted_content"],
+    store: false,
+  };
 }

@@ -5,12 +5,8 @@ import {
   getModelEffort,
   getOpenAIProviderOptions,
 } from "@/ipc/utils/thinking_utils";
-import type { ModelSelection, UserSettings } from "@/lib/schemas";
+import type { ModelSelection } from "@/lib/schemas";
 
-const baseSettings = {
-  selectedModel: { provider: "openai", name: "test-model" },
-  selectedChatMode: "build",
-} as unknown as UserSettings;
 const selection = (effortLevel: string): ModelSelection => ({
   provider: "openai",
   name: "test-model",
@@ -24,9 +20,9 @@ describe("getModelEffort", () => {
 });
 
 describe("getOpenAIProviderOptions", () => {
-  it("uses Responses reasoning options for the Value alias in build mode", () => {
+  it("uses Responses reasoning options for the Value alias", () => {
     expect(
-      getOpenAIProviderOptions(baseSettings, {
+      getOpenAIProviderOptions({
         provider: "auto",
         name: "value",
         effortLevel: "medium",
@@ -38,31 +34,36 @@ describe("getOpenAIProviderOptions", () => {
     });
   });
 
-  it.each(["local-agent", "ask", "plan", "build", undefined] as const)(
-    "maps OpenAI effort to Responses options in %s mode",
-    (mode) => {
-      expect(
-        getOpenAIProviderOptions(
-          { ...baseSettings, selectedChatMode: mode },
-          selection("high"),
-        ),
-      ).toEqual({
-        reasoning: { summary: "detailed", effort: "high" },
+  it.each(["low", "medium", "high", "xhigh", "max"])(
+    "maps %s effort to Responses options",
+    (effort) => {
+      expect(getOpenAIProviderOptions(selection(effort))).toEqual({
+        reasoning: { summary: "detailed", effort },
         include: ["reasoning.encrypted_content"],
         store: false,
       });
     },
   );
+
+  it("uses the resolved OpenAI provider for an Auto selection", () => {
+    expect(
+      getExtraProviderOptionsForEngine("openai", {
+        provider: "auto",
+        name: "auto",
+        effortLevel: "high",
+      }),
+    ).toEqual({
+      reasoning: { summary: "detailed", effort: "high" },
+      include: ["reasoning.encrypted_content"],
+      store: false,
+    });
+  });
 });
 
 describe("getExtraProviderOptions", () => {
   it("returns OpenAI engine body reasoning options", () => {
     expect(
-      getExtraProviderOptionsForEngine(
-        "openai",
-        baseSettings,
-        selection("low"),
-      ),
+      getExtraProviderOptionsForEngine("openai", selection("low")),
     ).toEqual({
       reasoning: { summary: "detailed", effort: "low" },
       include: ["reasoning.encrypted_content"],
@@ -72,11 +73,7 @@ describe("getExtraProviderOptions", () => {
 
   it("returns Anthropic engine body thinking options", () => {
     expect(
-      getExtraProviderOptionsForEngine(
-        "anthropic",
-        baseSettings,
-        selection("medium"),
-      ),
+      getExtraProviderOptionsForEngine("anthropic", selection("medium")),
     ).toEqual({
       thinking: { type: "adaptive", display: "summarized" },
       output_config: { effort: "medium" },
@@ -90,11 +87,7 @@ describe("getExtraProviderOptions", () => {
     ["minimal", 0],
   ])("maps Gemini %s effort to gateway budget %s", (effort, budget) => {
     expect(
-      getExtraProviderOptionsForEngine(
-        "google",
-        baseSettings,
-        selection(effort),
-      ),
+      getExtraProviderOptionsForEngine("google", selection(effort)),
     ).toEqual({
       thinking: {
         type: "enabled",

@@ -171,11 +171,7 @@ export function createDyadEngine(
         // Parse the request body to manipulate it
         const parsedBody = {
           ...JSON.parse(init.body),
-          ...getExtraProviderOptionsForEngine(
-            providerId,
-            options.settings,
-            modelSelection,
-          ),
+          ...getExtraProviderOptionsForEngine(providerId, modelSelection),
         };
 
         const getDyadOption = (key: string) =>
