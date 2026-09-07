@@ -11,19 +11,25 @@ import {
   formatInvalidProviderApiKeyMessage,
   normalizeProviderApiKeyInput,
 } from "@/lib/providerApiKey";
-import type { UserSettings } from "@/lib/schemas";
+import type { ModelSelection, UserSettings } from "@/lib/schemas";
 import { createDyadEngine } from "@/ipc/utils/llm_engine_provider";
 import { fastTextOutput } from "@/ipc/utils/stream_text_utils";
 import { IS_TEST_BUILD } from "@/ipc/utils/test_utils";
 import { getDyadEngineBaseUrl } from "@/ipc/utils/dyad_engine_url";
 import { getTestFetchOption } from "@/ipc/utils/test_fetch_override";
 import { getOpenRouterAppAttributionHeaders } from "@/ipc/utils/openrouter_attribution";
+import { GPT_5_6_LUNA_MODEL_NAME } from "@/ipc/shared/language_model_constants";
 
 const logger = log.scope("provider_api_key_validation");
 
 const VALIDATION_PROMPT =
   "What number is after four? Reply with only the number.";
 const VALIDATION_TIMEOUT_MS = 20_000;
+const DYAD_VALIDATION_MODEL = {
+  provider: "openai",
+  name: GPT_5_6_LUNA_MODEL_NAME,
+  effortLevel: "low",
+} satisfies ModelSelection;
 
 const PROVIDER_DISPLAY_NAMES: Record<ProviderApiKeyValidationProvider, string> =
   {
@@ -80,8 +86,9 @@ export async function validateProviderApiKey({
     const stream = streamText({
       output: fastTextOutput(),
       model: await createValidationModel(provider, normalizedApiKey),
-      maxOutputTokens: 8,
-      temperature: 0,
+      // Responses counts reasoning tokens against the output budget too.
+      maxOutputTokens: provider === "auto" ? 128 : 8,
+      temperature: provider === "auto" ? undefined : 0,
       maxRetries: 0,
       abortSignal: controller.signal,
       onError: ({ error }) => {
@@ -134,6 +141,7 @@ async function createValidationModel(
       const settings = await readEffectiveSettings();
       const dyad = createDyadEngine({
         apiKey,
+        modelSelection: DYAD_VALIDATION_MODEL,
         baseURL: getDyadEngineBaseUrl(),
         ...getTestFetchOption(),
         dyadOptions: {
@@ -153,7 +161,9 @@ async function createValidationModel(
           },
         } satisfies UserSettings,
       });
-      return dyad("dyad/auto", { providerId: "openai" });
+      return dyad.responses(DYAD_VALIDATION_MODEL.name, {
+        providerId: DYAD_VALIDATION_MODEL.provider,
+      });
     }
   }
 }
@@ -211,12 +221,21 @@ function classifyValidationError(
   );
 }
 
-function extractErrorMessage(error: unknown): string {
+function extractErrorMessage(error: unknown, depth = 0): string {
   if (error instanceof Error) {
     return error.message;
   }
   if (typeof error === "string") {
     return error;
+  }
+  // Responses stream errors are objects with a nested error.message.
+  if (error && typeof error === "object" && depth < 5) {
+    if ("message" in error && typeof error.message === "string") {
+      return error.message;
+    }
+    if ("error" in error) {
+      return extractErrorMessage(error.error, depth + 1);
+    }
   }
   return String(error);
 }
