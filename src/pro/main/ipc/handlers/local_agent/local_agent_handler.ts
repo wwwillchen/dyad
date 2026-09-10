@@ -1277,6 +1277,16 @@ export async function handleLocalAgentStream(
 
       // Retry loop: if the stream terminates with a transient error, captured text/tool events are replayed into message history, a continuation instruction is appended, and the stream is re-opened.
       while (!abortController.signal.aborted) {
+        // A new stream has a different response tail (sliced after compaction or
+        // rebuilt from retry events). Carry injections into its base once, after
+        // the completed transcript, rather than reusing the previous indexes.
+        if (allInjectedMessages.length > 0) {
+          currentMessageHistory = [
+            ...currentMessageHistory,
+            ...allInjectedMessages.map(({ message }) => message),
+          ];
+          allInjectedMessages.length = 0;
+        }
         let streamErrorFromCallback: unknown;
         const retryReplayEvents: RetryReplayEvent[] = [];
         activeRetryReplayEvents = retryReplayEvents;
@@ -1415,11 +1425,34 @@ export async function handleLocalAgentStream(
                       },
                     );
                   }
-                  compactedBaseMessages = compactedMessageHistory;
+                  compactedBaseMessages = needsContinuationInstruction
+                    ? [
+                        ...compactedMessageHistory,
+                        buildTerminatedRetryContinuationInstruction(),
+                      ]
+                    : compactedMessageHistory;
                   // Later passes/retries must start from the same compacted base.
                   // Earlier passes are represented by the persisted summary.
                   currentMessageHistory = compactedMessageHistory;
                   accumulatedAiMessages.length = 0;
+                  retryReplayEvents.length = 0;
+                  // Write a durable fallback immediately: an aborted/refused
+                  // stream may never produce post-compaction SDK messages. A
+                  // null history would restore the full, uncompacted display
+                  // content on the next turn. Normal finalization overwrites
+                  // this marker when there is a structured response to save.
+                  await db
+                    .update(messages)
+                    .set({
+                      aiMessagesJson: getAiMessagesJsonIfWithinLimit([
+                        {
+                          role: "assistant",
+                          content:
+                            "Earlier output from this turn is represented by the preceding compaction summary.",
+                        },
+                      ]),
+                    })
+                    .where(eq(messages.id, placeholderMessageId));
                 } else {
                   // Prevent repeated compaction attempts if the first one fails.
                   compactionFailedMidTurn = true;

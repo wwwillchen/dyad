@@ -2292,7 +2292,128 @@ describe("handleLocalAgentStream", () => {
   });
 
   describe("Mid-turn compaction", () => {
-    it.each(["todo follow-up", "stream retry"])(
+    it.each([
+      "empty response",
+      "refusal",
+      "abort",
+      "finalization error",
+      "stream error",
+    ])(
+      "preserves retry instructions and blocks content fallback after %s",
+      async (ending) => {
+        const { event } = createFakeEvent();
+        const controller = new AbortController();
+        mockSettings = buildTestSettings({ enableDyadPro: true });
+        mockChatData = buildTestChat();
+        mockIsChatPendingCompaction
+          .mockResolvedValueOnce(false)
+          .mockResolvedValueOnce(true)
+          .mockResolvedValue(false);
+        mockCheckAndMarkForCompaction.mockResolvedValue(true);
+        mockPerformCompaction.mockImplementation(async () => {
+          mockChatData!.messages.push({
+            id: 20,
+            role: "assistant",
+            content: "compacted retry summary",
+            isCompactionSummary: true,
+            createdAt: new Date("2025-01-02"),
+          });
+          return { success: true, summary: "compacted retry summary" };
+        });
+        let attempts = 0;
+        const preparedSteps: ModelMessage[][] = [];
+        mockStreamTextImpl = (options) => {
+          attempts += 1;
+          if (attempts === 1) {
+            return {
+              fullStream: (async function* () {
+                yield {
+                  type: "text-delta",
+                  text: "Already displayed before retry",
+                };
+                throw new TypeError("terminated");
+              })(),
+              response: Promise.resolve({ messages: [] }),
+              steps: Promise.resolve([]),
+            };
+          }
+          return {
+            fullStream: (async function* () {
+              await options.onStepFinish({
+                usage: { totalTokens: 200_000 },
+                toolCalls: [{}],
+              });
+              for (const stepNumber of [1, 2]) {
+                const prepared = await options.prepareStep({
+                  messages: options.messages,
+                  stepNumber,
+                  steps: [],
+                });
+                preparedSteps.push(prepared?.messages ?? options.messages);
+              }
+              if (ending === "abort") controller.abort();
+              if (ending === "stream error")
+                throw new Error("non-retryable failure");
+              if (ending === "refusal") {
+                yield {
+                  type: "finish",
+                  finishReason: "content-filter",
+                  rawFinishReason: "refusal",
+                };
+              }
+            })(),
+            get response() {
+              return ending === "finalization error"
+                ? Promise.reject(new Error("non-retryable failure"))
+                : Promise.resolve({ messages: [] });
+            },
+            steps: Promise.resolve([]),
+          };
+        };
+        const run = handleLocalAgentStream(
+          event,
+          { chatId: 1, prompt: "test" },
+          controller,
+          {
+            placeholderMessageId: 10,
+            systemPrompt: "You are helpful",
+            dyadRequestId,
+          },
+        );
+        if (ending === "stream error") await expect(run).resolves.toBe(false);
+        else await run;
+        expect(attempts).toBe(2);
+        expect(preparedSteps).toHaveLength(2);
+        for (const messages of preparedSteps) {
+          expect(JSON.stringify(messages)).toContain("compacted retry summary");
+          expect(JSON.stringify(messages)).toContain("do not repeat");
+        }
+        const aiMessagesJson = dbOperations.updates
+          .filter((update) => update.data.aiMessagesJson)
+          .at(-1)?.data.aiMessagesJson;
+        expect(aiMessagesJson).toBeDefined();
+        const nextTurnHistory = buildChatMessageHistory([
+          {
+            id: 10,
+            role: "assistant",
+            content: "Already displayed before retry",
+            aiMessagesJson: aiMessagesJson as any,
+            isCompactionSummary: false,
+            createdAt: new Date("2025-01-02"),
+          },
+        ]);
+        expect(JSON.stringify(nextTurnHistory)).not.toContain(
+          "Already displayed before retry",
+        );
+        expect(JSON.stringify(nextTurnHistory)).toContain(
+          ending === "refusal"
+            ? "Model refused to respond"
+            : "preceding compaction summary",
+        );
+      },
+    );
+
+    it.each(["todo follow-up", "stream retry", "finalization retry"])(
       "keeps the compacted base across later SDK steps and %s",
       async (resume) => {
         const { event } = createFakeEvent();
@@ -2428,6 +2549,12 @@ describe("handleLocalAgentStream", () => {
             outgoing.push(options.messages);
             return {
               fullStream: (async function* () {
+                const prepared = await options.prepareStep({
+                  messages: options.messages,
+                  stepNumber: 0,
+                  steps: [],
+                });
+                outgoing.push(prepared?.messages ?? options.messages);
                 yield { type: "text-delta", text: "All done" };
               })(),
               response: Promise.resolve({ messages: [] }),
@@ -2449,6 +2576,22 @@ describe("handleLocalAgentStream", () => {
                       ]
                     : [],
               });
+              yield {
+                type: "text-delta",
+                text: "summarized pre-compaction text",
+              };
+              yield {
+                type: "tool-call",
+                toolCallId: "summarized-tool",
+                toolName: "read_file",
+                input: { path: "old.txt" },
+              };
+              yield {
+                type: "tool-result",
+                toolCallId: "summarized-tool",
+                toolName: "read_file",
+                output: "summarized result",
+              };
               await options.onStepFinish({
                 usage: { totalTokens: 200_000 },
                 toolCalls: [{}],
@@ -2472,9 +2615,25 @@ describe("handleLocalAgentStream", () => {
                 outgoing.push(prepared?.messages ?? messages);
               }
               yield { type: "text-delta", text: "Progress update" };
+              yield {
+                type: "tool-call",
+                toolCallId: "retained-tool",
+                toolName: "read_file",
+                input: { path: "new.txt" },
+              };
+              yield {
+                type: "tool-result",
+                toolCallId: "retained-tool",
+                toolName: "read_file",
+                output: "retained result",
+              };
               if (resume === "stream retry") throw new TypeError("terminated");
             })(),
-            response: Promise.resolve({ messages: finalMessages }),
+            get response() {
+              return resume === "finalization retry"
+                ? Promise.reject(new TypeError("terminated"))
+                : Promise.resolve({ messages: finalMessages });
+            },
             steps: Promise.resolve([
               { toolCalls: [{}], response: { messages: before } },
               {
@@ -2497,7 +2656,7 @@ describe("handleLocalAgentStream", () => {
         );
         expect(mockPerformCompaction).toHaveBeenCalledTimes(1);
         expect(passes).toBe(2);
-        expect(outgoing).toHaveLength(4);
+        expect(outgoing).toHaveLength(5);
         for (const messages of outgoing) {
           const serialized = JSON.stringify(messages);
           expect(serialized).toContain("compacted base");
@@ -2510,7 +2669,7 @@ describe("handleLocalAgentStream", () => {
         }
         for (const messages of outgoing.slice(
           1,
-          resume === "stream retry" ? 3 : 4,
+          resume === "todo follow-up" ? 4 : 3,
         )) {
           expect(messages).toEqual(expect.arrayContaining(after));
         }
@@ -2519,6 +2678,27 @@ describe("handleLocalAgentStream", () => {
           expect(outgoing[3]).toEqual(expect.arrayContaining(later));
         } else {
           expect(JSON.stringify(outgoing[3])).toContain("Progress update");
+          expect(JSON.stringify(outgoing[3])).toContain("retained-tool");
+          expect(JSON.stringify(outgoing[3])).not.toContain("summarized");
+          const persisted = dbOperations.updates
+            .filter((update) => update.data.aiMessagesJson)
+            .at(-1)?.data.aiMessagesJson;
+          expect(JSON.stringify(persisted)).toContain("retained-tool");
+          expect(JSON.stringify(persisted)).not.toContain("summarized");
+        }
+        for (const messages of outgoing.slice(3)) {
+          expect(
+            messages.filter((message) =>
+              JSON.stringify(message).includes("injected context"),
+            ),
+          ).toHaveLength(1);
+          const injectedIndex = messages.findIndex((message) =>
+            JSON.stringify(message).includes("injected context"),
+          );
+          const finalToolIndex = messages
+            .map((message) => message.role)
+            .lastIndexOf("tool");
+          expect(injectedIndex).toBeGreaterThan(finalToolIndex);
         }
         for (const messages of outgoing.slice(1, 3)) {
           const injectedIndex = messages.findIndex((message) =>
@@ -2724,9 +2904,9 @@ describe("handleLocalAgentStream", () => {
       expect(mockPerformCompaction).toHaveBeenCalledTimes(1);
       expect(preparedAfterCompaction).toContain(inFlightAssistant);
       expect(preparedAfterCompaction).toContain(inFlightTool);
-      const persisted = dbOperations.updates.find(
-        (update) => update.data.aiMessagesJson,
-      )?.data.aiMessagesJson;
+      const persisted = dbOperations.updates
+        .filter((update) => update.data.aiMessagesJson)
+        .at(-1)?.data.aiMessagesJson;
       expect(JSON.stringify(persisted)).toContain("after compacted pass");
       expect(JSON.stringify(persisted)).not.toContain("I started the work.");
       expect(JSON.stringify(persisted)).not.toContain("call-1");
@@ -3153,10 +3333,13 @@ describe("handleLocalAgentStream", () => {
       const aiMessagesUpdates = dbOperations.updates.filter(
         (u) => u.data.aiMessagesJson !== undefined,
       );
-      expect(aiMessagesUpdates).toHaveLength(1);
+      expect(aiMessagesUpdates).toHaveLength(2);
       expect(
-        (aiMessagesUpdates[0].data.aiMessagesJson as { messages: unknown[] })
-          .messages,
+        (
+          aiMessagesUpdates.at(-1)!.data.aiMessagesJson as {
+            messages: unknown[];
+          }
+        ).messages,
       ).toEqual(postCompactionGenerated);
     });
   });
