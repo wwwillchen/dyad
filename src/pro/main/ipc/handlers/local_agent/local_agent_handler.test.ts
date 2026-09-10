@@ -2498,7 +2498,12 @@ describe("handleLocalAgentStream", () => {
           ],
         } as any);
         let injectContext: () => void;
+        let injectScreenshot: () => void;
         vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
+          injectScreenshot = () =>
+            ctx.appendUserMessage([
+              { type: "image-url", url: "https://example.com/screenshot.png" },
+            ]);
           injectContext = () =>
             ctx.appendUserMessage([{ type: "text", text: "injected context" }]);
           return {
@@ -2629,6 +2634,12 @@ describe("handleLocalAgentStream", () => {
                 toolName: "read_file",
                 output: "summarized result",
               };
+              injectScreenshot();
+              await options.prepareStep({
+                messages: [...options.messages, ...before],
+                stepNumber: 1,
+                steps: [],
+              });
               await options.onStepFinish({
                 usage: { totalTokens: 200_000 },
                 toolCalls: [{}],
@@ -2703,6 +2714,21 @@ describe("handleLocalAgentStream", () => {
         }
         for (const messages of outgoing.slice(0, 3)) {
           expect(messages).toEqual(expect.arrayContaining(before));
+          const screenshotIndexes = messages.flatMap((message, index) =>
+            JSON.stringify(message).includes(
+              "https://example.com/screenshot.png",
+            )
+              ? [index]
+              : [],
+          );
+          expect(screenshotIndexes).toHaveLength(1);
+          const resultIndex = messages.findIndex(
+            (message) =>
+              message.role === "tool" &&
+              JSON.stringify(message).includes("before-compaction"),
+          );
+          expect(resultIndex).toBeGreaterThanOrEqual(0);
+          expect(screenshotIndexes[0]).toBe(resultIndex + 1);
         }
         for (const messages of outgoing.slice(
           1,
@@ -2760,201 +2786,248 @@ describe("handleLocalAgentStream", () => {
       },
     );
 
-    it("preserves the full in-flight tail after sanitizing follow-up history", async () => {
-      const { event } = createFakeEvent();
-      mockSettings = buildTestSettings({ enableDyadPro: true });
-      mockChatData = buildTestChat();
+    it.each(["todo", "Explorer"])(
+      "preserves %s instructions and the in-flight tail across compaction and retry",
+      async (kind) => {
+        const { event } = createFakeEvent();
+        mockSettings = buildTestSettings({ enableDyadPro: true });
+        mockChatData = buildTestChat();
 
-      vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
-        return {
-          update_todos: {
-            execute: async (args: any) => {
-              ctx.todos = args.todos;
-              ctx.onUpdateTodos(ctx.todos);
-              return "Updated todos";
+        vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
+          if (kind === "Explorer")
+            ctx.spawnedSubagentThreadIds?.push("explorer-context");
+          return {
+            update_todos: {
+              execute: async (args: any) => {
+                ctx.todos = args.todos;
+                ctx.onUpdateTodos(ctx.todos);
+                return "Updated todos";
+              },
             },
-          },
-        } as any;
-      });
-
-      mockIsChatPendingCompaction
-        .mockResolvedValueOnce(false)
-        .mockResolvedValueOnce(true)
-        .mockResolvedValue(false);
-      mockCheckAndMarkForCompaction.mockResolvedValue(true);
-      mockPerformCompaction.mockImplementation(async () => {
-        if (!mockChatData) {
-          return { success: false, error: "missing chat" };
-        }
-        mockChatData = {
-          ...mockChatData,
-          messages: [
-            ...mockChatData.messages,
+          } as any;
+        });
+        if (kind === "Explorer")
+          (mockSubagentManager.waitForSubagents as any).mockResolvedValueOnce([
             {
-              id: 20,
-              role: "assistant",
-              content: "Conversation compacted.",
-              isCompactionSummary: true,
-              createdAt: new Date("2025-01-01T00:03:30Z"),
+              id: "explorer-context",
+              status: "completed",
+              result: { report: "Important Explorer evidence in src/auth.ts" },
+              error: null,
+            } as any,
+          ]);
+
+        mockIsChatPendingCompaction
+          .mockResolvedValueOnce(false)
+          .mockResolvedValueOnce(true)
+          .mockResolvedValue(false);
+        mockCheckAndMarkForCompaction.mockResolvedValue(true);
+        mockPerformCompaction.mockImplementation(async () => {
+          if (!mockChatData) {
+            return { success: false, error: "missing chat" };
+          }
+          mockChatData = {
+            ...mockChatData,
+            messages: [
+              ...mockChatData.messages,
+              {
+                id: 20,
+                role: "assistant",
+                content: "Conversation compacted.",
+                isCompactionSummary: true,
+                createdAt: new Date("2025-01-01T00:03:30Z"),
+              },
+            ],
+          } as any;
+          return {
+            success: true,
+            summary: "Conversation compacted.",
+            backupPath: ".dyad/chats/1/compaction-test.md",
+          };
+        });
+
+        const splitParallelToolHistory = [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: "call-1",
+                toolName: "read_file",
+                input: { path: "src/App.tsx" },
+              },
+              {
+                type: "tool-call",
+                toolCallId: "call-2",
+                toolName: "read_file",
+                input: { path: "src/main.tsx" },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call-1",
+                toolName: "read_file",
+                output: "App result",
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call-2",
+                toolName: "read_file",
+                output: "main result",
+              },
+            ],
+          },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "I started the work." }],
+          },
+        ];
+        const inFlightAssistant = {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call-live",
+              toolName: "read_file",
+              input: { path: "src/live.ts" },
             },
           ],
-        } as any;
-        return {
-          success: true,
-          summary: "Conversation compacted.",
-          backupPath: ".dyad/chats/1/compaction-test.md",
         };
-      });
-
-      const splitParallelToolHistory = [
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "tool-call",
-              toolCallId: "call-1",
-              toolName: "read_file",
-              input: { path: "src/App.tsx" },
-            },
-            {
-              type: "tool-call",
-              toolCallId: "call-2",
-              toolName: "read_file",
-              input: { path: "src/main.tsx" },
-            },
-          ],
-        },
-        {
+        const inFlightTool = {
           role: "tool",
           content: [
             {
               type: "tool-result",
-              toolCallId: "call-1",
+              toolCallId: "call-live",
               toolName: "read_file",
-              output: "App result",
+              output: "live result",
             },
           ],
-        },
-        {
-          role: "tool",
-          content: [
-            {
-              type: "tool-result",
-              toolCallId: "call-2",
-              toolName: "read_file",
-              output: "main result",
-            },
-          ],
-        },
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "I started the work." }],
-        },
-      ];
-      const inFlightAssistant = {
-        role: "assistant",
-        content: [
-          {
-            type: "tool-call",
-            toolCallId: "call-live",
-            toolName: "read_file",
-            input: { path: "src/live.ts" },
-          },
-        ],
-      };
-      const inFlightTool = {
-        role: "tool",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: "call-live",
-            toolName: "read_file",
-            output: "live result",
-          },
-        ],
-      };
+        };
 
-      let passCount = 0;
-      let preparedAfterCompaction: any[] = [];
-      mockStreamTextImpl = (options) => {
-        passCount += 1;
-        if (passCount === 1) {
+        let passCount = 0;
+        let preparedAfterCompaction: any[] = [];
+        let retryHistory: any[] = [];
+        mockStreamTextImpl = (options) => {
+          passCount += 1;
+          if (passCount === 3) {
+            retryHistory = options.messages;
+            return {
+              fullStream: (async function* () {
+                yield { type: "text-delta", text: "Finished" };
+              })(),
+              response: Promise.resolve({
+                messages: [
+                  { role: "assistant", content: "after compacted pass" },
+                ],
+              }),
+              steps: Promise.resolve([]),
+            };
+          }
+          if (passCount === 1) {
+            return {
+              fullStream: (async function* () {
+                await options.tools.update_todos.execute({
+                  merge: false,
+                  todos:
+                    kind === "Explorer"
+                      ? []
+                      : [
+                          {
+                            id: "todo-1",
+                            content: "Finish the requested work",
+                            status: "pending",
+                          },
+                        ],
+                });
+                yield { type: "text-delta", text: "I started the work." };
+              })(),
+              response: Promise.resolve({
+                messages: splitParallelToolHistory,
+              }),
+              steps: Promise.resolve([
+                {
+                  toolCalls: [{ toolName: "set_chat_summary" }],
+                  response: { messages: splitParallelToolHistory },
+                },
+              ]),
+            };
+          }
+
           return {
             fullStream: (async function* () {
-              await options.tools.update_todos.execute({
-                merge: false,
-                todos: [
-                  {
-                    id: "todo-1",
-                    content: "Finish the requested work",
-                    status: "pending",
-                  },
-                ],
+              await options.onStepFinish?.({
+                usage: { totalTokens: 200_000 },
+                toolCalls: [{}],
               });
-              yield { type: "text-delta", text: "I started the work." };
+              const stepMessages = [
+                ...options.messages,
+                inFlightAssistant,
+                inFlightTool,
+              ];
+              const prepared = (await options.prepareStep?.({
+                messages: stepMessages,
+                stepNumber: 1,
+                steps: [],
+                model: {},
+                experimental_context: undefined,
+              })) ?? { messages: stepMessages };
+              preparedAfterCompaction = prepared.messages;
+              yield { type: "text-delta", text: "Finished the work." };
+              throw new TypeError("terminated");
             })(),
             response: Promise.resolve({
-              messages: splitParallelToolHistory,
+              messages: [
+                { role: "assistant", content: "after compacted pass" },
+              ],
             }),
-            steps: Promise.resolve([
-              {
-                toolCalls: [{ toolName: "set_chat_summary" }],
-                response: { messages: splitParallelToolHistory },
-              },
-            ]),
+            steps: Promise.resolve([]),
           };
-        }
-
-        return {
-          fullStream: (async function* () {
-            await options.onStepFinish?.({
-              usage: { totalTokens: 200_000 },
-              toolCalls: [{}],
-            });
-            const stepMessages = [
-              ...options.messages,
-              inFlightAssistant,
-              inFlightTool,
-            ];
-            const prepared = (await options.prepareStep?.({
-              messages: stepMessages,
-              stepNumber: 1,
-              steps: [],
-              model: {},
-              experimental_context: undefined,
-            })) ?? { messages: stepMessages };
-            preparedAfterCompaction = prepared.messages;
-            yield { type: "text-delta", text: "Finished the work." };
-          })(),
-          response: Promise.resolve({
-            messages: [{ role: "assistant", content: "after compacted pass" }],
-          }),
-          steps: Promise.resolve([]),
         };
-      };
 
-      await handleLocalAgentStream(
-        event,
-        { chatId: 1, prompt: "test" },
-        new AbortController(),
-        {
-          placeholderMessageId: 10,
-          systemPrompt: "You are helpful",
-          dyadRequestId,
-        },
-      );
+        await handleLocalAgentStream(
+          event,
+          { chatId: 1, prompt: "test" },
+          new AbortController(),
+          {
+            placeholderMessageId: 10,
+            systemPrompt: "You are helpful",
+            dyadRequestId,
+          },
+        );
 
-      expect(passCount).toBe(2);
-      expect(mockPerformCompaction).toHaveBeenCalledTimes(1);
-      expect(preparedAfterCompaction).toContain(inFlightAssistant);
-      expect(preparedAfterCompaction).toContain(inFlightTool);
-      const persisted = dbOperations.updates
-        .filter((update) => update.data.aiMessagesJson)
-        .at(-1)?.data.aiMessagesJson;
-      expect(JSON.stringify(persisted)).toContain("after compacted pass");
-      expect(JSON.stringify(persisted)).not.toContain("I started the work.");
-      expect(JSON.stringify(persisted)).not.toContain("call-1");
-    });
+        expect(passCount).toBe(3);
+        expect(mockPerformCompaction).toHaveBeenCalledTimes(1);
+        expect(preparedAfterCompaction).toContain(inFlightAssistant);
+        expect(preparedAfterCompaction).toContain(inFlightTool);
+        const expectedContext =
+          kind === "Explorer"
+            ? "Important Explorer evidence"
+            : "incomplete todo(s)";
+        for (const history of [preparedAfterCompaction, retryHistory]) {
+          expect(
+            history.filter((message) =>
+              JSON.stringify(message).includes(expectedContext),
+            ),
+          ).toHaveLength(1);
+        }
+        const persisted = dbOperations.updates
+          .filter((update) => update.data.aiMessagesJson)
+          .at(-1)?.data.aiMessagesJson;
+        expect(JSON.stringify(persisted)).toContain("after compacted pass");
+        expect(JSON.stringify(persisted)).not.toContain("I started the work.");
+        expect(JSON.stringify(persisted)).not.toContain("call-1");
+        expect(JSON.stringify(persisted)).not.toContain(expectedContext);
+      },
+    );
 
     it("should compact between steps when token usage crosses threshold", async () => {
       // Arrange

@@ -1239,6 +1239,10 @@ export async function handleLocalAgentStream(
     let todoFollowUpLoops = 0;
     let hasInjectedPlanningQuestionnaireReflection = false;
     let currentMessageHistory = messageHistory;
+    // These messages never enter the DB transcript used by compaction.
+    // Keep Explorer evidence and active follow-up instructions in live history.
+    const turnOnlyBaseMessages: ModelMessage[] = [];
+    let persistedTodoNotice: ModelMessage | undefined;
     const accumulatedAiMessages: ModelMessage[] = [];
     let usedAttachmentAccessTool = false;
     // Track total steps across all passes to detect step limit
@@ -1270,6 +1274,7 @@ export async function handleLocalAgentStream(
           },
         ],
       };
+      persistedTodoNotice = syntheticMessage;
       // Insert before the last message (the user's current message) so the
       // user's intent is the final thing the LLM sees.
       const insertIndex = Math.max(0, currentMessageHistory.length - 1);
@@ -1412,11 +1417,6 @@ export async function handleLocalAgentStream(
                   compactedMidTurn = true;
                   // Preserve only messages generated after this compaction boundary.
                   postMidTurnCompactionStartStep = options.stepNumber;
-                  // Clear stale injected messages — their insertAtIndex values are
-                  // based on the pre-compaction message array which has been rebuilt
-                  // with a different (typically smaller) count. Keeping them would
-                  // cause injectMessagesAtPositions to splice at wrong positions.
-                  allInjectedMessages.length = 0;
                   const compactedMessageHistory = buildChatMessageHistory(
                     chat.messages,
                     {
@@ -1440,12 +1440,30 @@ export async function handleLocalAgentStream(
                       },
                     );
                   }
+                  if (persistedTodoNotice && hasIncompleteTodos(ctx.todos)) {
+                    const userIndex = compactedMessageHistory.findIndex(
+                      (message) => message.role === "user",
+                    );
+                    compactedMessageHistory.splice(
+                      Math.max(0, userIndex),
+                      0,
+                      persistedTodoNotice,
+                    );
+                  }
+                  compactedMessageHistory.push(...turnOnlyBaseMessages);
                   compactedBaseMessages = needsContinuationInstruction
                     ? [
                         ...compactedMessageHistory,
                         buildTerminatedRetryContinuationInstruction(),
                       ]
                     : compactedMessageHistory;
+                  // The SDK response tail is unchanged within this attempt.
+                  // Shift existing screenshots/context by only the base delta.
+                  const injectionBaseDelta =
+                    compactedBaseMessages.length - attemptBaseMessageCount;
+                  for (const injection of allInjectedMessages) {
+                    injection.insertAtIndex += injectionBaseDelta;
+                  }
                   // Later passes/retries must start from the same compacted base.
                   // Earlier passes are represented by the persisted summary.
                   currentMessageHistory = compactedMessageHistory;
@@ -2049,18 +2067,18 @@ export async function handleLocalAgentStream(
         for (const explorer of explorers) {
           synthesizedExplorerThreadIds.add(explorer.id);
         }
-        currentMessageHistory = [
-          ...currentMessageHistory,
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: buildExplorerSynthesisMessage(explorers),
-              },
-            ],
-          },
-        ];
+        const synthesisMessage: ModelMessage = {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: buildExplorerSynthesisMessage(explorers),
+            },
+          ],
+        };
+        persistedTodoNotice = undefined;
+        turnOnlyBaseMessages.push(synthesisMessage);
+        currentMessageHistory = [...currentMessageHistory, synthesisMessage];
         logger.info(
           `Starting mandatory Explorer synthesis pass for chat ${req.chatId}`,
         );
@@ -2086,6 +2104,8 @@ export async function handleLocalAgentStream(
         role: "user",
         content: [{ type: "text", text: reminderText }],
       };
+      persistedTodoNotice = undefined;
+      turnOnlyBaseMessages.push(reminderMessage);
       currentMessageHistory = [...currentMessageHistory, reminderMessage];
       // Note: Do NOT push reminderMessage to accumulatedAiMessages.
       // It is a synthetic message that should not be persisted to aiMessagesJson,
