@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
+import type { ModelMessage } from "ai";
 import {
   type RetryReplayEvent,
   buildRetryReplayMessages,
   maybeCaptureRetryReplayEvent,
   maybeCaptureRetryReplayText,
+  maybeAppendRetryReplayForRetry,
   toToolResultOutput,
 } from "@/pro/main/ipc/handlers/local_agent/retry_replay_utils";
 
@@ -12,6 +14,50 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("buildRetryReplayMessages", () => {
+  it("keeps injected context between replayed actions without persisting turn-only instructions", () => {
+    const injection: ModelMessage = {
+      role: "user",
+      content: "Screenshot context",
+    };
+    const events: RetryReplayEvent[] = [
+      { type: "assistant-text", text: "Before screenshot" },
+      { type: "injected-user-message", message: injection },
+      { type: "assistant-text", text: "Acting on screenshot" },
+      {
+        type: "tool-call",
+        toolCallId: "edit",
+        toolName: "edit_file",
+        input: {},
+      },
+      {
+        type: "tool-result",
+        toolCallId: "edit",
+        toolName: "edit_file",
+        output: "Edited",
+      },
+    ];
+    let history: ModelMessage[] = [{ role: "user", content: "Task" }];
+    const persisted: ModelMessage[] = [];
+    maybeAppendRetryReplayForRetry({
+      retryReplayEvents: events,
+      currentMessageHistoryRef: history,
+      accumulatedAiMessagesRef: persisted,
+      onCurrentMessageHistoryUpdate: (next) => {
+        history = next;
+      },
+    });
+    expect(history.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "tool",
+    ]);
+    expect(history[2]).toBe(injection);
+    expect(JSON.stringify(history[3])).toContain("Acting on screenshot");
+    expect(JSON.stringify(persisted)).not.toContain("Screenshot context");
+    expect(JSON.stringify(persisted)).toContain("Edited");
+  });
   it("returns empty array when no events are provided", () => {
     expect(buildRetryReplayMessages([])).toEqual([]);
   });

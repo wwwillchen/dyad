@@ -3,9 +3,10 @@
  * stream termination. Extracted for testability.
  */
 
-import type { ModelMessage } from "ai";
+import type { ModelMessage, UserModelMessage } from "ai";
 
 export type RetryReplayEvent =
+  | { type: "injected-user-message"; message: UserModelMessage }
   | {
       type: "assistant-text";
       text: string;
@@ -171,6 +172,11 @@ export function buildRetryReplayMessages(
   };
 
   for (const event of retryReplayEvents) {
+    if (event.type === "injected-user-message") {
+      flushPendingAssistantMessage();
+      replayMessages.push(event.message);
+      continue;
+    }
     if (event.type === "assistant-text") {
       if (!event.text.trim()) {
         continue;
@@ -253,5 +259,12 @@ export function maybeAppendRetryReplayForRetry(params: {
     ...currentMessageHistoryRef,
     ...replayMessages,
   ]);
-  accumulatedAiMessagesRef.push(...replayMessages);
+  // Injections include synthetic instructions that belong only to this turn.
+  accumulatedAiMessagesRef.push(
+    ...buildRetryReplayMessages(
+      retryReplayEvents.filter(
+        (event) => event.type !== "injected-user-message",
+      ),
+    ),
+  );
 }

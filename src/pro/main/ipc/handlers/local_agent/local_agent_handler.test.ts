@@ -196,6 +196,7 @@ const dbOperations: {
 } = { updates: [], queries: [] };
 
 let mockChatData: ReturnType<typeof buildTestChat> | null = null;
+let mockAiMessageSaveFailures = 0;
 let mockMcpServers: Array<{ id: number; name: string }> = [];
 let mockMcpToolSet: Record<string, Record<string, unknown>> = {};
 
@@ -209,6 +210,10 @@ vi.mock("@/db", () => ({
     update: vi.fn(() => ({
       set: vi.fn((data: Record<string, unknown>) => ({
         where: vi.fn((condition: any) => {
+          if (data.aiMessagesJson && mockAiMessageSaveFailures > 0) {
+            mockAiMessageSaveFailures -= 1;
+            return Promise.reject(new Error("test history write failure"));
+          }
           dbOperations.updates.push({
             table: "messages",
             id: condition?.id ?? 0,
@@ -1043,6 +1048,7 @@ describe("handleLocalAgentStream", () => {
     vi.clearAllMocks();
     dbOperations.updates = [];
     dbOperations.queries = [];
+    mockAiMessageSaveFailures = 0;
     mockChatData = null;
     mockMcpServers = [];
     mockMcpToolSet = {};
@@ -2292,25 +2298,45 @@ describe("handleLocalAgentStream", () => {
   });
 
   describe("Mid-turn compaction", () => {
-    it.each([
-      "empty response",
-      "refusal",
-      "abort",
-      "finalization error",
-      "stream error",
-    ])(
-      "preserves retry instructions and blocks content fallback after %s",
-      async (ending) => {
+    it.each(
+      [
+        "empty response",
+        "refusal",
+        "abort",
+        "finalization error",
+        "stream error",
+        "fallback write error",
+        "join error",
+      ].flatMap((ending) =>
+        [false, true].map((hasOutput) => ({ ending, hasOutput })),
+      ),
+    )(
+      "preserves retry instructions and post-compaction history after $ending (output: $hasOutput)",
+      async ({ ending, hasOutput }) => {
         const { event } = createFakeEvent();
         const controller = new AbortController();
         mockSettings = buildTestSettings({ enableDyadPro: true });
         mockChatData = buildTestChat();
+        let completeTool: () => void;
+        vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
+          completeTool = () =>
+            ctx.onXmlComplete(
+              '<dyad-write path="new.ts">saved code</dyad-write>',
+            );
+          return {};
+        });
+        if (ending === "join error") {
+          mockSubagentManager.waitForOwnedSubagentsAndSealTurn.mockRejectedValueOnce(
+            new Error("join failure"),
+          );
+        }
         mockIsChatPendingCompaction
           .mockResolvedValueOnce(false)
           .mockResolvedValueOnce(true)
           .mockResolvedValue(false);
         mockCheckAndMarkForCompaction.mockResolvedValue(true);
         mockPerformCompaction.mockImplementation(async () => {
+          if (ending === "fallback write error") mockAiMessageSaveFailures = 1;
           mockChatData!.messages.push({
             id: 20,
             role: "assistant",
@@ -2351,6 +2377,12 @@ describe("handleLocalAgentStream", () => {
                 });
                 preparedSteps.push(prepared?.messages ?? options.messages);
               }
+              if (hasOutput) completeTool();
+              if (hasOutput)
+                yield {
+                  type: "text-delta",
+                  text: "Completed post-compaction work",
+                };
               if (ending === "abort") controller.abort();
               if (ending === "stream error")
                 throw new Error("non-retryable failure");
@@ -2408,8 +2440,13 @@ describe("handleLocalAgentStream", () => {
         expect(JSON.stringify(nextTurnHistory)).toContain(
           ending === "refusal"
             ? "Model refused to respond"
-            : "preceding compaction summary",
+            : hasOutput
+              ? "Completed post-compaction work"
+              : "preceding compaction summary",
         );
+        if (hasOutput && ending !== "refusal") {
+          expect(JSON.stringify(nextTurnHistory)).toContain("new.ts");
+        }
       },
     );
 
@@ -2695,10 +2732,17 @@ describe("handleLocalAgentStream", () => {
           const injectedIndex = messages.findIndex((message) =>
             JSON.stringify(message).includes("injected context"),
           );
-          const finalToolIndex = messages
-            .map((message) => message.role)
-            .lastIndexOf("tool");
-          expect(injectedIndex).toBeGreaterThan(finalToolIndex);
+          const nextActionIndex = messages.findIndex((message) =>
+            JSON.stringify(message).includes(
+              resume === "todo follow-up" ? "later-step" : "retained-tool",
+            ),
+          );
+          expect(injectedIndex).toBeLessThan(nextActionIndex);
+          expect(JSON.stringify(messages.at(-1))).toContain(
+            resume === "todo follow-up"
+              ? "incomplete todo(s)"
+              : "do not repeat",
+          );
         }
         for (const messages of outgoing.slice(1, 3)) {
           const injectedIndex = messages.findIndex((message) =>

@@ -111,6 +111,7 @@ import {
 import { sendTelemetryEvent } from "@/ipc/utils/telemetry";
 import {
   prepareStepMessages,
+  injectMessagesAtPositions,
   buildTodoReminderMessage,
   hasIncompleteTodos,
   formatTodoSummary,
@@ -654,6 +655,28 @@ export async function handleLocalAgentStream(
   // Held in a ref object so sendResponseChunk can mutate it.
   const lastSentRef = { value: "" };
   let activeRetryReplayEvents: RetryReplayEvent[] | null = null;
+  let postCompactionContentStart: number | null = null;
+  let savedFinalAiMessages = false;
+  const persistCompactionFallback = async () => {
+    if (postCompactionContentStart === null || savedFinalAiMessages) return;
+    try {
+      await db
+        .update(messages)
+        .set({
+          aiMessagesJson: getAiMessagesJsonIfWithinLimit([
+            {
+              role: "assistant",
+              content:
+                fullResponse.slice(postCompactionContentStart) ||
+                "Earlier output from this turn is represented by the preceding compaction summary.",
+            },
+          ]),
+        })
+        .where(eq(messages.id, placeholderMessageId));
+    } catch (error) {
+      logger.warn("Failed to persist compaction fallback history:", error);
+    }
+  };
   // Mid-turn compaction inserts a DB summary row for LLM history, but we render
   // the user-facing compaction indicator inline in the active assistant turn.
   const hiddenMessageIdsForStreaming = new Set<number>();
@@ -1274,19 +1297,10 @@ export async function handleLocalAgentStream(
       }> = [];
       let terminatedRetryCount = 0;
       let needsContinuationInstruction = false;
+      let injectionBaseMessageCount = 0;
 
       // Retry loop: if the stream terminates with a transient error, captured text/tool events are replayed into message history, a continuation instruction is appended, and the stream is re-opened.
       while (!abortController.signal.aborted) {
-        // A new stream has a different response tail (sliced after compaction or
-        // rebuilt from retry events). Carry injections into its base once, after
-        // the completed transcript, rather than reusing the previous indexes.
-        if (allInjectedMessages.length > 0) {
-          currentMessageHistory = [
-            ...currentMessageHistory,
-            ...allInjectedMessages.map(({ message }) => message),
-          ];
-          allInjectedMessages.length = 0;
-        }
         let streamErrorFromCallback: unknown;
         const retryReplayEvents: RetryReplayEvent[] = [];
         activeRetryReplayEvents = retryReplayEvents;
@@ -1310,6 +1324,7 @@ export async function handleLocalAgentStream(
         // streamText rebuilds every step from this immutable initial base plus
         // cumulative responses. prepareStep overrides do not update that base.
         const attemptBaseMessageCount = sanitizedAttemptMessages.length;
+        injectionBaseMessageCount = attemptBaseMessageCount;
         let compactedBaseMessages: ModelMessage[] | undefined;
         // Step numbers restart on a retry; prior replay is already in the base.
         postMidTurnCompactionStartStep = null;
@@ -1436,23 +1451,12 @@ export async function handleLocalAgentStream(
                   currentMessageHistory = compactedMessageHistory;
                   accumulatedAiMessages.length = 0;
                   retryReplayEvents.length = 0;
-                  // Write a durable fallback immediately: an aborted/refused
-                  // stream may never produce post-compaction SDK messages. A
-                  // null history would restore the full, uncompacted display
-                  // content on the next turn. Normal finalization overwrites
-                  // this marker when there is a structured response to save.
-                  await db
-                    .update(messages)
-                    .set({
-                      aiMessagesJson: getAiMessagesJsonIfWithinLimit([
-                        {
-                          role: "assistant",
-                          content:
-                            "Earlier output from this turn is represented by the preceding compaction summary.",
-                        },
-                      ]),
-                    })
-                    .where(eq(messages.id, placeholderMessageId));
+                  injectionBaseMessageCount = compactedBaseMessages.length;
+                  // Keep a durable marker now and the displayed post-compaction
+                  // remainder on every exit that cannot save SDK history.
+                  postCompactionContentStart = fullResponse.length;
+                  savedFinalAiMessages = false;
+                  await persistCompactionFallback();
                 } else {
                   // Prevent repeated compaction attempts if the first one fails.
                   compactionFailedMidTurn = true;
@@ -1469,11 +1473,23 @@ export async function handleLocalAgentStream(
                 };
               }
 
+              const previousInjectionCount = allInjectedMessages.length;
               const preparedStep = prepareStepMessages(
                 stepOptions,
                 pendingUserMessages,
                 allInjectedMessages,
               );
+              // Capture context at the point the model first receives it. Replay
+              // message counts differ from SDK responses (e.g. text coalescing),
+              // so replay events, rather than SDK indexes, preserve chronology.
+              for (const injection of allInjectedMessages.slice(
+                previousInjectionCount,
+              )) {
+                retryReplayEvents.push({
+                  type: "injected-user-message",
+                  message: injection.message,
+                });
+              }
 
               // prepareStepMessages returns undefined when it has no additional
               // injections/cleanups to apply. If we already replaced the base
@@ -1857,6 +1873,7 @@ export async function handleLocalAgentStream(
                 onCurrentMessageHistoryUpdate: (next) =>
                   (currentMessageHistory = next),
               });
+              allInjectedMessages.length = 0;
               terminatedRetryCount += 1;
               needsContinuationInstruction = true;
               const retryDelayMs =
@@ -1906,6 +1923,7 @@ export async function handleLocalAgentStream(
                 onCurrentMessageHistoryUpdate: (next) =>
                   (currentMessageHistory = next),
               });
+              allInjectedMessages.length = 0;
               terminatedRetryCount += 1;
               needsContinuationInstruction = true;
               const retryDelayMs =
@@ -1957,9 +1975,9 @@ export async function handleLocalAgentStream(
       // Track total steps for step limit detection
       totalStepsExecuted += steps.length;
 
-      if (responseMessages.length > 0) {
+      if (responseMessages.length > 0 || allInjectedMessages.length > 0) {
         // For mid-turn compaction, slice off pre-compaction messages
-        const messagesToAccumulate =
+        const responseTail =
           compactedMidTurn && postMidTurnCompactionStartStep !== null
             ? (() => {
                 // stepNumber is 0-indexed (from AI SDK: stepNumber = steps.length).
@@ -1975,7 +1993,22 @@ export async function handleLocalAgentStream(
                 return responseMessages.slice(prevStepMessages?.length ?? 0);
               })()
             : responseMessages;
-        accumulatedAiMessages.push(...messagesToAccumulate);
+        const discardedMessageCount =
+          responseMessages.length - responseTail.length;
+        const messagesToAccumulate = injectMessagesAtPositions(
+          responseTail,
+          allInjectedMessages.map((injection) => ({
+            ...injection,
+            insertAtIndex: Math.max(
+              0,
+              injection.insertAtIndex -
+                injectionBaseMessageCount -
+                discardedMessageCount,
+            ),
+          })),
+        );
+        allInjectedMessages.length = 0;
+        accumulatedAiMessages.push(...responseTail);
         currentMessageHistory = [
           ...currentMessageHistory,
           ...messagesToAccumulate,
@@ -2210,6 +2243,7 @@ export async function handleLocalAgentStream(
           .update(messages)
           .set({ aiMessagesJson })
           .where(eq(messages.id, placeholderMessageId));
+        savedFinalAiMessages = true;
       }
     } catch (err) {
       logger.warn("Failed to save AI messages JSON:", err);
@@ -2341,6 +2375,7 @@ export async function handleLocalAgentStream(
     });
     return false; // Error - don't consume quota
   } finally {
+    await persistCompactionFallback();
     endTurnFinalization(mutationTurnId);
     // If an in-progress tool's XML preview was overlaid in the renderer
     // and the stream tore down before onXmlComplete could commit and
