@@ -2292,6 +2292,250 @@ describe("handleLocalAgentStream", () => {
   });
 
   describe("Mid-turn compaction", () => {
+    it.each(["todo follow-up", "stream retry"])(
+      "keeps the compacted base across later SDK steps and %s",
+      async (resume) => {
+        const { event } = createFakeEvent();
+        mockSettings = buildTestSettings({ enableDyadPro: true });
+        const oldAssistant = {
+          role: "assistant",
+          content: [
+            {
+              type: "reasoning",
+              text: "old reasoning",
+              providerOptions: {
+                openai: { reasoningEncryptedContent: "old-chain" },
+              },
+            },
+            { type: "text", text: "old context assistant" },
+          ],
+        };
+        mockChatData = buildTestChat({
+          messages: [
+            {
+              id: 1,
+              role: "user",
+              content: "old context user",
+              createdAt: new Date("2025-01-01T00:00:00Z"),
+            },
+            {
+              id: 2,
+              role: "assistant",
+              content: "old context assistant",
+              aiMessagesJson: [oldAssistant],
+              createdAt: new Date("2025-01-01T00:01:00Z"),
+            },
+            {
+              id: 3,
+              role: "user",
+              content: "current task",
+              createdAt: new Date("2025-01-01T00:02:00Z"),
+            },
+            {
+              id: 10,
+              role: "assistant",
+              content: "",
+              createdAt: new Date("2025-01-01T00:03:00Z"),
+            },
+          ],
+        } as any);
+        let injectContext: () => void;
+        vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
+          injectContext = () =>
+            ctx.appendUserMessage([{ type: "text", text: "injected context" }]);
+          return {
+            update_todos: {
+              execute: async (args: any) => {
+                ctx.todos = args.todos;
+                ctx.onUpdateTodos(ctx.todos);
+                return "Updated todos";
+              },
+            },
+          } as any;
+        });
+        mockIsChatPendingCompaction
+          .mockResolvedValueOnce(false)
+          .mockResolvedValueOnce(true)
+          .mockResolvedValue(false);
+        mockCheckAndMarkForCompaction.mockResolvedValue(true);
+        mockPerformCompaction.mockImplementation(async () => {
+          mockChatData = {
+            ...mockChatData,
+            messages: [
+              ...mockChatData!.messages,
+              {
+                id: 20,
+                role: "assistant",
+                content: "compacted base",
+                isCompactionSummary: true,
+                createdAt: new Date("2025-01-01T00:03:30Z"),
+              },
+            ],
+          } as any;
+          return {
+            success: true,
+            summary: "compacted base",
+            backupPath: ".dyad/chats/1/compaction-test.md",
+          };
+        });
+        const toolPair = (id: string) => [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: id,
+                toolName: "read_file",
+                input: { path: id },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: id,
+                toolName: "read_file",
+                output: { type: "text", value: id },
+              },
+            ],
+          },
+        ];
+        const before = toolPair("before-compaction");
+        const after = [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "reasoning",
+                text: "new reasoning",
+                providerOptions: {
+                  openai: { reasoningEncryptedContent: "new-chain" },
+                },
+              },
+              { type: "text", text: "post-compaction response" },
+            ],
+          },
+          ...toolPair("after-compaction"),
+        ];
+        const later = toolPair("later-step");
+        const outgoing: any[][] = [];
+        let passes = 0;
+        mockStreamTextImpl = (options) => {
+          passes += 1;
+          if (passes > 1) {
+            outgoing.push(options.messages);
+            return {
+              fullStream: (async function* () {
+                yield { type: "text-delta", text: "All done" };
+              })(),
+              response: Promise.resolve({ messages: [] }),
+              steps: Promise.resolve([]),
+            };
+          }
+          const finalMessages = [...before, ...after, ...later];
+          return {
+            fullStream: (async function* () {
+              await options.tools.update_todos.execute({
+                todos:
+                  resume === "todo follow-up"
+                    ? [
+                        {
+                          id: "todo",
+                          content: "Finish work",
+                          status: "pending",
+                        },
+                      ]
+                    : [],
+              });
+              await options.onStepFinish({
+                usage: { totalTokens: 200_000 },
+                toolCalls: [{}],
+              });
+              // Match streamText: each prepareStep receives the ORIGINAL base plus
+              // cumulative responses, never the previous prepareStep override.
+              for (const [i, tail] of [
+                before,
+                [...before, ...after],
+                finalMessages,
+              ].entries()) {
+                if (i === 1) injectContext();
+                const messages = [...options.messages, ...tail];
+                const prepared = await options.prepareStep({
+                  messages,
+                  stepNumber: i + 1,
+                  steps: [],
+                  model: {},
+                  experimental_context: undefined,
+                });
+                outgoing.push(prepared?.messages ?? messages);
+              }
+              yield { type: "text-delta", text: "Progress update" };
+              if (resume === "stream retry") throw new TypeError("terminated");
+            })(),
+            response: Promise.resolve({ messages: finalMessages }),
+            steps: Promise.resolve([
+              { toolCalls: [{}], response: { messages: before } },
+              {
+                toolCalls: [{}],
+                response: { messages: [...before, ...after] },
+              },
+              { toolCalls: [], response: { messages: finalMessages } },
+            ]),
+          };
+        };
+        await handleLocalAgentStream(
+          event,
+          { chatId: 1, prompt: "test" },
+          new AbortController(),
+          {
+            placeholderMessageId: 10,
+            systemPrompt: "You are helpful",
+            dyadRequestId,
+          },
+        );
+        expect(mockPerformCompaction).toHaveBeenCalledTimes(1);
+        expect(passes).toBe(2);
+        expect(outgoing).toHaveLength(4);
+        for (const messages of outgoing) {
+          const serialized = JSON.stringify(messages);
+          expect(serialized).toContain("compacted base");
+          expect(serialized).toContain("current task");
+          expect(serialized).not.toContain("old context");
+          expect(serialized).not.toContain("old-chain");
+        }
+        for (const messages of outgoing.slice(0, 3)) {
+          expect(messages).toEqual(expect.arrayContaining(before));
+        }
+        for (const messages of outgoing.slice(
+          1,
+          resume === "stream retry" ? 3 : 4,
+        )) {
+          expect(messages).toEqual(expect.arrayContaining(after));
+        }
+        expect(outgoing[2]).toEqual(expect.arrayContaining(later));
+        if (resume === "todo follow-up") {
+          expect(outgoing[3]).toEqual(expect.arrayContaining(later));
+        } else {
+          expect(JSON.stringify(outgoing[3])).toContain("Progress update");
+        }
+        for (const messages of outgoing.slice(1, 3)) {
+          const injectedIndex = messages.findIndex((message) =>
+            JSON.stringify(message).includes("injected context"),
+          );
+          expect(injectedIndex).toBeGreaterThan(messages.indexOf(after.at(-1)));
+          expect(
+            messages.filter((message) =>
+              JSON.stringify(message).includes("injected context"),
+            ),
+          ).toHaveLength(1);
+          if (messages.includes(later[0]))
+            expect(injectedIndex).toBeLessThan(messages.indexOf(later[0]));
+        }
+      },
+    );
+
     it("preserves the full in-flight tail after sanitizing follow-up history", async () => {
       const { event } = createFakeEvent();
       mockSettings = buildTestSettings({ enableDyadPro: true });
@@ -2458,7 +2702,9 @@ describe("handleLocalAgentStream", () => {
             preparedAfterCompaction = prepared.messages;
             yield { type: "text-delta", text: "Finished the work." };
           })(),
-          response: Promise.resolve({ messages: [] }),
+          response: Promise.resolve({
+            messages: [{ role: "assistant", content: "after compacted pass" }],
+          }),
           steps: Promise.resolve([]),
         };
       };
@@ -2478,6 +2724,12 @@ describe("handleLocalAgentStream", () => {
       expect(mockPerformCompaction).toHaveBeenCalledTimes(1);
       expect(preparedAfterCompaction).toContain(inFlightAssistant);
       expect(preparedAfterCompaction).toContain(inFlightTool);
+      const persisted = dbOperations.updates.find(
+        (update) => update.data.aiMessagesJson,
+      )?.data.aiMessagesJson;
+      expect(JSON.stringify(persisted)).toContain("after compacted pass");
+      expect(JSON.stringify(persisted)).not.toContain("I started the work.");
+      expect(JSON.stringify(persisted)).not.toContain("call-1");
     });
 
     it("should compact between steps when token usage crosses threshold", async () => {
