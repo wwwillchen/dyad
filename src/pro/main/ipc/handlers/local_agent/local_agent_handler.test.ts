@@ -196,6 +196,7 @@ const dbOperations: {
 } = { updates: [], queries: [] };
 
 let mockChatData: ReturnType<typeof buildTestChat> | null = null;
+let mockAiMessageSaveFailures = 0;
 let mockMcpServers: Array<{ id: number; name: string }> = [];
 let mockMcpToolSet: Record<string, Record<string, unknown>> = {};
 
@@ -209,6 +210,10 @@ vi.mock("@/db", () => ({
     update: vi.fn(() => ({
       set: vi.fn((data: Record<string, unknown>) => ({
         where: vi.fn((condition: any) => {
+          if (data.aiMessagesJson && mockAiMessageSaveFailures > 0) {
+            mockAiMessageSaveFailures -= 1;
+            return Promise.reject(new Error("test history write failure"));
+          }
           dbOperations.updates.push({
             table: "messages",
             id: condition?.id ?? 0,
@@ -1043,6 +1048,7 @@ describe("handleLocalAgentStream", () => {
     vi.clearAllMocks();
     dbOperations.updates = [];
     dbOperations.queries = [];
+    mockAiMessageSaveFailures = 0;
     mockChatData = null;
     mockMcpServers = [];
     mockMcpToolSet = {};
@@ -2292,193 +2298,736 @@ describe("handleLocalAgentStream", () => {
   });
 
   describe("Mid-turn compaction", () => {
-    it("preserves the full in-flight tail after sanitizing follow-up history", async () => {
-      const { event } = createFakeEvent();
-      mockSettings = buildTestSettings({ enableDyadPro: true });
-      mockChatData = buildTestChat();
-
-      vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
-        return {
-          update_todos: {
-            execute: async (args: any) => {
-              ctx.todos = args.todos;
-              ctx.onUpdateTodos(ctx.todos);
-              return "Updated todos";
-            },
-          },
-        } as any;
-      });
-
-      mockIsChatPendingCompaction
-        .mockResolvedValueOnce(false)
-        .mockResolvedValueOnce(true)
-        .mockResolvedValue(false);
-      mockCheckAndMarkForCompaction.mockResolvedValue(true);
-      mockPerformCompaction.mockImplementation(async () => {
-        if (!mockChatData) {
-          return { success: false, error: "missing chat" };
+    it.each(
+      [
+        "empty response",
+        "refusal",
+        "abort",
+        "finalization error",
+        "stream error",
+        "fallback write error",
+        "join error",
+      ].flatMap((ending) =>
+        [false, true].map((hasOutput) => ({ ending, hasOutput })),
+      ),
+    )(
+      "preserves retry instructions and post-compaction history after $ending (output: $hasOutput)",
+      async ({ ending, hasOutput }) => {
+        const { event } = createFakeEvent();
+        const controller = new AbortController();
+        mockSettings = buildTestSettings({ enableDyadPro: true });
+        mockChatData = buildTestChat();
+        let completeTool: () => void;
+        vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
+          completeTool = () =>
+            ctx.onXmlComplete(
+              '<dyad-write path="new.ts">saved code</dyad-write>',
+            );
+          return {};
+        });
+        if (ending === "join error") {
+          mockSubagentManager.waitForOwnedSubagentsAndSealTurn.mockRejectedValueOnce(
+            new Error("join failure"),
+          );
         }
-        mockChatData = {
-          ...mockChatData,
-          messages: [
-            ...mockChatData.messages,
-            {
-              id: 20,
-              role: "assistant",
-              content: "Conversation compacted.",
-              isCompactionSummary: true,
-              createdAt: new Date("2025-01-01T00:03:30Z"),
+        mockIsChatPendingCompaction
+          .mockResolvedValueOnce(false)
+          .mockResolvedValueOnce(true)
+          .mockResolvedValue(false);
+        mockCheckAndMarkForCompaction.mockResolvedValue(true);
+        mockPerformCompaction.mockImplementation(async () => {
+          if (ending === "fallback write error") mockAiMessageSaveFailures = 1;
+          mockChatData!.messages.push({
+            id: 20,
+            role: "assistant",
+            content: "compacted retry summary",
+            isCompactionSummary: true,
+            createdAt: new Date("2025-01-02"),
+          });
+          return { success: true, summary: "compacted retry summary" };
+        });
+        let attempts = 0;
+        const preparedSteps: ModelMessage[][] = [];
+        mockStreamTextImpl = (options) => {
+          attempts += 1;
+          if (attempts === 1) {
+            return {
+              fullStream: (async function* () {
+                yield {
+                  type: "text-delta",
+                  text: "Already displayed before retry",
+                };
+                throw new TypeError("terminated");
+              })(),
+              response: Promise.resolve({ messages: [] }),
+              steps: Promise.resolve([]),
+            };
+          }
+          return {
+            fullStream: (async function* () {
+              await options.onStepFinish({
+                usage: { totalTokens: 200_000 },
+                toolCalls: [{}],
+              });
+              for (const stepNumber of [1, 2]) {
+                const prepared = await options.prepareStep({
+                  messages: options.messages,
+                  stepNumber,
+                  steps: [],
+                });
+                preparedSteps.push(prepared?.messages ?? options.messages);
+              }
+              if (hasOutput) completeTool();
+              if (hasOutput)
+                yield {
+                  type: "text-delta",
+                  text: "Completed post-compaction work",
+                };
+              if (ending === "abort") controller.abort();
+              if (ending === "stream error")
+                throw new Error("non-retryable failure");
+              if (ending === "refusal") {
+                yield {
+                  type: "finish",
+                  finishReason: "content-filter",
+                  rawFinishReason: "refusal",
+                };
+              }
+            })(),
+            get response() {
+              return ending === "finalization error"
+                ? Promise.reject(new Error("non-retryable failure"))
+                : Promise.resolve({ messages: [] });
             },
-          ],
-        } as any;
-        return {
-          success: true,
-          summary: "Conversation compacted.",
-          backupPath: ".dyad/chats/1/compaction-test.md",
+            steps: Promise.resolve([]),
+          };
         };
-      });
+        const run = handleLocalAgentStream(
+          event,
+          { chatId: 1, prompt: "test" },
+          controller,
+          {
+            placeholderMessageId: 10,
+            systemPrompt: "You are helpful",
+            dyadRequestId,
+          },
+        );
+        if (ending === "stream error") await expect(run).resolves.toBe(false);
+        else await run;
+        expect(attempts).toBe(2);
+        expect(preparedSteps).toHaveLength(2);
+        for (const messages of preparedSteps) {
+          expect(JSON.stringify(messages)).toContain("compacted retry summary");
+          expect(JSON.stringify(messages)).toContain("do not repeat");
+        }
+        const aiMessagesJson = dbOperations.updates
+          .filter((update) => update.data.aiMessagesJson)
+          .at(-1)?.data.aiMessagesJson;
+        expect(aiMessagesJson).toBeDefined();
+        const nextTurnHistory = buildChatMessageHistory([
+          {
+            id: 10,
+            role: "assistant",
+            content: "Already displayed before retry",
+            aiMessagesJson: aiMessagesJson as any,
+            isCompactionSummary: false,
+            createdAt: new Date("2025-01-02"),
+          },
+        ]);
+        expect(JSON.stringify(nextTurnHistory)).not.toContain(
+          "Already displayed before retry",
+        );
+        expect(JSON.stringify(nextTurnHistory)).toContain(
+          ending === "refusal"
+            ? "Model refused to respond"
+            : hasOutput
+              ? "Completed post-compaction work"
+              : "preceding compaction summary",
+        );
+        if (hasOutput && ending !== "refusal") {
+          expect(JSON.stringify(nextTurnHistory)).toContain("new.ts");
+        }
+      },
+    );
 
-      const splitParallelToolHistory = [
-        {
+    it.each(["todo follow-up", "stream retry", "finalization retry"])(
+      "keeps the compacted base across later SDK steps and %s",
+      async (resume) => {
+        const { event } = createFakeEvent();
+        mockSettings = buildTestSettings({ enableDyadPro: true });
+        const oldAssistant = {
           role: "assistant",
           content: [
             {
-              type: "tool-call",
-              toolCallId: "call-1",
-              toolName: "read_file",
-              input: { path: "src/App.tsx" },
+              type: "reasoning",
+              text: "old reasoning",
+              providerOptions: {
+                openai: { reasoningEncryptedContent: "old-chain" },
+              },
+            },
+            { type: "text", text: "old context assistant" },
+          ],
+        };
+        mockChatData = buildTestChat({
+          messages: [
+            {
+              id: 1,
+              role: "user",
+              content: "old context user",
+              createdAt: new Date("2025-01-01T00:00:00Z"),
             },
             {
-              type: "tool-call",
-              toolCallId: "call-2",
-              toolName: "read_file",
-              input: { path: "src/main.tsx" },
+              id: 2,
+              role: "assistant",
+              content: "old context assistant",
+              aiMessagesJson: [oldAssistant],
+              createdAt: new Date("2025-01-01T00:01:00Z"),
             },
-          ],
-        },
-        {
-          role: "tool",
-          content: [
             {
-              type: "tool-result",
-              toolCallId: "call-1",
-              toolName: "read_file",
-              output: "App result",
+              id: 3,
+              role: "user",
+              content: "current task",
+              createdAt: new Date("2025-01-01T00:02:00Z"),
             },
-          ],
-        },
-        {
-          role: "tool",
-          content: [
             {
-              type: "tool-result",
-              toolCallId: "call-2",
-              toolName: "read_file",
-              output: "main result",
+              id: 10,
+              role: "assistant",
+              content: "",
+              createdAt: new Date("2025-01-01T00:03:00Z"),
             },
           ],
-        },
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "I started the work." }],
-        },
-      ];
-      const inFlightAssistant = {
-        role: "assistant",
-        content: [
+        } as any);
+        let injectContext: () => void;
+        let injectScreenshot: () => void;
+        vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
+          injectScreenshot = () =>
+            ctx.appendUserMessage([
+              { type: "image-url", url: "https://example.com/screenshot.png" },
+            ]);
+          injectContext = () =>
+            ctx.appendUserMessage([{ type: "text", text: "injected context" }]);
+          return {
+            update_todos: {
+              execute: async (args: any) => {
+                ctx.todos = args.todos;
+                ctx.onUpdateTodos(ctx.todos);
+                return "Updated todos";
+              },
+            },
+          } as any;
+        });
+        mockIsChatPendingCompaction
+          .mockResolvedValueOnce(false)
+          .mockResolvedValueOnce(true)
+          .mockResolvedValue(false);
+        mockCheckAndMarkForCompaction.mockResolvedValue(true);
+        mockPerformCompaction.mockImplementation(async () => {
+          mockChatData = {
+            ...mockChatData,
+            messages: [
+              ...mockChatData!.messages,
+              {
+                id: 20,
+                role: "assistant",
+                content: "compacted base",
+                isCompactionSummary: true,
+                createdAt: new Date("2025-01-01T00:03:30Z"),
+              },
+            ],
+          } as any;
+          return {
+            success: true,
+            summary: "compacted base",
+            backupPath: ".dyad/chats/1/compaction-test.md",
+          };
+        });
+        const toolPair = (id: string) => [
           {
-            type: "tool-call",
-            toolCallId: "call-live",
-            toolName: "read_file",
-            input: { path: "src/live.ts" },
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: id,
+                toolName: "read_file",
+                input: { path: id },
+              },
+            ],
           },
-        ],
-      };
-      const inFlightTool = {
-        role: "tool",
-        content: [
           {
-            type: "tool-result",
-            toolCallId: "call-live",
-            toolName: "read_file",
-            output: "live result",
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: id,
+                toolName: "read_file",
+                output: { type: "text", value: id },
+              },
+            ],
           },
-        ],
-      };
-
-      let passCount = 0;
-      let preparedAfterCompaction: any[] = [];
-      mockStreamTextImpl = (options) => {
-        passCount += 1;
-        if (passCount === 1) {
+        ];
+        const before = toolPair("before-compaction");
+        const after = [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "reasoning",
+                text: "new reasoning",
+                providerOptions: {
+                  openai: { reasoningEncryptedContent: "new-chain" },
+                },
+              },
+              { type: "text", text: "post-compaction response" },
+            ],
+          },
+          ...toolPair("after-compaction"),
+        ];
+        const later = toolPair("later-step");
+        const outgoing: any[][] = [];
+        let passes = 0;
+        mockStreamTextImpl = (options) => {
+          passes += 1;
+          if (passes > 1) {
+            outgoing.push(options.messages);
+            return {
+              fullStream: (async function* () {
+                const prepared = await options.prepareStep({
+                  messages: options.messages,
+                  stepNumber: 0,
+                  steps: [],
+                });
+                outgoing.push(prepared?.messages ?? options.messages);
+                yield { type: "text-delta", text: "All done" };
+              })(),
+              response: Promise.resolve({ messages: [] }),
+              steps: Promise.resolve([]),
+            };
+          }
+          const finalMessages = [...before, ...after, ...later];
           return {
             fullStream: (async function* () {
               await options.tools.update_todos.execute({
-                merge: false,
-                todos: [
-                  {
-                    id: "todo-1",
-                    content: "Finish the requested work",
-                    status: "pending",
-                  },
-                ],
+                todos:
+                  resume === "todo follow-up"
+                    ? [
+                        {
+                          id: "todo",
+                          content: "Finish work",
+                          status: "pending",
+                        },
+                      ]
+                    : [],
               });
-              yield { type: "text-delta", text: "I started the work." };
+              yield {
+                type: "text-delta",
+                text: "summarized pre-compaction text",
+              };
+              yield {
+                type: "tool-call",
+                toolCallId: "summarized-tool",
+                toolName: "read_file",
+                input: { path: "old.txt" },
+              };
+              yield {
+                type: "tool-result",
+                toolCallId: "summarized-tool",
+                toolName: "read_file",
+                output: "summarized result",
+              };
+              injectScreenshot();
+              await options.prepareStep({
+                messages: [...options.messages, ...before],
+                stepNumber: 1,
+                steps: [],
+              });
+              await options.onStepFinish({
+                usage: { totalTokens: 200_000 },
+                toolCalls: [{}],
+              });
+              // Match streamText: each prepareStep receives the ORIGINAL base plus
+              // cumulative responses, never the previous prepareStep override.
+              for (const [i, tail] of [
+                before,
+                [...before, ...after],
+                finalMessages,
+              ].entries()) {
+                if (i === 1) injectContext();
+                const messages = [...options.messages, ...tail];
+                const prepared = await options.prepareStep({
+                  messages,
+                  stepNumber: i + 1,
+                  steps: [],
+                  model: {},
+                  experimental_context: undefined,
+                });
+                outgoing.push(prepared?.messages ?? messages);
+              }
+              yield { type: "text-delta", text: "Progress update" };
+              yield {
+                type: "tool-call",
+                toolCallId: "retained-tool",
+                toolName: "read_file",
+                input: { path: "new.txt" },
+              };
+              yield {
+                type: "tool-result",
+                toolCallId: "retained-tool",
+                toolName: "read_file",
+                output: "retained result",
+              };
+              if (resume === "stream retry") throw new TypeError("terminated");
             })(),
-            response: Promise.resolve({
-              messages: splitParallelToolHistory,
-            }),
+            get response() {
+              return resume === "finalization retry"
+                ? Promise.reject(new TypeError("terminated"))
+                : Promise.resolve({ messages: finalMessages });
+            },
             steps: Promise.resolve([
+              { toolCalls: [{}], response: { messages: before } },
               {
-                toolCalls: [{ toolName: "set_chat_summary" }],
-                response: { messages: splitParallelToolHistory },
+                toolCalls: [{}],
+                response: { messages: [...before, ...after] },
               },
+              { toolCalls: [], response: { messages: finalMessages } },
             ]),
           };
-        }
-
-        return {
-          fullStream: (async function* () {
-            await options.onStepFinish?.({
-              usage: { totalTokens: 200_000 },
-              toolCalls: [{}],
-            });
-            const stepMessages = [
-              ...options.messages,
-              inFlightAssistant,
-              inFlightTool,
-            ];
-            const prepared = (await options.prepareStep?.({
-              messages: stepMessages,
-              stepNumber: 1,
-              steps: [],
-              model: {},
-              experimental_context: undefined,
-            })) ?? { messages: stepMessages };
-            preparedAfterCompaction = prepared.messages;
-            yield { type: "text-delta", text: "Finished the work." };
-          })(),
-          response: Promise.resolve({ messages: [] }),
-          steps: Promise.resolve([]),
         };
-      };
+        await handleLocalAgentStream(
+          event,
+          { chatId: 1, prompt: "test" },
+          new AbortController(),
+          {
+            placeholderMessageId: 10,
+            systemPrompt: "You are helpful",
+            dyadRequestId,
+          },
+        );
+        expect(mockPerformCompaction).toHaveBeenCalledTimes(1);
+        expect(passes).toBe(2);
+        expect(outgoing).toHaveLength(5);
+        for (const messages of outgoing) {
+          const serialized = JSON.stringify(messages);
+          expect(serialized).toContain("compacted base");
+          expect(serialized).toContain("current task");
+          expect(serialized).not.toContain("old context");
+          expect(serialized).not.toContain("old-chain");
+        }
+        for (const messages of outgoing.slice(0, 3)) {
+          expect(messages).toEqual(expect.arrayContaining(before));
+          const screenshotIndexes = messages.flatMap((message, index) =>
+            JSON.stringify(message).includes(
+              "https://example.com/screenshot.png",
+            )
+              ? [index]
+              : [],
+          );
+          expect(screenshotIndexes).toHaveLength(1);
+          const resultIndex = messages.findIndex(
+            (message) =>
+              message.role === "tool" &&
+              JSON.stringify(message).includes("before-compaction"),
+          );
+          expect(resultIndex).toBeGreaterThanOrEqual(0);
+          expect(screenshotIndexes[0]).toBe(resultIndex + 1);
+        }
+        for (const messages of outgoing.slice(
+          1,
+          resume === "todo follow-up" ? 4 : 3,
+        )) {
+          expect(messages).toEqual(expect.arrayContaining(after));
+        }
+        expect(outgoing[2]).toEqual(expect.arrayContaining(later));
+        if (resume === "todo follow-up") {
+          expect(outgoing[3]).toEqual(expect.arrayContaining(later));
+        } else {
+          expect(JSON.stringify(outgoing[3])).toContain("Progress update");
+          expect(JSON.stringify(outgoing[3])).toContain("retained-tool");
+          expect(JSON.stringify(outgoing[3])).not.toContain("summarized");
+          const persisted = dbOperations.updates
+            .filter((update) => update.data.aiMessagesJson)
+            .at(-1)?.data.aiMessagesJson;
+          expect(JSON.stringify(persisted)).toContain("retained-tool");
+          expect(JSON.stringify(persisted)).not.toContain("summarized");
+        }
+        for (const messages of outgoing.slice(3)) {
+          expect(
+            messages.filter((message) =>
+              JSON.stringify(message).includes("injected context"),
+            ),
+          ).toHaveLength(1);
+          const injectedIndex = messages.findIndex((message) =>
+            JSON.stringify(message).includes("injected context"),
+          );
+          const nextActionIndex = messages.findIndex((message) =>
+            JSON.stringify(message).includes(
+              resume === "todo follow-up" ? "later-step" : "retained-tool",
+            ),
+          );
+          expect(injectedIndex).toBeLessThan(nextActionIndex);
+          expect(JSON.stringify(messages.at(-1))).toContain(
+            resume === "todo follow-up"
+              ? "incomplete todo(s)"
+              : "do not repeat",
+          );
+        }
+        for (const messages of outgoing.slice(1, 3)) {
+          const injectedIndex = messages.findIndex((message) =>
+            JSON.stringify(message).includes("injected context"),
+          );
+          expect(injectedIndex).toBeGreaterThan(messages.indexOf(after.at(-1)));
+          expect(
+            messages.filter((message) =>
+              JSON.stringify(message).includes("injected context"),
+            ),
+          ).toHaveLength(1);
+          if (messages.includes(later[0]))
+            expect(injectedIndex).toBeLessThan(messages.indexOf(later[0]));
+        }
+      },
+    );
 
-      await handleLocalAgentStream(
-        event,
-        { chatId: 1, prompt: "test" },
-        new AbortController(),
-        {
-          placeholderMessageId: 10,
-          systemPrompt: "You are helpful",
-          dyadRequestId,
-        },
-      );
+    it.each(["todo", "Explorer"])(
+      "preserves %s instructions and the in-flight tail across compaction and retry",
+      async (kind) => {
+        const { event } = createFakeEvent();
+        mockSettings = buildTestSettings({ enableDyadPro: true });
+        mockChatData = buildTestChat();
 
-      expect(passCount).toBe(2);
-      expect(mockPerformCompaction).toHaveBeenCalledTimes(1);
-      expect(preparedAfterCompaction).toContain(inFlightAssistant);
-      expect(preparedAfterCompaction).toContain(inFlightTool);
-    });
+        vi.mocked(buildAgentToolSet).mockImplementation((ctx) => {
+          if (kind === "Explorer")
+            ctx.spawnedSubagentThreadIds?.push("explorer-context");
+          return {
+            update_todos: {
+              execute: async (args: any) => {
+                ctx.todos = args.todos;
+                ctx.onUpdateTodos(ctx.todos);
+                return "Updated todos";
+              },
+            },
+          } as any;
+        });
+        if (kind === "Explorer")
+          (mockSubagentManager.waitForSubagents as any).mockResolvedValueOnce([
+            {
+              id: "explorer-context",
+              status: "completed",
+              result: { report: "Important Explorer evidence in src/auth.ts" },
+              error: null,
+            } as any,
+          ]);
+
+        mockIsChatPendingCompaction
+          .mockResolvedValueOnce(false)
+          .mockResolvedValueOnce(true)
+          .mockResolvedValue(false);
+        mockCheckAndMarkForCompaction.mockResolvedValue(true);
+        mockPerformCompaction.mockImplementation(async () => {
+          if (!mockChatData) {
+            return { success: false, error: "missing chat" };
+          }
+          mockChatData = {
+            ...mockChatData,
+            messages: [
+              ...mockChatData.messages,
+              {
+                id: 20,
+                role: "assistant",
+                content: "Conversation compacted.",
+                isCompactionSummary: true,
+                createdAt: new Date("2025-01-01T00:03:30Z"),
+              },
+            ],
+          } as any;
+          return {
+            success: true,
+            summary: "Conversation compacted.",
+            backupPath: ".dyad/chats/1/compaction-test.md",
+          };
+        });
+
+        const splitParallelToolHistory = [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: "call-1",
+                toolName: "read_file",
+                input: { path: "src/App.tsx" },
+              },
+              {
+                type: "tool-call",
+                toolCallId: "call-2",
+                toolName: "read_file",
+                input: { path: "src/main.tsx" },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call-1",
+                toolName: "read_file",
+                output: "App result",
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call-2",
+                toolName: "read_file",
+                output: "main result",
+              },
+            ],
+          },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "I started the work." }],
+          },
+        ];
+        const inFlightAssistant = {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call-live",
+              toolName: "read_file",
+              input: { path: "src/live.ts" },
+            },
+          ],
+        };
+        const inFlightTool = {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-live",
+              toolName: "read_file",
+              output: "live result",
+            },
+          ],
+        };
+
+        let passCount = 0;
+        let preparedAfterCompaction: any[] = [];
+        let retryHistory: any[] = [];
+        mockStreamTextImpl = (options) => {
+          passCount += 1;
+          if (passCount === 3) {
+            retryHistory = options.messages;
+            return {
+              fullStream: (async function* () {
+                yield { type: "text-delta", text: "Finished" };
+              })(),
+              response: Promise.resolve({
+                messages: [
+                  { role: "assistant", content: "after compacted pass" },
+                ],
+              }),
+              steps: Promise.resolve([]),
+            };
+          }
+          if (passCount === 1) {
+            return {
+              fullStream: (async function* () {
+                await options.tools.update_todos.execute({
+                  merge: false,
+                  todos:
+                    kind === "Explorer"
+                      ? []
+                      : [
+                          {
+                            id: "todo-1",
+                            content: "Finish the requested work",
+                            status: "pending",
+                          },
+                        ],
+                });
+                yield { type: "text-delta", text: "I started the work." };
+              })(),
+              response: Promise.resolve({
+                messages: splitParallelToolHistory,
+              }),
+              steps: Promise.resolve([
+                {
+                  toolCalls: [{ toolName: "set_chat_summary" }],
+                  response: { messages: splitParallelToolHistory },
+                },
+              ]),
+            };
+          }
+
+          return {
+            fullStream: (async function* () {
+              await options.onStepFinish?.({
+                usage: { totalTokens: 200_000 },
+                toolCalls: [{}],
+              });
+              const stepMessages = [
+                ...options.messages,
+                inFlightAssistant,
+                inFlightTool,
+              ];
+              const prepared = (await options.prepareStep?.({
+                messages: stepMessages,
+                stepNumber: 1,
+                steps: [],
+                model: {},
+                experimental_context: undefined,
+              })) ?? { messages: stepMessages };
+              preparedAfterCompaction = prepared.messages;
+              yield { type: "text-delta", text: "Finished the work." };
+              throw new TypeError("terminated");
+            })(),
+            response: Promise.resolve({
+              messages: [
+                { role: "assistant", content: "after compacted pass" },
+              ],
+            }),
+            steps: Promise.resolve([]),
+          };
+        };
+
+        await handleLocalAgentStream(
+          event,
+          { chatId: 1, prompt: "test" },
+          new AbortController(),
+          {
+            placeholderMessageId: 10,
+            systemPrompt: "You are helpful",
+            dyadRequestId,
+          },
+        );
+
+        expect(passCount).toBe(3);
+        expect(mockPerformCompaction).toHaveBeenCalledTimes(1);
+        expect(preparedAfterCompaction).toContain(inFlightAssistant);
+        expect(preparedAfterCompaction).toContain(inFlightTool);
+        const expectedContext =
+          kind === "Explorer"
+            ? "Important Explorer evidence"
+            : "incomplete todo(s)";
+        for (const history of [preparedAfterCompaction, retryHistory]) {
+          expect(
+            history.filter((message) =>
+              JSON.stringify(message).includes(expectedContext),
+            ),
+          ).toHaveLength(1);
+        }
+        const persisted = dbOperations.updates
+          .filter((update) => update.data.aiMessagesJson)
+          .at(-1)?.data.aiMessagesJson;
+        expect(JSON.stringify(persisted)).toContain("after compacted pass");
+        expect(JSON.stringify(persisted)).not.toContain("I started the work.");
+        expect(JSON.stringify(persisted)).not.toContain("call-1");
+        expect(JSON.stringify(persisted)).not.toContain(expectedContext);
+      },
+    );
 
     it("should compact between steps when token usage crosses threshold", async () => {
       // Arrange
@@ -2901,10 +3450,13 @@ describe("handleLocalAgentStream", () => {
       const aiMessagesUpdates = dbOperations.updates.filter(
         (u) => u.data.aiMessagesJson !== undefined,
       );
-      expect(aiMessagesUpdates).toHaveLength(1);
+      expect(aiMessagesUpdates).toHaveLength(2);
       expect(
-        (aiMessagesUpdates[0].data.aiMessagesJson as { messages: unknown[] })
-          .messages,
+        (
+          aiMessagesUpdates.at(-1)!.data.aiMessagesJson as {
+            messages: unknown[];
+          }
+        ).messages,
       ).toEqual(postCompactionGenerated);
     });
   });

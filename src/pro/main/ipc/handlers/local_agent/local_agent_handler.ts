@@ -111,6 +111,7 @@ import {
 import { sendTelemetryEvent } from "@/ipc/utils/telemetry";
 import {
   prepareStepMessages,
+  injectMessagesAtPositions,
   buildTodoReminderMessage,
   hasIncompleteTodos,
   formatTodoSummary,
@@ -654,6 +655,28 @@ export async function handleLocalAgentStream(
   // Held in a ref object so sendResponseChunk can mutate it.
   const lastSentRef = { value: "" };
   let activeRetryReplayEvents: RetryReplayEvent[] | null = null;
+  let postCompactionContentStart: number | null = null;
+  let savedFinalAiMessages = false;
+  const persistCompactionFallback = async () => {
+    if (postCompactionContentStart === null || savedFinalAiMessages) return;
+    try {
+      await db
+        .update(messages)
+        .set({
+          aiMessagesJson: getAiMessagesJsonIfWithinLimit([
+            {
+              role: "assistant",
+              content:
+                fullResponse.slice(postCompactionContentStart) ||
+                "Earlier output from this turn is represented by the preceding compaction summary.",
+            },
+          ]),
+        })
+        .where(eq(messages.id, placeholderMessageId));
+    } catch (error) {
+      logger.warn("Failed to persist compaction fallback history:", error);
+    }
+  };
   // Mid-turn compaction inserts a DB summary row for LLM history, but we render
   // the user-facing compaction indicator inline in the active assistant turn.
   const hiddenMessageIdsForStreaming = new Set<number>();
@@ -1203,16 +1226,9 @@ export async function handleLocalAgentStream(
       });
     }
 
-    // Used to swap out pre-compaction history while preserving in-flight turn steps.
-    let baseMessageHistoryCount = messageHistory.length;
     let compactBeforeNextStep = false;
     let compactedMidTurn = false;
     let compactionFailedMidTurn = false;
-    // Tracks the difference between the compacted base message count and the
-    // SDK's initialMessages count. Used to adjust injection indices after
-    // compaction so that subsequent steps (which use the SDK's shorter base)
-    // inject user messages at the correct position.
-    let compactionIndexDelta = 0;
 
     const maxOutputTokens = await getMaxTokens(settings.selectedModel);
     const temperature = await getTemperature(settings.selectedModel);
@@ -1223,6 +1239,10 @@ export async function handleLocalAgentStream(
     let todoFollowUpLoops = 0;
     let hasInjectedPlanningQuestionnaireReflection = false;
     let currentMessageHistory = messageHistory;
+    // These messages never enter the DB transcript used by compaction.
+    // Keep Explorer evidence and active follow-up instructions in live history.
+    const turnOnlyBaseMessages: ModelMessage[] = [];
+    let persistedTodoNotice: ModelMessage | undefined;
     const accumulatedAiMessages: ModelMessage[] = [];
     let usedAttachmentAccessTool = false;
     // Track total steps across all passes to detect step limit
@@ -1254,6 +1274,7 @@ export async function handleLocalAgentStream(
           },
         ],
       };
+      persistedTodoNotice = syntheticMessage;
       // Insert before the last message (the user's current message) so the
       // user's intent is the final thing the LLM sees.
       const insertIndex = Math.max(0, currentMessageHistory.length - 1);
@@ -1271,9 +1292,7 @@ export async function handleLocalAgentStream(
       compactedMidTurn = false;
       compactionFailedMidTurn = false;
       compactBeforeNextStep = false;
-      compactionIndexDelta = 0;
       postMidTurnCompactionStartStep = null;
-      baseMessageHistoryCount = currentMessageHistory.length;
 
       let passProducedChatText = false;
       let responseMessages: ModelMessage[] = [];
@@ -1283,6 +1302,7 @@ export async function handleLocalAgentStream(
       }> = [];
       let terminatedRetryCount = 0;
       let needsContinuationInstruction = false;
+      let injectionBaseMessageCount = 0;
 
       // Retry loop: if the stream terminates with a transient error, captured text/tool events are replayed into message history, a continuation instruction is appended, and the stream is re-opened.
       while (!abortController.signal.aborted) {
@@ -1297,7 +1317,6 @@ export async function handleLocalAgentStream(
         currentMessageHistory = sanitizeToolCallTranscript(
           currentMessageHistory,
         );
-        baseMessageHistoryCount = currentMessageHistory.length;
         const attemptMessages = needsContinuationInstruction
           ? [
               ...currentMessageHistory,
@@ -1307,6 +1326,13 @@ export async function handleLocalAgentStream(
         const sanitizedAttemptMessages = normalizeToolCallIdsForTarget(
           sanitizeToolCallTranscript(attemptMessages),
         );
+        // streamText rebuilds every step from this immutable initial base plus
+        // cumulative responses. prepareStep overrides do not update that base.
+        const attemptBaseMessageCount = sanitizedAttemptMessages.length;
+        injectionBaseMessageCount = attemptBaseMessageCount;
+        let compactedBaseMessages: ModelMessage[] | undefined;
+        // Step numbers restart on a retry; prior replay is already in the base.
+        postMidTurnCompactionStartStep = null;
         const attemptToolInputIds = new Set<string>();
         const invalidToolCallIds = new Set<string>();
         const rejectedToolCallIds = new Set<string>();
@@ -1382,9 +1408,6 @@ export async function handleLocalAgentStream(
                 settings.enableContextCompaction !== false
               ) {
                 compactBeforeNextStep = false;
-                const inFlightTailMessages = options.messages.slice(
-                  baseMessageHistoryCount,
-                );
                 const compacted = await maybePerformPendingCompaction({
                   showOnTopOfCurrentResponse: true,
                   force: true,
@@ -1394,12 +1417,6 @@ export async function handleLocalAgentStream(
                   compactedMidTurn = true;
                   // Preserve only messages generated after this compaction boundary.
                   postMidTurnCompactionStartStep = options.stepNumber;
-                  // Clear stale injected messages — their insertAtIndex values are
-                  // based on the pre-compaction message array which has been rebuilt
-                  // with a different (typically smaller) count. Keeping them would
-                  // cause injectMessagesAtPositions to splice at wrong positions.
-                  allInjectedMessages.length = 0;
-                  const preCompactionBaseCount = baseMessageHistoryCount;
                   const compactedMessageHistory = buildChatMessageHistory(
                     chat.messages,
                     {
@@ -1423,49 +1440,73 @@ export async function handleLocalAgentStream(
                       },
                     );
                   }
-                  baseMessageHistoryCount = compactedMessageHistory.length;
-                  // The compacted history includes the compaction summary, but the
-                  // AI SDK's initialMessages does not. Track the delta so we can
-                  // adjust injection indices after prepareStepMessages runs.
-                  compactionIndexDelta =
-                    baseMessageHistoryCount - preCompactionBaseCount;
-                  stepOptions = {
-                    ...options,
-                    // Preserve in-flight turn messages so same-turn tool loops can
-                    // continue, while later turns are compacted via persisted history.
-                    messages: [
-                      ...compactedMessageHistory,
-                      ...inFlightTailMessages,
-                    ],
-                  };
+                  if (persistedTodoNotice && hasIncompleteTodos(ctx.todos)) {
+                    const userIndex = compactedMessageHistory.findIndex(
+                      (message) => message.role === "user",
+                    );
+                    compactedMessageHistory.splice(
+                      Math.max(0, userIndex),
+                      0,
+                      persistedTodoNotice,
+                    );
+                  }
+                  compactedMessageHistory.push(...turnOnlyBaseMessages);
+                  compactedBaseMessages = needsContinuationInstruction
+                    ? [
+                        ...compactedMessageHistory,
+                        buildTerminatedRetryContinuationInstruction(),
+                      ]
+                    : compactedMessageHistory;
+                  // The SDK response tail is unchanged within this attempt.
+                  // Shift existing screenshots/context by only the base delta.
+                  const injectionBaseDelta =
+                    compactedBaseMessages.length - attemptBaseMessageCount;
+                  for (const injection of allInjectedMessages) {
+                    injection.insertAtIndex += injectionBaseDelta;
+                  }
+                  // Later passes/retries must start from the same compacted base.
+                  // Earlier passes are represented by the persisted summary.
+                  currentMessageHistory = compactedMessageHistory;
+                  accumulatedAiMessages.length = 0;
+                  retryReplayEvents.length = 0;
+                  injectionBaseMessageCount = compactedBaseMessages.length;
+                  // Keep a durable marker now and the displayed post-compaction
+                  // remainder on every exit that cannot save SDK history.
+                  postCompactionContentStart = fullResponse.length;
+                  savedFinalAiMessages = false;
+                  await persistCompactionFallback();
                 } else {
                   // Prevent repeated compaction attempts if the first one fails.
                   compactionFailedMidTurn = true;
                 }
               }
 
+              if (compactedBaseMessages) {
+                stepOptions = {
+                  ...options,
+                  messages: [
+                    ...compactedBaseMessages,
+                    ...options.messages.slice(attemptBaseMessageCount),
+                  ],
+                };
+              }
+
+              const previousInjectionCount = allInjectedMessages.length;
               const preparedStep = prepareStepMessages(
                 stepOptions,
                 pendingUserMessages,
                 allInjectedMessages,
               );
-
-              // After mid-turn compaction, injection indices are based on the
-              // compacted message array (which includes the compaction summary).
-              // The AI SDK's internal messages don't include this summary, so
-              // subsequent steps have a shorter base. Adjust indices now so
-              // future re-injections land at the correct position.
-              if (compactionIndexDelta !== 0) {
-                for (const injection of allInjectedMessages) {
-                  injection.insertAtIndex = Math.max(
-                    0,
-                    injection.insertAtIndex - compactionIndexDelta,
-                  );
-                }
-                // Always reset, even when no injections exist yet — a tool may
-                // add pending messages in a later step and their indices should
-                // not be shifted by a stale delta.
-                compactionIndexDelta = 0;
+              // Capture context at the point the model first receives it. Replay
+              // message counts differ from SDK responses (e.g. text coalescing),
+              // so replay events, rather than SDK indexes, preserve chronology.
+              for (const injection of allInjectedMessages.slice(
+                previousInjectionCount,
+              )) {
+                retryReplayEvents.push({
+                  type: "injected-user-message",
+                  message: injection.message,
+                });
               }
 
               // prepareStepMessages returns undefined when it has no additional
@@ -1850,6 +1891,7 @@ export async function handleLocalAgentStream(
                 onCurrentMessageHistoryUpdate: (next) =>
                   (currentMessageHistory = next),
               });
+              allInjectedMessages.length = 0;
               terminatedRetryCount += 1;
               needsContinuationInstruction = true;
               const retryDelayMs =
@@ -1899,6 +1941,7 @@ export async function handleLocalAgentStream(
                 onCurrentMessageHistoryUpdate: (next) =>
                   (currentMessageHistory = next),
               });
+              allInjectedMessages.length = 0;
               terminatedRetryCount += 1;
               needsContinuationInstruction = true;
               const retryDelayMs =
@@ -1950,9 +1993,9 @@ export async function handleLocalAgentStream(
       // Track total steps for step limit detection
       totalStepsExecuted += steps.length;
 
-      if (responseMessages.length > 0) {
+      if (responseMessages.length > 0 || allInjectedMessages.length > 0) {
         // For mid-turn compaction, slice off pre-compaction messages
-        const messagesToAccumulate =
+        const responseTail =
           compactedMidTurn && postMidTurnCompactionStartStep !== null
             ? (() => {
                 // stepNumber is 0-indexed (from AI SDK: stepNumber = steps.length).
@@ -1968,7 +2011,22 @@ export async function handleLocalAgentStream(
                 return responseMessages.slice(prevStepMessages?.length ?? 0);
               })()
             : responseMessages;
-        accumulatedAiMessages.push(...messagesToAccumulate);
+        const discardedMessageCount =
+          responseMessages.length - responseTail.length;
+        const messagesToAccumulate = injectMessagesAtPositions(
+          responseTail,
+          allInjectedMessages.map((injection) => ({
+            ...injection,
+            insertAtIndex: Math.max(
+              0,
+              injection.insertAtIndex -
+                injectionBaseMessageCount -
+                discardedMessageCount,
+            ),
+          })),
+        );
+        allInjectedMessages.length = 0;
+        accumulatedAiMessages.push(...responseTail);
         currentMessageHistory = [
           ...currentMessageHistory,
           ...messagesToAccumulate,
@@ -2009,18 +2067,18 @@ export async function handleLocalAgentStream(
         for (const explorer of explorers) {
           synthesizedExplorerThreadIds.add(explorer.id);
         }
-        currentMessageHistory = [
-          ...currentMessageHistory,
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: buildExplorerSynthesisMessage(explorers),
-              },
-            ],
-          },
-        ];
+        const synthesisMessage: ModelMessage = {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: buildExplorerSynthesisMessage(explorers),
+            },
+          ],
+        };
+        persistedTodoNotice = undefined;
+        turnOnlyBaseMessages.push(synthesisMessage);
+        currentMessageHistory = [...currentMessageHistory, synthesisMessage];
         logger.info(
           `Starting mandatory Explorer synthesis pass for chat ${req.chatId}`,
         );
@@ -2046,6 +2104,8 @@ export async function handleLocalAgentStream(
         role: "user",
         content: [{ type: "text", text: reminderText }],
       };
+      persistedTodoNotice = undefined;
+      turnOnlyBaseMessages.push(reminderMessage);
       currentMessageHistory = [...currentMessageHistory, reminderMessage];
       // Note: Do NOT push reminderMessage to accumulatedAiMessages.
       // It is a synthetic message that should not be persisted to aiMessagesJson,
@@ -2203,6 +2263,7 @@ export async function handleLocalAgentStream(
           .update(messages)
           .set({ aiMessagesJson })
           .where(eq(messages.id, placeholderMessageId));
+        savedFinalAiMessages = true;
       }
     } catch (err) {
       logger.warn("Failed to save AI messages JSON:", err);
@@ -2334,6 +2395,7 @@ export async function handleLocalAgentStream(
     });
     return false; // Error - don't consume quota
   } finally {
+    await persistCompactionFallback();
     endTurnFinalization(mutationTurnId);
     // If an in-progress tool's XML preview was overlaid in the renderer
     // and the stream tore down before onXmlComplete could commit and
