@@ -21,7 +21,10 @@ if (actualContextSha !== expectedContextSha) {
   throw new Error("PR review context changed after generation");
 }
 
-const summary = fs.readFileSync(reviewPath, "utf8").trim();
+const summary = fs
+  .readFileSync(reviewPath, "utf8")
+  .replace(/\r\n/g, "\n")
+  .trim();
 const recMatch = summary.match(
   /\*\*Recommendation:\s*(auto-fix|human-review|ready)\s*\*\*/,
 );
@@ -206,21 +209,16 @@ if (normalizedFindings.length > 0 && summaryIssues.length === 0) {
   );
 }
 
+// Inline code delimiters are presentation only; preserve identifier punctuation.
+const issueKey = ({ severity, path, line, title }) =>
+  `${severity}:${path}:${line}:${title.replace(/(?<!`)`([^`]+)`(?!`)/g, "$1")}`;
+
 if (summaryIssues.length > 0) {
-  const summaryKeys = new Set(
-    summaryIssues.map(
-      (issue) => `${issue.severity}:${issue.path}:${issue.line}:${issue.title}`,
-    ),
-  );
-  const findingKeys = new Set(
-    normalizedFindings.map(
-      (finding) =>
-        `${finding.severity}:${finding.path}:${finding.line}:${finding.title}`,
-    ),
-  );
+  const summaryKeys = new Set(summaryIssues.map(issueKey));
+  const findingKeys = new Set(normalizedFindings.map(issueKey));
 
   for (const finding of normalizedFindings) {
-    const key = `${finding.severity}:${finding.path}:${finding.line}:${finding.title}`;
+    const key = issueKey(finding);
     if (!summaryKeys.has(key)) {
       throw new Error(
         `Review summary is missing Issues Summary row for finding ${key}`,
@@ -229,7 +227,7 @@ if (summaryIssues.length > 0) {
   }
 
   for (const issue of summaryIssues) {
-    const key = `${issue.severity}:${issue.path}:${issue.line}:${issue.title}`;
+    const key = issueKey(issue);
     if (!findingKeys.has(key)) {
       throw new Error(
         `Findings JSON is missing entry for Issues Summary row ${key}`,
