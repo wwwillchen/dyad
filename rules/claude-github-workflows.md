@@ -22,6 +22,8 @@ When a headless Claude job must write local handoff artifacts, exclude project/l
 
 When validating Markdown tables from an agent artifact, recognize separator rows by matching the complete row or every cell, not with a substring check such as `line.includes("---")`. Valid filenames and issue titles can contain three consecutive hyphens, and dropping one such row makes the summary and structured findings disagree.
 
+If a PR review run is green but inline comments are missing, inspect the separate `post-claude-review` job: findings validation uses `continue-on-error` and can skip all inline comments while still posting the summary. Check the artifact for presentation-only title differences before treating the finding as absent.
+
 ## Harden the agent's permissions — `.claude/settings.json` merges into CI
 
 Both `claude-code-action` and `claude-code-base-action` read `.claude/settings.json` from the workspace after `actions/checkout`, and the project's file is committed (tracked in git). **`permissions.allow` arrays merge across scopes — they do not replace each other.** From the Claude Code docs: _"Array settings merge across scopes. When the same array-valued setting (such as `permissions.allow`) appears in multiple scopes, the arrays are concatenated and deduplicated, not replaced."_ ([source](https://code.claude.com/docs/en/settings)).
