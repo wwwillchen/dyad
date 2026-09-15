@@ -5,10 +5,14 @@ import { db } from "../../db";
 import { apps } from "../../db/schema";
 import { eq } from "drizzle-orm";
 import log from "electron-log";
-import { createVercelClient, VERCEL_API_BASE } from "../utils/vercel_utils";
+import {
+  createVercelClient,
+  VERCEL_API_BASE,
+  type VercelProjectFramework,
+} from "../utils/vercel_utils";
+import { getVercelProjectCreationError } from "../utils/vercel_errors";
 import * as fs from "fs";
 import * as path from "path";
-import { CreateProjectFramework } from "@vercel/sdk/models/createprojectop.js";
 import { getDyadAppPath } from "@/paths/paths";
 import { slugifyAppPath } from "@/shared/slugify";
 import { createTypedHandler } from "./base";
@@ -128,12 +132,12 @@ async function getDefaultTeamId(token: string): Promise<string> {
 
 async function detectFramework(
   appPath: string,
-): Promise<CreateProjectFramework | undefined> {
+): Promise<VercelProjectFramework | undefined> {
   try {
     // Check for specific config files first
     const configFiles: Array<{
       file: string;
-      framework: CreateProjectFramework;
+      framework: VercelProjectFramework;
     }> = [
       { file: "next.config.js", framework: "nextjs" },
       { file: "next.config.mjs", framework: "nextjs" },
@@ -405,7 +409,7 @@ async function handleCreateProject(
         },
       });
 
-      if (deploymentData.url) {
+      if ("url" in deploymentData && deploymentData.url) {
         logger.info(`First deployment successful: ${deploymentData.url}`);
       } else {
         logger.warn("First deployment failed: No deployment URL returned");
@@ -419,7 +423,7 @@ async function handleCreateProject(
   } catch (err: any) {
     if (err instanceof DyadError) throw err;
     logger.error("[Vercel Handler] Failed to create project:", err);
-    throw new Error(err.message || "Failed to create Vercel project.");
+    throw getVercelProjectCreationError(err);
   }
 }
 
