@@ -327,6 +327,14 @@ function FooterComponent({ context }: { context?: FooterContext }) {
   // work that already existed when it started. If newer commits exist, let the
   // user choose whether to keep them or restore through them.
   const handleRetry = async () => {
+    if (
+      messages.some((message) => message.executionBackend === "claude-code")
+    ) {
+      showError(
+        "Start a new chat to retry Claude Code. Retrying here would retain hidden context from the replaced turn.",
+      );
+      return;
+    }
     if (!selectedChatId || !appId) {
       console.error("No chat selected or app ID not available");
       return;
@@ -420,6 +428,12 @@ function FooterComponent({ context }: { context?: FooterContext }) {
     }
   };
 
+  const retryUnavailableReason = messages.some(
+    (message) => message.executionBackend === "claude-code",
+  )
+    ? "Start a new chat to retry Claude Code; the existing CLI context cannot be replaced."
+    : undefined;
+
   // When the last assistant turn produced a commit, show the modified-files card
   // (which owns its own Undo/Retry buttons). Otherwise fall back to the standalone
   // buttons so text-only replies keep those affordances.
@@ -444,6 +458,7 @@ function FooterComponent({ context }: { context?: FooterContext }) {
           onUndo={handleUndo}
           isUndoLoading={isUndoLoading}
           onRetry={handleRetry}
+          retryUnavailableReason={retryUnavailableReason}
           isRetryLoading={isRetryLoading}
           isAnyVersionMutationPending={isAnyVersionMutationPending}
         />
@@ -472,8 +487,12 @@ function FooterComponent({ context }: { context?: FooterContext }) {
               variant="outline"
               size="sm"
               disabled={
-                isRetryLoading || isUndoLoading || isAnyVersionMutationPending
+                isRetryLoading ||
+                isUndoLoading ||
+                isAnyVersionMutationPending ||
+                !!retryUnavailableReason
               }
+              title={retryUnavailableReason}
               onClick={handleRetry}
             >
               {isRetryLoading ? (
