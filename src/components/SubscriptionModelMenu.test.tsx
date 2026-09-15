@@ -144,6 +144,11 @@ it("allows free users to connect and explains the Basic Agent limit", async () =
     acceptCharges: true,
     selectModel: true,
   });
+  expect(
+    screen.getByText(
+      /defaults for new chats. Existing chats keep their model selection/,
+    ),
+  ).toBeVisible();
   expect(screen.getByText(/no Dyad usage fees/)).toBeVisible();
   expect(screen.getByText(/Basic Agent limits still apply/)).toBeVisible();
   expect(screen.queryByText(/1.5 Pro credits/)).not.toBeInTheDocument();
@@ -179,6 +184,10 @@ it("offers disconnect when stored credentials cannot be read", async () => {
     expect(disconnect).not.toHaveAttribute("aria-disabled", "true"),
   );
   await user.click(disconnect);
+  expect(
+    screen.getByText(/Your saved ChatGPT connection could not be opened/),
+  ).toBeVisible();
+  expect(screen.queryByText(/Connecting sets/)).toBeNull();
   expect(mocks.disconnect).toHaveBeenCalledTimes(1);
   expect(mocks.connect).not.toHaveBeenCalled();
 });

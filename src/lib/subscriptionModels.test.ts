@@ -10,9 +10,13 @@ describe("subscription defaults", () => {
   it.each([undefined, "free", "go", "business", "enterprise", "edu"])(
     "prefers Luna for %s plans even with an eligible current selection",
     (plan) => {
-      expect(getSubscriptionDefaultModel(catalog, plan, current)).toBe(
-        "gpt-5.6-luna",
-      );
+      expect(
+        getSubscriptionDefaultModel(
+          [current.name, "gpt-5.6-luna"],
+          plan,
+          current,
+        ),
+      ).toBe("gpt-5.6-luna");
       expect(getSubscriptionDefaultModel([current.name], plan, current)).toBe(
         current.name,
       );
