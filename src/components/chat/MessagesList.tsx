@@ -13,7 +13,7 @@ import ChatMessage from "./ChatMessage";
 import { OpenRouterSetupBanner, SetupBanner } from "../SetupBanner";
 
 import { useStreamChat } from "@/hooks/useStreamChat";
-import { selectedChatIdAtom } from "@/atoms/chatAtoms";
+import { useDisplayedChatMessages } from "@/hooks/useChatStream";
 import { useUserInputRequests } from "@/user_input/hooks";
 import { useAtomValue } from "jotai";
 import { CheckCircle2, Loader2, RefreshCw, Undo } from "lucide-react";
@@ -33,6 +33,7 @@ import { ExtraCommitsRevertDialog } from "./ExtraCommitsRevertDialog";
 import { getExtraRevertedCommits } from "./revertImpact";
 
 interface MessagesListProps {
+  chatId: number | null;
   messages: Message[];
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   onAtBottomChange?: (atBottom: boolean) => void;
@@ -576,7 +577,15 @@ function FooterComponent({ context }: { context?: FooterContext }) {
 }
 
 export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
-  function MessagesList({ messages, messagesEndRef, onAtBottomChange }, ref) {
+  function MessagesList(
+    {
+      chatId: selectedChatId,
+      messages: persistedMessages,
+      messagesEndRef,
+      onAtBottomChange,
+    },
+    ref,
+  ) {
     const appId = useAtomValue(selectedAppIdAtom);
     const { refreshVersions } = useVersions(appId);
     const {
@@ -596,7 +605,10 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
     const { settings } = useSettings();
     const [isUndoLoading, setIsUndoLoading] = useState(false);
     const [isRetryLoading, setIsRetryLoading] = useState(false);
-    const selectedChatId = useAtomValue(selectedChatIdAtom);
+    const messages = useDisplayedChatMessages(
+      selectedChatId,
+      persistedMessages,
+    );
     const { chat: selectedChat } = useChatMode(selectedChatId);
 
     // Virtualization only renders visible DOM elements, which creates issues for E2E tests:
@@ -674,7 +686,7 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
     // Create context object for Footer component with stable references
     const footerContext = useMemo<FooterContext>(
       () => ({
-        messages,
+        messages: persistedMessages,
         messagesEndRef,
         isStreaming,
         isUndoLoading,
@@ -691,7 +703,7 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
         renderSetupBanner,
       }),
       [
-        messages,
+        persistedMessages,
         messagesEndRef,
         isStreaming,
         isUndoLoading,

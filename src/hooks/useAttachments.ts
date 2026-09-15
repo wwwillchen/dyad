@@ -1,7 +1,7 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { FileAttachment } from "@/ipc/types";
-import { useAtom } from "jotai";
-import { attachmentsAtom } from "@/atoms/chatAtoms";
+import { atom, useAtom } from "jotai";
+import { attachmentsAtom, chatAttachmentsByIdAtom } from "@/atoms/chatAtoms";
 import { showError } from "@/lib/toast";
 import { validateChatAttachmentFiles } from "@/shared/chatAttachmentLimits";
 
@@ -16,8 +16,39 @@ function isFileDrag(e: React.DragEvent): boolean {
   return types ? Array.from(types).includes("Files") : false;
 }
 
-export function useAttachments() {
-  const [attachments, setAttachments] = useAtom(attachmentsAtom);
+const EMPTY_ATTACHMENTS: FileAttachment[] = [];
+
+export function useAttachments(chatId?: number | null) {
+  // Capture the rendered chat in the atom, so callbacks retained by an in-flight
+  // submission still write to that chat after navigation or unmount.
+  const draftAtom = useMemo(
+    () =>
+      chatId == null
+        ? attachmentsAtom
+        : atom(
+            (get) =>
+              get(chatAttachmentsByIdAtom).get(chatId) ?? EMPTY_ATTACHMENTS,
+            (
+              get,
+              set,
+              update:
+                | FileAttachment[]
+                | ((current: FileAttachment[]) => FileAttachment[]),
+            ) => {
+              const drafts = get(chatAttachmentsByIdAtom);
+              const current = drafts.get(chatId) ?? EMPTY_ATTACHMENTS;
+              const next =
+                typeof update === "function" ? update(current) : update;
+              if (next === current) return;
+              const updated = new Map(drafts);
+              if (next.length) updated.set(chatId, next);
+              else updated.delete(chatId);
+              set(chatAttachmentsByIdAtom, updated);
+            },
+          ),
+    [chatId],
+  );
+  const [attachments, setAttachments] = useAtom(draftAtom);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
@@ -172,6 +203,22 @@ export function useAttachments() {
     return true;
   };
 
+  const restoreSubmittedAttachments = useCallback(
+    (submitted: readonly FileAttachment[]) => {
+      setAttachments((current) => [
+        ...submitted.filter(
+          (entry) =>
+            !current.some(
+              (candidate) =>
+                candidate.file === entry.file && candidate.type === entry.type,
+            ),
+        ),
+        ...current,
+      ]);
+    },
+    [setAttachments],
+  );
+
   const handlePaste = async (e: React.ClipboardEvent) => {
     if (pendingFiles) return;
 
@@ -226,6 +273,7 @@ export function useAttachments() {
     handleDrop,
     clearAttachments,
     clearSubmittedAttachments,
+    restoreSubmittedAttachments,
     handlePaste,
     addAttachments,
     replaceAttachments,

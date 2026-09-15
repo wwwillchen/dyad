@@ -202,7 +202,8 @@ harness.dispose()                     // race-free teardown (see §6)
   what persists `chatMode` onto the chat row).
 - **Seeding attachments**: use `setChatAttachments([{ name, content, mimeType }])`
   after `mount()` and before `typeInChat()` / `pressEnterInChat()`. It writes the
-  same `attachmentsAtom` shape that the file picker/drop/paste paths store:
+  same chat-scoped draft that the file picker/drop/paste paths store
+  (`chatAttachmentsByIdAtom`, or `attachmentsAtom` for the home composer):
   browser `File` objects plus the `chat-context` / `upload-to-codebase` type.
   Submit still runs through the real `ChatInput` path, including `FileReader`
   conversion to IPC attachments and `.dyad/media` persistence.

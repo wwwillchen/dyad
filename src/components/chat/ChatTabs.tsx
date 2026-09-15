@@ -31,7 +31,7 @@ import {
   chatInputValuesByIdAtom,
   ensureRecentViewedChatIdAtom,
   removeTransferredChatTabAtom,
-  attachmentsAtom,
+  chatAttachmentsByIdAtom,
 } from "@/atoms/chatAtoms";
 import {
   editorCursorAtom,
@@ -1568,7 +1568,8 @@ export function ChatTabs({ selectedChatId }: ChatTabsProps) {
                             );
                             setDraggingChatId(chat.id);
                             const hasAttachments =
-                              isActive && store.get(attachmentsAtom).length > 0;
+                              (store.get(chatAttachmentsByIdAtom).get(chat.id)
+                                ?.length ?? 0) > 0;
                             if (hasAttachments) {
                               showError(t("moveTabAttachmentsBlocked"));
                             }

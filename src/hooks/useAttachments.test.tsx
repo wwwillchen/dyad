@@ -3,7 +3,11 @@ import { createStore, Provider } from "jotai";
 import type { PropsWithChildren } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { attachmentsAtom } from "@/atoms/chatAtoms";
+import {
+  attachmentsAtom,
+  chatAttachmentsByIdAtom,
+  removeChatIdFromAllTrackingAtom,
+} from "@/atoms/chatAtoms";
 import type { FileAttachment } from "@/ipc/types";
 import { showError } from "@/lib/toast";
 import {
@@ -29,6 +33,37 @@ function makeWrapper() {
 }
 
 describe("useAttachments", () => {
+  it("restores a rejected submission to its original chat after navigation and unmount", () => {
+    const { store, Wrapper } = makeWrapper();
+    const view = renderHook(({ chatId }) => useAttachments(chatId), {
+      initialProps: { chatId: 1 },
+      wrapper: Wrapper,
+    });
+    act(() => view.result.current.addAttachments([makeFile("a.txt")]));
+    const submitted = view.result.current.attachments;
+    const restoreA = view.result.current.restoreSubmittedAttachments;
+    act(() => view.result.current.clearSubmittedAttachments(submitted));
+    view.rerender({ chatId: 2 });
+    act(() => view.result.current.addAttachments([makeFile("b.txt")]));
+    view.unmount();
+    act(() => restoreA(submitted));
+    const reopened = renderHook(({ chatId }) => useAttachments(chatId), {
+      initialProps: { chatId: 2 },
+      wrapper: Wrapper,
+    });
+    expect(
+      reopened.result.current.attachments.map(({ file }) => file.name),
+    ).toEqual(["b.txt"]);
+    reopened.rerender({ chatId: 1 });
+    expect(
+      reopened.result.current.attachments.map(({ file }) => file.name),
+    ).toEqual(["a.txt"]);
+    expect(store.get(attachmentsAtom)).toEqual([]);
+    act(() => store.set(removeChatIdFromAllTrackingAtom, 1));
+    expect(store.get(chatAttachmentsByIdAtom).has(1)).toBe(false);
+    expect(store.get(chatAttachmentsByIdAtom).get(2)).toHaveLength(1);
+    reopened.unmount();
+  });
   beforeEach(() => {
     vi.mocked(showError).mockReset();
   });
@@ -158,6 +193,23 @@ describe("useAttachments", () => {
 
     expect(store.get(attachmentsAtom)).toEqual([
       { file: newerFile, type: "chat-context" },
+    ]);
+  });
+
+  it("restores rejected attachments once while retaining the new draft", () => {
+    const { store, Wrapper } = makeWrapper();
+    const { result } = renderHook(useAttachments, { wrapper: Wrapper });
+    act(() => result.current.addAttachments([makeFile("submitted.txt")]));
+    const submitted = store.get(attachmentsAtom);
+    act(() => {
+      result.current.clearSubmittedAttachments(submitted);
+      result.current.addAttachments([makeFile("newer.txt")]);
+      result.current.restoreSubmittedAttachments(submitted);
+      result.current.restoreSubmittedAttachments(submitted);
+    });
+    expect(store.get(attachmentsAtom).map(({ file }) => file.name)).toEqual([
+      "submitted.txt",
+      "newer.txt",
     ]);
   });
 });

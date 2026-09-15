@@ -432,6 +432,7 @@ export function ChatPanel({
                 >
                   <div className="flex-1 relative overflow-hidden">
                     <MessagesList
+                      chatId={chatId ?? null}
                       messages={messages}
                       messagesEndRef={messagesEndRef}
                       ref={messagesContainerRef}

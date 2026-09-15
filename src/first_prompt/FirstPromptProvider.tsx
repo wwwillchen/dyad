@@ -27,6 +27,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { showError } from "@/lib/toast";
 import {
   attachmentsAtom,
+  chatAttachmentsByIdAtom,
   chatInputValuesByIdAtom,
   homeChatInputValueAtom,
   homeSelectedAppAtom,
@@ -62,6 +63,7 @@ import { resolveFirstPromptDefaultChatMode } from "./provider_resume";
 import type { UserSettings } from "@/lib/schemas";
 import {
   mergeRejectedPromptIntoChatDraft,
+  mergeRejectedAttachmentsIntoChatDraft,
   removeSubmittedFirstPromptAttachments,
 } from "./editing_buffer";
 
@@ -118,6 +120,17 @@ export function FirstPromptProvider({
   settleDelayMsRef.current = settleDelayMs;
 
   const dependencies = useRef<FirstPromptDeps | null>(null);
+  const clearSubmittedHomeAttachments = (payload: FirstPromptPayload) => {
+    const currentAttachments = store.get(attachmentsAtom);
+    // Clear submitted attachments from the home composer.
+    store.set(
+      attachmentsAtom,
+      removeSubmittedFirstPromptAttachments(
+        currentAttachments,
+        payload.attachments,
+      ),
+    );
+  };
   dependencies.current = {
     async createApp(operationId, chatMode) {
       const result = await ipc.app.createApp({
@@ -206,15 +219,7 @@ export function FirstPromptProvider({
         // Clear submitted prompt text from the home composer.
         store.set(homeChatInputValueAtom, "");
       }
-      const currentAttachments = store.get(attachmentsAtom);
-      // Clear submitted attachments from the home composer.
-      store.set(
-        attachmentsAtom,
-        removeSubmittedFirstPromptAttachments(
-          currentAttachments,
-          payload.attachments,
-        ),
-      );
+      clearSubmittedHomeAttachments(payload);
       if (store.get(homeSelectedAppAtom)?.id === payload.selectedApp?.id) {
         // Clear the submitted app selection from the home composer.
         store.set(homeSelectedAppAtom, null);
@@ -225,6 +230,15 @@ export function FirstPromptProvider({
       store.set(chatInputValuesByIdAtom, (current) =>
         mergeRejectedPromptIntoChatDraft(current, chatId, payload.prompt),
       );
+      // Preserve rejected first-prompt attachments in the destination chat.
+      store.set(chatAttachmentsByIdAtom, (current) =>
+        mergeRejectedAttachmentsIntoChatDraft(
+          current,
+          chatId,
+          payload.attachments,
+        ),
+      );
+      clearSubmittedHomeAttachments(payload);
     },
     showError(message, failure) {
       const key =
