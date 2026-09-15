@@ -42,6 +42,7 @@ let credentialCache: Credentials | DyadError | null | undefined;
 let celebrationPending = false;
 export function acknowledgeSubscriptionConnection() {
   celebrationPending = false;
+  setupError = undefined;
 }
 let server: Server | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;

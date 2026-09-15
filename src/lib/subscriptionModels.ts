@@ -35,6 +35,15 @@ export function getSubscriptionDefaultModel(
     : models[0];
 }
 
+export function isChatGPTAutoSelection(
+  model: Pick<LargeLanguageModel, "provider" | "name">,
+): boolean {
+  return (
+    model.provider === "auto" &&
+    (model.name === "auto" || model.name === "auto-sidekick")
+  );
+}
+
 /** Use the effective account catalog shared by picker status and backend routing. */
 export function usesChatGPTSubscription(
   model: Pick<LargeLanguageModel, "provider" | "name">,

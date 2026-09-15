@@ -216,6 +216,56 @@ describe("global subscription turn routing", () => {
     });
     expect(mocks.credits).not.toHaveBeenCalled();
   });
+  it.each([
+    ["free", "gpt-5.6-luna"],
+    [undefined, "gpt-5.6-luna"],
+    ["plus", "eligible-model"],
+    ["pro", "eligible-model"],
+  ] as const)(
+    "resolves free-user Auto using ChatGPT tier %s",
+    async (planType, expected) => {
+      mocks.account.mockResolvedValue({
+        connected: true,
+        planType,
+        models: ["first-model", "eligible-model", "gpt-5.6-luna"],
+      });
+      const result = await preflightSubscriptionTurn(
+        { provider: "auto", name: "auto", effortLevel: "medium" },
+        { ...settings, enableDyadPro: false, selectedModel: model },
+        signal,
+      );
+      expect(result).toMatchObject({
+        provider: "openai",
+        name: expected,
+        connection: "subscription",
+      });
+      expect(mocks.credentials).toHaveBeenCalled();
+      expect(mocks.credits).not.toHaveBeenCalled();
+    },
+  );
+  it("falls back to the first subscription model for Auto when Luna is unavailable", async () => {
+    const result = await preflightSubscriptionTurn(
+      { provider: "auto", name: "auto", effortLevel: "medium" },
+      { ...settings, enableDyadPro: false },
+      signal,
+    );
+    expect(result).toMatchObject({
+      provider: "openai",
+      name: "eligible-model",
+      connection: "subscription",
+    });
+  });
+  it("keeps disconnected Auto on its existing provider-key path", async () => {
+    mocks.account.mockResolvedValue({ connected: false, models: [] });
+    expect(
+      await preflightSubscriptionTurn(
+        { provider: "auto", name: "auto", effortLevel: "medium" },
+        { ...settings, enableDyadPro: false },
+        signal,
+      ),
+    ).toEqual({ provider: "auto", name: "auto", effortLevel: "medium" });
+    expect(mocks.credentials).not.toHaveBeenCalled();
+  });
   it("preserves own-key routing when Pro is off", async () => {
     mocks.account.mockResolvedValue({ connected: false, models: [] });
     expect(

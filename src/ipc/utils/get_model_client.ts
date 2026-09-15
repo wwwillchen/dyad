@@ -196,7 +196,7 @@ export async function getModelClient(
   );
   const connection = modelSelection.connection;
   if (connection === "subscription") {
-    if (model.provider !== "openai")
+    if (modelSelection.provider !== "openai")
       throw new DyadError(
         "Subscription supports OpenAI models only. Choose a ChatGPT model.",
         DyadErrorKind.Validation,
@@ -204,7 +204,7 @@ export async function getModelClient(
     return {
       modelClient: {
         model: await createCodexSubscriptionModel(
-          model.name,
+          modelSelection.name,
           subscriptionBillingKey(settings),
           context,
         ),

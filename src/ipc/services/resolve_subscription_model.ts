@@ -4,8 +4,13 @@ import {
   type ModelSelection,
   type UserSettings,
 } from "@/lib/schemas";
-import { usesChatGPTSubscription } from "@/lib/subscriptionModels";
+import {
+  getSubscriptionDefaultModel,
+  isChatGPTAutoSelection,
+  usesChatGPTSubscription,
+} from "@/lib/subscriptionModels";
 import { getSubscriptionAccount } from "./codex_subscription_account";
+import { resolveModelSelection } from "../utils/model_effort";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 /** Choose the source for a concrete model, shared by chat and auxiliary calls. */
@@ -18,7 +23,9 @@ export async function resolveSubscriptionModel(
   const fallback = proEnabled
     ? { ...identity, connection: "pro" as const }
     : identity;
-  if (!proEnabled && model.provider !== "openai") return identity;
+  const subscriptionAuto = !proEnabled && isChatGPTAutoSelection(model);
+  if (!proEnabled && model.provider !== "openai" && !subscriptionAuto)
+    return identity;
   const provider = (await getLanguageModelProviders()).find(
     (p) => p.id === model.provider,
   );
@@ -28,7 +35,10 @@ export async function resolveSubscriptionModel(
   ) {
     return proEnabled ? { ...identity, connection: "api-key" } : identity;
   }
-  if (settings.proModelUsage === "pro" || model.provider !== "openai")
+  if (
+    settings.proModelUsage === "pro" ||
+    (model.provider !== "openai" && !subscriptionAuto)
+  )
     return fallback;
   const account = await getSubscriptionAccount({ includeUsage: false });
   if (account.credentialError)
@@ -52,6 +62,26 @@ export async function resolveSubscriptionModel(
         : "Subscription model availability is unavailable. Try again or choose another available model.",
       DyadErrorKind.External,
     );
+  if (subscriptionAuto) {
+    if (account.error) throw new DyadError(account.error, DyadErrorKind.Auth);
+    const name = getSubscriptionDefaultModel(
+      account.models,
+      "planType" in account ? account.planType : undefined,
+      settings.selectedModel ?? identity,
+    );
+    if (!name)
+      throw new DyadError(
+        "Subscription model availability is unavailable. Try again or disconnect ChatGPT to use your API keys.",
+        DyadErrorKind.External,
+      );
+    return {
+      ...(await resolveModelSelection({
+        model: { provider: "openai", name },
+        preferredEffortLevel: identity.effortLevel,
+      })),
+      connection: "subscription",
+    };
+  }
   if (!usesChatGPTSubscription(model, settings, account)) return fallback;
   if (account.error) throw new DyadError(account.error, DyadErrorKind.Auth);
   return { ...identity, connection: "subscription" };

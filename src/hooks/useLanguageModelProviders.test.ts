@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
     data: undefined,
     isLoading: true,
   },
+  subscriptionLoading: false,
   subscription: {
     connected: false,
     pending: false,
@@ -18,7 +19,10 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 vi.mock("./useSubscriptionAccount", () => ({
-  useSubscriptionAccount: () => ({ data: mocks.subscription }),
+  useSubscriptionAccount: () => ({
+    data: mocks.subscriptionLoading ? undefined : mocks.subscription,
+    isLoading: mocks.subscriptionLoading,
+  }),
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -45,6 +49,7 @@ vi.mock("./useSettings", () => ({
 
 describe("useLanguageModelProviders", () => {
   beforeEach(() => {
+    mocks.subscriptionLoading = false;
     mocks.subscription = {
       connected: false,
       pending: false,
@@ -60,6 +65,19 @@ describe("useLanguageModelProviders", () => {
     };
   });
 
+  it("waits for an existing subscription before deciding provider readiness", () => {
+    mocks.selectedModel = { provider: "openai", name: "subscription-model" };
+    mocks.useQueryResult.isLoading = false;
+    mocks.subscriptionLoading = true;
+    mocks.subscription.connected = true;
+    const { result, rerender } = renderHook(() => useLanguageModelProviders());
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.isAnyProviderSetup()).toBe(false);
+    mocks.subscriptionLoading = false;
+    rerender();
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.isAnyProviderSetup()).toBe(true);
+  });
   it("treats a selected Ollama model as a configured provider while provider data is loading", () => {
     const { result } = renderHook(() => useLanguageModelProviders());
 
@@ -80,7 +98,7 @@ describe("useLanguageModelProviders", () => {
     mocks.selectedModel = { provider: "auto", name: "auto" };
     mocks.subscription.connected = true;
     const { result, rerender } = renderHook(() => useLanguageModelProviders());
-    expect(result.current.isAnyProviderSetup()).toBe(false);
+    expect(result.current.isAnyProviderSetup()).toBe(true);
     mocks.selectedModel = { provider: "openai", name: "subscription-model" };
     mocks.subscription.pending = true;
     rerender();

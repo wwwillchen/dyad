@@ -1,11 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { ipc, type LanguageModelProvider } from "@/ipc/types";
 import { useSettings } from "./useSettings";
-import { cloudProviders } from "@/lib/schemas";
+import { cloudProviders, isDyadProEnabled } from "@/lib/schemas";
 import { queryKeys } from "@/lib/queryKeys";
 import { isProviderSetup as isProviderSetupUtil } from "@/lib/providerUtils";
 import { useSubscriptionAccount } from "./useSubscriptionAccount";
-import { usesChatGPTSubscription } from "@/lib/subscriptionModels";
+import {
+  isChatGPTAutoSelection,
+  usesChatGPTSubscription,
+} from "@/lib/subscriptionModels";
 
 const localProviders = new Set(["ollama", "lmstudio"]);
 
@@ -33,11 +36,16 @@ export function useLanguageModelProviders() {
     if (
       settings &&
       !subscription.data?.pending &&
-      usesChatGPTSubscription(
+      (usesChatGPTSubscription(
         settings.selectedModel,
         settings,
         subscription.data ?? { connected: false, models: [] },
-      )
+      ) ||
+        (!isDyadProEnabled(settings) &&
+          settings.proModelUsage !== "pro" &&
+          isChatGPTAutoSelection(settings.selectedModel) &&
+          subscription.data?.connected &&
+          subscription.data.models.length > 0))
     )
       return true;
     if (
@@ -64,6 +72,7 @@ export function useLanguageModelProviders() {
 
   return {
     ...queryResult,
+    isLoading: queryResult.isLoading || subscription.isLoading,
     isProviderSetup,
     isAnyProviderSetup,
   };

@@ -39,6 +39,7 @@ vi.mock("./codex_subscription_account", () => ({
 }));
 import { writeSettings } from "@/main/settings";
 import {
+  acknowledgeSubscriptionConnection,
   connectCodexSubscription,
   disconnectCodexSubscription,
   getCodexSubscriptionStatus,
@@ -285,6 +286,12 @@ describe("successful browser return", () => {
           planType,
         );
         expect(getCodexSubscriptionStatus().credentialError).toBeUndefined();
+        acknowledgeSubscriptionConnection();
+        expect(getCodexSubscriptionStatus()).toMatchObject({
+          connected: true,
+          celebrationPending: false,
+          setupError: undefined,
+        });
         disconnectCodexSubscription();
         expect(writeSettings).toHaveBeenCalledWith({ proModelUsage: "pro" });
         expect(getCodexSubscriptionStatus()).toMatchObject({
