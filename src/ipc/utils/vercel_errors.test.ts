@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ResponseValidationError } from "@vercel/sdk/models/responsevalidationerror.js";
+import { SDKError } from "@vercel/sdk/models/sdkerror.js";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { getVercelProjectCreationError } from "./vercel_errors";
 
@@ -22,8 +23,13 @@ describe("getVercelProjectCreationError", () => {
       expect(result).toBeInstanceOf(DyadError);
       expect(result).toHaveProperty("kind", DyadErrorKind.External);
       expect(result.message).toContain("couldn't read Vercel's response");
-      expect(result.message).toContain("may already have been created");
-      expect(result.message).toContain('"Connect to existing project"');
+      expect(result.message).toContain(`HTTP ${status}`);
+      if (status === 200) {
+        expect(result.message).toContain("may already have been created");
+        expect(result.message).toContain('"Connect to existing project"');
+      } else {
+        expect(result.message).not.toContain("may already have been created");
+      }
       expect(result.message).not.toContain("private-");
       expect(result.message).not.toContain("Response validation failed");
     },
@@ -65,9 +71,42 @@ describe("getVercelProjectCreationError", () => {
       cause: new Error("Invalid value for framework: expected a string"),
     });
 
-    expect(getVercelProjectCreationError(error).message).toBe(
+    const message = getVercelProjectCreationError(error).message;
+    expect(message).toContain(
       "Vercel project setup failed (HTTP 200): Invalid value for framework: expected a string",
     );
+    expect(message).toContain("may already have been created");
+    expect(message).toContain('"Connect to existing project"');
+  });
+
+  it.each([400, 403, 409, 500])(
+    "extracts normal HTTP %s API errors without displaying the SDK's raw body",
+    (status) => {
+      const body = JSON.stringify({
+        error: { message: "The project could not be created." },
+        secret: "private-environment-value",
+      });
+      const error = new SDKError("API error occurred", {
+        response: new Response(body, { status }),
+        request: new Request("https://api.vercel.com/v10/projects"),
+        body,
+      });
+
+      expect(getVercelProjectCreationError(error).message).toBe(
+        `Vercel project setup failed (HTTP ${status}): The project could not be created.`,
+      );
+    },
+  );
+
+  it("keeps the HTTP status when a normal API error has a non-JSON body", () => {
+    const error = new SDKError("API error occurred", {
+      response: new Response(null, { status: 502 }),
+      request: new Request("https://api.vercel.com/v10/projects"),
+      body: "<html>private-proxy-details</html>",
+    });
+    const message = getVercelProjectCreationError(error).message;
+    expect(message).toContain("HTTP 502");
+    expect(message).not.toContain("private-proxy-details");
   });
 
   it("preserves other errors and their classifications", () => {

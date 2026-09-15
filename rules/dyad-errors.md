@@ -28,7 +28,7 @@ Prefer **`DyadError`** over growing `FILTERED_EXCEPTION_MESSAGES` in `telemetry.
 
 Responses API stream errors can arrive through AI SDK `onError` as plain objects with nested `error.message`, even with HTTP 200. Extract that message before classifying authentication failures; `String(error)` produces `[object Object]`. Cover both HTTP failures and streamed errors when changing provider validation.
 
-Vercel SDK `ResponseValidationError` can follow HTTP 200 after a project was created (e.g. SDK 1.18.0 rejected `resourceConfig.buildMachineType: "basic"`). Surface the API error message or validation cause, check SDK schema compatibility, and avoid blindly retrying creation; do not dump the entire project response, which can contain environment variables.
+Vercel SDK `ResponseValidationError` can follow HTTP 200 after a project was created (e.g. SDK 1.18.0 rejected `resourceConfig.buildMachineType: "basic"`). Surface the API error message or validation cause and include connect-existing guidance for 2xx responses even when details exist; normal API errors extend `VercelError` instead. Keep project-creation telemetry limited to fixed classification fields, since both provider messages and validation stacks can contain private data.
 
 ## Non-Pro event sampling (renderer)
 

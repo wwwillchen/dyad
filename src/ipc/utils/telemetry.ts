@@ -66,6 +66,18 @@ export function sendTelemetryException(
     return;
   }
 
+  // Vercel diagnostics are shown locally, but can echo private project data
+  // in both messages and validation stacks. Send only fixed classification
+  // fields; even frame-looking lines can originate in a provider message.
+  if (context?.ipc_channel === "vercel:create-project") {
+    sendTelemetryEvent("$exception", {
+      exception_name: "VercelProjectSetupError",
+      exception_message: "Vercel project setup failed.",
+      ipc_channel: "vercel:create-project",
+    });
+    return;
+  }
+
   // For a server the user runs, the message is the one field built from
   // arbitrary strings: the machine's address, its certificate, whatever it
   // chose to say back. Decided per channel rather than per message, so a throw

@@ -18,6 +18,10 @@ vi.mock("electron", () => ({
   },
 }));
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { ResponseValidationError } from "@vercel/sdk/models/responsevalidationerror.js";
+import { SDKError } from "@vercel/sdk/models/sdkerror.js";
+import { getVercelProjectCreationError } from "./vercel_errors";
+import { serializeIpcError, deserializeIpcError } from "../contracts/core";
 import {
   sendTelemetryEventToWindow,
   sendTelemetryException,
@@ -144,6 +148,60 @@ describe("sendTelemetryEventToWindow", () => {
       eventName: "app:crash_detected",
       properties: { error: true },
     });
+  });
+});
+
+describe("Vercel project diagnostics", () => {
+  beforeEach(() => {
+    sent.calls.length = 0;
+  });
+
+  it.each(["validation", "api"])(
+    "keeps %s details in IPC while telemetry receives only fixed fields",
+    (type) => {
+      const detail = "private-customer-repo\n    at private-credential";
+      const httpMeta = {
+        response: new Response(null, { status: type === "api" ? 403 : 200 }),
+        request: new Request("https://api.vercel.com/v10/projects"),
+        body:
+          type === "api"
+            ? JSON.stringify({ error: { message: detail } })
+            : "{}",
+      };
+      const upstream =
+        type === "api"
+          ? new SDKError("API error occurred", httpMeta)
+          : new ResponseValidationError("Response validation failed", {
+              ...httpMeta,
+              rawValue: {},
+              rawMessage: "Response validation failed",
+              cause: new Error(detail),
+            });
+      const error = getVercelProjectCreationError(upstream);
+
+      expect(deserializeIpcError(serializeIpcError(error)).message).toContain(
+        detail,
+      );
+      sendTelemetryException(error, { ipc_channel: "vercel:create-project" });
+      expect(sent.calls).toEqual([
+        {
+          exception_name: "VercelProjectSetupError",
+          exception_message: "Vercel project setup failed.",
+          ipc_channel: "vercel:create-project",
+        },
+      ]);
+      expect(JSON.stringify(sent.calls)).not.toContain("private-");
+    },
+  );
+
+  it("continues filtering expected failures before reporting classification", () => {
+    sendTelemetryException(
+      new DyadError("private-auth-details", DyadErrorKind.Auth),
+      {
+        ipc_channel: "vercel:create-project",
+      },
+    );
+    expect(sent.calls).toEqual([]);
   });
 });
 
