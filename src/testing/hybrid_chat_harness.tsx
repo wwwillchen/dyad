@@ -74,6 +74,7 @@ import {
 } from "@/atoms/chatAnnotationAtoms";
 import {
   attachmentsAtom,
+  chatAttachmentsByIdAtom,
   chatInputValuesByIdAtom,
   selectedChatIdAtom,
 } from "@/atoms/chatAtoms";
@@ -376,7 +377,7 @@ export interface HybridChatHarness extends ChatFlowHarness {
   getChatAnnotations: (chatId: number) => ChatAnnotation[];
 
   /**
-   * Seed the real ChatInput attachment atom with browser File objects, matching
+   * Seed the mounted chat's attachment draft with browser File objects, matching
    * what the file picker/drop/paste handoff stores before submit converts files
    * to IPC attachments.
    */
@@ -1118,7 +1119,12 @@ export async function setupHybridChatHarness(
         }),
       );
       act(() => {
-        store.set(attachmentsAtom, fileAttachments);
+        const chatId = store.get(selectedChatIdAtom);
+        if (chatId == null) store.set(attachmentsAtom, fileAttachments);
+        else
+          store.set(chatAttachmentsByIdAtom, (previous) =>
+            new Map(previous).set(chatId, fileAttachments),
+          );
       });
     };
 

@@ -289,7 +289,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     handlePaste,
     confirmPendingFiles,
     cancelPendingFiles,
-  } = useAttachments();
+  } = useAttachments(chatId);
 
   // Use the hook to fetch the proposal
   const {

@@ -232,7 +232,7 @@ export const PreviewIframe = ({
   const [isEditingAddressBar, setIsEditingAddressBar] = useState(false);
   const isEditingAddressBarRef = useRef(false);
 
-  const { addAttachments } = useAttachments();
+  const { addAttachments } = useAttachments(selectedChatId);
   const setPendingChanges = useSetAtom(pendingVisualChangesAtom);
 
   const handleReload = useCallback(() => {

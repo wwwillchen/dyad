@@ -512,6 +512,12 @@ export const removeChatIdFromAllTrackingAtom = atom(
     // Remove from closed-tab history
     removeFromClosedTabHistory(get, set, chatId);
     // Clear per-chat input
+    const attachmentDrafts = get(chatAttachmentsByIdAtom);
+    if (attachmentDrafts.has(chatId)) {
+      const next = new Map(attachmentDrafts);
+      next.delete(chatId);
+      set(chatAttachmentsByIdAtom, next);
+    }
     const inputs = get(chatInputValuesByIdAtom);
     if (inputs.has(chatId)) {
       const next = new Map(inputs);
@@ -536,6 +542,11 @@ export const removeChatIdFromAllTrackingAtom = atom(
 
 export const attachmentsAtom = atom<FileAttachment[]>([]);
 attachmentsAtom.debugLabel = "attachmentsAtom";
+
+// The home composer has no chat yet; its attachments remain in attachmentsAtom.
+export const chatAttachmentsByIdAtom = atom<Map<number, FileAttachment[]>>(
+  new Map(),
+);
 
 // Agent todos per chat
 export const agentTodosByChatIdAtom = atom<Map<number, AgentTodo[]>>(new Map());
