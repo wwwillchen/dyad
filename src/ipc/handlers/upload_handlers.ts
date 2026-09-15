@@ -22,9 +22,12 @@ function isTestUploadUrl(value: string): boolean {
   }
 }
 
+/** In-flight uploads, so a report that is abandoned can stop sending. */
+const uploads = new Map<string, AbortController>();
+
 export function registerUploadHandlers() {
   createTypedHandler(systemContracts.uploadToSignedUrl, async (_, params) => {
-    const { url, contentType, data } = params;
+    const { url, contentType, data, uploadId } = params;
     logger.debug("IPC: upload-to-signed-url called");
 
     // Validate the signed URL. E2E builds also accept a loopback address so a
@@ -47,14 +50,34 @@ export function registerUploadHandlers() {
       );
     }
 
-    // Perform the upload to the signed URL
-    const response = await fetch(url, {
-      method: "PUT",
-      headers: {
-        "Content-Type": contentType,
-      },
-      body: JSON.stringify(data),
-    });
+    // Perform the upload to the signed URL. Aborting destroys the socket, which
+    // stops a large body mid-stream but cannot recall bytes the kernel already
+    // sent -- a small body is on its way out before anyone can press anything.
+    const controller = new AbortController();
+    uploads.set(uploadId, controller);
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "PUT",
+        headers: {
+          "Content-Type": contentType,
+        },
+        body: JSON.stringify(data),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      // A reporter backing out is an outcome, not a fault. Rethrowing would
+      // publish an AbortError to the exception telemetry, so the more often
+      // the cancel works the more broken the uploader would look. It is still
+      // told apart from a finished upload, which the caller goes on to cite.
+      if (controller.signal.aborted) {
+        logger.debug("Upload aborted before it finished");
+        return { uploaded: false };
+      }
+      throw error;
+    } finally {
+      uploads.delete(uploadId);
+    }
 
     if (!response.ok) {
       throw new Error(
@@ -63,6 +86,16 @@ export function registerUploadHandlers() {
     }
 
     logger.debug("Successfully uploaded data to signed URL");
+    return { uploaded: true };
+  });
+
+  createTypedHandler(systemContracts.cancelUpload, async (_, params) => {
+    const controller = uploads.get(params.uploadId);
+    if (!controller) return { cancelled: false };
+    controller.abort();
+    uploads.delete(params.uploadId);
+    logger.debug("IPC: cancel-upload aborted an in-flight upload");
+    return { cancelled: true };
   });
 
   logger.debug("Registered upload IPC handlers");
