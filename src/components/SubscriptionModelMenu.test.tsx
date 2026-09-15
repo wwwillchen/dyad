@@ -15,15 +15,20 @@ const mocks = vi.hoisted(() => ({
   credentialError: false,
   settingsLoading: false,
   pro: true,
+  fastMode: false,
+  statusError: undefined as string | undefined,
+  updateSettings: vi.fn(),
   connect: vi.fn(),
   disconnect: vi.fn(),
 }));
 vi.mock("@/hooks/useSettings", () => ({
   useSettings: () => ({
+    updateSettings: mocks.updateSettings,
     settings: mocks.settingsLoading
       ? undefined
       : {
           enableDyadPro: mocks.pro,
+          chatgptFastMode: mocks.fastMode,
           providerSettings: mocks.pro
             ? { auto: { apiKey: { value: "test-key" } } }
             : {},
@@ -35,6 +40,7 @@ vi.mock("@/ipc/types", () => ({
     settings: {
       getCodexSubscriptionStatus: async () => ({
         connected: mocks.connected,
+        error: mocks.statusError,
         credentialError: mocks.credentialError,
         planType: "plus",
         pending: false,
@@ -55,6 +61,9 @@ beforeEach(() => {
   mocks.connected = false;
   mocks.credentialError = false;
   mocks.pro = true;
+  mocks.fastMode = false;
+  mocks.statusError = undefined;
+  mocks.updateSettings.mockResolvedValue(undefined);
 });
 afterEach(() => vi.unstubAllGlobals());
 async function open() {
@@ -81,6 +90,42 @@ async function open() {
   );
   return user;
 }
+it.each([false, true])(
+  "saves Fast mode from %s without closing the submenu",
+  async (enabled) => {
+    mocks.connected = true;
+    mocks.fastMode = enabled;
+    const user = await open();
+    const toggle = await screen.findByRole("menuitemcheckbox", {
+      name: /Fast mode/,
+    });
+    expect(toggle).toHaveAttribute("aria-checked", String(enabled));
+    expect(toggle).toHaveTextContent("Faster responses, 2x ChatGPT usage");
+    await user.click(toggle);
+    expect(mocks.updateSettings).toHaveBeenCalledWith({
+      chatgptFastMode: !enabled,
+    });
+    expect(toggle).toBeVisible();
+  },
+);
+
+it("shows Fast mode save failures without closing the submenu", async () => {
+  mocks.connected = true;
+  mocks.updateSettings.mockRejectedValueOnce(
+    new Error("Could not save settings"),
+  );
+  const user = await open();
+  await user.click(
+    await screen.findByRole("menuitemcheckbox", { name: /Fast mode/ }),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not save settings",
+  );
+  expect(
+    screen.getByRole("menuitemcheckbox", { name: /Fast mode/ }),
+  ).toHaveAttribute("aria-checked", "false");
+});
+
 it("opens on hover and keeps connection errors visible in the real Base UI menu", async () => {
   mocks.connect.mockRejectedValueOnce(new Error("Secure storage unavailable"));
   const user = await open();
@@ -190,4 +235,66 @@ it("offers disconnect when stored credentials cannot be read", async () => {
   expect(screen.queryByText(/Connecting sets/)).toBeNull();
   expect(mocks.disconnect).toHaveBeenCalledTimes(1);
   expect(mocks.connect).not.toHaveBeenCalled();
+});
+
+it.each([false, true])(
+  "hides Fast mode without a usable connection (credential error: %s)",
+  async (credentialError) => {
+    mocks.credentialError = credentialError;
+    await open();
+    const action = await screen.findByRole("menuitem", {
+      name: credentialError ? "Disconnect ChatGPT" : "Connect with ChatGPT",
+    });
+    await waitFor(() =>
+      expect(action).not.toHaveAttribute("aria-disabled", "true"),
+    );
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: /Fast mode/ }),
+    ).not.toBeInTheDocument();
+  },
+);
+
+it("clears a failed Fast mode save when disconnect starts and shows its error", async () => {
+  mocks.connected = true;
+  mocks.updateSettings.mockRejectedValueOnce(
+    new Error("Could not save settings"),
+  );
+  let rejectDisconnect!: (error: Error) => void;
+  mocks.disconnect.mockImplementationOnce(
+    () =>
+      new Promise((_, reject) => {
+        rejectDisconnect = reject;
+      }),
+  );
+  const user = await open();
+  await user.click(
+    await screen.findByRole("menuitemcheckbox", { name: /Fast mode/ }),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not save settings",
+  );
+  await user.click(
+    screen.getByRole("menuitem", { name: "Disconnect ChatGPT" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+  );
+  rejectDisconnect(new Error("Could not disconnect ChatGPT"));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not disconnect ChatGPT",
+  );
+});
+
+it("keeps subscription status errors visible alongside Fast mode save errors", async () => {
+  mocks.connected = true;
+  mocks.statusError = "Subscription status unavailable";
+  mocks.updateSettings.mockRejectedValueOnce(
+    new Error("Could not save settings"),
+  );
+  const user = await open();
+  await user.click(
+    await screen.findByRole("menuitemcheckbox", { name: /Fast mode/ }),
+  );
+  expect(await screen.findByText("Could not save settings")).toBeVisible();
+  expect(screen.getByText("Subscription status unavailable")).toBeVisible();
 });
