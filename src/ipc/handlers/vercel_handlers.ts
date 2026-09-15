@@ -5,11 +5,14 @@ import { db } from "../../db";
 import { apps } from "../../db/schema";
 import { eq } from "drizzle-orm";
 import log from "electron-log";
-import { createVercelClient, VERCEL_API_BASE } from "../utils/vercel_utils";
+import {
+  createVercelClient,
+  VERCEL_API_BASE,
+  type VercelProjectFramework,
+} from "../utils/vercel_utils";
 import { getVercelProjectCreationError } from "../utils/vercel_errors";
 import * as fs from "fs";
 import * as path from "path";
-import type { CreateProjectFramework } from "@vercel/sdk/models/createprojectpasswordprotection.js";
 import { getDyadAppPath } from "@/paths/paths";
 import { slugifyAppPath } from "@/shared/slugify";
 import { createTypedHandler } from "./base";
@@ -129,12 +132,12 @@ async function getDefaultTeamId(token: string): Promise<string> {
 
 async function detectFramework(
   appPath: string,
-): Promise<CreateProjectFramework | undefined> {
+): Promise<VercelProjectFramework | undefined> {
   try {
     // Check for specific config files first
     const configFiles: Array<{
       file: string;
-      framework: CreateProjectFramework;
+      framework: VercelProjectFramework;
     }> = [
       { file: "next.config.js", framework: "nextjs" },
       { file: "next.config.mjs", framework: "nextjs" },

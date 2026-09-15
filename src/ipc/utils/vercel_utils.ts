@@ -5,6 +5,12 @@ import { IS_TEST_BUILD } from "./test_utils";
 
 const logger = log.scope("vercel_utils");
 
+export type VercelProjectFramework = NonNullable<
+  NonNullable<
+    Parameters<Vercel["projects"]["createProject"]>[0]["requestBody"]
+  >["framework"]
+>;
+
 // Use test server URLs when in test mode
 const TEST_SERVER_BASE = `http://localhost:${process.env.FAKE_LLM_PORT || "3500"}`;
 

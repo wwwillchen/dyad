@@ -2,6 +2,29 @@ import { ResponseValidationError } from "@vercel/sdk/models/responsevalidationer
 import { VercelError } from "@vercel/sdk/models/vercelerror.js";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
+function getVercelErrorKind(status: number): DyadErrorKind {
+  switch (status) {
+    case 400:
+    case 422:
+      return DyadErrorKind.Validation;
+    case 401:
+    case 403:
+      return DyadErrorKind.Auth;
+    case 402:
+    case 428:
+      return DyadErrorKind.Precondition;
+    case 404:
+    case 410:
+      return DyadErrorKind.NotFound;
+    case 409:
+      return DyadErrorKind.Conflict;
+    case 429:
+      return DyadErrorKind.RateLimited;
+    default:
+      return DyadErrorKind.External;
+  }
+}
+
 function getResponseErrorMessage(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
   if ("error" in value) {
@@ -50,7 +73,7 @@ export function getVercelProjectCreationError(error: unknown): Error {
 
     return new DyadError(
       `Vercel project setup failed (HTTP ${error.statusCode}): ${(detail || fallback).slice(0, 4000)}${recovery}`,
-      DyadErrorKind.External,
+      getVercelErrorKind(error.statusCode),
     );
   }
 

@@ -161,7 +161,7 @@ describe("Vercel project diagnostics", () => {
     (type) => {
       const detail = "private-customer-repo\n    at private-credential";
       const httpMeta = {
-        response: new Response(null, { status: type === "api" ? 403 : 200 }),
+        response: new Response(null, { status: type === "api" ? 500 : 200 }),
         request: new Request("https://api.vercel.com/v10/projects"),
         body:
           type === "api"
@@ -203,6 +203,23 @@ describe("Vercel project diagnostics", () => {
     );
     expect(sent.calls).toEqual([]);
   });
+
+  it.each([400, 401, 403, 409, 429])(
+    "filters mapped HTTP %s API failures",
+    (status) => {
+      const error = new SDKError("API error occurred", {
+        response: new Response(null, { status }),
+        request: new Request("https://api.vercel.com/v10/projects"),
+        body: JSON.stringify({
+          error: { message: "private-provider-details" },
+        }),
+      });
+      sendTelemetryException(getVercelProjectCreationError(error), {
+        ipc_channel: "vercel:create-project",
+      });
+      expect(sent.calls).toEqual([]);
+    },
+  );
 });
 
 /**

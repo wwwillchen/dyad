@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ResponseValidationError } from "@vercel/sdk/models/responsevalidationerror.js";
 import { SDKError } from "@vercel/sdk/models/sdkerror.js";
+import { z } from "zod/v3";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { getVercelProjectCreationError } from "./vercel_errors";
 
@@ -21,7 +22,6 @@ describe("getVercelProjectCreationError", () => {
       const result = getVercelProjectCreationError(error);
 
       expect(result).toBeInstanceOf(DyadError);
-      expect(result).toHaveProperty("kind", DyadErrorKind.External);
       expect(result.message).toContain("couldn't read Vercel's response");
       expect(result.message).toContain(`HTTP ${status}`);
       if (status === 200) {
@@ -107,6 +107,52 @@ describe("getVercelProjectCreationError", () => {
     const message = getVercelProjectCreationError(error).message;
     expect(message).toContain("HTTP 502");
     expect(message).not.toContain("private-proxy-details");
+  });
+
+  it.each([
+    [400, DyadErrorKind.Validation],
+    [401, DyadErrorKind.Auth],
+    [402, DyadErrorKind.Precondition],
+    [403, DyadErrorKind.Auth],
+    [404, DyadErrorKind.NotFound],
+    [409, DyadErrorKind.Conflict],
+    [410, DyadErrorKind.NotFound],
+    [422, DyadErrorKind.Validation],
+    [428, DyadErrorKind.Precondition],
+    [429, DyadErrorKind.RateLimited],
+    [500, DyadErrorKind.External],
+  ] as const)("classifies HTTP %s as %s", (status, kind) => {
+    const error = new SDKError("API error occurred", {
+      response: new Response(null, { status }),
+      request: new Request("https://api.vercel.com/v10/projects"),
+      body: "{}",
+    });
+    expect(getVercelProjectCreationError(error)).toHaveProperty("kind", kind);
+  });
+
+  it("preserves real Zod validation details alongside recovery guidance", () => {
+    const parsed = z
+      .object({
+        resourceConfig: z.object({
+          buildMachineType: z.enum(["enhanced", "turbo"]),
+        }),
+      })
+      .safeParse({ resourceConfig: { buildMachineType: "basic" } });
+    if (parsed.success)
+      throw new Error("Expected the old SDK schema to reject basic");
+    const error = new ResponseValidationError("Response validation failed", {
+      response: new Response(null, { status: 200 }),
+      request: new Request("https://api.vercel.com/v10/projects"),
+      body: "{}",
+      rawValue: {},
+      rawMessage: "Response validation failed",
+      cause: parsed.error,
+    });
+    const result = getVercelProjectCreationError(error);
+    expect(result.message).toContain('"basic"');
+    expect(result.message).toContain("buildMachineType");
+    expect(result.message).toContain('"Connect to existing project"');
+    expect(result).toHaveProperty("kind", DyadErrorKind.External);
   });
 
   it("preserves other errors and their classifications", () => {
