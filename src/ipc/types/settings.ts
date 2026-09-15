@@ -22,9 +22,11 @@ export const settingsContracts = {
     input: z.void(),
     output: z.object({
       connected: z.boolean(),
+      planType: z.string().optional(),
       credentialError: z.boolean().optional(),
       pending: z.boolean(),
       celebrationPending: z.boolean().optional(),
+      setupError: z.string().optional(),
       models: z.array(z.string()),
       modelsError: z.string().optional(),
       limitsError: z.string().optional(),
@@ -46,7 +48,10 @@ export const settingsContracts = {
   }),
   connectCodexSubscription: defineContract({
     channel: "codex-subscription:connect",
-    input: z.object({ acceptCharges: z.literal(true) }),
+    input: z.object({
+      acceptCharges: z.literal(true),
+      selectModel: z.boolean().optional(),
+    }),
     output: z.void(),
   }),
   disconnectCodexSubscription: defineContract({

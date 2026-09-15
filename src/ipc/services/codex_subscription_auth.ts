@@ -8,9 +8,16 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 import { getUserDataPath } from "@/paths/paths";
 import { readSettings, writeSettings } from "@/main/settings";
-import { hasDyadProKey } from "@/lib/schemas";
-import { resetSubscriptionAccount } from "./codex_subscription_account";
+import {
+  getSubscriptionAccount,
+  resetSubscriptionAccount,
+} from "./codex_subscription_account";
 import { subscriptionConnectedPage } from "./codex_subscription_return_page";
+import {
+  getSubscriptionDefaultModel,
+  normalizeChatGPTPlanType,
+} from "@/lib/subscriptionModels";
+import { addRecentModel, getEffectiveRecentModels } from "@/lib/recentModels";
 
 // Public native-client registration used by Codex/OpenCode; not a client secret.
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -21,10 +28,12 @@ const Credentials = z.object({
   refresh: z.string().min(1),
   accountId: z.string().min(1),
   expires: z.number(),
+  planType: z.string().optional(),
 });
 type Credentials = z.infer<typeof Credentials>;
 const Tokens = z.object({
   access_token: z.string(),
+  id_token: z.string().optional(),
   refresh_token: z.string(),
   expires_in: z.number().positive().optional(),
 });
@@ -33,11 +42,13 @@ let credentialCache: Credentials | DyadError | null | undefined;
 let celebrationPending = false;
 export function acknowledgeSubscriptionConnection() {
   celebrationPending = false;
+  setupError = undefined;
 }
 let server: Server | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let pending = false;
 let lastError: string | undefined;
+let setupError: string | undefined;
 let refreshing: Promise<Credentials> | undefined;
 
 function credentialPath() {
@@ -72,7 +83,7 @@ function load(): Credentials | undefined {
     // A failed read is not an absent connection. Keep reporting it until
     // successful reconnection or explicit disconnect replaces the cache.
     credentialCache = new DyadError(
-      "Reconnect your ChatGPT subscription; its saved credentials could not be opened.",
+      "Saved ChatGPT credentials could not be opened. Reconnect ChatGPT, or disconnect it to use your OpenAI API key.",
       DyadErrorKind.Auth,
     );
     throw credentialCache;
@@ -100,11 +111,17 @@ function stopLogin() {
 }
 export function getCodexSubscriptionStatus() {
   try {
+    const credentials = load();
+    const planType =
+      normalizeChatGPTPlanType(credentials?.planType) ??
+      getPlanTypeFromToken(credentials?.access);
     return {
-      connected: Boolean(load()),
+      connected: Boolean(credentials),
+      ...(planType ? { planType } : {}),
       pending,
       error: lastError,
       celebrationPending,
+      setupError,
     };
   } catch {
     return {
@@ -112,7 +129,7 @@ export function getCodexSubscriptionStatus() {
       credentialError: true,
       pending,
       error:
-        "Saved ChatGPT credentials could not be opened. Restore your OS keyring or reconnect.",
+        "Saved ChatGPT credentials could not be opened. Restore your OS keyring, reconnect ChatGPT, or disconnect it to use your OpenAI API key.",
     };
   }
 }
@@ -125,6 +142,7 @@ export function disconnectCodexSubscription() {
   stopLogin();
   refreshing = undefined;
   lastError = undefined;
+  setupError = undefined;
   fs.rmSync(credentialPath(), { force: true });
 }
 export function validateOAuthState(expected: string, actual: string | null) {
@@ -134,9 +152,24 @@ export function validateOAuthState(expected: string, actual: string | null) {
     timingSafeEqual(Buffer.from(expected), Buffer.from(actual))
   );
 }
+
+function getPlanTypeFromToken(token: string | undefined) {
+  if (!token) return undefined;
+  try {
+    const claims = JSON.parse(
+      Buffer.from(token.split(".")[1], "base64url").toString(),
+    );
+    return normalizeChatGPTPlanType(
+      claims["https://api.openai.com/auth"]?.chatgpt_plan_type,
+    );
+  } catch {
+    // Optional display/default-selection metadata must not invalidate authentication.
+    return undefined;
+  }
+}
 async function exchange(
   params: Record<string, string>,
-  previousAccountId?: string,
+  previous?: Pick<Credentials, "accountId" | "planType">,
 ): Promise<Credentials> {
   const response = await fetch(`${ISSUER}/oauth/token`, {
     method: "POST",
@@ -156,13 +189,18 @@ async function exchange(
     const claims = JSON.parse(
       Buffer.from(tokens.access_token.split(".")[1], "base64url").toString(),
     );
+    const accountId =
+      claims["https://api.openai.com/auth"]?.chatgpt_account_id ??
+      previous?.accountId;
     return Credentials.parse({
       access: tokens.access_token,
       refresh: tokens.refresh_token,
-      accountId:
-        claims["https://api.openai.com/auth"]?.chatgpt_account_id ??
-        previousAccountId,
+      accountId,
       expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+      planType:
+        getPlanTypeFromToken(tokens.id_token) ??
+        getPlanTypeFromToken(tokens.access_token) ??
+        (accountId === previous?.accountId ? previous?.planType : undefined),
     });
   } catch {
     throw new DyadError(
@@ -183,7 +221,7 @@ export async function getCodexSubscriptionCredentials(): Promise<Credentials> {
     const current = generation;
     refreshing = exchange(
       { grant_type: "refresh_token", refresh_token: stored.refresh },
-      stored.accountId,
+      stored,
     )
       .then((credentials) => {
         if (generation !== current)
@@ -201,18 +239,14 @@ export async function getCodexSubscriptionCredentials(): Promise<Credentials> {
   return refreshing;
 }
 export async function connectCodexSubscription(
-  options: { port?: number } = {},
+  options: { port?: number; selectModel?: boolean } = {},
 ) {
-  if (!hasDyadProKey(readSettings()))
-    throw new DyadError(
-      "Connect Dyad Pro before connecting ChatGPT.",
-      DyadErrorKind.Precondition,
-    );
   requireEncryption();
   if (pending) return;
   const current = ++generation;
   refreshing = undefined;
   lastError = undefined;
+  setupError = undefined;
   pending = true;
   const state = randomBytes(32).toString("base64url");
   const verifier = randomBytes(32).toString("base64url");
@@ -252,7 +286,7 @@ export async function connectCodexSubscription(
       code_verifier: verifier,
       redirect_uri: redirect,
     })
-      .then((credentials) => {
+      .then(async (credentials) => {
         if (generation !== current) {
           res.end("Sign-in cancelled.");
           return;
@@ -260,6 +294,44 @@ export async function connectCodexSubscription(
         save(credentials);
         writeSettings({ proModelUsage: "subscription" });
         resetSubscriptionAccount();
+        if (options.selectModel) {
+          try {
+            const account = await getSubscriptionAccount({
+              includeUsage: false,
+            });
+            if (generation !== current) {
+              res.end("Sign-in cancelled.");
+              return;
+            }
+            const settings = readSettings();
+            const name = getSubscriptionDefaultModel(
+              account.models,
+              credentials.planType,
+              settings.selectedModel,
+            );
+            if (!name || account.error || account.modelsError)
+              throw new Error("Subscription model selection unavailable");
+            writeSettings({
+              selectedModel: { provider: "openai", name },
+              recentModels: addRecentModel(
+                getEffectiveRecentModels(
+                  settings.recentModels,
+                  settings.selectedModel,
+                ),
+                { provider: "openai", name },
+              ),
+              selectedChatMode: "local-agent",
+              defaultChatMode: "local-agent",
+            });
+          } catch {
+            if (generation !== current) {
+              res.end("Sign-in cancelled.");
+              return;
+            }
+            setupError =
+              "ChatGPT is connected, but its models could not be loaded. Your model and mode were not changed. Disconnect and reconnect to retry setup, or choose a supported model manually.";
+          }
+        }
         celebrationPending = true;
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.end(subscriptionConnectedPage);

@@ -12,6 +12,7 @@ vi.mock("node-fetch", async (importOriginal) => ({
 }));
 vi.mock("@/main/settings", () => ({
   readSettings: () => ({
+    enableDyadPro: true,
     providerSettings: { auto: { apiKey: { value: mocks.key } } },
   }),
 }));
@@ -36,7 +37,10 @@ const info = {
 const accountResponse = (body = info) =>
   new NodeResponse(JSON.stringify(body), { status: 200 });
 async function run(signal?: AbortSignal) {
-  const model = await createCodexSubscriptionModel("gpt-5.6-luna");
+  const model = await createCodexSubscriptionModel(
+    "gpt-5.6-luna",
+    mocks.key || null,
+  );
   const result = await model.doStream({ prompt: [], abortSignal: signal });
   // No inference completion in this fixture: cancel to dispose active context.
   await result.stream.cancel();
@@ -59,6 +63,12 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 describe("BYO subscription preflight through the actual provider", () => {
+  it("runs free subscription inference without a Dyad balance check", async () => {
+    mocks.key = "";
+    await run();
+    expect(mocks.accountFetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it("checks a fresh account balance before every inference request", async () => {
     await run();
     await run();

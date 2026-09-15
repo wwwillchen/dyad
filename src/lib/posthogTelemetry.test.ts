@@ -841,6 +841,13 @@ describe("shouldBypassNonProTelemetrySampling", () => {
     ).toBe(true);
   });
 
+  it("always sends ChatGPT setup clicks for non-Pro sampling", () => {
+    expect(
+      shouldBypassNonProTelemetrySampling({
+        event: "setup-flow:ai-provider-setup:chatgpt:click",
+      }),
+    ).toBe(true);
+  });
   it("always sends promo_click for non-Pro sampling", () => {
     expect(
       shouldBypassNonProTelemetrySampling({

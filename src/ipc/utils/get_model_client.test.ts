@@ -312,9 +312,13 @@ describe("getModelClient", () => {
         name: "gpt-5.5",
         connection: "subscription",
       });
-      expect(createCodexSubscriptionModel).toHaveBeenCalledWith("gpt-5.5", {
-        chatId: 42,
-      });
+      expect(createCodexSubscriptionModel).toHaveBeenCalledWith(
+        "gpt-5.5",
+        settings.providerSettings?.auto?.apiKey?.value,
+        {
+          chatId: 42,
+        },
+      );
     },
   );
 
@@ -441,6 +445,27 @@ describe("getModelClient", () => {
     );
     expect((result.modelClient.model as any).provider).toBe(
       "chatgpt-subscription",
+    );
+  });
+  test("constructs the concrete subscription model for free Auto without an API key", async () => {
+    vi.mocked(getSubscriptionAccount).mockResolvedValue({
+      connected: true,
+      models: ["gpt-5.6-luna"],
+    } as any);
+    const result = await getModelClient({ provider: "auto", name: "auto" }, {
+      enableDyadPro: false,
+      providerSettings: {},
+      selectedModel: { provider: "auto", name: "auto" },
+    } as UserSettings);
+    expect(result.runtimeModel).toMatchObject({
+      provider: "openai",
+      name: "gpt-5.6-luna",
+      connection: "subscription",
+    });
+    expect(createCodexSubscriptionModel).toHaveBeenCalledWith(
+      "gpt-5.6-luna",
+      null,
+      undefined,
     );
   });
   test("keeps the accepted turn source pinned", async () => {

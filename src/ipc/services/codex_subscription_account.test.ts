@@ -261,7 +261,7 @@ it.each(["empty", "error", "hidden"])(
     );
     const account = await getSubscriptionAccount({ includeUsage: false });
     expect(account.models).toEqual(["gpt-fallback", "gpt-second"]);
-    expect(account.modelsError).toBeUndefined();
+    expect(account.modelsError).toBeDefined();
     const model = {
       provider: "openai",
       name: "gpt-fallback",

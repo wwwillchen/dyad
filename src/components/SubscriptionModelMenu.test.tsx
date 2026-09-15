@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -7,21 +7,27 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
+  DropdownMenuItem,
 } from "./ui/dropdown-menu";
 import { SubscriptionModelMenu } from "./SubscriptionModelMenu";
 const mocks = vi.hoisted(() => ({
   connected: false,
+  credentialError: false,
+  settingsLoading: false,
   pro: true,
   connect: vi.fn(),
   disconnect: vi.fn(),
 }));
 vi.mock("@/hooks/useSettings", () => ({
   useSettings: () => ({
-    settings: {
-      providerSettings: mocks.pro
-        ? { auto: { apiKey: { value: "test-key" } } }
-        : {},
-    },
+    settings: mocks.settingsLoading
+      ? undefined
+      : {
+          enableDyadPro: mocks.pro,
+          providerSettings: mocks.pro
+            ? { auto: { apiKey: { value: "test-key" } } }
+            : {},
+        },
   }),
 }));
 vi.mock("@/ipc/types", () => ({
@@ -29,6 +35,8 @@ vi.mock("@/ipc/types", () => ({
     settings: {
       getCodexSubscriptionStatus: async () => ({
         connected: mocks.connected,
+        credentialError: mocks.credentialError,
+        planType: "plus",
         pending: false,
         models: ["gpt-test"],
         windows: [
@@ -43,9 +51,12 @@ vi.mock("@/ipc/types", () => ({
 }));
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.settingsLoading = false;
   mocks.connected = false;
+  mocks.credentialError = false;
   mocks.pro = true;
 });
+afterEach(() => vi.unstubAllGlobals());
 async function open() {
   const user = userEvent.setup();
   render(
@@ -57,7 +68,9 @@ async function open() {
       <DropdownMenu>
         <DropdownMenuTrigger>Models</DropdownMenuTrigger>
         <DropdownMenuContent>
-          <SubscriptionModelMenu />
+          <SubscriptionModelMenu>
+            <DropdownMenuItem>Example model</DropdownMenuItem>
+          </SubscriptionModelMenu>
         </DropdownMenuContent>
       </DropdownMenu>
     </QueryClientProvider>,
@@ -88,15 +101,93 @@ it("shows account usage limits without a duplicate model catalog", async () => {
   mocks.connected = true;
   await open();
   expect(await screen.findByText("5-hour")).toBeVisible();
+  expect(screen.getByText("Plus")).toBeVisible();
+  expect(screen.getByText("Plus").parentElement).toHaveTextContent(
+    "ChatGPT subscription",
+  );
+  expect(
+    screen.getByText("Get up to 5× usage with your ChatGPT subscription."),
+  ).toBeVisible();
+  expect(screen.getByText(/1.5 Pro credits/)).toBeVisible();
+  expect(screen.getByText("New")).toBeVisible();
   expect(screen.getByText("25% used")).toBeVisible();
   expect(
     screen.getByRole("menuitem", { name: "Disconnect ChatGPT" }),
   ).toBeVisible();
 });
-it("requires Dyad Pro before connection", async () => {
-  mocks.pro = false;
-  await open();
+it("replaces models with subscription details in narrow windows and returns with Back", async () => {
+  vi.stubGlobal("innerWidth", 300);
+  const user = await open();
+  await user.click(
+    screen.getByRole("menuitem", { name: /Subscription.*Open submenu/ }),
+  );
   expect(
-    await screen.findByRole("menuitem", { name: "Connect with ChatGPT" }),
+    await screen.findByRole("menuitem", { name: "Back to models" }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("menuitem", { name: "Example model" }),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole("menuitem", { name: "Back to models" }));
+  expect(screen.getByRole("menuitem", { name: "Example model" })).toBeVisible();
+});
+it("allows free users to connect and explains the Basic Agent limit", async () => {
+  mocks.pro = false;
+  const user = await open();
+  const connect = await screen.findByRole("menuitem", {
+    name: "Connect with ChatGPT",
+  });
+  await waitFor(() =>
+    expect(connect).not.toHaveAttribute("aria-disabled", "true"),
+  );
+  await user.click(connect);
+  expect(mocks.connect).toHaveBeenCalledWith({
+    acceptCharges: true,
+    selectModel: true,
+  });
+  expect(
+    screen.getByText(
+      /defaults for new chats. Existing chats keep their model selection/,
+    ),
+  ).toBeVisible();
+  expect(screen.getByText(/no Dyad usage fees/)).toBeVisible();
+  expect(screen.getByText(/Basic Agent limits still apply/)).toBeVisible();
+  expect(screen.queryByText(/1.5 Pro credits/)).not.toBeInTheDocument();
+});
+
+it("does not offer connection until billing settings are loaded", async () => {
+  mocks.settingsLoading = true;
+  await open();
+  expect(await screen.findByText("Checking Dyad Pro status…")).toBeVisible();
+  expect(
+    screen.getByRole("menuitem", { name: "Connect with ChatGPT" }),
   ).toHaveAttribute("aria-disabled", "true");
+  expect(mocks.connect).not.toHaveBeenCalled();
+});
+
+it("keeps connected copy neutral while billing settings load", async () => {
+  mocks.settingsLoading = true;
+  mocks.connected = true;
+  await open();
+  expect(await screen.findByText("Checking Dyad Pro status…")).toBeVisible();
+  expect(
+    screen.queryByText("Disconnect ChatGPT to use your OpenAI API key."),
+  ).toBeNull();
+});
+it("offers disconnect when stored credentials cannot be read", async () => {
+  mocks.pro = false;
+  mocks.credentialError = true;
+  const user = await open();
+  const disconnect = await screen.findByRole("menuitem", {
+    name: "Disconnect ChatGPT",
+  });
+  await waitFor(() =>
+    expect(disconnect).not.toHaveAttribute("aria-disabled", "true"),
+  );
+  await user.click(disconnect);
+  expect(
+    screen.getByText(/Your saved ChatGPT connection could not be opened/),
+  ).toBeVisible();
+  expect(screen.queryByText(/Connecting sets/)).toBeNull();
+  expect(mocks.disconnect).toHaveBeenCalledTimes(1);
+  expect(mocks.connect).not.toHaveBeenCalled();
 });

@@ -196,7 +196,81 @@ describe("global subscription turn routing", () => {
     ).rejects.toThrow("Subscription model availability is unavailable");
     expect(mocks.credits).not.toHaveBeenCalled();
   });
+  it("explains both recovery options for free users with unreadable credentials", async () => {
+    mocks.account.mockResolvedValue({
+      connected: false,
+      credentialError: true,
+      models: [],
+    });
+    await expect(
+      preflightSubscriptionTurn(
+        model,
+        { ...settings, enableDyadPro: false },
+        signal,
+      ),
+    ).rejects.toMatchObject({
+      kind: DyadErrorKind.Auth,
+      message: expect.stringContaining(
+        "Reconnect ChatGPT, or disconnect it in the model picker to use your OpenAI API key",
+      ),
+    });
+    expect(mocks.credits).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["free", "gpt-5.6-luna"],
+    [undefined, "gpt-5.6-luna"],
+    ["plus", "eligible-model"],
+    ["pro", "eligible-model"],
+  ] as const)(
+    "resolves free-user Auto using ChatGPT tier %s",
+    async (planType, expected) => {
+      mocks.account.mockResolvedValue({
+        connected: true,
+        planType,
+        models: ["first-model", "eligible-model", "gpt-5.6-luna"],
+      });
+      const result = await preflightSubscriptionTurn(
+        { provider: "auto", name: "auto", effortLevel: "medium" },
+        { ...settings, enableDyadPro: false, selectedModel: model },
+        signal,
+      );
+      expect(result).toMatchObject({
+        provider: "openai",
+        name: expected,
+        connection: "subscription",
+      });
+      expect(mocks.account).toHaveBeenCalled();
+      expect(mocks.credentials).toHaveBeenCalled();
+      expect(mocks.credits).not.toHaveBeenCalled();
+    },
+  );
+  it("falls back to the first subscription model for Auto when Luna is unavailable", async () => {
+    const result = await preflightSubscriptionTurn(
+      { provider: "auto", name: "auto", effortLevel: "medium" },
+      { ...settings, enableDyadPro: false },
+      signal,
+    );
+    expect(result).toMatchObject({
+      provider: "openai",
+      name: "eligible-model",
+      connection: "subscription",
+    });
+    expect(mocks.account).toHaveBeenCalled();
+  });
+  it("keeps disconnected Auto on its existing provider-key path", async () => {
+    mocks.account.mockResolvedValue({ connected: false, models: [] });
+    expect(
+      await preflightSubscriptionTurn(
+        { provider: "auto", name: "auto", effortLevel: "medium" },
+        { ...settings, enableDyadPro: false },
+        signal,
+      ),
+    ).toEqual({ provider: "auto", name: "auto", effortLevel: "medium" });
+    expect(mocks.account).toHaveBeenCalled();
+    expect(mocks.credentials).not.toHaveBeenCalled();
+  });
   it("preserves own-key routing when Pro is off", async () => {
+    mocks.account.mockResolvedValue({ connected: false, models: [] });
     expect(
       await preflightSubscriptionTurn(
         model,
@@ -204,7 +278,33 @@ describe("global subscription turn routing", () => {
         signal,
       ),
     ).not.toHaveProperty("connection");
-    expect(mocks.account).not.toHaveBeenCalled();
+    expect(mocks.account).toHaveBeenCalled();
+    expect(mocks.credits).not.toHaveBeenCalled();
+  });
+  it.each([{}, settings.providerSettings])(
+    "allows free subscription turns without Dyad credit checks (%j)",
+    async (providerSettings) => {
+      const freeSettings = {
+        ...settings,
+        enableDyadPro: false,
+        providerSettings,
+      };
+      const result = await preflightWithAdmission(model, freeSettings, signal);
+      expect(result.model.connection).toBe("subscription");
+      expect(result.externalModelAdmission).toBeUndefined();
+      expect(mocks.account).toHaveBeenCalled();
+      expect(mocks.credentials).toHaveBeenCalled();
+      expect(mocks.credits).not.toHaveBeenCalled();
+    },
+  );
+  it("keeps unsupported free models on their own provider credentials", async () => {
+    const result = await preflightSubscriptionTurn(
+      { ...model, name: "unsupported" },
+      { ...settings, providerSettings: {} },
+      signal,
+    );
+    expect(result).not.toHaveProperty("connection");
+    expect(mocks.credits).not.toHaveBeenCalled();
   });
   it("propagates confirmed credit and auth denial before accepting a turn", async () => {
     mocks.credits.mockRejectedValue(new Error("Out of credits"));

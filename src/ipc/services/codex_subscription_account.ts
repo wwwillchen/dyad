@@ -181,6 +181,6 @@ export async function getSubscriptionAccount({
     ...getCodexSubscriptionStatus(),
     ...cached,
     models,
-    modelsError: models.length ? undefined : cached.modelsError,
+    modelsError: cached.modelsError,
   };
 }

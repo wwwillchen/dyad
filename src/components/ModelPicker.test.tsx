@@ -9,20 +9,26 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelPicker } from "./ModelPicker";
 vi.mock("./SubscriptionModelMenu", () => ({
-  SubscriptionModelMenu: () => null,
+  SubscriptionModelMenu: ({ children }: { children: React.ReactNode }) =>
+    children,
 }));
 vi.mock("@/hooks/useSubscriptionAccount", () => ({
   useSubscriptionAccount: () => ({
-    data: {
-      connected: mocks.subscriptionConnected,
-      models: ["gpt-5"],
-      windows: [],
-      limitReached: false,
-    },
+    isLoading: mocks.subscriptionLoading,
+    data: mocks.subscriptionUnavailable
+      ? undefined
+      : {
+          connected: mocks.subscriptionConnected,
+          models: ["gpt-5"],
+          windows: [],
+          limitReached: false,
+        },
   }),
 }));
 
 const mocks = vi.hoisted(() => ({
+  subscriptionUnavailable: false,
+  subscriptionLoading: false,
   subscriptionConnected: true,
   invalidateQueries: vi.fn(),
   setChatMode: vi.fn(),
@@ -516,6 +522,8 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 
 describe("ModelPicker", () => {
   beforeEach(() => {
+    mocks.subscriptionUnavailable = false;
+    mocks.subscriptionLoading = false;
     mocks.subscriptionConnected = true;
     mocks.settings.proModelUsage = "subscription";
     mocks.invalidateQueries.mockReset();
@@ -1330,7 +1338,48 @@ describe("ModelPicker", () => {
     expect(screen.getByText("Auto (balanced)")).toBeTruthy();
   });
 
+  it.each([true, false])(
+    "only defers OpenAI locks while loading (%s)",
+    (loading) => {
+      mocks.subscriptionLoading = loading;
+      mocks.subscriptionUnavailable = true;
+      mocks.settings.enableDyadPro = false;
+      mocks.settings.providerSettings.auto.apiKey.value = "";
+      mocks.renderSubContent = true;
+      render(<ModelPicker />);
+      expect(screen.getByText("GPT 5").closest("button")?.dataset.locked).toBe(
+        loading ? undefined : "true",
+      );
+      expect(screen.queryByText("ChatGPT plan")).toBeNull();
+    },
+  );
+
+  it("unlocks only subscription-supported models for free users", async () => {
+    mocks.settings.enableDyadPro = false;
+    mocks.settings.providerSettings.auto.apiKey.value = "";
+    mocks.renderSubContent = true;
+    render(<ModelPicker />);
+    const supported = screen.getByText("GPT 5").closest("button")!;
+    expect(supported.dataset.locked).toBeUndefined();
+    expect(within(supported).getByText("ChatGPT plan")).toBeTruthy();
+    expect(
+      screen.getByText("GPT 5 Mini").closest("button")?.dataset.locked,
+    ).toBe("true");
+    fireEvent.click(supported);
+    await waitFor(() =>
+      expect(mocks.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          selectedModel: expect.objectContaining({
+            provider: "openai",
+            name: "gpt-5",
+          }),
+        }),
+      ),
+    );
+  });
+
   it("marks models without a provider key as locked for non-Pro users", () => {
+    mocks.subscriptionConnected = false;
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.settings.providerSettings.openrouter.apiKey.value = "openrouter-key";
@@ -1358,6 +1407,7 @@ describe("ModelPicker", () => {
   });
 
   it("opens the unlock dialog instead of selecting a locked model", () => {
+    mocks.subscriptionConnected = false;
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.renderSubContent = true;
@@ -1375,6 +1425,7 @@ describe("ModelPicker", () => {
   });
 
   it("opens the Pro upgrade page from the unlock dialog", () => {
+    mocks.subscriptionConnected = false;
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.renderSubContent = true;
@@ -1399,6 +1450,7 @@ describe("ModelPicker", () => {
   });
 
   it("navigates to provider settings from the unlock dialog own-key link", () => {
+    mocks.subscriptionConnected = false;
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.renderSubContent = true;
@@ -1453,6 +1505,7 @@ describe("ModelPicker", () => {
   });
 
   it("labels locked models for assistive tech", () => {
+    mocks.subscriptionConnected = false;
     mocks.settings.enableDyadPro = false;
     mocks.settings.providerSettings.auto.apiKey.value = "";
     mocks.renderSubContent = true;

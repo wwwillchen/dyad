@@ -109,6 +109,7 @@ export function shapeSubscriptionRequest(
 
 export async function createCodexSubscriptionModel(
   modelName: string,
+  billingKey: string | null,
   context?: { chatId: number; externalModelAdmission?: ExternalModelAdmission },
 ): Promise<LanguageModelV3> {
   // Fail before any model request; the fetch rechecks expiry for long turns.
@@ -207,7 +208,7 @@ export async function createCodexSubscriptionModel(
           response.status === 401 || response.status === 403
             ? "ChatGPT subscription access was rejected. Reconnect or choose an available model."
             : response.status === 429
-              ? "ChatGPT subscription limit reached. Upgrade your ChatGPT subscription tier or select Pro credits under Model usage in the Pro menu."
+              ? "ChatGPT subscription limit reached. Wait for your limit to reset, upgrade your ChatGPT subscription tier, or choose another available model."
               : `ChatGPT subscription request failed (HTTP ${response.status}).`;
         throw new DyadError(detail ? `${summary} ${detail}` : summary, kind);
       }
@@ -234,7 +235,7 @@ export async function createCodexSubscriptionModel(
           modelName,
           params.abortSignal,
           undefined,
-          undefined,
+          billingKey,
           context?.externalModelAdmission,
         );
         const recovery: { commit?: () => void } = {};

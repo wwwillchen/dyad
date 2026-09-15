@@ -151,8 +151,20 @@ export class ModelPicker {
 
   async selectTestAzureModel() {
     await this.page.getByTestId("model-picker").click();
-    await this.getMenuItem("All models").click();
-    await this.getMenuItem("Azure OpenAI", false).click();
+    // Use the explicit keyboard-open action: clicks can toggle a hover-open
+    // submenu closed, and async menu positioning can move the pointer off it.
+    const catalog = this.page.getByTestId("more-models-submenu");
+    await expect(async () => {
+      await this.getMenuItem("All models").focus();
+      await this.getMenuItem("All models").press("ArrowRight");
+      await expect(catalog).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 10_000 });
+    await expect(catalog).toHaveAttribute("data-catalog-loading", "false");
+    await this.getMenuItem("Azure OpenAI", false).focus();
+    await this.getMenuItem("Azure OpenAI", false).press("ArrowRight");
+    await expect(
+      this.page.getByTestId("other-provider-models-azure"),
+    ).toBeVisible();
     await this.clickModel("azure", "GPT-5");
   }
 }

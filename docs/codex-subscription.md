@@ -8,6 +8,22 @@ Electron safeStorage, refreshes them, and calls the Codex Responses endpoint
 directly. Credentials never cross renderer IPC and are not imported from another
 application. An available OS keyring is required; there is no plaintext fallback.
 
+Free Dyad users can connect their ChatGPT subscription without a Dyad Pro key.
+Subscription inference has no Dyad usage fees when Pro is off or no Pro key is
+configured; the existing Basic Agent quota and free-tier feature limits still
+apply. With Pro enabled, subscription inference retains its existing credit
+checks and usage charges.
+
+Onboarding offers **ChatGPT subscription** in place of the Google shortcut.
+Google Gemini remains available through **Other providers**. Successful onboarding
+sign-in selects an eligible OpenAI model: ChatGPT tiers other than Plus or Pro
+(including an unknown tier) prefer `gpt-5.6-luna`, falling back to the first
+catalog model. Plus and Pro preserve an already-eligible selection, otherwise
+using the first model in the effective subscription catalog. Selection also
+adds the model to Recents and sets Agent as
+the selected and default mode, then lets a saved first prompt resume. Free users
+connecting from the model picker's Subscription submenu get the same defaults.
+
 This is a transport for Dyad's existing agent, not the Codex CLI's agent loop.
 Dyad still owns prompts, tool execution, permissions, file edits, preview and undo.
 No extra shell tool is introduced. Existing Dyad tool permissions still apply.
@@ -15,10 +31,16 @@ Model availability is ultimately decided by the subscription service, not the AP
 catalog; unavailable models fail without switching to a paid API automatically.
 
 The picker keeps a single model catalog. Its hover-open Subscription submenu
-connects/disconnects ChatGPT and displays account-reported usage windows. Models
-present in the effective subscription catalog show a `ChatGPT plan` chip when subscription
+connects/disconnects ChatGPT and displays account-reported usage windows.
+The Subscription entry carries a **New** chip. Its panel opens beside the model
+list when either side has room; otherwise it replaces the list with a **Back to
+models** action. It displays the ChatGPT tier from `chatgpt_plan_type` inside the
+OAuth token's `https://api.openai.com/auth` claim, or **Plan unavailable**.
+The tier is refreshed with the credentials and never used to bypass Dyad quotas.
+Models present in the effective subscription catalog show a `ChatGPT plan` chip when subscription
 usage is selected, with the tooltip `Uses your connected ChatGPT subscription`.
-Models outside that catalog continue through Pro credits. Cancelled or timed-out
+Models outside that catalog require their provider API key for free users, or
+continue through Pro credits when Pro is enabled. Cancelled or timed-out
 sign-in attempts leave Pro-credit routing available. The picker and backend share
 one catalog resolution: a nonempty ChatGPT catalog, then the last successful
 ChatGPT catalog for the connection, then the OpenAI models returned by
@@ -49,8 +71,9 @@ existing routes; the client cannot redirect a model selected inside a remote ser
 Browser OAuth success returns a static celebration page with automatic
 `dyad://chatgpt-connected` navigation and a manual Open Dyad button. No credentials
 are in that link. The app only shows success for a verified pending local
-connection. Copy discloses **up to 1.5 Pro credits / 1M tokens**; rates below are
-unchanged. Usage limits show an informational banner, never an automatic payment
+connection. Pro copy discloses **up to 1.5 Pro credits / 1M tokens**; free-user copy
+explains that there are no Dyad usage fees and Basic Agent limits still apply.
+Rates below are unchanged. Usage limits show an informational banner, never an automatic payment
 source switch.
 Account status polls every thirty minutes when idle, immediately when the usage
 submenu opens, and every thirty seconds while it remains open. Pending browser
@@ -73,7 +96,9 @@ account and connection switches remains necessary.
 ## BYO credit preflight
 
 Before durable turn acceptance, Dyad resolves the global source and validates
-subscription credentials where applicable and credits. The credit check issues
+subscription credentials where applicable, and credits only when Pro is enabled.
+Free subscription requests never check Dyad credits or send usage to Engine.
+The credit check issues
 an opaque, main-only admission for the turn, bound to the checked Dyad key. The
 first subscription, local, or custom-provider request consumes it once instead
 of repeating the check after acceptance. A fail-open preflight issues the same
