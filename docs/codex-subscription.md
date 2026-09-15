@@ -16,8 +16,11 @@ checks and usage charges.
 
 Onboarding offers **ChatGPT subscription** in place of the Google shortcut.
 Google Gemini remains available through **Other providers**. Successful onboarding
-sign-in selects an eligible OpenAI model (preserving an already-eligible selection,
-otherwise the first model in the effective subscription catalog), sets Agent as
+sign-in selects an eligible OpenAI model: ChatGPT tiers other than Plus or Pro
+(including an unknown tier) prefer `gpt-5.6-luna`, falling back to the first
+catalog model. Plus and Pro preserve an already-eligible selection, otherwise
+using the first model in the effective subscription catalog. Selection also
+adds the model to Recents and sets Agent as
 the selected and default mode, then lets a saved first prompt resume. Free users
 connecting from the model picker's Subscription submenu get the same defaults.
 
@@ -28,8 +31,13 @@ Model availability is ultimately decided by the subscription service, not the AP
 catalog; unavailable models fail without switching to a paid API automatically.
 
 The picker keeps a single model catalog. Its hover-open Subscription submenu
-connects/disconnects ChatGPT and displays account-reported usage windows. Models
-present in the effective subscription catalog show a `ChatGPT plan` chip when subscription
+connects/disconnects ChatGPT and displays account-reported usage windows.
+The Subscription entry carries a **New** chip. Its panel opens beside the model
+list when either side has room; otherwise it replaces the list with a **Back to
+models** action. It displays the ChatGPT tier from `chatgpt_plan_type` inside the
+OAuth token's `https://api.openai.com/auth` claim, or **Plan unavailable**.
+The tier is refreshed with the credentials and never used to bypass Dyad quotas.
+Models present in the effective subscription catalog show a `ChatGPT plan` chip when subscription
 usage is selected, with the tooltip `Uses your connected ChatGPT subscription`.
 Models outside that catalog require their provider API key for free users, or
 continue through Pro credits when Pro is enabled. Cancelled or timed-out

@@ -1336,312 +1336,316 @@ export function ModelPicker() {
           </span>
         </DropdownMenuTrigger>
         <DropdownMenuContent className={MODEL_MENU_WIDTH_CLASS} align="start">
-          <SubscriptionModelMenu />
-          <DropdownMenuSeparator />
-          {/* Trial user upgrade banner */}
-          {isTrial && (
-            <>
-              <div className="px-2 py-3 bg-gradient-to-r from-indigo-50 to-sky-50 dark:from-indigo-950/50 dark:to-sky-950/50">
-                <p className="text-sm text-indigo-700 dark:text-indigo-300 mb-2">
-                  Upgrade from Dyad Pro trial to unlock more models.
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="cursor-pointer w-full bg-indigo-600 hover:bg-indigo-700 text-white hover:text-white border-indigo-600"
-                  onClick={() => {
-                    ipc.system.openExternalUrl(
-                      "https://academy.dyad.sh/subscription",
-                    );
-                    setOpen(false);
-                  }}
-                >
-                  Upgrade to Dyad Pro
-                </Button>
-              </div>
-              <DropdownMenuSeparator />
-              {/* Trial users only see the auto model */}
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger
-                  hideChevron
-                  data-model-provider="auto"
-                  data-model-name="auto"
-                  aria-label={`Auto. Trial. Selected. Effort: ${formatEffortLevel(trialAutoEffort)}. Press Enter to select; press Right Arrow to configure effort.`}
-                  className="relative py-2 bg-primary/8 before:absolute before:inset-y-1.5 before:left-0 before:w-[3px] before:rounded-r-full before:bg-primary"
-                  onMouseDown={(event) => {
-                    if (!isEffortChevronTarget(event.target)) {
-                      event.preventBaseUIHandler();
-                    }
-                  }}
-                  onClick={(event) => {
-                    if (!isEffortChevronTarget(event.target)) {
-                      event.preventBaseUIHandler();
-                      void onModelSelect({
-                        model: { name: "auto", provider: "auto" },
-                        catalogModel: autoModels.find(
-                          (model) => model.apiName === "auto",
-                        ),
-                      });
+          <SubscriptionModelMenu>
+            <DropdownMenuSeparator />
+            {/* Trial user upgrade banner */}
+            {isTrial && (
+              <>
+                <div className="px-2 py-3 bg-gradient-to-r from-indigo-50 to-sky-50 dark:from-indigo-950/50 dark:to-sky-950/50">
+                  <p className="text-sm text-indigo-700 dark:text-indigo-300 mb-2">
+                    Upgrade from Dyad Pro trial to unlock more models.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="cursor-pointer w-full bg-indigo-600 hover:bg-indigo-700 text-white hover:text-white border-indigo-600"
+                    onClick={() => {
+                      ipc.system.openExternalUrl(
+                        "https://academy.dyad.sh/subscription",
+                      );
                       setOpen(false);
-                    }
-                  }}
+                    }}
+                  >
+                    Upgrade to Dyad Pro
+                  </Button>
+                </div>
+                <DropdownMenuSeparator />
+                {/* Trial users only see the auto model */}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger
+                    hideChevron
+                    data-model-provider="auto"
+                    data-model-name="auto"
+                    aria-label={`Auto. Trial. Selected. Effort: ${formatEffortLevel(trialAutoEffort)}. Press Enter to select; press Right Arrow to configure effort.`}
+                    className="relative py-2 bg-primary/8 before:absolute before:inset-y-1.5 before:left-0 before:w-[3px] before:rounded-r-full before:bg-primary"
+                    onMouseDown={(event) => {
+                      if (!isEffortChevronTarget(event.target)) {
+                        event.preventBaseUIHandler();
+                      }
+                    }}
+                    onClick={(event) => {
+                      if (!isEffortChevronTarget(event.target)) {
+                        event.preventBaseUIHandler();
+                        void onModelSelect({
+                          model: { name: "auto", provider: "auto" },
+                          catalogModel: autoModels.find(
+                            (model) => model.apiName === "auto",
+                          ),
+                        });
+                        setOpen(false);
+                      }
+                    }}
+                  >
+                    <div className="flex justify-between items-center w-full gap-2">
+                      <span className="text-[13px]">Auto</span>
+                      <span className="ml-auto flex items-center gap-1.5">
+                        <span
+                          className={cn(
+                            PILL_CLASS,
+                            "bg-primary/10 text-primary",
+                          )}
+                        >
+                          Trial
+                        </span>
+                        <CheckIcon className="size-3.5 text-primary shrink-0" />
+                        <span
+                          data-effort-level
+                          className="text-xs text-muted-foreground"
+                          title={`Reasoning effort: ${formatEffortLevel(trialAutoEffort)}`}
+                        >
+                          {formatCompactEffortLevel(trialAutoEffort)}
+                        </span>
+                        <span
+                          data-effort-chevron
+                          aria-hidden="true"
+                          className="-mr-1 flex size-6 items-center justify-center rounded-sm hover:bg-muted"
+                        >
+                          <ChevronRightIcon className="size-4" />
+                        </span>
+                      </span>
+                    </div>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-52">
+                    <DropdownMenuLabel>Effort</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {trialAutoEffortSettings.possibleEffortLevels.map(
+                      (effortLevel) => (
+                        <DropdownMenuItem
+                          key={effortLevel}
+                          onClick={() => {
+                            void onModelSelect({
+                              model: { name: "auto", provider: "auto" },
+                              catalogModel: trialAutoModel,
+                              effortLevel,
+                              rememberEffort: true,
+                            });
+                            setOpen(false);
+                          }}
+                        >
+                          <span>{formatEffortLevel(effortLevel)}</span>
+                          {effortLevel ===
+                            trialAutoEffortSettings.defaultEffortLevel && (
+                            <span className="text-xs text-muted-foreground">
+                              (default)
+                            </span>
+                          )}
+                          {effortLevel === trialAutoEffort && (
+                            <CheckIcon className="ml-auto size-3.5 text-primary" />
+                          )}
+                        </DropdownMenuItem>
+                      ),
+                    )}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </>
+            )}
+
+            {/* Non-trial users get a compact quick switcher. */}
+            {!isTrial && (
+              <>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger
+                    className="w-full font-normal"
+                    {...NAVIGATION_SUBMENU_HOVER_PROPS}
+                  >
+                    <span>All models</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent
+                    className={cn(MODEL_MENU_WIDTH_CLASS, SCROLL_AREA_CLASS)}
+                    data-testid="more-models-submenu"
+                    data-catalog-loading={loading}
+                  >
+                    <DropdownMenuLabel>All models</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {loading ? (
+                      <div className="text-xs text-center py-2 text-muted-foreground">
+                        Loading cloud models...
+                      </div>
+                    ) : !hasCloudCatalogEntries ? (
+                      <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                        {cloudCatalogError
+                          ? "Couldn’t load cloud models"
+                          : "No cloud models available"}
+                      </div>
+                    ) : (
+                      <>
+                        {(() => {
+                          const nodes: ReactNode[] = [];
+                          cloudCatalogGroups.forEach(
+                            ({ tier, entries }, index) => {
+                              if (index > 0) {
+                                nodes.push(
+                                  <DropdownMenuSeparator
+                                    key={`tier-sep-${tier.label}`}
+                                  />,
+                                );
+                              }
+                              nodes.push(
+                                <div
+                                  key={`tier-label-${tier.label}`}
+                                  className="flex items-center gap-1.5 px-2 pt-1.5 pb-1"
+                                >
+                                  <span className="text-[10px] uppercase tracking-wider font-medium text-muted-foreground shrink-0">
+                                    {tier.label}
+                                  </span>
+                                  <span
+                                    aria-hidden="true"
+                                    className="size-[3px] rounded-full bg-muted-foreground/50 shrink-0"
+                                  />
+                                  <span className="text-[11px] text-muted-foreground/85 truncate">
+                                    {tier.caption}
+                                  </span>
+                                </div>,
+                              );
+                              entries.forEach(({ providerId, model }) => {
+                                nodes.push(
+                                  renderCloudModelItem({ providerId, model }),
+                                );
+                              });
+                            },
+                          );
+                          return nodes;
+                        })()}
+                      </>
+                    )}
+                    <DropdownMenuSeparator />
+                    <div
+                      className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-wider font-medium text-muted-foreground"
+                      data-testid="local-providers-section"
+                    >
+                      Local providers
+                    </div>
+                    {renderLocalProviderSubmenu({
+                      providerId: "ollama",
+                      label: "Ollama",
+                      models: ollamaModels,
+                      loading: ollamaLoading,
+                      error: ollamaError,
+                    })}
+                    {renderLocalProviderSubmenu({
+                      providerId: "lmstudio",
+                      label: "LM Studio",
+                      models: lmStudioModels,
+                      loading: lmStudioLoading,
+                      error: lmStudioError,
+                    })}
+                    {otherProviderEntries.length > 0 && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <div
+                          className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-wider font-medium text-muted-foreground"
+                          data-testid="cloud-providers-section"
+                        >
+                          Cloud providers
+                        </div>
+                        {otherProviderEntries.map(([providerId, models]) =>
+                          renderProviderSubmenu(providerId, models),
+                        )}
+                      </>
+                    )}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                <DropdownMenuSeparator />
+
+                {loading ? (
+                  <div className="text-xs text-center py-2 text-muted-foreground">
+                    Loading models...
+                  </div>
+                ) : (
+                  <>
+                    {autoModels.length > 0 && (
+                      <>
+                        {autoModels.map((model) =>
+                          renderCloudModelItem({
+                            providerId: "auto",
+                            model,
+                            showPrice: false,
+                          }),
+                        )}
+                        {recentModelEntries.length > 0 && (
+                          <DropdownMenuSeparator />
+                        )}
+                      </>
+                    )}
+
+                    {cloudCatalogError && autoModels.length === 0 && (
+                      <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                        Couldn’t load cloud models
+                      </div>
+                    )}
+
+                    {recentModelEntries.length > 0 && (
+                      <>
+                        <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                          Recent
+                        </DropdownMenuLabel>
+                        {recentModelEntries.map((entry) => {
+                          if (entry.type === "cloud") {
+                            return renderCloudModelItem({
+                              providerId: entry.providerId,
+                              model: entry.model,
+                            });
+                          }
+                          if (entry.type === "local") {
+                            return renderLocalModelItem(
+                              entry.providerId,
+                              entry.model,
+                            );
+                          }
+                          return (
+                            <DropdownMenuItem
+                              key={`${entry.providerId}-${entry.modelName}-loading`}
+                              disabled
+                              aria-label={`${entry.modelName}. Loading local model`}
+                              className="py-1.5"
+                            >
+                              <ProviderIcon providerId={entry.providerId} />
+                              <span className="min-w-0 truncate text-[13px]">
+                                {entry.modelName}
+                              </span>
+                              <span className="ml-auto text-xs text-muted-foreground">
+                                Loading...
+                              </span>
+                            </DropdownMenuItem>
+                          );
+                        })}
+                      </>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+
+            {/* Upgrade footer for non-Pro users */}
+            {!isTrial && !dyadProEnabled && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  data-testid="model-picker-unlock-all"
+                  className="px-2 py-2 bg-gradient-to-r from-indigo-50 to-sky-50 dark:from-indigo-950/50 dark:to-sky-950/50 focus:from-indigo-100 focus:to-sky-100 dark:focus:from-indigo-950 dark:focus:to-sky-950"
+                  onClick={handleUnlockAllClick}
                 >
-                  <div className="flex justify-between items-center w-full gap-2">
-                    <span className="text-[13px]">Auto</span>
-                    <span className="ml-auto flex items-center gap-1.5">
-                      <span
-                        className={cn(PILL_CLASS, "bg-primary/10 text-primary")}
-                      >
-                        Trial
-                      </span>
-                      <CheckIcon className="size-3.5 text-primary shrink-0" />
-                      <span
-                        data-effort-level
-                        className="text-xs text-muted-foreground"
-                        title={`Reasoning effort: ${formatEffortLevel(trialAutoEffort)}`}
-                      >
-                        {formatCompactEffortLevel(trialAutoEffort)}
-                      </span>
-                      <span
-                        data-effort-chevron
-                        aria-hidden="true"
-                        className="-mr-1 flex size-6 items-center justify-center rounded-sm hover:bg-muted"
-                      >
-                        <ChevronRightIcon className="size-4" />
-                      </span>
+                  <div className="flex items-center gap-2 w-full">
+                    <SparklesIcon className="size-3.5 text-indigo-600 dark:text-indigo-300 shrink-0" />
+                    <span className="text-[13px] font-medium text-indigo-700 dark:text-indigo-300">
+                      Unlock all models with Dyad Pro
                     </span>
                   </div>
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="w-52">
-                  <DropdownMenuLabel>Effort</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {trialAutoEffortSettings.possibleEffortLevels.map(
-                    (effortLevel) => (
-                      <DropdownMenuItem
-                        key={effortLevel}
-                        onClick={() => {
-                          void onModelSelect({
-                            model: { name: "auto", provider: "auto" },
-                            catalogModel: trialAutoModel,
-                            effortLevel,
-                            rememberEffort: true,
-                          });
-                          setOpen(false);
-                        }}
-                      >
-                        <span>{formatEffortLevel(effortLevel)}</span>
-                        {effortLevel ===
-                          trialAutoEffortSettings.defaultEffortLevel && (
-                          <span className="text-xs text-muted-foreground">
-                            (default)
-                          </span>
-                        )}
-                        {effortLevel === trialAutoEffort && (
-                          <CheckIcon className="ml-auto size-3.5 text-primary" />
-                        )}
-                      </DropdownMenuItem>
-                    ),
-                  )}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            </>
-          )}
-
-          {/* Non-trial users get a compact quick switcher. */}
-          {!isTrial && (
-            <>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger
-                  className="w-full font-normal"
-                  {...NAVIGATION_SUBMENU_HOVER_PROPS}
-                >
-                  <span>All models</span>
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent
-                  className={cn(MODEL_MENU_WIDTH_CLASS, SCROLL_AREA_CLASS)}
-                  data-testid="more-models-submenu"
-                  data-catalog-loading={loading}
-                >
-                  <DropdownMenuLabel>All models</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {loading ? (
-                    <div className="text-xs text-center py-2 text-muted-foreground">
-                      Loading cloud models...
-                    </div>
-                  ) : !hasCloudCatalogEntries ? (
-                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                      {cloudCatalogError
-                        ? "Couldn’t load cloud models"
-                        : "No cloud models available"}
-                    </div>
-                  ) : (
-                    <>
-                      {(() => {
-                        const nodes: ReactNode[] = [];
-                        cloudCatalogGroups.forEach(
-                          ({ tier, entries }, index) => {
-                            if (index > 0) {
-                              nodes.push(
-                                <DropdownMenuSeparator
-                                  key={`tier-sep-${tier.label}`}
-                                />,
-                              );
-                            }
-                            nodes.push(
-                              <div
-                                key={`tier-label-${tier.label}`}
-                                className="flex items-center gap-1.5 px-2 pt-1.5 pb-1"
-                              >
-                                <span className="text-[10px] uppercase tracking-wider font-medium text-muted-foreground shrink-0">
-                                  {tier.label}
-                                </span>
-                                <span
-                                  aria-hidden="true"
-                                  className="size-[3px] rounded-full bg-muted-foreground/50 shrink-0"
-                                />
-                                <span className="text-[11px] text-muted-foreground/85 truncate">
-                                  {tier.caption}
-                                </span>
-                              </div>,
-                            );
-                            entries.forEach(({ providerId, model }) => {
-                              nodes.push(
-                                renderCloudModelItem({ providerId, model }),
-                              );
-                            });
-                          },
-                        );
-                        return nodes;
-                      })()}
-                    </>
-                  )}
-                  <DropdownMenuSeparator />
-                  <div
-                    className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-wider font-medium text-muted-foreground"
-                    data-testid="local-providers-section"
-                  >
-                    Local providers
-                  </div>
-                  {renderLocalProviderSubmenu({
-                    providerId: "ollama",
-                    label: "Ollama",
-                    models: ollamaModels,
-                    loading: ollamaLoading,
-                    error: ollamaError,
-                  })}
-                  {renderLocalProviderSubmenu({
-                    providerId: "lmstudio",
-                    label: "LM Studio",
-                    models: lmStudioModels,
-                    loading: lmStudioLoading,
-                    error: lmStudioError,
-                  })}
-                  {otherProviderEntries.length > 0 && (
-                    <>
-                      <DropdownMenuSeparator />
-                      <div
-                        className="px-2 pt-1.5 pb-1 text-[10px] uppercase tracking-wider font-medium text-muted-foreground"
-                        data-testid="cloud-providers-section"
-                      >
-                        Cloud providers
-                      </div>
-                      {otherProviderEntries.map(([providerId, models]) =>
-                        renderProviderSubmenu(providerId, models),
-                      )}
-                    </>
-                  )}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-
-              <DropdownMenuSeparator />
-
-              {loading ? (
-                <div className="text-xs text-center py-2 text-muted-foreground">
-                  Loading models...
-                </div>
-              ) : (
-                <>
-                  {autoModels.length > 0 && (
-                    <>
-                      {autoModels.map((model) =>
-                        renderCloudModelItem({
-                          providerId: "auto",
-                          model,
-                          showPrice: false,
-                        }),
-                      )}
-                      {recentModelEntries.length > 0 && (
-                        <DropdownMenuSeparator />
-                      )}
-                    </>
-                  )}
-
-                  {cloudCatalogError && autoModels.length === 0 && (
-                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                      Couldn’t load cloud models
-                    </div>
-                  )}
-
-                  {recentModelEntries.length > 0 && (
-                    <>
-                      <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        Recent
-                      </DropdownMenuLabel>
-                      {recentModelEntries.map((entry) => {
-                        if (entry.type === "cloud") {
-                          return renderCloudModelItem({
-                            providerId: entry.providerId,
-                            model: entry.model,
-                          });
-                        }
-                        if (entry.type === "local") {
-                          return renderLocalModelItem(
-                            entry.providerId,
-                            entry.model,
-                          );
-                        }
-                        return (
-                          <DropdownMenuItem
-                            key={`${entry.providerId}-${entry.modelName}-loading`}
-                            disabled
-                            aria-label={`${entry.modelName}. Loading local model`}
-                            className="py-1.5"
-                          >
-                            <ProviderIcon providerId={entry.providerId} />
-                            <span className="min-w-0 truncate text-[13px]">
-                              {entry.modelName}
-                            </span>
-                            <span className="ml-auto text-xs text-muted-foreground">
-                              Loading...
-                            </span>
-                          </DropdownMenuItem>
-                        );
-                      })}
-                    </>
-                  )}
-                </>
-              )}
-            </>
-          )}
-
-          {/* Upgrade footer for non-Pro users */}
-          {!isTrial && !dyadProEnabled && (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                data-testid="model-picker-unlock-all"
-                className="px-2 py-2 bg-gradient-to-r from-indigo-50 to-sky-50 dark:from-indigo-950/50 dark:to-sky-950/50 focus:from-indigo-100 focus:to-sky-100 dark:focus:from-indigo-950 dark:focus:to-sky-950"
-                onClick={handleUnlockAllClick}
-              >
-                <div className="flex items-center gap-2 w-full">
-                  <SparklesIcon className="size-3.5 text-indigo-600 dark:text-indigo-300 shrink-0" />
-                  <span className="text-[13px] font-medium text-indigo-700 dark:text-indigo-300">
-                    Unlock all models with Dyad Pro
-                  </span>
-                </div>
-              </DropdownMenuItem>
-            </>
-          )}
+                </DropdownMenuItem>
+              </>
+            )}
+          </SubscriptionModelMenu>
         </DropdownMenuContent>
       </DropdownMenu>
 

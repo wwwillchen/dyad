@@ -13,6 +13,11 @@ import {
   resetSubscriptionAccount,
 } from "./codex_subscription_account";
 import { subscriptionConnectedPage } from "./codex_subscription_return_page";
+import {
+  getSubscriptionDefaultModel,
+  normalizeChatGPTPlanType,
+} from "@/lib/subscriptionModels";
+import { addRecentModel, getEffectiveRecentModels } from "@/lib/recentModels";
 
 // Public native-client registration used by Codex/OpenCode; not a client secret.
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -23,10 +28,12 @@ const Credentials = z.object({
   refresh: z.string().min(1),
   accountId: z.string().min(1),
   expires: z.number(),
+  planType: z.string().optional(),
 });
 type Credentials = z.infer<typeof Credentials>;
 const Tokens = z.object({
   access_token: z.string(),
+  id_token: z.string().optional(),
   refresh_token: z.string(),
   expires_in: z.number().positive().optional(),
 });
@@ -102,8 +109,13 @@ function stopLogin() {
 }
 export function getCodexSubscriptionStatus() {
   try {
+    const credentials = load();
+    const planType =
+      normalizeChatGPTPlanType(credentials?.planType) ??
+      getPlanTypeFromToken(credentials?.access);
     return {
-      connected: Boolean(load()),
+      connected: Boolean(credentials),
+      ...(planType ? { planType } : {}),
       pending,
       error: lastError,
       celebrationPending,
@@ -136,6 +148,21 @@ export function validateOAuthState(expected: string, actual: string | null) {
     timingSafeEqual(Buffer.from(expected), Buffer.from(actual))
   );
 }
+
+function getPlanTypeFromToken(token: string | undefined) {
+  if (!token) return undefined;
+  try {
+    const claims = JSON.parse(
+      Buffer.from(token.split(".")[1], "base64url").toString(),
+    );
+    return normalizeChatGPTPlanType(
+      claims["https://api.openai.com/auth"]?.chatgpt_plan_type,
+    );
+  } catch {
+    // Optional display/default-selection metadata must not invalidate authentication.
+    return undefined;
+  }
+}
 async function exchange(
   params: Record<string, string>,
   previousAccountId?: string,
@@ -165,6 +192,9 @@ async function exchange(
         claims["https://api.openai.com/auth"]?.chatgpt_account_id ??
         previousAccountId,
       expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+      planType:
+        getPlanTypeFromToken(tokens.id_token) ??
+        getPlanTypeFromToken(tokens.access_token),
     });
   } catch {
     throw new DyadError(
@@ -264,15 +294,22 @@ export async function connectCodexSubscription(
             return;
           }
           const settings = readSettings();
-          const name =
-            settings.selectedModel.provider === "openai" &&
-            account.models.includes(settings.selectedModel.name)
-              ? settings.selectedModel.name
-              : account.models[0];
+          const name = getSubscriptionDefaultModel(
+            account.models,
+            credentials.planType,
+            settings.selectedModel,
+          );
           if (!name || account.error)
             throw new Error("Subscription model selection unavailable");
           writeSettings({
             selectedModel: { provider: "openai", name },
+            recentModels: addRecentModel(
+              getEffectiveRecentModels(
+                settings.recentModels,
+                settings.selectedModel,
+              ),
+              { provider: "openai", name },
+            ),
             selectedChatMode: "local-agent",
             defaultChatMode: "local-agent",
           });

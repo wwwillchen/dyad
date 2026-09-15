@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -7,6 +7,7 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
+  DropdownMenuItem,
 } from "./ui/dropdown-menu";
 import { SubscriptionModelMenu } from "./SubscriptionModelMenu";
 const mocks = vi.hoisted(() => ({
@@ -30,6 +31,7 @@ vi.mock("@/ipc/types", () => ({
     settings: {
       getCodexSubscriptionStatus: async () => ({
         connected: mocks.connected,
+        planType: "plus",
         pending: false,
         models: ["gpt-test"],
         windows: [
@@ -47,6 +49,7 @@ beforeEach(() => {
   mocks.connected = false;
   mocks.pro = true;
 });
+afterEach(() => vi.unstubAllGlobals());
 async function open() {
   const user = userEvent.setup();
   render(
@@ -58,7 +61,9 @@ async function open() {
       <DropdownMenu>
         <DropdownMenuTrigger>Models</DropdownMenuTrigger>
         <DropdownMenuContent>
-          <SubscriptionModelMenu />
+          <SubscriptionModelMenu>
+            <DropdownMenuItem>Example model</DropdownMenuItem>
+          </SubscriptionModelMenu>
         </DropdownMenuContent>
       </DropdownMenu>
     </QueryClientProvider>,
@@ -89,10 +94,27 @@ it("shows account usage limits without a duplicate model catalog", async () => {
   mocks.connected = true;
   await open();
   expect(await screen.findByText("5-hour")).toBeVisible();
+  expect(screen.getByText("ChatGPT Plus")).toBeVisible();
+  expect(screen.getByText("New")).toBeVisible();
   expect(screen.getByText("25% used")).toBeVisible();
   expect(
     screen.getByRole("menuitem", { name: "Disconnect ChatGPT" }),
   ).toBeVisible();
+});
+it("replaces models with subscription details in narrow windows and returns with Back", async () => {
+  vi.stubGlobal("innerWidth", 300);
+  const user = await open();
+  await user.click(
+    screen.getByRole("menuitem", { name: /Subscription.*Open submenu/ }),
+  );
+  expect(
+    await screen.findByRole("menuitem", { name: "Back to models" }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("menuitem", { name: "Example model" }),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole("menuitem", { name: "Back to models" }));
+  expect(screen.getByRole("menuitem", { name: "Example model" })).toBeVisible();
 });
 it("allows free users to connect and explains the Basic Agent limit", async () => {
   mocks.pro = false;

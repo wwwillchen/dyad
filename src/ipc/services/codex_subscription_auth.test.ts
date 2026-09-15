@@ -122,9 +122,15 @@ describe("subscription OAuth", () => {
 });
 
 describe("successful browser return", () => {
-  it.each([false, true])(
-    "connects without Pro and serves a credential-free deep link (select model: %s)",
-    async (selectModel) => {
+  it.each([
+    [false, undefined],
+    [true, "free"],
+    [true, "plus"],
+    [true, "pro"],
+    [true, undefined],
+  ] as const)(
+    "connects without Pro and serves a credential-free deep link (select model: %s, tier: %s)",
+    async (selectModel, planType) => {
       vi.mocked(writeSettings).mockClear();
       mocks.directory = fs.mkdtempSync(
         path.join(os.tmpdir(), "dyad-oauth-success-"),
@@ -140,6 +146,7 @@ describe("successful browser return", () => {
             ? new Response(
                 JSON.stringify({
                   access_token: access,
+                  id_token: `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_plan_type: planType } })).toString("base64url")}.signature`,
                   refresh_token: "test-refresh",
                   expires_in: 3600,
                 }),
@@ -172,6 +179,7 @@ describe("successful browser return", () => {
         if (selectModel) {
           expect(writeSettings).toHaveBeenCalledWith({
             selectedModel: { provider: "openai", name: "supported-model" },
+            recentModels: [{ provider: "openai", name: "supported-model" }],
             selectedChatMode: "local-agent",
             defaultChatMode: "local-agent",
           });
@@ -184,6 +192,10 @@ describe("successful browser return", () => {
           connected: true,
           celebrationPending: true,
         });
+        const status = getCodexSubscriptionStatus();
+        expect("planType" in status ? status.planType : undefined).toBe(
+          planType,
+        );
         expect(getCodexSubscriptionStatus().credentialError).toBeUndefined();
         disconnectCodexSubscription();
         expect(writeSettings).toHaveBeenCalledWith({ proModelUsage: "pro" });

@@ -9,7 +9,8 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelPicker } from "./ModelPicker";
 vi.mock("./SubscriptionModelMenu", () => ({
-  SubscriptionModelMenu: () => null,
+  SubscriptionModelMenu: ({ children }: { children: React.ReactNode }) =>
+    children,
 }));
 vi.mock("@/hooks/useSubscriptionAccount", () => ({
   useSubscriptionAccount: () => ({
