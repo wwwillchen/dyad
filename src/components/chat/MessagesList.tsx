@@ -14,7 +14,6 @@ import { OpenRouterSetupBanner, SetupBanner } from "../SetupBanner";
 
 import { useStreamChat } from "@/hooks/useStreamChat";
 import { useDisplayedChatMessages } from "@/hooks/useChatStream";
-import { selectedChatIdAtom } from "@/atoms/chatAtoms";
 import { useUserInputRequests } from "@/user_input/hooks";
 import { useAtomValue } from "jotai";
 import { CheckCircle2, Loader2, RefreshCw, Undo } from "lucide-react";
@@ -34,6 +33,7 @@ import { ExtraCommitsRevertDialog } from "./ExtraCommitsRevertDialog";
 import { getExtraRevertedCommits } from "./revertImpact";
 
 interface MessagesListProps {
+  chatId: number | null;
   messages: Message[];
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   onAtBottomChange?: (atBottom: boolean) => void;
@@ -578,7 +578,12 @@ function FooterComponent({ context }: { context?: FooterContext }) {
 
 export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
   function MessagesList(
-    { messages: persistedMessages, messagesEndRef, onAtBottomChange },
+    {
+      chatId: selectedChatId,
+      messages: persistedMessages,
+      messagesEndRef,
+      onAtBottomChange,
+    },
     ref,
   ) {
     const appId = useAtomValue(selectedAppIdAtom);
@@ -600,7 +605,6 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
     const { settings } = useSettings();
     const [isUndoLoading, setIsUndoLoading] = useState(false);
     const [isRetryLoading, setIsRetryLoading] = useState(false);
-    const selectedChatId = useAtomValue(selectedChatIdAtom);
     const messages = useDisplayedChatMessages(
       selectedChatId,
       persistedMessages,
