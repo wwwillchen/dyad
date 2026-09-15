@@ -65,6 +65,7 @@ export function useStreamChat({
       selectedComponents,
       requestedChatMode,
       planAcceptInNewChat,
+      showOptimisticMessage,
       onAccepted,
       onAcceptanceError,
       onAcceptanceRejected,
@@ -78,6 +79,7 @@ export function useStreamChat({
       selectedComponents?: ComponentSelection[];
       requestedChatMode?: Chat["chatMode"] | null;
       planAcceptInNewChat?: boolean;
+      showOptimisticMessage?: boolean;
       onAccepted?: StreamRequest["onAccepted"];
       onAcceptanceError?: StreamRequest["onAcceptanceError"];
       onAcceptanceRejected?: StreamRequest["onAcceptanceRejected"];
@@ -120,6 +122,7 @@ export function useStreamChat({
           selectedComponents,
           requestedChatMode,
           planAcceptInNewChat,
+          showOptimisticMessage,
           onAccepted,
           onAcceptanceError,
           onAcceptanceRejected,

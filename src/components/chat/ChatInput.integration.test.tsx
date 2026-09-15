@@ -7,7 +7,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { cleanup, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import {
   setupHybridChatHarness,
   type HybridChatHarness,
@@ -27,7 +27,11 @@ describe("chat input during turn admission", () => {
     harness = await setupHybridChatHarness({
       electronMock: h,
       autoApprove: true,
-      settings: { enableDyadPro: false, providerSettings: {} },
+      settings: {
+        enableDyadPro: false,
+        providerSettings: {},
+        isTestMode: true,
+      },
     });
   }, 60_000);
 
@@ -66,6 +70,10 @@ describe("chat input during turn admission", () => {
       try {
         // Assert before releasing admission: network speed cannot hide a regression.
         expect(harness.getChatInputValue(chatId)).toBe("");
+        const list = within(screen.getByTestId("messages-list"));
+        expect(list.getAllByText(submitted)).toHaveLength(1);
+        expect(list.queryByText("Sending…")).toBeNull();
+        expect(list.queryByTestId("restore-to-message-button")).toBeNull();
         await waitFor(() =>
           expect(preflightSubscriptionTurn).toHaveBeenCalled(),
         );
@@ -75,6 +83,9 @@ describe("chat input during turn admission", () => {
       }
       await harness.bridge.settleInFlight();
       await waitFor(() => {
+        expect(
+          within(screen.getByTestId("messages-list")).queryAllByText(submitted),
+        ).toHaveLength(rejected ? 0 : 1);
         expect(harness.getChatInputValue(chatId)).toBe(
           rejected
             ? nextDraft

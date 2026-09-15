@@ -696,6 +696,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
       chatId,
       attachments,
       redo: false,
+      showOptimisticMessage: true,
       selectedComponents: componentsToSend,
       requestedChatMode: isChatModeLoading ? null : storedChatMode,
       onAccepted: () => {
