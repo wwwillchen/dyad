@@ -40,6 +40,8 @@ describe("local agent step limit (integration)", () => {
     harness = await setupHybridChatHarness({
       electronMock: h,
       engine: true,
+      // Keep this Engine queue flow off the custom-provider billing preflight.
+      selectedModel: { provider: "google", name: "gemini-2.5-pro" },
       chatMode: "local-agent",
       settings: {
         isTestMode: true,
