@@ -396,8 +396,9 @@ When billing direct OpenAI-compatible model streams, set the provider's
 and providers may return no final token counts. Enable it only on billed routes.
 
 When a billing wrapper receives an explicit request-scoped API key, use that key
-without reading current settings. Resolve free-versus-Pro defaults only when no
-key was supplied; settings changes must not redirect an accepted request's billing.
+without reading current settings. Use an explicit free sentinel for accepted unbilled turns; resolve it from the
+accepted settings snapshot, alongside the key for billed turns, before building
+model clients. Never let tool-loop requests re-read live billing settings.
 
 Keep chat-turn network preflight outside `withChatQueueLock`; recheck the model,
 mode and billing settings under the lock before acceptance, including after a

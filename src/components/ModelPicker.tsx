@@ -657,7 +657,12 @@ export function ModelPicker() {
       )
     )
       return false;
-    if (settingsLoading || dyadProEnabled || providerId === "auto") {
+    if (
+      settingsLoading ||
+      dyadProEnabled ||
+      providerId === "auto" ||
+      (providerId === "openai" && !subscription.data)
+    ) {
       return false;
     }
     const provider = providers?.find((p) => p.id === providerId);

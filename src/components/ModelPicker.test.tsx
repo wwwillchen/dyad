@@ -14,16 +14,19 @@ vi.mock("./SubscriptionModelMenu", () => ({
 }));
 vi.mock("@/hooks/useSubscriptionAccount", () => ({
   useSubscriptionAccount: () => ({
-    data: {
-      connected: mocks.subscriptionConnected,
-      models: ["gpt-5"],
-      windows: [],
-      limitReached: false,
-    },
+    data: mocks.subscriptionUnavailable
+      ? undefined
+      : {
+          connected: mocks.subscriptionConnected,
+          models: ["gpt-5"],
+          windows: [],
+          limitReached: false,
+        },
   }),
 }));
 
 const mocks = vi.hoisted(() => ({
+  subscriptionUnavailable: false,
   subscriptionConnected: true,
   invalidateQueries: vi.fn(),
   setChatMode: vi.fn(),
@@ -517,6 +520,7 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 
 describe("ModelPicker", () => {
   beforeEach(() => {
+    mocks.subscriptionUnavailable = false;
     mocks.subscriptionConnected = true;
     mocks.settings.proModelUsage = "subscription";
     mocks.invalidateQueries.mockReset();
@@ -1329,6 +1333,18 @@ describe("ModelPicker", () => {
     render(<ModelPicker />);
 
     expect(screen.getByText("Auto (balanced)")).toBeTruthy();
+  });
+
+  it("defers OpenAI locks when the subscription query has no result", () => {
+    mocks.subscriptionUnavailable = true;
+    mocks.settings.enableDyadPro = false;
+    mocks.settings.providerSettings.auto.apiKey.value = "";
+    mocks.renderSubContent = true;
+    render(<ModelPicker />);
+    expect(
+      screen.getByText("GPT 5").closest("button")?.dataset.locked,
+    ).toBeUndefined();
+    expect(screen.queryByText("ChatGPT plan")).toBeNull();
   });
 
   it("unlocks only subscription-supported models for free users", async () => {

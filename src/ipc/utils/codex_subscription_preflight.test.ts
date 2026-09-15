@@ -37,7 +37,10 @@ const info = {
 const accountResponse = (body = info) =>
   new NodeResponse(JSON.stringify(body), { status: 200 });
 async function run(signal?: AbortSignal) {
-  const model = await createCodexSubscriptionModel("gpt-5.6-luna");
+  const model = await createCodexSubscriptionModel(
+    "gpt-5.6-luna",
+    mocks.key || null,
+  );
   const result = await model.doStream({ prompt: [], abortSignal: signal });
   // No inference completion in this fixture: cancel to dispose active context.
   await result.stream.cancel();

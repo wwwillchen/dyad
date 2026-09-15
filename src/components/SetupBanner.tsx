@@ -190,6 +190,7 @@ export function SetupBanner({
               }
               onClick={handleSubscriptionSetupClick}
               disabled={
+                !settings ||
                 connection.isPending ||
                 subscription.isLoading ||
                 subscription.data?.pending
@@ -203,9 +204,20 @@ export function SetupBanner({
             />
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            {hasPro
-              ? "ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens."
-              : "ChatGPT subscription required. No Dyad usage fees; Basic Agent limits apply."}
+            {!settings
+              ? "Checking Dyad Pro status…"
+              : hasPro
+                ? "ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens."
+                : "ChatGPT subscription required. No Dyad usage fees; Basic Agent limits apply."}
+          </p>
+          <p
+            role="status"
+            aria-live="polite"
+            className="mt-2 text-xs text-muted-foreground"
+          >
+            {subscription.data?.pending
+              ? "Waiting for ChatGPT sign-in in your browser…"
+              : ""}
           </p>
           {subscription.data?.pending && (
             <Button
@@ -219,11 +231,13 @@ export function SetupBanner({
           )}
           {(connection.error ||
             subscription.error ||
-            subscription.data?.error) && (
+            subscription.data?.error ||
+            subscription.data?.setupError) && (
             <p role="alert" className="mt-2 text-sm text-destructive">
               {connection.error?.message ??
                 subscription.error?.message ??
-                subscription.data?.error}
+                subscription.data?.error ??
+                subscription.data?.setupError}
             </p>
           )}
         </div>

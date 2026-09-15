@@ -26,6 +26,7 @@ export const settingsContracts = {
       credentialError: z.boolean().optional(),
       pending: z.boolean(),
       celebrationPending: z.boolean().optional(),
+      setupError: z.string().optional(),
       models: z.array(z.string()),
       modelsError: z.string().optional(),
       limitsError: z.string().optional(),

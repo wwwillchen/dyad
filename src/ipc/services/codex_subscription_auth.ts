@@ -47,6 +47,7 @@ let server: Server | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let pending = false;
 let lastError: string | undefined;
+let setupError: string | undefined;
 let refreshing: Promise<Credentials> | undefined;
 
 function credentialPath() {
@@ -81,7 +82,7 @@ function load(): Credentials | undefined {
     // A failed read is not an absent connection. Keep reporting it until
     // successful reconnection or explicit disconnect replaces the cache.
     credentialCache = new DyadError(
-      "Reconnect your ChatGPT subscription; its saved credentials could not be opened.",
+      "Saved ChatGPT credentials could not be opened. Reconnect ChatGPT, or disconnect it to use your OpenAI API key.",
       DyadErrorKind.Auth,
     );
     throw credentialCache;
@@ -119,6 +120,7 @@ export function getCodexSubscriptionStatus() {
       pending,
       error: lastError,
       celebrationPending,
+      setupError,
     };
   } catch {
     return {
@@ -126,7 +128,7 @@ export function getCodexSubscriptionStatus() {
       credentialError: true,
       pending,
       error:
-        "Saved ChatGPT credentials could not be opened. Restore your OS keyring or reconnect.",
+        "Saved ChatGPT credentials could not be opened. Restore your OS keyring, reconnect ChatGPT, or disconnect it to use your OpenAI API key.",
     };
   }
 }
@@ -139,6 +141,7 @@ export function disconnectCodexSubscription() {
   stopLogin();
   refreshing = undefined;
   lastError = undefined;
+  setupError = undefined;
   fs.rmSync(credentialPath(), { force: true });
 }
 export function validateOAuthState(expected: string, actual: string | null) {
@@ -240,6 +243,7 @@ export async function connectCodexSubscription(
   const current = ++generation;
   refreshing = undefined;
   lastError = undefined;
+  setupError = undefined;
   pending = true;
   const state = randomBytes(32).toString("base64url");
   const verifier = randomBytes(32).toString("base64url");
@@ -288,31 +292,42 @@ export async function connectCodexSubscription(
         writeSettings({ proModelUsage: "subscription" });
         resetSubscriptionAccount();
         if (options.selectModel) {
-          const account = await getSubscriptionAccount({ includeUsage: false });
-          if (generation !== current) {
-            res.end("Sign-in cancelled.");
-            return;
-          }
-          const settings = readSettings();
-          const name = getSubscriptionDefaultModel(
-            account.models,
-            credentials.planType,
-            settings.selectedModel,
-          );
-          if (!name || account.error)
-            throw new Error("Subscription model selection unavailable");
-          writeSettings({
-            selectedModel: { provider: "openai", name },
-            recentModels: addRecentModel(
-              getEffectiveRecentModels(
-                settings.recentModels,
-                settings.selectedModel,
+          try {
+            const account = await getSubscriptionAccount({
+              includeUsage: false,
+            });
+            if (generation !== current) {
+              res.end("Sign-in cancelled.");
+              return;
+            }
+            const settings = readSettings();
+            const name = getSubscriptionDefaultModel(
+              account.models,
+              credentials.planType,
+              settings.selectedModel,
+            );
+            if (!name || account.error)
+              throw new Error("Subscription model selection unavailable");
+            writeSettings({
+              selectedModel: { provider: "openai", name },
+              recentModels: addRecentModel(
+                getEffectiveRecentModels(
+                  settings.recentModels,
+                  settings.selectedModel,
+                ),
+                { provider: "openai", name },
               ),
-              { provider: "openai", name },
-            ),
-            selectedChatMode: "local-agent",
-            defaultChatMode: "local-agent",
-          });
+              selectedChatMode: "local-agent",
+              defaultChatMode: "local-agent",
+            });
+          } catch {
+            if (generation !== current) {
+              res.end("Sign-in cancelled.");
+              return;
+            }
+            setupError =
+              "ChatGPT is connected, but its models could not be loaded. Your model and mode were not changed. Disconnect and reconnect to retry setup, or choose a supported model manually.";
+          }
         }
         celebrationPending = true;
         res.setHeader("Content-Type", "text/html; charset=utf-8");

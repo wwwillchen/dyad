@@ -35,7 +35,7 @@ export async function resolveSubscriptionModel(
     throw new DyadError(
       proEnabled
         ? "Saved ChatGPT credentials could not be opened. Reconnect your ChatGPT subscription or select Pro credits in the Pro menu."
-        : "Saved ChatGPT credentials could not be opened. Reconnect your ChatGPT subscription in the model picker.",
+        : "Saved ChatGPT credentials could not be opened. Reconnect ChatGPT, or disconnect it in the model picker to use your OpenAI API key.",
       DyadErrorKind.Auth,
     );
   // An abandoned sign-in can leave a status error without a connection. It

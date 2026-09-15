@@ -49,6 +49,46 @@ describe("single-attempt subscription usage", () => {
     vi.unstubAllGlobals();
     fs.rmSync(mocks.directory, { recursive: true, force: true });
   });
+  it("keeps explicitly free requests free after Pro is enabled", async () => {
+    const { checkSubscriptionCredits } =
+      await import("./codex_subscription_credit_check");
+    vi.mocked(checkSubscriptionCredits).mockClear();
+    mocks.proEnabled = true;
+    for (let step = 0; step < 2; step++) {
+      const id = await startSubscriptionUsage(
+        "model",
+        undefined,
+        undefined,
+        null,
+      );
+      expect(id).toBeUndefined();
+      await finishSubscriptionUsage(id, "model", usage);
+    }
+    expect(checkSubscriptionCredits).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("keeps billing the accepted Pro key after disabling Pro across requests", async () => {
+    const { checkSubscriptionCredits } =
+      await import("./codex_subscription_credit_check");
+    vi.mocked(checkSubscriptionCredits).mockClear();
+    mocks.proEnabled = false;
+    mocks.key = "replacement";
+    for (let step = 0; step < 2; step++) {
+      const id = await startSubscriptionUsage(
+        "model",
+        undefined,
+        undefined,
+        "accepted-key",
+      );
+      await finishSubscriptionUsage(id, "model", usage);
+    }
+    expect(checkSubscriptionCredits).toHaveBeenCalledTimes(2);
+    expect(checkSubscriptionCredits).toHaveBeenCalledWith(
+      "accepted-key",
+      undefined,
+    );
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
   it("normalizes tokens without double-counting cached input or reasoning", () => {
     expect(normalizeSubscriptionUsage(usage)).toEqual({
       input: 70,

@@ -312,9 +312,13 @@ describe("getModelClient", () => {
         name: "gpt-5.5",
         connection: "subscription",
       });
-      expect(createCodexSubscriptionModel).toHaveBeenCalledWith("gpt-5.5", {
-        chatId: 42,
-      });
+      expect(createCodexSubscriptionModel).toHaveBeenCalledWith(
+        "gpt-5.5",
+        settings.providerSettings?.auto?.apiKey?.value,
+        {
+          chatId: 42,
+        },
+      );
     },
   );
 

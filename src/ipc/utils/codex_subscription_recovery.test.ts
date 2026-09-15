@@ -120,7 +120,9 @@ async function run(
   modelName = "test",
   signal?: AbortSignal,
 ) {
-  const model = await createCodexSubscriptionModel(modelName, { chatId });
+  const model = await createCodexSubscriptionModel(modelName, "test-key", {
+    chatId,
+  });
   const result = await model.doStream({ prompt, abortSignal: signal });
   const reader = result.stream.getReader();
   while (!(await reader.read()).done) {
@@ -224,7 +226,16 @@ describe("subscription encrypted reasoning recovery", () => {
   ] as const)("does not recover HTTP %i with code %s", async (status, code) => {
     const requests = capture(() => rejected(code, status));
     await expect(run()).rejects.toThrow();
-    expect(requests).toHaveLength(1);
+    // Server errors use transport retries, never encrypted-reasoning recovery.
+    expect(requests).toHaveLength(status === 500 ? 3 : 1);
+    for (const request of requests) {
+      expect(request).toEqual(requests[0]);
+      expect(
+        request.input.some(
+          (item) => item.encrypted_content === "old-reasoning",
+        ),
+      ).toBe(true);
+    }
   });
 
   it("does not retry based on error message text", async () => {

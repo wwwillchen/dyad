@@ -1,3 +1,4 @@
+import { isDyadProEnabled } from "@/lib/schemas";
 import type { ExternalModelAdmission } from "../services/external_model_admission";
 import {
   AUTO_DYAD_PRO_MODEL_ALIASES,
@@ -82,24 +83,37 @@ export interface ModelClient {
   getRuntimeModel?: () => ModelSelection;
 }
 
+// Callers supply the accepted turn's settings (or an auxiliary-call snapshot).
+function subscriptionBillingKey(settings: UserSettings): string | null {
+  return isDyadProEnabled(settings)
+    ? (settings.providerSettings?.auto?.apiKey?.value ?? null)
+    : null;
+}
+
 async function createResolvedAliasClient({
   provider,
   resolvedModel,
   modelId,
   selection,
+  settings,
   context,
 }: {
   provider: DyadEngineProvider;
   resolvedModel: ResolvedAliasModel;
   modelId: string;
   selection: ModelSelection;
+  settings: UserSettings;
   context?: { chatId: number; externalModelAdmission?: ExternalModelAdmission };
 }) {
   return {
     selection,
     model:
       selection.connection === "subscription"
-        ? await createCodexSubscriptionModel(selection.name, context)
+        ? await createCodexSubscriptionModel(
+            selection.name,
+            subscriptionBillingKey(settings),
+            context,
+          )
         : createDyadEngineAliasModel({ provider, resolvedModel, modelId }),
   };
 }
@@ -189,7 +203,11 @@ export async function getModelClient(
       );
     return {
       modelClient: {
-        model: await createCodexSubscriptionModel(model.name, context),
+        model: await createCodexSubscriptionModel(
+          model.name,
+          subscriptionBillingKey(settings),
+          context,
+        ),
         builtinProviderId: "openai",
         getRuntimeModel: () => modelSelection,
       },
@@ -514,6 +532,7 @@ async function getProModelClient({
       resolvedModel,
       modelId: resolvedModelId,
       selection,
+      settings,
       context,
     });
     return {
@@ -549,6 +568,7 @@ async function getProModelClient({
           resolvedModel,
           modelId: resolvedModelId,
           selection,
+          settings,
           context,
         });
 

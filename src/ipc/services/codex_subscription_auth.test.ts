@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   url: "",
   encryption: true,
   decrypt: vi.fn(),
+  account: vi.fn(),
+  selectedModel: { provider: "auto", name: "auto" },
 }));
 vi.mock("electron", () => ({
   app: { getPath: () => mocks.directory },
@@ -27,16 +29,13 @@ vi.mock("@/paths/paths", () => ({ getUserDataPath: () => mocks.directory }));
 vi.mock("@/main/settings", () => ({
   readSettings: () => ({
     providerSettings: {},
-    selectedModel: { provider: "auto", name: "auto" },
+    selectedModel: mocks.selectedModel,
   }),
   writeSettings: vi.fn(),
 }));
 vi.mock("./codex_subscription_account", () => ({
   resetSubscriptionAccount: vi.fn(),
-  getSubscriptionAccount: async () => ({
-    connected: true,
-    models: ["supported-model"],
-  }),
+  getSubscriptionAccount: mocks.account,
 }));
 import { writeSettings } from "@/main/settings";
 import {
@@ -122,7 +121,17 @@ describe("subscription OAuth", () => {
 });
 
 describe("successful browser return", () => {
+  beforeEach(() => {
+    mocks.selectedModel = { provider: "auto", name: "auto" };
+    mocks.account
+      .mockReset()
+      .mockResolvedValue({ connected: true, models: ["supported-model"] });
+  });
   it.each([
+    [true, "plus", "preserve"],
+    [true, "free", "empty"],
+    [true, "free", "error"],
+    [true, "free", "throw"],
     [false, undefined],
     [true, "free"],
     [true, "plus"],
@@ -130,7 +139,25 @@ describe("successful browser return", () => {
     [true, undefined],
   ] as const)(
     "connects without Pro and serves a credential-free deep link (select model: %s, tier: %s)",
-    async (selectModel, planType) => {
+    async (selectModel, planType, scenario = undefined) => {
+      if (scenario === "preserve") {
+        mocks.selectedModel = { provider: "openai", name: "supported-model" };
+        mocks.account.mockResolvedValue({
+          connected: true,
+          models: ["other-model", "supported-model"],
+        });
+      }
+      if (scenario === "empty")
+        mocks.account.mockResolvedValue({ connected: true, models: [] });
+      if (scenario === "error")
+        mocks.account.mockResolvedValue({
+          connected: true,
+          models: ["supported-model"],
+          error: "Unavailable",
+        });
+      if (scenario === "throw")
+        mocks.account.mockRejectedValue(new Error("Unavailable"));
+      const setupFailed = ["empty", "error", "throw"].includes(scenario ?? "");
       vi.mocked(writeSettings).mockClear();
       mocks.directory = fs.mkdtempSync(
         path.join(os.tmpdir(), "dyad-oauth-success-"),
@@ -176,7 +203,7 @@ describe("successful browser return", () => {
         expect(writeSettings).toHaveBeenCalledWith({
           proModelUsage: "subscription",
         });
-        if (selectModel) {
+        if (selectModel && !setupFailed) {
           expect(writeSettings).toHaveBeenCalledWith({
             selectedModel: { provider: "openai", name: "supported-model" },
             recentModels: [{ provider: "openai", name: "supported-model" }],
@@ -193,6 +220,15 @@ describe("successful browser return", () => {
           celebrationPending: true,
         });
         const status = getCodexSubscriptionStatus();
+        expect(status.error).toBeUndefined();
+        if (setupFailed)
+          expect(
+            "setupError" in status ? status.setupError : undefined,
+          ).toContain("ChatGPT is connected");
+        else
+          expect(
+            "setupError" in status ? status.setupError : undefined,
+          ).toBeUndefined();
         expect("planType" in status ? status.planType : undefined).toBe(
           planType,
         );

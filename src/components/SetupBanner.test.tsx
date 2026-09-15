@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   disconnect: vi.fn(),
   navigate: vi.fn(),
   pending: false,
+  settingsLoading: false,
   pro: false,
 }));
 vi.mock("react-i18next", () => ({
@@ -44,12 +45,14 @@ vi.mock("@/hooks/useSubscriptionAccount", () => ({
 }));
 vi.mock("@/hooks/useSettings", () => ({
   useSettings: () => ({
-    settings: {
-      enableDyadPro: mocks.pro,
-      providerSettings: mocks.pro
-        ? { auto: { apiKey: { value: "pro-key" } } }
-        : {},
-    },
+    settings: mocks.settingsLoading
+      ? undefined
+      : {
+          enableDyadPro: mocks.pro,
+          providerSettings: mocks.pro
+            ? { auto: { apiKey: { value: "pro-key" } } }
+            : {},
+        },
   }),
 }));
 vi.mock("./ProBanner", () => ({ SetupDyadProButton: () => null }));
@@ -65,6 +68,7 @@ vi.mock("@/ipc/types", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.settingsLoading = false;
   mocks.pending = false;
   mocks.pro = false;
 });
@@ -124,4 +128,21 @@ it("discloses the existing subscription charge when Pro is active", () => {
   setup();
   expect(screen.getByText(/1.5 Pro credits/)).toBeVisible();
   expect(screen.queryByText(/No Dyad usage fees/)).not.toBeInTheDocument();
+});
+
+it("waits for settings before showing fees or permitting connection", () => {
+  mocks.settingsLoading = true;
+  setup();
+  expect(screen.getByText("Checking Dyad Pro status…")).toBeVisible();
+  expect(screen.queryByText(/No Dyad usage fees/)).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "ChatGPT subscription" }),
+  ).toBeDisabled();
+});
+it("announces the browser sign-in wait", () => {
+  mocks.pending = true;
+  setup();
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Waiting for ChatGPT sign-in in your browser",
+  );
 });

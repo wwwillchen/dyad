@@ -40,7 +40,7 @@ export async function startExternalModelUsage(
     connection: "subscription",
     modelProvider: "openai",
   },
-  apiKey?: string,
+  apiKey?: string | null,
   admission?: ExternalModelAdmission,
 ) {
   if (signal?.aborted)
@@ -48,6 +48,9 @@ export async function startExternalModelUsage(
       "External model request cancelled.",
       DyadErrorKind.UserCancelled,
     );
+  // null is an explicitly accepted free request; never consult live settings.
+  if (apiKey === null && billing.connection === "subscription")
+    return undefined;
   const settings = apiKey === undefined ? readSettings() : undefined;
   // Free subscription requests never check or report Dyad credits. Explicit
   // billing keys still belong to the already-resolved Pro request.

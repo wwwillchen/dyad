@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Sparkles } from "lucide-react";
 import { useSubscriptionAccount } from "@/hooks/useSubscriptionAccount";
+import { useFirstPromptProviderResume } from "@/first_prompt/FirstPromptProvider";
 import { useSettings } from "@/hooks/useSettings";
 import { useDeepLink } from "@/contexts/DeepLinkContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -22,6 +23,8 @@ export function SubscriptionConnectionStatus() {
   const { settings } = useSettings();
   const hasPro = settings && isDyadProEnabled(settings);
   const status = useSubscriptionAccount();
+  const resumeFirstPrompt = useFirstPromptProviderResume();
+  const [resumeError, setResumeError] = useState<string>();
   const client = useQueryClient();
   const { lastDeepLink, clearLastDeepLink } = useDeepLink();
   useEffect(() => {
@@ -30,9 +33,43 @@ export function SubscriptionConnectionStatus() {
     clearLastDeepLink();
   }, [lastDeepLink, clearLastDeepLink, client]);
   useEffect(() => {
-    if (status.data?.celebrationPending)
-      void client.invalidateQueries({ queryKey: queryKeys.settings.user });
-  }, [status.data?.celebrationPending, client]);
+    if (
+      !status.data?.connected ||
+      status.data.pending ||
+      !status.data.celebrationPending ||
+      status.data.setupError
+    )
+      return;
+    let cancelled = false;
+    void client
+      .fetchQuery({
+        queryKey: queryKeys.settings.user,
+        queryFn: () => ipc.settings.getUserSettings(),
+        staleTime: 0,
+      })
+      .then((updatedSettings) => {
+        if (!cancelled) {
+          setResumeError(undefined);
+          resumeFirstPrompt(updatedSettings);
+        }
+      })
+      .catch(() => {
+        if (!cancelled)
+          setResumeError(
+            "Your prompt is still saved. Close this dialog and send it again to continue.",
+          );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    status.data?.connected,
+    status.data?.pending,
+    status.data?.celebrationPending,
+    status.data?.setupError,
+    client,
+    resumeFirstPrompt,
+  ]);
   const close = async () => {
     await ipc.settings.acknowledgeSubscriptionConnection();
     await client.invalidateQueries({
@@ -41,7 +78,11 @@ export function SubscriptionConnectionStatus() {
   };
   return (
     <Dialog
-      open={Boolean(status.data?.connected && status.data.celebrationPending)}
+      open={Boolean(
+        status.data?.connected &&
+        !status.data.pending &&
+        status.data.celebrationPending,
+      )}
       onOpenChange={(open) => {
         if (!open) void close();
       }}
@@ -61,10 +102,15 @@ export function SubscriptionConnectionStatus() {
             Uses your ChatGPT subscription for eligible models (marked in the
             model list).
           </p>
+          {(status.data?.setupError || resumeError) && (
+            <p role="alert">{status.data?.setupError ?? resumeError}</p>
+          )}
           <p>
-            {hasPro
-              ? "Uses up to 1.5 Dyad Pro credits / 1 million tokens processed."
-              : "No Dyad usage fees. Your ChatGPT subscription limits and Dyad Basic Agent quota still apply."}
+            {!settings
+              ? "Checking Dyad Pro status…"
+              : hasPro
+                ? "Uses up to 1.5 Dyad Pro credits / 1 million tokens processed."
+                : "No Dyad usage fees. Your ChatGPT subscription limits and Dyad Basic Agent quota still apply."}
           </p>
         </div>
         <DialogFooter>
@@ -94,6 +140,13 @@ export function SubscriptionLimitBanner() {
     >
       You've reached a ChatGPT subscription usage limit. Wait for your limit to
       reset or upgrade your ChatGPT subscription tier.
+      {!isDyadProEnabled(settings) && (
+        <>
+          {" "}
+          You can also disconnect ChatGPT in the Subscription menu to use your
+          OpenAI API key.
+        </>
+      )}
       {isDyadProEnabled(settings) && (
         <>
           {" "}

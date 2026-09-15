@@ -18,7 +18,10 @@ import {
   createCodexSubscriptionModel,
   shapeSubscriptionRequest,
 } from "./codex_subscription_provider";
-import { finishSubscriptionUsage } from "../services/codex_subscription_usage";
+import {
+  finishSubscriptionUsage,
+  startSubscriptionUsage,
+} from "../services/codex_subscription_usage";
 import {
   DyadErrorKind,
   isDyadErrorKindFilteredFromTelemetry,
@@ -29,6 +32,34 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("Codex subscription Responses adapter", () => {
+  it.each([null, "accepted-key"])(
+    "retains the billing source across model requests (%s)",
+    async (key) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response("data: [DONE]\n\n", {
+              headers: { "content-type": "text/event-stream" },
+            }),
+        ),
+      );
+      const model = await createCodexSubscriptionModel("test", key);
+      for (let step = 0; step < 2; step++) {
+        const result = await model.doStream({ prompt: [] });
+        await result.stream.cancel();
+      }
+      expect(startSubscriptionUsage).toHaveBeenCalledTimes(2);
+      expect(startSubscriptionUsage).toHaveBeenNthCalledWith(
+        2,
+        "test",
+        undefined,
+        undefined,
+        key,
+        undefined,
+      );
+    },
+  );
   it.each([502, 503])(
     "retries HTTP %s on the same subscription",
     async (status) => {
@@ -43,7 +74,7 @@ describe("Codex subscription Responses adapter", () => {
           }),
         );
       vi.stubGlobal("fetch", fetch);
-      const model = await createCodexSubscriptionModel("test");
+      const model = await createCodexSubscriptionModel("test", null);
       const result = await model.doStream({ prompt: [] });
       await result.stream.cancel();
       expect(fetch).toHaveBeenCalledTimes(2);
@@ -54,7 +85,7 @@ describe("Codex subscription Responses adapter", () => {
   it("bounds server retries and preserves a sanitized final error", async () => {
     const fetch = vi.fn(async () => new Response("secret", { status: 503 }));
     vi.stubGlobal("fetch", fetch);
-    const model = await createCodexSubscriptionModel("test");
+    const model = await createCodexSubscriptionModel("test", null);
     await expect(model.doStream({ prompt: [] })).rejects.toMatchObject({
       kind: DyadErrorKind.External,
       message: "ChatGPT subscription request failed (HTTP 503).",
@@ -70,7 +101,7 @@ describe("Codex subscription Responses adapter", () => {
       return new Response("unavailable", { status: 503 });
     });
     vi.stubGlobal("fetch", fetch);
-    const model = await createCodexSubscriptionModel("test");
+    const model = await createCodexSubscriptionModel("test", null);
     await expect(
       model.doStream({ prompt: [], abortSignal: controller.signal }),
     ).rejects.toMatchObject({ name: "AbortError" });
@@ -79,7 +110,7 @@ describe("Codex subscription Responses adapter", () => {
 
   async function rejectedRequest(body: string, status = 400) {
     vi.stubGlobal("fetch", async () => new Response(body, { status }));
-    const model = await createCodexSubscriptionModel("test");
+    const model = await createCodexSubscriptionModel("test", null);
     return model.doStream({
       prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
     });
@@ -272,7 +303,7 @@ describe("Codex subscription Responses adapter", () => {
         }),
       );
       const options = {
-        model: await createCodexSubscriptionModel("requested-model"),
+        model: await createCodexSubscriptionModel("requested-model", null),
         system: "Dyad",
         prompt: "Hello",
         maxRetries: 0,
@@ -303,7 +334,7 @@ describe("Codex subscription Responses adapter", () => {
       async () => new Response("sensitive upstream detail", { status: 401 }),
     );
     const result = streamText({
-      model: await createCodexSubscriptionModel("test"),
+      model: await createCodexSubscriptionModel("test", null),
       prompt: "hello",
       maxRetries: 0,
     });

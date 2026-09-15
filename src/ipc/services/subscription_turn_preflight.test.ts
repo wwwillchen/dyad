@@ -196,6 +196,26 @@ describe("global subscription turn routing", () => {
     ).rejects.toThrow("Subscription model availability is unavailable");
     expect(mocks.credits).not.toHaveBeenCalled();
   });
+  it("explains both recovery options for free users with unreadable credentials", async () => {
+    mocks.account.mockResolvedValue({
+      connected: false,
+      credentialError: true,
+      models: [],
+    });
+    await expect(
+      preflightSubscriptionTurn(
+        model,
+        { ...settings, enableDyadPro: false },
+        signal,
+      ),
+    ).rejects.toMatchObject({
+      kind: DyadErrorKind.Auth,
+      message: expect.stringContaining(
+        "Reconnect ChatGPT, or disconnect it in the model picker to use your OpenAI API key",
+      ),
+    });
+    expect(mocks.credits).not.toHaveBeenCalled();
+  });
   it("preserves own-key routing when Pro is off", async () => {
     mocks.account.mockResolvedValue({ connected: false, models: [] });
     expect(
@@ -205,6 +225,7 @@ describe("global subscription turn routing", () => {
         signal,
       ),
     ).not.toHaveProperty("connection");
+    expect(mocks.account).toHaveBeenCalled();
     expect(mocks.credits).not.toHaveBeenCalled();
   });
   it.each([{}, settings.providerSettings])(
@@ -218,6 +239,7 @@ describe("global subscription turn routing", () => {
       const result = await preflightWithAdmission(model, freeSettings, signal);
       expect(result.model.connection).toBe("subscription");
       expect(result.externalModelAdmission).toBeUndefined();
+      expect(mocks.account).toHaveBeenCalled();
       expect(mocks.credentials).toHaveBeenCalled();
       expect(mocks.credits).not.toHaveBeenCalled();
     },

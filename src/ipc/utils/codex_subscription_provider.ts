@@ -109,6 +109,7 @@ export function shapeSubscriptionRequest(
 
 export async function createCodexSubscriptionModel(
   modelName: string,
+  billingKey: string | null,
   context?: { chatId: number; externalModelAdmission?: ExternalModelAdmission },
 ): Promise<LanguageModelV3> {
   // Fail before any model request; the fetch rechecks expiry for long turns.
@@ -234,7 +235,7 @@ export async function createCodexSubscriptionModel(
           modelName,
           params.abortSignal,
           undefined,
-          undefined,
+          billingKey,
           context?.externalModelAdmission,
         );
         const recovery: { commit?: () => void } = {};

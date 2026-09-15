@@ -108,23 +108,47 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
         </p>
       )}
       <p className="px-2 py-2 text-sm text-muted-foreground">
-        {hasPro
-          ? "Get up to 5x usage with Pro credits by connecting your ChatGPT subscription"
-          : "Use your ChatGPT subscription with no Dyad usage fees. Basic Agent limits still apply."}
+        {!settings
+          ? "Checking Dyad Pro status…"
+          : hasPro
+            ? "Get up to 5x usage with Pro credits by connecting your ChatGPT subscription"
+            : "Use your ChatGPT subscription with no Dyad usage fees. Basic Agent limits still apply."}
       </p>
+      {settings && !hasPro && !connected && (
+        <p className="px-2 pb-2 text-xs text-muted-foreground">
+          Connecting selects a ChatGPT model and sets Agent as your default
+          mode.
+        </p>
+      )}
+      {connected && !hasPro && (
+        <p className="px-2 pb-2 text-xs text-muted-foreground">
+          Disconnect ChatGPT to use your OpenAI API key.
+        </p>
+      )}
       {hasPro && (
         <p className="px-2 pb-2 text-xs text-muted-foreground">
           Uses up to 1.5 Pro credits / 1M tokens
         </p>
       )}
-      {(status.error || action.error || status.data?.error) && (
+      {(status.error ||
+        action.error ||
+        status.data?.error ||
+        status.data?.setupError) && (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
-          {action.error?.message ?? status.error?.message ?? status.data?.error}
+          {action.error?.message ??
+            status.error?.message ??
+            status.data?.error ??
+            status.data?.setupError}
         </p>
       )}
       <DropdownMenuItem
         closeOnClick={false}
-        disabled={action.isPending || status.isLoading || status.data?.pending}
+        disabled={
+          !settings ||
+          action.isPending ||
+          status.isLoading ||
+          status.data?.pending
+        }
         onClick={() => action.mutate(connected ? "disconnect" : "connect")}
       >
         {status.data?.pending

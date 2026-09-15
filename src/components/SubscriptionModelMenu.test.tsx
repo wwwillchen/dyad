@@ -12,18 +12,21 @@ import {
 import { SubscriptionModelMenu } from "./SubscriptionModelMenu";
 const mocks = vi.hoisted(() => ({
   connected: false,
+  settingsLoading: false,
   pro: true,
   connect: vi.fn(),
   disconnect: vi.fn(),
 }));
 vi.mock("@/hooks/useSettings", () => ({
   useSettings: () => ({
-    settings: {
-      enableDyadPro: mocks.pro,
-      providerSettings: mocks.pro
-        ? { auto: { apiKey: { value: "test-key" } } }
-        : {},
-    },
+    settings: mocks.settingsLoading
+      ? undefined
+      : {
+          enableDyadPro: mocks.pro,
+          providerSettings: mocks.pro
+            ? { auto: { apiKey: { value: "test-key" } } }
+            : {},
+        },
   }),
 }));
 vi.mock("@/ipc/types", () => ({
@@ -46,6 +49,7 @@ vi.mock("@/ipc/types", () => ({
 }));
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.settingsLoading = false;
   mocks.connected = false;
   mocks.pro = true;
 });
@@ -131,5 +135,16 @@ it("allows free users to connect and explains the Basic Agent limit", async () =
     selectModel: true,
   });
   expect(screen.getByText(/no Dyad usage fees/)).toBeVisible();
+  expect(screen.getByText(/Basic Agent limits still apply/)).toBeVisible();
   expect(screen.queryByText(/1.5 Pro credits/)).not.toBeInTheDocument();
+});
+
+it("does not offer connection until billing settings are loaded", async () => {
+  mocks.settingsLoading = true;
+  await open();
+  expect(await screen.findByText("Checking Dyad Pro status…")).toBeVisible();
+  expect(
+    screen.getByRole("menuitem", { name: "Connect with ChatGPT" }),
+  ).toHaveAttribute("aria-disabled", "true");
+  expect(mocks.connect).not.toHaveBeenCalled();
 });
