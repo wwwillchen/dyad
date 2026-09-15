@@ -24,6 +24,7 @@ export function SubscriptionConnectionStatus() {
   const hasPro = settings && isDyadProEnabled(settings);
   const status = useSubscriptionAccount();
   const resumeFirstPrompt = useFirstPromptProviderResume();
+  const [resumeRequested, setResumeRequested] = useState(false);
   const [resumeError, setResumeError] = useState<string>();
   const client = useQueryClient();
   const { lastDeepLink, clearLastDeepLink } = useDeepLink();
@@ -34,9 +35,30 @@ export function SubscriptionConnectionStatus() {
   }, [lastDeepLink, clearLastDeepLink, client]);
   useEffect(() => {
     if (
+      status.data?.connected &&
+      !status.data.pending &&
+      status.data.celebrationPending &&
+      !status.data.setupError
+    ) {
+      setResumeRequested(true);
+    } else if (
       !status.data?.connected ||
       status.data.pending ||
-      !status.data.celebrationPending ||
+      status.data.setupError
+    ) {
+      setResumeRequested(false);
+    }
+  }, [
+    status.data?.connected,
+    status.data?.pending,
+    status.data?.celebrationPending,
+    status.data?.setupError,
+  ]);
+  useEffect(() => {
+    if (
+      !status.data?.connected ||
+      status.data.pending ||
+      !resumeRequested ||
       status.data.setupError
     )
       return;
@@ -46,6 +68,8 @@ export function SubscriptionConnectionStatus() {
         queryKey: queryKeys.settings.user,
         queryFn: () => ipc.settings.getUserSettings(),
         staleTime: 0,
+        retry: 2,
+        retryDelay: 250,
       })
       .then((updatedSettings) => {
         if (!cancelled) {
@@ -65,7 +89,7 @@ export function SubscriptionConnectionStatus() {
   }, [
     status.data?.connected,
     status.data?.pending,
-    status.data?.celebrationPending,
+    resumeRequested,
     status.data?.setupError,
     client,
     resumeFirstPrompt,

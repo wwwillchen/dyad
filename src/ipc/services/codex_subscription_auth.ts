@@ -309,7 +309,7 @@ export async function connectCodexSubscription(
               credentials.planType,
               settings.selectedModel,
             );
-            if (!name || account.error)
+            if (!name || account.error || account.modelsError)
               throw new Error("Subscription model selection unavailable");
             writeSettings({
               selectedModel: { provider: "openai", name },

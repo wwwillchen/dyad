@@ -184,6 +184,7 @@ describe("successful browser return", () => {
     [true, "plus", "preserve"],
     [true, "free", "empty"],
     [true, "free", "error"],
+    [true, "free", "catalog-error"],
     [true, "free", "throw"],
     [false, undefined],
     [true, "free"],
@@ -208,9 +209,17 @@ describe("successful browser return", () => {
           models: ["supported-model"],
           error: "Unavailable",
         });
+      if (scenario === "catalog-error")
+        mocks.account.mockResolvedValue({
+          connected: true,
+          models: ["fallback-model"],
+          modelsError: "Catalog unavailable",
+        });
       if (scenario === "throw")
         mocks.account.mockRejectedValue(new Error("Unavailable"));
-      const setupFailed = ["empty", "error", "throw"].includes(scenario ?? "");
+      const setupFailed = ["empty", "error", "catalog-error", "throw"].includes(
+        scenario ?? "",
+      );
       vi.mocked(writeSettings).mockClear();
       mocks.directory = fs.mkdtempSync(
         path.join(os.tmpdir(), "dyad-oauth-success-"),

@@ -28,7 +28,7 @@ vi.mock("@/ipc/types", () => ({
   ipc: { settings: { getUserSettings: mocks.getSettings } },
 }));
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   mocks.status = {
     connected: true,
     pending: false,
@@ -37,15 +37,15 @@ beforeEach(() => {
   };
 });
 function setup() {
-  return render(
-    <QueryClientProvider
-      client={
-        new QueryClient({ defaultOptions: { queries: { retry: false } } })
-      }
-    >
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={client}>
       <SubscriptionConnectionStatus />
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 it("resumes the saved prompt only after completed setup and refreshed settings", async () => {
   let resolve!: (value: UserSettings) => void;
@@ -66,9 +66,10 @@ it("resumes the saved prompt only after completed setup and refreshed settings",
     expect(mocks.resume).toHaveBeenCalledExactlyOnceWith(settings),
   );
 });
-it.each(["pending", "failed", "not-connected"])(
+it.each(["pending", "failed", "not-connected", "acknowledged"])(
   "does not resume a saved prompt when setup is %s",
   async (state) => {
+    if (state === "acknowledged") mocks.status.celebrationPending = false;
     if (state === "pending") mocks.status.pending = true;
     if (state === "failed")
       mocks.status.setupError = "Models unavailable; reconnect to retry.";
@@ -78,5 +79,53 @@ it.each(["pending", "failed", "not-connected"])(
     expect(mocks.resume).not.toHaveBeenCalled();
     if (state === "failed")
       expect(screen.getByRole("alert")).toHaveTextContent("Models unavailable");
+  },
+);
+
+it("retries transient settings failures before resuming", async () => {
+  const settings = { defaultChatMode: "local-agent" } as UserSettings;
+  mocks.getSettings
+    .mockRejectedValueOnce(new Error("temporary"))
+    .mockResolvedValue(settings);
+  setup();
+  await waitFor(() =>
+    expect(mocks.resume).toHaveBeenCalledExactlyOnceWith(settings),
+  );
+  expect(mocks.getSettings).toHaveBeenCalledTimes(2);
+});
+it("keeps the saved prompt and shows recovery after settings retries fail", async () => {
+  mocks.getSettings.mockRejectedValue(new Error("unavailable"));
+  setup();
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Your prompt is still saved",
+  );
+  expect(mocks.getSettings).toHaveBeenCalledTimes(3);
+  expect(mocks.resume).not.toHaveBeenCalled();
+});
+it.each(["acknowledged", "disconnected"])(
+  "handles %s while refreshing settings",
+  async (state) => {
+    let resolve!: (settings: UserSettings) => void;
+    mocks.getSettings.mockImplementation(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    const view = setup();
+    if (state === "acknowledged") mocks.status.celebrationPending = false;
+    else mocks.status.connected = false;
+    view.rerender(
+      <QueryClientProvider client={view.client}>
+        <SubscriptionConnectionStatus />
+      </QueryClientProvider>,
+    );
+    const settings = { defaultChatMode: "local-agent" } as UserSettings;
+    await act(async () => resolve(settings));
+    if (state === "acknowledged")
+      await waitFor(() =>
+        expect(mocks.resume).toHaveBeenCalledExactlyOnceWith(settings),
+      );
+    else expect(mocks.resume).not.toHaveBeenCalled();
   },
 );

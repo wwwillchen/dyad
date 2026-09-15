@@ -12,6 +12,7 @@ import {
 import { SubscriptionModelMenu } from "./SubscriptionModelMenu";
 const mocks = vi.hoisted(() => ({
   connected: false,
+  credentialError: false,
   settingsLoading: false,
   pro: true,
   connect: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("@/ipc/types", () => ({
     settings: {
       getCodexSubscriptionStatus: async () => ({
         connected: mocks.connected,
+        credentialError: mocks.credentialError,
         planType: "plus",
         pending: false,
         models: ["gpt-test"],
@@ -51,6 +53,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.settingsLoading = false;
   mocks.connected = false;
+  mocks.credentialError = false;
   mocks.pro = true;
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -155,5 +158,29 @@ it("does not offer connection until billing settings are loaded", async () => {
   expect(
     screen.getByRole("menuitem", { name: "Connect with ChatGPT" }),
   ).toHaveAttribute("aria-disabled", "true");
+  expect(mocks.connect).not.toHaveBeenCalled();
+});
+
+it("keeps connected copy neutral while billing settings load", async () => {
+  mocks.settingsLoading = true;
+  mocks.connected = true;
+  await open();
+  expect(await screen.findByText("Checking Dyad Pro status…")).toBeVisible();
+  expect(
+    screen.queryByText("Disconnect ChatGPT to use your OpenAI API key."),
+  ).toBeNull();
+});
+it("offers disconnect when stored credentials cannot be read", async () => {
+  mocks.pro = false;
+  mocks.credentialError = true;
+  const user = await open();
+  const disconnect = await screen.findByRole("menuitem", {
+    name: "Disconnect ChatGPT",
+  });
+  await waitFor(() =>
+    expect(disconnect).not.toHaveAttribute("aria-disabled", "true"),
+  );
+  await user.click(disconnect);
+  expect(mocks.disconnect).toHaveBeenCalledTimes(1);
   expect(mocks.connect).not.toHaveBeenCalled();
 });

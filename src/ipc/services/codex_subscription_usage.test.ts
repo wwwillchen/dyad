@@ -63,6 +63,7 @@ describe("single-attempt subscription usage", () => {
       );
       expect(id).toBeUndefined();
       await finishSubscriptionUsage(id, "model", usage);
+      await interruptSubscriptionUsage(id);
     }
     expect(checkSubscriptionCredits).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
@@ -88,6 +89,11 @@ describe("single-attempt subscription usage", () => {
       undefined,
     );
     expect(fetch).toHaveBeenCalledTimes(2);
+    for (const [, options] of vi.mocked(fetch).mock.calls) {
+      expect(options?.headers).toMatchObject({
+        Authorization: "Bearer accepted-key",
+      });
+    }
   });
   it("normalizes tokens without double-counting cached input or reasoning", () => {
     expect(normalizeSubscriptionUsage(usage)).toEqual({

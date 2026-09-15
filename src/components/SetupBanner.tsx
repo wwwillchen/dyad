@@ -210,15 +210,15 @@ export function SetupBanner({
                 ? "ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens."
                 : "ChatGPT subscription required. No Dyad usage fees; Basic Agent limits apply."}
           </p>
-          <p
-            role="status"
-            aria-live="polite"
-            className="mt-2 text-xs text-muted-foreground"
-          >
-            {subscription.data?.pending
-              ? "Waiting for ChatGPT sign-in in your browser…"
-              : ""}
-          </p>
+          {subscription.data?.pending && (
+            <p
+              role="status"
+              aria-live="polite"
+              className="mt-2 text-xs text-muted-foreground"
+            >
+              Waiting for ChatGPT sign-in in your browser…
+            </p>
+          )}
           {subscription.data?.pending && (
             <Button
               variant="ghost"

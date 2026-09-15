@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LanguageModelV3Prompt } from "@ai-sdk/provider";
 
+vi.mock("node:timers/promises", () => ({ setTimeout: vi.fn(async () => {}) }));
+
 const account = vi.hoisted(() => ({ id: "account-a" }));
 vi.mock("../services/codex_subscription_auth", () => ({
   getCodexSubscriptionCredentials: async () => ({

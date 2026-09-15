@@ -84,6 +84,7 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
     requestAnimationFrame(() => trigger.current?.focus());
   };
   const connected = status.data?.connected;
+  const canDisconnect = connected || status.data?.credentialError;
   const planType = normalizeChatGPTPlanType(status.data?.planType);
   const label = (
     <>
@@ -122,7 +123,7 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
           mode.
         </p>
       )}
-      {connected && !hasPro && (
+      {settings && connected && !hasPro && (
         <p className="px-2 pb-2 text-xs text-muted-foreground">
           Disconnect ChatGPT to use your OpenAI API key.
         </p>
@@ -146,11 +147,11 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
           status.isLoading ||
           status.data?.pending
         }
-        onClick={() => action.mutate(connected ? "disconnect" : "connect")}
+        onClick={() => action.mutate(canDisconnect ? "disconnect" : "connect")}
       >
         {status.data?.pending
           ? "Waiting for browser sign-in…"
-          : connected
+          : canDisconnect
             ? "Disconnect ChatGPT"
             : "Connect with ChatGPT"}
       </DropdownMenuItem>

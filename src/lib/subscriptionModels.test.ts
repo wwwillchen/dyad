@@ -5,7 +5,7 @@ import {
 } from "./subscriptionModels";
 
 const current = { provider: "openai", name: "gpt-5.6-terra" };
-const catalog = [current.name, "gpt-5.6-luna"];
+const catalog = ["gpt-5.6-luna", current.name];
 describe("subscription defaults", () => {
   it.each([undefined, "free", "go", "business", "enterprise", "edu"])(
     "prefers Luna for %s plans even with an eligible current selection",
