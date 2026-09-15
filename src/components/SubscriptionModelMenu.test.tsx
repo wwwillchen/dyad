@@ -98,7 +98,16 @@ it("shows account usage limits without a duplicate model catalog", async () => {
   mocks.connected = true;
   await open();
   expect(await screen.findByText("5-hour")).toBeVisible();
-  expect(screen.getByText("ChatGPT Plus")).toBeVisible();
+  expect(screen.getByText("Plus")).toBeVisible();
+  expect(screen.getByText("Plus").parentElement).toHaveTextContent(
+    "ChatGPT subscription",
+  );
+  expect(
+    screen.getByText("Get up to 5× usage with your ChatGPT subscription."),
+  ).toBeVisible();
+  expect(
+    screen.queryByText(/Uses up to 1.5 Pro credits/),
+  ).not.toBeInTheDocument();
   expect(screen.getByText("New")).toBeVisible();
   expect(screen.getByText("25% used")).toBeVisible();
   expect(

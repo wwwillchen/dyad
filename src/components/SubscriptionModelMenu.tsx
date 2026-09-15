@@ -99,19 +99,21 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
     ". Open submenu.";
   const details = (
     <>
-      <DropdownMenuLabel>ChatGPT subscription</DropdownMenuLabel>
-      {connected && (
-        <p className="px-2 pb-2 text-xs text-muted-foreground">
-          {planType
-            ? "ChatGPT " + CHATGPT_PLAN_LABELS[planType]
-            : "Plan unavailable"}
-        </p>
-      )}
+      <DropdownMenuLabel className="flex items-center gap-2">
+        ChatGPT subscription
+        {connected && (
+          <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+            {planType ? CHATGPT_PLAN_LABELS[planType] : "Plan unavailable"}
+          </Badge>
+        )}
+      </DropdownMenuLabel>
       <p className="px-2 py-2 text-sm text-muted-foreground">
         {!settings
           ? "Checking Dyad Pro status…"
           : hasPro
-            ? "Get up to 5x usage with Pro credits by connecting your ChatGPT subscription"
+            ? connected
+              ? "Get up to 5× usage with your ChatGPT subscription."
+              : "Get up to 5x usage with Pro credits by connecting your ChatGPT subscription"
             : "Use your ChatGPT subscription with no Dyad usage fees. Basic Agent limits still apply."}
       </p>
       {settings && !hasPro && !connected && (
@@ -123,11 +125,6 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
       {connected && !hasPro && (
         <p className="px-2 pb-2 text-xs text-muted-foreground">
           Disconnect ChatGPT to use your OpenAI API key.
-        </p>
-      )}
-      {hasPro && (
-        <p className="px-2 pb-2 text-xs text-muted-foreground">
-          Uses up to 1.5 Pro credits / 1M tokens
         </p>
       )}
       {(status.error ||
@@ -260,17 +257,6 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
           <DropdownMenuSubContent
             className="w-80 max-h-(--available-height) overflow-y-auto scrollbar-on-hover"
             side={inline ? "right" : placement}
-            sideOffset={8}
-            alignOffset={0}
-            anchor={() =>
-              host.current?.closest('[data-slot="dropdown-menu-content"]') ??
-              null
-            }
-            collisionAvoidance={{
-              side: "flip",
-              align: "shift",
-              fallbackAxisSide: "none",
-            }}
           >
             {details}
           </DropdownMenuSubContent>

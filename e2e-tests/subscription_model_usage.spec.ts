@@ -1,7 +1,7 @@
 import { expect } from "@playwright/test";
 import { test } from "./helpers/test_helper";
 
-test("subscription model usage UX", async ({ po, electronApp }) => {
+test("subscription model usage UX", async ({ po, electronApp }, testInfo) => {
   await po.setUpDyadPro();
   await electronApp.evaluate(({ ipcMain, BrowserWindow }) => {
     ipcMain.removeHandler("codex-subscription:status");
@@ -39,35 +39,37 @@ test("subscription model usage UX", async ({ po, electronApp }) => {
   ).toBeVisible({ timeout: 40000 });
   await expect(po.page.getByText("5-hour", { exact: true })).toBeVisible();
   await expect(po.page.getByText("Weekly", { exact: true })).toBeVisible();
-  await expect(
-    po.page.getByText("ChatGPT Plus", { exact: true }),
-  ).toBeVisible();
+  await expect(po.page.getByText("Plus", { exact: true })).toBeVisible();
   await expect(
     subscriptionMenu.getByText("New", { exact: true }),
   ).toBeVisible();
-  const rootMenu = po.page.locator('[data-slot="dropdown-menu-content"]');
   const sideMenu = po.page.locator('[data-slot="dropdown-menu-sub-content"]');
   await expect(async () => {
-    const parent = await rootMenu.boundingBox();
+    const parent = await subscriptionMenu.boundingBox();
     const panel = await sideMenu.boundingBox();
     expect(parent).not.toBeNull();
     expect(panel).not.toBeNull();
-    expect(
-      panel!.x >= parent!.x + parent!.width ||
-        panel!.x + panel!.width <= parent!.x,
-    ).toBe(true);
+    const gap =
+      panel!.x >= parent!.x
+        ? panel!.x - (parent!.x + parent!.width)
+        : parent!.x - (panel!.x + panel!.width);
+    expect(gap).toBeGreaterThanOrEqual(-1);
+    expect(gap).toBeLessThanOrEqual(4);
   }).toPass();
   await expect(
     po.page.getByText("Uses up to 1.5 Pro credits / 1M tokens", {
       exact: true,
     }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await expect(
     po.page.getByRole("menuitem", { name: /^Pro credits/ }),
   ).toHaveCount(0);
   await expect(po.page.getByRole("menuitem", { name: /^API key/ })).toHaveCount(
     0,
   );
+  await po.page.screenshot({
+    path: testInfo.outputPath("subscription-menu.png"),
+  });
   await po.page.keyboard.press("Escape");
   await po.page.keyboard.press("Escape");
   // Neither side has room in this window: show details in the same menu.
