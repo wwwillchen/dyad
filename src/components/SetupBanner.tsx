@@ -183,25 +183,21 @@ export function SetupBanner({
               }
             />
             <ProviderOptionButton
-              label={
-                subscription.data?.pending
-                  ? "Cancel sign-in"
-                  : "ChatGPT subscription"
-              }
+              label="ChatGPT subscription"
               chip={
-                settings && !hasPro && !subscription.data?.pending
+                settings &&
+                !hasPro &&
+                subscription.data &&
+                !subscription.data.pending
                   ? "Free"
                   : undefined
               }
-              onClick={
-                subscription.data?.pending
-                  ? () => connection.mutate(true)
-                  : handleSubscriptionSetupClick
-              }
+              onClick={handleSubscriptionSetupClick}
               disabled={
                 connection.isPending ||
-                (!subscription.data?.pending &&
-                  (!settings || subscription.isLoading))
+                subscription.data?.pending ||
+                !settings ||
+                subscription.isLoading
               }
               icon={<ProviderIcon providerId="openai" className="size-4" />}
             />
@@ -219,13 +215,23 @@ export function SetupBanner({
             </p>
           )}
           {subscription.data?.pending && (
-            <p
-              role="status"
-              aria-live="polite"
-              className="mt-2 text-xs text-muted-foreground"
-            >
-              Waiting for ChatGPT sign-in in your browser…
-            </p>
+            <div className="mt-2 flex items-center justify-center gap-2">
+              <p
+                role="status"
+                aria-live="polite"
+                className="text-xs text-muted-foreground"
+              >
+                Waiting for ChatGPT sign-in in your browser…
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={connection.isPending}
+                onClick={() => connection.mutate(true)}
+              >
+                Cancel sign-in
+              </Button>
+            </div>
           )}
           {(connection.error ||
             subscription.error ||

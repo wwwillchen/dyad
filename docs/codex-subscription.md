@@ -71,8 +71,12 @@ existing routes; the client cannot redirect a model selected inside a remote ser
 Browser OAuth success returns a static celebration page with automatic
 `dyad://chatgpt-connected` navigation and a manual Open Dyad button. No credentials
 are in that link. The app only shows success for a verified pending local
-connection. Pro copy discloses **up to 1.5 Pro credits / 1M tokens**; free-user copy
-explains that there are no Dyad usage fees and Basic Agent limits still apply.
+connection. Pro copy discloses **up to 1.5 Pro credits / 1M tokens**. Non-Pro
+setup, connection-success, and model-menu surfaces omit the usage-fee/Basic Agent
+quota sentence. Setup shows a **Free** badge on the ChatGPT subscription option
+only once settings and subscription status have loaded and sign-in is not pending.
+During browser sign-in, the provider option stays disabled and a separate cancel
+button appears beside the waiting status.
 Rates below are unchanged. Usage limits show an informational banner, never an automatic payment
 source switch.
 Account status polls every thirty minutes when idle, immediately when the usage

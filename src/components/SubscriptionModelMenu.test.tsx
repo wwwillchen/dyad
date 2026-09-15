@@ -130,7 +130,7 @@ it("replaces models with subscription details in narrow windows and returns with
   await user.click(screen.getByRole("menuitem", { name: "Back to models" }));
   expect(screen.getByRole("menuitem", { name: "Example model" })).toBeVisible();
 });
-it("allows free users to connect and explains the Basic Agent limit", async () => {
+it("allows free users to connect without the usage-fee sentence", async () => {
   mocks.pro = false;
   const user = await open();
   const connect = await screen.findByRole("menuitem", {
@@ -149,8 +149,10 @@ it("allows free users to connect and explains the Basic Agent limit", async () =
       /defaults for new chats. Existing chats keep their model selection/,
     ),
   ).toBeVisible();
-  expect(screen.getByText(/no Dyad usage fees/)).toBeVisible();
-  expect(screen.getByText(/Basic Agent limits still apply/)).toBeVisible();
+  expect(screen.queryByText(/no Dyad usage fees/)).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(/Basic Agent limits still apply/),
+  ).not.toBeInTheDocument();
   expect(screen.queryByText(/1.5 Pro credits/)).not.toBeInTheDocument();
 });
 
