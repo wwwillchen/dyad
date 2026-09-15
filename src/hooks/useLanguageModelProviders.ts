@@ -4,11 +4,14 @@ import { useSettings } from "./useSettings";
 import { cloudProviders } from "@/lib/schemas";
 import { queryKeys } from "@/lib/queryKeys";
 import { isProviderSetup as isProviderSetupUtil } from "@/lib/providerUtils";
+import { useSubscriptionAccount } from "./useSubscriptionAccount";
+import { usesChatGPTSubscription } from "@/lib/subscriptionModels";
 
 const localProviders = new Set(["ollama", "lmstudio"]);
 
 export function useLanguageModelProviders() {
   const { settings, envVars } = useSettings();
+  const subscription = useSubscriptionAccount();
 
   const queryResult = useQuery<LanguageModelProvider[], Error>({
     queryKey: queryKeys.languageModels.providers,
@@ -27,6 +30,16 @@ export function useLanguageModelProviders() {
   };
 
   const isAnyProviderSetup = () => {
+    if (
+      settings &&
+      !subscription.data?.pending &&
+      usesChatGPTSubscription(
+        settings.selectedModel,
+        settings,
+        subscription.data ?? { connected: false, models: [] },
+      )
+    )
+      return true;
     if (
       settings?.selectedModel.provider &&
       localProviders.has(settings.selectedModel.provider) &&

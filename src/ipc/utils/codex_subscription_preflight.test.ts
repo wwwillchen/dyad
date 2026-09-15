@@ -12,6 +12,7 @@ vi.mock("node-fetch", async (importOriginal) => ({
 }));
 vi.mock("@/main/settings", () => ({
   readSettings: () => ({
+    enableDyadPro: true,
     providerSettings: { auto: { apiKey: { value: mocks.key } } },
   }),
 }));
@@ -59,6 +60,12 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 describe("BYO subscription preflight through the actual provider", () => {
+  it("runs free subscription inference without a Dyad balance check", async () => {
+    mocks.key = "";
+    await run();
+    expect(mocks.accountFetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it("checks a fresh account balance before every inference request", async () => {
     await run();
     await run();

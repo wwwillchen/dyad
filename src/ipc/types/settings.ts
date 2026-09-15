@@ -46,7 +46,10 @@ export const settingsContracts = {
   }),
   connectCodexSubscription: defineContract({
     channel: "codex-subscription:connect",
-    input: z.object({ acceptCharges: z.literal(true) }),
+    input: z.object({
+      acceptCharges: z.literal(true),
+      selectModel: z.boolean().optional(),
+    }),
     output: z.void(),
   }),
   disconnectCodexSubscription: defineContract({

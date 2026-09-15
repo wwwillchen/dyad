@@ -1,5 +1,9 @@
 import { getLanguageModelProviders } from "../shared/language_model_helpers";
-import type { ModelSelection, UserSettings } from "@/lib/schemas";
+import {
+  isDyadProEnabled,
+  type ModelSelection,
+  type UserSettings,
+} from "@/lib/schemas";
 import { usesChatGPTSubscription } from "@/lib/subscriptionModels";
 import { getSubscriptionAccount } from "./codex_subscription_account";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
@@ -10,11 +14,11 @@ export async function resolveSubscriptionModel(
   settings: UserSettings,
 ): Promise<ModelSelection> {
   const { connection: _legacyConnection, ...identity } = model;
-  if (
-    !settings.enableDyadPro ||
-    !settings.providerSettings?.auto?.apiKey?.value
-  )
-    return identity;
+  const proEnabled = isDyadProEnabled(settings);
+  const fallback = proEnabled
+    ? { ...identity, connection: "pro" as const }
+    : identity;
+  if (!proEnabled && model.provider !== "openai") return identity;
   const provider = (await getLanguageModelProviders()).find(
     (p) => p.id === model.provider,
   );
@@ -22,30 +26,33 @@ export async function resolveSubscriptionModel(
     ["ollama", "lmstudio"].includes(model.provider) ||
     provider?.type === "custom"
   ) {
-    return { ...identity, connection: "api-key" };
+    return proEnabled ? { ...identity, connection: "api-key" } : identity;
   }
   if (settings.proModelUsage === "pro" || model.provider !== "openai")
-    return { ...identity, connection: "pro" };
+    return fallback;
   const account = await getSubscriptionAccount({ includeUsage: false });
   if (account.credentialError)
     throw new DyadError(
-      "Saved ChatGPT credentials could not be opened. Reconnect your ChatGPT subscription or select Pro credits in the Pro menu.",
+      proEnabled
+        ? "Saved ChatGPT credentials could not be opened. Reconnect your ChatGPT subscription or select Pro credits in the Pro menu."
+        : "Saved ChatGPT credentials could not be opened. Reconnect your ChatGPT subscription in the model picker.",
       DyadErrorKind.Auth,
     );
   // An abandoned sign-in can leave a status error without a connection. It
   // belongs in the account UI and must not block ordinary Pro-credit turns.
-  if (!account.connected) return { ...identity, connection: "pro" };
+  if (!account.connected) return fallback;
   if (account.error && !account.models.length)
     throw new DyadError(account.error, DyadErrorKind.Auth);
   // With no catalog, eligibility is unknown. Do not silently change the
   // billing source of a potentially subscription-eligible model on an outage.
   if (account.modelsError && !account.models.length)
     throw new DyadError(
-      "Subscription model availability is unavailable. Try again or select Pro credits in the Pro menu.",
+      proEnabled
+        ? "Subscription model availability is unavailable. Try again or select Pro credits in the Pro menu."
+        : "Subscription model availability is unavailable. Try again or choose another available model.",
       DyadErrorKind.External,
     );
-  if (!usesChatGPTSubscription(model, settings, account))
-    return { ...identity, connection: "pro" };
+  if (!usesChatGPTSubscription(model, settings, account)) return fallback;
   if (account.error) throw new DyadError(account.error, DyadErrorKind.Auth);
   return { ...identity, connection: "subscription" };
 }

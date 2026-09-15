@@ -11,6 +11,14 @@ const mocks = vi.hoisted(() => ({
     data: undefined,
     isLoading: true,
   },
+  subscription: {
+    connected: false,
+    pending: false,
+    models: ["subscription-model"],
+  },
+}));
+vi.mock("./useSubscriptionAccount", () => ({
+  useSubscriptionAccount: () => ({ data: mocks.subscription }),
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -37,6 +45,11 @@ vi.mock("./useSettings", () => ({
 
 describe("useLanguageModelProviders", () => {
   beforeEach(() => {
+    mocks.subscription = {
+      connected: false,
+      pending: false,
+      models: ["subscription-model"],
+    };
     mocks.selectedModel = {
       provider: "ollama",
       name: "llama3",
@@ -62,5 +75,22 @@ describe("useLanguageModelProviders", () => {
     const { result } = renderHook(() => useLanguageModelProviders());
 
     expect(result.current.isAnyProviderSetup()).toBe(true);
+  });
+  it("waits for sign-in and a supported model before resuming onboarding", () => {
+    mocks.selectedModel = { provider: "auto", name: "auto" };
+    mocks.subscription.connected = true;
+    const { result, rerender } = renderHook(() => useLanguageModelProviders());
+    expect(result.current.isAnyProviderSetup()).toBe(false);
+    mocks.selectedModel = { provider: "openai", name: "subscription-model" };
+    mocks.subscription.pending = true;
+    rerender();
+    expect(result.current.isAnyProviderSetup()).toBe(false);
+    mocks.subscription.pending = false;
+    rerender();
+    expect(result.current.isAnyProviderSetup()).toBe(true);
+    expect(result.current.isProviderSetup("openai")).toBe(false);
+    mocks.subscription.connected = false;
+    rerender();
+    expect(result.current.isAnyProviderSetup()).toBe(false);
   });
 });

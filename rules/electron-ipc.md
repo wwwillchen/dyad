@@ -395,6 +395,10 @@ When billing direct OpenAI-compatible model streams, set the provider's
 `includeUsage: true`; otherwise the SDK omits `stream_options.include_usage`
 and providers may return no final token counts. Enable it only on billed routes.
 
+When a billing wrapper receives an explicit request-scoped API key, use that key
+without reading current settings. Resolve free-versus-Pro defaults only when no
+key was supplied; settings changes must not redirect an accepted request's billing.
+
 Keep chat-turn network preflight outside `withChatQueueLock`; recheck the model,
 mode and billing settings under the lock before acceptance, including after a
 failed preflight. Cancellation should release a turn's wait without aborting

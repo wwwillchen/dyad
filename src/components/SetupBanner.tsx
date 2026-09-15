@@ -22,10 +22,14 @@ import { useScrollAndNavigateTo } from "@/hooks/useScrollAndNavigateTo";
 // @ts-ignore
 import logo from "../../assets/logo.svg";
 // @ts-ignore
-import googleIcon from "../../assets/ai-logos/google-g-icon.svg";
-// @ts-ignore
 import openrouterLogo from "../../assets/ai-logos/openrouter-logo.png";
 import { SetupDyadProButton } from "./ProBanner";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSubscriptionAccount } from "@/hooks/useSubscriptionAccount";
+import { useSettings } from "@/hooks/useSettings";
+import { isDyadProEnabled } from "@/lib/schemas";
+import { queryKeys } from "@/lib/queryKeys";
+import { ProviderIcon } from "./ProviderIcon";
 
 export function SetupBanner({
   variant = "inline",
@@ -37,6 +41,22 @@ export function SetupBanner({
   const { t } = useTranslation("home");
   const posthog = usePostHog();
   const navigate = useNavigate();
+  const client = useQueryClient();
+  const subscription = useSubscriptionAccount();
+  const { settings } = useSettings();
+  const hasPro = settings && isDyadProEnabled(settings);
+  const connection = useMutation({
+    mutationFn: (cancel: boolean) =>
+      cancel
+        ? ipc.settings.disconnectCodexSubscription()
+        : ipc.settings.connectCodexSubscription({
+            acceptCharges: true,
+            selectModel: true,
+          }),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: queryKeys.settings.all });
+    },
+  });
   const { hasArmedPayload: hasPendingPrompt } = useFirstPromptSaga();
   const { isAnyProviderSetup, isLoading: loading } =
     useLanguageModelProviders();
@@ -46,12 +66,9 @@ export function SetupBanner({
     block: "start",
   });
 
-  const handleGoogleSetupClick = () => {
-    posthog.capture("setup-flow:ai-provider-setup:google:click");
-    navigate({
-      to: providerSettingsRoute.id,
-      params: { provider: "google" },
-    });
+  const handleSubscriptionSetupClick = () => {
+    posthog.capture("setup-flow:ai-provider-setup:chatgpt:click");
+    connection.mutate(false);
   };
 
   const handleOpenRouterSetupClick = () => {
@@ -150,7 +167,7 @@ export function SetupBanner({
 
         <div className="mt-4">
           <p className="mb-2 text-sm font-medium text-muted-foreground">
-            Or use your own API key
+            Or use your own subscription or API key
           </p>
           <div className="grid gap-2 sm:grid-cols-3">
             <ProviderOptionButton
@@ -166,10 +183,18 @@ export function SetupBanner({
               }
             />
             <ProviderOptionButton
-              label="Google"
-              chip="Free"
-              onClick={handleGoogleSetupClick}
-              icon={<img src={googleIcon} alt="Google" className="size-4" />}
+              label={
+                subscription.data?.pending
+                  ? "Waiting for sign-in…"
+                  : "ChatGPT subscription"
+              }
+              onClick={handleSubscriptionSetupClick}
+              disabled={
+                connection.isPending ||
+                subscription.isLoading ||
+                subscription.data?.pending
+              }
+              icon={<ProviderIcon providerId="openai" className="size-4" />}
             />
             <ProviderOptionButton
               label="Other providers"
@@ -177,6 +202,30 @@ export function SetupBanner({
               icon={<Settings className="size-4 text-muted-foreground" />}
             />
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {hasPro
+              ? "ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens."
+              : "ChatGPT subscription required. No Dyad usage fees; Basic Agent limits apply."}
+          </p>
+          {subscription.data?.pending && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={connection.isPending}
+              onClick={() => connection.mutate(true)}
+            >
+              Cancel sign-in
+            </Button>
+          )}
+          {(connection.error ||
+            subscription.error ||
+            subscription.data?.error) && (
+            <p role="alert" className="mt-2 text-sm text-destructive">
+              {connection.error?.message ??
+                subscription.error?.message ??
+                subscription.data?.error}
+            </p>
+          )}
         </div>
 
         <div className="mt-4 flex w-full flex-col items-center justify-around gap-2 text-xs sm:flex-row">
@@ -209,23 +258,26 @@ function ProviderOptionButton({
   icon,
   chip,
   onClick,
+  disabled,
 }: {
   label: string;
   icon: React.ReactNode;
   chip?: string;
   onClick: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex min-h-12 cursor-pointer items-center justify-between gap-2 rounded-md border border-border bg-(--background-lighter) px-3 py-2 text-left text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+      disabled={disabled}
+      className="flex min-h-12 cursor-pointer items-center justify-between gap-2 rounded-md border border-border bg-(--background-lighter) px-3 py-2 text-left text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35 disabled:cursor-default disabled:opacity-50"
     >
       <span className="flex min-w-0 items-center gap-2">
         <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-background">
           {icon}
         </span>
-        <span className="truncate">{label}</span>
+        <span>{label}</span>
       </span>
       {chip ? (
         <span className="shrink-0 rounded-full border border-emerald-600/25 bg-emerald-500/10 px-1.5 py-px text-[11px] font-semibold text-emerald-700 dark:border-emerald-400/25 dark:text-emerald-300">

@@ -11,6 +11,7 @@ vi.mock("node-fetch", async (importOriginal) => ({
 }));
 vi.mock("@/main/settings", () => ({
   readSettings: () => ({
+    enableDyadPro: true,
     providerSettings: { auto: { apiKey: { value: mocks.key } } },
   }),
 }));

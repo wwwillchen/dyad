@@ -647,7 +647,16 @@ export function ModelPicker() {
   // Custom and local providers are never locked: Pro doesn't unlock those.
   // While settings/env vars are still loading we can't tell whether a key
   // exists, so fail open rather than flash a lock at env-var-configured users.
-  const isModelLocked = (providerId: string) => {
+  const isModelLocked = (providerId: string, model: LanguageModel) => {
+    if (
+      settings &&
+      usesChatGPTSubscription(
+        { provider: providerId, name: model.apiName },
+        settings,
+        subscription.data ?? { connected: false, models: [] },
+      )
+    )
+      return false;
     if (settingsLoading || dyadProEnabled || providerId === "auto") {
       return false;
     }
@@ -716,7 +725,7 @@ export function ModelPicker() {
     model: LanguageModel,
     effortLevel?: string,
   ) => {
-    if (isModelLocked(providerId)) {
+    if (isModelLocked(providerId, model)) {
       handleLockedModelClick(providerId, model);
       return;
     }
@@ -757,7 +766,7 @@ export function ModelPicker() {
     };
     const isSelected = isSameModel(normalizedSelectedModel, modelRef);
     const modelKey = `${providerId}-${model.apiName}-${modelRef.customModelId ?? "catalog"}`;
-    const isLocked = isModelLocked(providerId);
+    const isLocked = isModelLocked(providerId, model);
     const isAutoProviderRow = providerId === "auto";
     const isFreeProRow = isFreeProLanguageModel(providerId, model.apiName);
     const isFreeProviderRow =

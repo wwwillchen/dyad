@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/hooks/useSettings", () => ({
   useSettings: () => ({
     settings: {
+      enableDyadPro: mocks.pro,
       providerSettings: mocks.pro
         ? { auto: { apiKey: { value: "test-key" } } }
         : {},
@@ -93,10 +94,20 @@ it("shows account usage limits without a duplicate model catalog", async () => {
     screen.getByRole("menuitem", { name: "Disconnect ChatGPT" }),
   ).toBeVisible();
 });
-it("requires Dyad Pro before connection", async () => {
+it("allows free users to connect and explains the Basic Agent limit", async () => {
   mocks.pro = false;
-  await open();
-  expect(
-    await screen.findByRole("menuitem", { name: "Connect with ChatGPT" }),
-  ).toHaveAttribute("aria-disabled", "true");
+  const user = await open();
+  const connect = await screen.findByRole("menuitem", {
+    name: "Connect with ChatGPT",
+  });
+  await waitFor(() =>
+    expect(connect).not.toHaveAttribute("aria-disabled", "true"),
+  );
+  await user.click(connect);
+  expect(mocks.connect).toHaveBeenCalledWith({
+    acceptCharges: true,
+    selectModel: true,
+  });
+  expect(screen.getByText(/no Dyad usage fees/)).toBeVisible();
+  expect(screen.queryByText(/1.5 Pro credits/)).not.toBeInTheDocument();
 });

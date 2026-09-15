@@ -787,7 +787,10 @@ export function shouldBypassNonProTelemetrySampling(
 
   // Promo clicks are only ever fired by non-Pro users; sampling would drop
   // 90% of them and make conversion funnels unreadable.
-  if (eventName === "promo_click") {
+  if (
+    eventName === "promo_click" ||
+    eventName === "setup-flow:ai-provider-setup:chatgpt:click"
+  ) {
     return true;
   }
 

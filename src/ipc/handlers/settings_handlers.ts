@@ -17,8 +17,10 @@ export function registerSettingsHandlers() {
   createTypedHandler(settingsContracts.getCodexSubscriptionStatus, async () =>
     getSubscriptionAccount(),
   );
-  createTypedHandler(settingsContracts.connectCodexSubscription, async () =>
-    connectCodexSubscription(),
+  createTypedHandler(
+    settingsContracts.connectCodexSubscription,
+    async (_, options) =>
+      connectCodexSubscription({ selectModel: options.selectModel }),
   );
   createTypedHandler(settingsContracts.disconnectCodexSubscription, async () =>
     disconnectCodexSubscription(),

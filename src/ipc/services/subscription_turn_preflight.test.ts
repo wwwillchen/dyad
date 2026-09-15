@@ -197,6 +197,7 @@ describe("global subscription turn routing", () => {
     expect(mocks.credits).not.toHaveBeenCalled();
   });
   it("preserves own-key routing when Pro is off", async () => {
+    mocks.account.mockResolvedValue({ connected: false, models: [] });
     expect(
       await preflightSubscriptionTurn(
         model,
@@ -204,7 +205,31 @@ describe("global subscription turn routing", () => {
         signal,
       ),
     ).not.toHaveProperty("connection");
-    expect(mocks.account).not.toHaveBeenCalled();
+    expect(mocks.credits).not.toHaveBeenCalled();
+  });
+  it.each([{}, settings.providerSettings])(
+    "allows free subscription turns without Dyad credit checks (%j)",
+    async (providerSettings) => {
+      const freeSettings = {
+        ...settings,
+        enableDyadPro: false,
+        providerSettings,
+      };
+      const result = await preflightWithAdmission(model, freeSettings, signal);
+      expect(result.model.connection).toBe("subscription");
+      expect(result.externalModelAdmission).toBeUndefined();
+      expect(mocks.credentials).toHaveBeenCalled();
+      expect(mocks.credits).not.toHaveBeenCalled();
+    },
+  );
+  it("keeps unsupported free models on their own provider credentials", async () => {
+    const result = await preflightSubscriptionTurn(
+      { ...model, name: "unsupported" },
+      { ...settings, providerSettings: {} },
+      signal,
+    );
+    expect(result).not.toHaveProperty("connection");
+    expect(mocks.credits).not.toHaveBeenCalled();
   });
   it("propagates confirmed credit and auth denial before accepting a turn", async () => {
     mocks.credits.mockRejectedValue(new Error("Out of credits"));

@@ -8,8 +8,10 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 import { getUserDataPath } from "@/paths/paths";
 import { readSettings, writeSettings } from "@/main/settings";
-import { hasDyadProKey } from "@/lib/schemas";
-import { resetSubscriptionAccount } from "./codex_subscription_account";
+import {
+  getSubscriptionAccount,
+  resetSubscriptionAccount,
+} from "./codex_subscription_account";
 import { subscriptionConnectedPage } from "./codex_subscription_return_page";
 
 // Public native-client registration used by Codex/OpenCode; not a client secret.
@@ -201,13 +203,8 @@ export async function getCodexSubscriptionCredentials(): Promise<Credentials> {
   return refreshing;
 }
 export async function connectCodexSubscription(
-  options: { port?: number } = {},
+  options: { port?: number; selectModel?: boolean } = {},
 ) {
-  if (!hasDyadProKey(readSettings()))
-    throw new DyadError(
-      "Connect Dyad Pro before connecting ChatGPT.",
-      DyadErrorKind.Precondition,
-    );
   requireEncryption();
   if (pending) return;
   const current = ++generation;
@@ -252,7 +249,7 @@ export async function connectCodexSubscription(
       code_verifier: verifier,
       redirect_uri: redirect,
     })
-      .then((credentials) => {
+      .then(async (credentials) => {
         if (generation !== current) {
           res.end("Sign-in cancelled.");
           return;
@@ -260,6 +257,26 @@ export async function connectCodexSubscription(
         save(credentials);
         writeSettings({ proModelUsage: "subscription" });
         resetSubscriptionAccount();
+        if (options.selectModel) {
+          const account = await getSubscriptionAccount({ includeUsage: false });
+          if (generation !== current) {
+            res.end("Sign-in cancelled.");
+            return;
+          }
+          const settings = readSettings();
+          const name =
+            settings.selectedModel.provider === "openai" &&
+            account.models.includes(settings.selectedModel.name)
+              ? settings.selectedModel.name
+              : account.models[0];
+          if (!name || account.error)
+            throw new Error("Subscription model selection unavailable");
+          writeSettings({
+            selectedModel: { provider: "openai", name },
+            selectedChatMode: "local-agent",
+            defaultChatMode: "local-agent",
+          });
+        }
         celebrationPending = true;
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.end(subscriptionConnectedPage);

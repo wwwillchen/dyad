@@ -26,12 +26,17 @@ vi.mock("electron", () => ({
 vi.mock("@/paths/paths", () => ({ getUserDataPath: () => mocks.directory }));
 vi.mock("@/main/settings", () => ({
   readSettings: () => ({
-    providerSettings: { auto: { apiKey: { value: "test-pro" } } },
+    providerSettings: {},
+    selectedModel: { provider: "auto", name: "auto" },
   }),
   writeSettings: vi.fn(),
 }));
 vi.mock("./codex_subscription_account", () => ({
   resetSubscriptionAccount: vi.fn(),
+  getSubscriptionAccount: async () => ({
+    connected: true,
+    models: ["supported-model"],
+  }),
 }));
 import { writeSettings } from "@/main/settings";
 import {
@@ -117,63 +122,80 @@ describe("subscription OAuth", () => {
 });
 
 describe("successful browser return", () => {
-  it("selects subscription globally, serves a credential-free deep link, and disconnect selects Pro", async () => {
-    mocks.directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "dyad-oauth-success-"),
-    );
-    mocks.encryption = true;
-    mocks.decrypt.mockImplementation((b: Buffer) => b.toString());
-    const nativeFetch = globalThis.fetch;
-    const access = `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test-account" } })).toString("base64url")}.signature`;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
-        String(url).startsWith("https://auth.openai.com/")
-          ? new Response(
-              JSON.stringify({
-                access_token: access,
-                refresh_token: "test-refresh",
-                expires_in: 3600,
-              }),
-            )
-          : nativeFetch(url, init),
-      ),
-    );
-    try {
-      fs.writeFileSync(
-        path.join(mocks.directory, "codex-subscription.enc"),
-        "broken",
+  it.each([false, true])(
+    "connects without Pro and serves a credential-free deep link (select model: %s)",
+    async (selectModel) => {
+      vi.mocked(writeSettings).mockClear();
+      mocks.directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), "dyad-oauth-success-"),
       );
-      expect(getCodexSubscriptionStatus().credentialError).toBe(true);
-      await connectCodexSubscription({ port: 0 });
-      const login = new URL(mocks.url);
-      const callback = new URL(login.searchParams.get("redirect_uri")!);
-      callback.searchParams.set("state", login.searchParams.get("state")!);
-      callback.searchParams.set("code", "test-code");
-      const response = await fetch(callback);
-      const html = await response.text();
-      expect(html).toContain('href="dyad://chatgpt-connected"');
-      expect(html).toContain('window.location.href="dyad://chatgpt-connected"');
-      expect(html).not.toContain(access);
-      expect(html).not.toContain("test-code");
-      expect(writeSettings).toHaveBeenCalledWith({
-        proModelUsage: "subscription",
-      });
-      expect(getCodexSubscriptionStatus()).toMatchObject({
-        connected: true,
-        celebrationPending: true,
-      });
-      expect(getCodexSubscriptionStatus().credentialError).toBeUndefined();
-      disconnectCodexSubscription();
-      expect(writeSettings).toHaveBeenCalledWith({ proModelUsage: "pro" });
-      expect(getCodexSubscriptionStatus()).toMatchObject({
-        connected: false,
-        celebrationPending: false,
-      });
-    } finally {
-      disconnectCodexSubscription();
-      vi.unstubAllGlobals();
-      fs.rmSync(mocks.directory, { recursive: true, force: true });
-    }
-  });
+      mocks.encryption = true;
+      mocks.decrypt.mockImplementation((b: Buffer) => b.toString());
+      const nativeFetch = globalThis.fetch;
+      const access = `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test-account" } })).toString("base64url")}.signature`;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+          String(url).startsWith("https://auth.openai.com/")
+            ? new Response(
+                JSON.stringify({
+                  access_token: access,
+                  refresh_token: "test-refresh",
+                  expires_in: 3600,
+                }),
+              )
+            : nativeFetch(url, init),
+        ),
+      );
+      try {
+        fs.writeFileSync(
+          path.join(mocks.directory, "codex-subscription.enc"),
+          "broken",
+        );
+        expect(getCodexSubscriptionStatus().credentialError).toBe(true);
+        await connectCodexSubscription({ port: 0, selectModel });
+        const login = new URL(mocks.url);
+        const callback = new URL(login.searchParams.get("redirect_uri")!);
+        callback.searchParams.set("state", login.searchParams.get("state")!);
+        callback.searchParams.set("code", "test-code");
+        const response = await fetch(callback);
+        const html = await response.text();
+        expect(html).toContain('href="dyad://chatgpt-connected"');
+        expect(html).toContain(
+          'window.location.href="dyad://chatgpt-connected"',
+        );
+        expect(html).not.toContain(access);
+        expect(html).not.toContain("test-code");
+        expect(writeSettings).toHaveBeenCalledWith({
+          proModelUsage: "subscription",
+        });
+        if (selectModel) {
+          expect(writeSettings).toHaveBeenCalledWith({
+            selectedModel: { provider: "openai", name: "supported-model" },
+            selectedChatMode: "local-agent",
+            defaultChatMode: "local-agent",
+          });
+        } else {
+          expect(writeSettings).not.toHaveBeenCalledWith(
+            expect.objectContaining({ selectedModel: expect.anything() }),
+          );
+        }
+        expect(getCodexSubscriptionStatus()).toMatchObject({
+          connected: true,
+          celebrationPending: true,
+        });
+        expect(getCodexSubscriptionStatus().credentialError).toBeUndefined();
+        disconnectCodexSubscription();
+        expect(writeSettings).toHaveBeenCalledWith({ proModelUsage: "pro" });
+        expect(getCodexSubscriptionStatus()).toMatchObject({
+          connected: false,
+          celebrationPending: false,
+        });
+      } finally {
+        disconnectCodexSubscription();
+        vi.unstubAllGlobals();
+        fs.rmSync(mocks.directory, { recursive: true, force: true });
+      }
+    },
+  );
 });

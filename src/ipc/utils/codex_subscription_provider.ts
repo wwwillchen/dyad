@@ -207,7 +207,7 @@ export async function createCodexSubscriptionModel(
           response.status === 401 || response.status === 403
             ? "ChatGPT subscription access was rejected. Reconnect or choose an available model."
             : response.status === 429
-              ? "ChatGPT subscription limit reached. Upgrade your ChatGPT subscription tier or select Pro credits under Model usage in the Pro menu."
+              ? "ChatGPT subscription limit reached. Wait for your limit to reset, upgrade your ChatGPT subscription tier, or choose another available model."
               : `ChatGPT subscription request failed (HTTP ${response.status}).`;
         throw new DyadError(detail ? `${summary} ${detail}` : summary, kind);
       }

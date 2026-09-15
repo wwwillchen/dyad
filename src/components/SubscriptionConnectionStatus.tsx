@@ -15,9 +15,12 @@ import {
   DialogFooter,
 } from "./ui/dialog";
 import { Button } from "./ui/button";
+import { isDyadProEnabled } from "@/lib/schemas";
 
 /** Mounted once, so closing the picker does not interrupt sign-in completion. */
 export function SubscriptionConnectionStatus() {
+  const { settings } = useSettings();
+  const hasPro = settings && isDyadProEnabled(settings);
   const status = useSubscriptionAccount();
   const client = useQueryClient();
   const { lastDeepLink, clearLastDeepLink } = useDeepLink();
@@ -58,7 +61,11 @@ export function SubscriptionConnectionStatus() {
             Uses your ChatGPT subscription for eligible models (marked in the
             model list).
           </p>
-          <p>Uses up to 1.5 Dyad Pro credits / 1 million tokens processed.</p>
+          <p>
+            {hasPro
+              ? "Uses up to 1.5 Dyad Pro credits / 1 million tokens processed."
+              : "No Dyad usage fees. Your ChatGPT subscription limits and Dyad Basic Agent quota still apply."}
+          </p>
         </div>
         <DialogFooter>
           <Button className="w-full" onClick={() => void close()}>
@@ -74,7 +81,7 @@ export function SubscriptionLimitBanner() {
   const { settings } = useSettings();
   const status = useSubscriptionAccount();
   if (
-    !settings?.enableDyadPro ||
+    !settings ||
     settings.proModelUsage === "pro" ||
     !status.data?.connected ||
     !status.data.limitReached
@@ -85,10 +92,15 @@ export function SubscriptionLimitBanner() {
       role="status"
       className="mx-3 mb-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground"
     >
-      You've reached a ChatGPT subscription usage limit. Upgrade your ChatGPT
-      subscription tier or switch to Pro credit usage by selecting{" "}
-      <strong>Pro credits</strong> under <strong>Model usage</strong> in the Pro
-      menu.
+      You've reached a ChatGPT subscription usage limit. Wait for your limit to
+      reset or upgrade your ChatGPT subscription tier.
+      {isDyadProEnabled(settings) && (
+        <>
+          {" "}
+          You can also select <strong>Pro credits</strong> under{" "}
+          <strong>Model usage</strong> in the Pro menu.
+        </>
+      )}
     </div>
   );
 }

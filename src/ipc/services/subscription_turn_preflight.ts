@@ -1,4 +1,8 @@
-import type { ModelSelection, UserSettings } from "@/lib/schemas";
+import {
+  isDyadProEnabled,
+  type ModelSelection,
+  type UserSettings,
+} from "@/lib/schemas";
 import { resolveSubscriptionModel } from "./resolve_subscription_model";
 import { getCodexSubscriptionCredentials } from "./codex_subscription_auth";
 import {
@@ -47,6 +51,7 @@ export async function preflightSubscriptionTurn(
     await getCodexSubscriptionCredentials();
   let externalModelAdmission: ExternalModelAdmission | undefined;
   if (
+    isDyadProEnabled(settings) &&
     selections.some(
       (selection) =>
         selection.connection === "subscription" ||

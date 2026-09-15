@@ -6,6 +6,7 @@ import path from "node:path";
 const mocks = vi.hoisted(() => ({
   directory: "",
   key: "test-dyad-key",
+  proEnabled: true,
   warn: vi.fn(),
 }));
 vi.mock("./codex_subscription_credit_check", () => ({
@@ -14,6 +15,7 @@ vi.mock("./codex_subscription_credit_check", () => ({
 vi.mock("@/paths/paths", () => ({ getUserDataPath: () => mocks.directory }));
 vi.mock("@/main/settings", () => ({
   readSettings: () => ({
+    enableDyadPro: mocks.proEnabled,
     providerSettings: { auto: { apiKey: { value: mocks.key } } },
   }),
 }));
@@ -33,6 +35,7 @@ const usage = {
 describe("single-attempt subscription usage", () => {
   beforeEach(() => {
     mocks.key = "test-dyad-key";
+    mocks.proEnabled = true;
     mocks.warn.mockClear();
     mocks.directory = fs.mkdtempSync(
       path.join(os.tmpdir(), "dyad-usage-test-"),
@@ -60,6 +63,24 @@ describe("single-attempt subscription usage", () => {
       }),
     ).toThrow();
   });
+  it.each(["", "saved-but-disabled-key"])(
+    "does not check credits or report free subscription usage (%s)",
+    async (key) => {
+      mocks.key = key;
+      mocks.proEnabled = false;
+      const { checkSubscriptionCredits } =
+        await import("./codex_subscription_credit_check");
+      vi.mocked(checkSubscriptionCredits).mockClear();
+      const id = await startSubscriptionUsage("model");
+      expect(id).toBeUndefined();
+      // Upgrading during a request must not retroactively charge a free request.
+      mocks.proEnabled = true;
+      mocks.key = "new-pro-key";
+      await finishSubscriptionUsage(id, "model", usage);
+      expect(checkSubscriptionCredits).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
   it("sends the six fields once, without an idempotency header or local persistence", async () => {
     const id = await startSubscriptionUsage("gpt-5.6-luna");
     await Promise.all([

@@ -4,6 +4,7 @@ import { z } from "zod";
 import log from "electron-log";
 import type { LanguageModelV3Usage } from "@ai-sdk/provider";
 import { readSettings } from "@/main/settings";
+import { isDyadProEnabled } from "@/lib/schemas";
 import { getDyadEngineBaseUrl } from "@/ipc/utils/dyad_engine_url";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import type { SubscriptionTokens } from "@/lib/subscriptionUsage";
@@ -42,16 +43,25 @@ export async function startExternalModelUsage(
   apiKey?: string,
   admission?: ExternalModelAdmission,
 ) {
-  const key = apiKey ?? readSettings().providerSettings?.auto?.apiKey?.value;
-  if (!key)
-    throw new DyadError(
-      "Add your Dyad Pro key before using Pro with an external model.",
-      DyadErrorKind.Auth,
-    );
   if (signal?.aborted)
     throw new DyadError(
       "External model request cancelled.",
       DyadErrorKind.UserCancelled,
+    );
+  const settings = apiKey === undefined ? readSettings() : undefined;
+  // Free subscription requests never check or report Dyad credits. Explicit
+  // billing keys still belong to the already-resolved Pro request.
+  if (
+    billing.connection === "subscription" &&
+    settings &&
+    !isDyadProEnabled(settings)
+  )
+    return undefined;
+  const key = apiKey ?? settings?.providerSettings?.auto?.apiKey?.value;
+  if (!key)
+    throw new DyadError(
+      "Add your Dyad Pro key before using Pro with an external model.",
+      DyadErrorKind.Auth,
     );
   if (!consumeExternalModelAdmission(admission, key))
     await checkSubscriptionCredits(key, signal);
@@ -83,10 +93,11 @@ export function normalizeExternalModelUsage(
 
 /** Best effort: consume before sending, never retry or reject into the chat. */
 export async function finishExternalModelUsage(
-  id: string,
+  id: string | undefined,
   model: string,
   usage: LanguageModelV3Usage,
 ) {
+  if (!id) return;
   const request = active.get(id);
   if (!request) return;
   active.delete(id);
@@ -131,7 +142,11 @@ export async function finishExternalModelUsage(
     );
   }
 }
-export function interruptExternalModelUsage(id: string, notSent = false) {
+export function interruptExternalModelUsage(
+  id: string | undefined,
+  notSent = false,
+) {
+  if (!id) return;
   if (active.delete(id) && !notSent)
     logger.warn("External model request ended without usage; not reporting", {
       id,

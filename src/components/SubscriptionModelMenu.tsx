@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useSubscriptionAccount } from "@/hooks/useSubscriptionAccount";
 import { useSettings } from "@/hooks/useSettings";
-import { hasDyadProKey } from "@/lib/schemas";
+import { isDyadProEnabled } from "@/lib/schemas";
 import { useState } from "react";
 
 export function SubscriptionModelMenu() {
@@ -19,11 +19,14 @@ export function SubscriptionModelMenu() {
   const [open, setOpen] = useState(false);
   const status = useSubscriptionAccount(open);
   const { settings } = useSettings();
-  const hasPro = settings && hasDyadProKey(settings);
+  const hasPro = settings && isDyadProEnabled(settings);
   const action = useMutation({
     mutationFn: (kind: "connect" | "disconnect") =>
       kind === "connect"
-        ? ipc.settings.connectCodexSubscription({ acceptCharges: true })
+        ? ipc.settings.connectCodexSubscription({
+            acceptCharges: true,
+            selectModel: !hasPro,
+          })
         : ipc.settings.disconnectCodexSubscription(),
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: queryKeys.settings.all });
@@ -43,12 +46,15 @@ export function SubscriptionModelMenu() {
       <DropdownMenuSubContent className="w-80">
         <DropdownMenuLabel>ChatGPT subscription</DropdownMenuLabel>
         <p className="px-2 py-2 text-sm text-muted-foreground">
-          Get up to 5x usage with Pro credits by connecting your ChatGPT
-          subscription
+          {hasPro
+            ? "Get up to 5x usage with Pro credits by connecting your ChatGPT subscription"
+            : "Use your ChatGPT subscription with no Dyad usage fees. Basic Agent limits still apply."}
         </p>
-        <p className="px-2 pb-2 text-xs text-muted-foreground">
-          Uses up to 1.5 Pro credits / 1M tokens
-        </p>
+        {hasPro && (
+          <p className="px-2 pb-2 text-xs text-muted-foreground">
+            Uses up to 1.5 Pro credits / 1M tokens
+          </p>
+        )}
         {(status.error || action.error || status.data?.error) && (
           <p role="alert" className="px-2 py-1 text-xs text-destructive">
             {action.error?.message ??
@@ -59,10 +65,7 @@ export function SubscriptionModelMenu() {
         <DropdownMenuItem
           closeOnClick={false}
           disabled={
-            action.isPending ||
-            status.isLoading ||
-            status.data?.pending ||
-            (!connected && !hasPro)
+            action.isPending || status.isLoading || status.data?.pending
           }
           onClick={() => action.mutate(connected ? "disconnect" : "connect")}
         >
@@ -72,11 +75,6 @@ export function SubscriptionModelMenu() {
               ? "Disconnect ChatGPT"
               : "Connect with ChatGPT"}
         </DropdownMenuItem>
-        {!hasPro && !connected && (
-          <p className="px-2 py-1 text-xs text-muted-foreground">
-            Connect Dyad Pro first to use this feature.
-          </p>
-        )}
         {status.data?.pending && (
           <DropdownMenuItem
             closeOnClick={false}
