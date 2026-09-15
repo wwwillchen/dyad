@@ -6,9 +6,10 @@ import { apps } from "../../db/schema";
 import { eq } from "drizzle-orm";
 import log from "electron-log";
 import { createVercelClient, VERCEL_API_BASE } from "../utils/vercel_utils";
+import { getVercelProjectCreationError } from "../utils/vercel_errors";
 import * as fs from "fs";
 import * as path from "path";
-import { CreateProjectFramework } from "@vercel/sdk/models/createprojectop.js";
+import type { CreateProjectFramework } from "@vercel/sdk/models/createprojectpasswordprotection.js";
 import { getDyadAppPath } from "@/paths/paths";
 import { slugifyAppPath } from "@/shared/slugify";
 import { createTypedHandler } from "./base";
@@ -405,7 +406,7 @@ async function handleCreateProject(
         },
       });
 
-      if (deploymentData.url) {
+      if ("url" in deploymentData && deploymentData.url) {
         logger.info(`First deployment successful: ${deploymentData.url}`);
       } else {
         logger.warn("First deployment failed: No deployment URL returned");
@@ -419,7 +420,7 @@ async function handleCreateProject(
   } catch (err: any) {
     if (err instanceof DyadError) throw err;
     logger.error("[Vercel Handler] Failed to create project:", err);
-    throw new Error(err.message || "Failed to create Vercel project.");
+    throw getVercelProjectCreationError(err);
   }
 }
 

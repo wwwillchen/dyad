@@ -28,6 +28,8 @@ Prefer **`DyadError`** over growing `FILTERED_EXCEPTION_MESSAGES` in `telemetry.
 
 Responses API stream errors can arrive through AI SDK `onError` as plain objects with nested `error.message`, even with HTTP 200. Extract that message before classifying authentication failures; `String(error)` produces `[object Object]`. Cover both HTTP failures and streamed errors when changing provider validation.
 
+Vercel SDK `ResponseValidationError` can follow HTTP 200 after a project was created (e.g. SDK 1.18.0 rejected `resourceConfig.buildMachineType: "basic"`). Surface the API error message or validation cause, check SDK schema compatibility, and avoid blindly retrying creation; do not dump the entire project response, which can contain environment variables.
+
 ## Non-Pro event sampling (renderer)
 
 The renderer PostHog `before_send` (in `src/renderer.tsx`) drops ~90% of events for **non-Pro** users. Any event whose audience is primarily free users (conversion funnels like `promo_click`, upgrade CTAs) must be added to `shouldBypassNonProTelemetrySampling` in `src/lib/posthogTelemetry.ts`, or it will be silently undercounted 10x. Errors, `app:initial-load`, and `sandbox.script.*` already bypass sampling.

@@ -1,0 +1,10 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: "@vercel/sdk"
+    versioning-strategy: increase
+    open-pull-requests-limit: 1
