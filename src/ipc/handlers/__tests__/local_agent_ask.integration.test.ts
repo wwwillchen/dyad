@@ -34,6 +34,9 @@ describe("local-agent ask mode (integration)", () => {
     harness = await setupHybridChatHarness({
       electronMock: h,
       engine: true,
+      // Custom providers retain their direct transport even with Pro enabled.
+      // Select a cloud model to exercise the Engine request contract.
+      selectedModel: { provider: "google", name: "gemini-2.5-pro" },
       chatMode: "ask",
       settings: {
         isTestMode: true,
