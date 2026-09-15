@@ -59,6 +59,58 @@ describe("subscription OAuth", () => {
     fs.rmSync(mocks.directory, { recursive: true, force: true });
     vi.unstubAllGlobals();
   });
+  it.each([
+    [undefined, undefined, "plus"],
+    ["test-account", "pro", "pro"],
+    ["different-account", undefined, undefined],
+  ] as const)(
+    "refreshes tier metadata safely (%s, %s)",
+    async (accountId, planType, expected) => {
+      fs.writeFileSync(
+        path.join(mocks.directory, "codex-subscription.enc"),
+        JSON.stringify({
+          access: "old-access",
+          refresh: "old-refresh",
+          accountId: "test-account",
+          expires: 0,
+          planType: "plus",
+        }),
+      );
+      const access =
+        "header." +
+        Buffer.from(
+          JSON.stringify({
+            "https://api.openai.com/auth": {
+              chatgpt_account_id: accountId,
+              chatgpt_plan_type: planType,
+            },
+          }),
+        ).toString("base64url") +
+        ".signature";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({
+            access_token: access,
+            refresh_token: "new-refresh",
+            expires_in: 3600,
+          }),
+        ),
+      );
+      const credentials = await getCodexSubscriptionCredentials();
+      expect(credentials.planType).toBe(expected);
+      expect(
+        JSON.parse(
+          fs.readFileSync(
+            path.join(mocks.directory, "codex-subscription.enc"),
+            "utf8",
+          ),
+        ).planType,
+      ).toBe(expected);
+      const status = getCodexSubscriptionStatus();
+      expect("planType" in status ? status.planType : undefined).toBe(expected);
+    },
+  );
   it("requires secure storage", async () => {
     mocks.encryption = false;
     await expect(connectCodexSubscription()).rejects.toThrow(

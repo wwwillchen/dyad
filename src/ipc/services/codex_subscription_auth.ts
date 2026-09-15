@@ -168,7 +168,7 @@ function getPlanTypeFromToken(token: string | undefined) {
 }
 async function exchange(
   params: Record<string, string>,
-  previousAccountId?: string,
+  previous?: Pick<Credentials, "accountId" | "planType">,
 ): Promise<Credentials> {
   const response = await fetch(`${ISSUER}/oauth/token`, {
     method: "POST",
@@ -188,16 +188,18 @@ async function exchange(
     const claims = JSON.parse(
       Buffer.from(tokens.access_token.split(".")[1], "base64url").toString(),
     );
+    const accountId =
+      claims["https://api.openai.com/auth"]?.chatgpt_account_id ??
+      previous?.accountId;
     return Credentials.parse({
       access: tokens.access_token,
       refresh: tokens.refresh_token,
-      accountId:
-        claims["https://api.openai.com/auth"]?.chatgpt_account_id ??
-        previousAccountId,
+      accountId,
       expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
       planType:
         getPlanTypeFromToken(tokens.id_token) ??
-        getPlanTypeFromToken(tokens.access_token),
+        getPlanTypeFromToken(tokens.access_token) ??
+        (accountId === previous?.accountId ? previous?.planType : undefined),
     });
   } catch {
     throw new DyadError(
@@ -218,7 +220,7 @@ export async function getCodexSubscriptionCredentials(): Promise<Credentials> {
     const current = generation;
     refreshing = exchange(
       { grant_type: "refresh_token", refresh_token: stored.refresh },
-      stored.accountId,
+      stored,
     )
       .then((credentials) => {
         if (generation !== current)
