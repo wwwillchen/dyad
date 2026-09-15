@@ -129,13 +129,13 @@ export function SubscriptionConnectionStatus() {
           {(status.data?.setupError || resumeError) && (
             <p role="alert">{status.data?.setupError ?? resumeError}</p>
           )}
-          <p>
-            {!settings
-              ? "Checking Dyad Pro status…"
-              : hasPro
-                ? "Uses up to 1.5 Dyad Pro credits / 1 million tokens processed."
-                : "No Dyad usage fees. Your ChatGPT subscription limits and Dyad Basic Agent quota still apply."}
-          </p>
+          {(!settings || hasPro) && (
+            <p>
+              {!settings
+                ? "Checking Dyad Pro status…"
+                : "Uses up to 1.5 Dyad Pro credits / 1 million tokens processed."}
+            </p>
+          )}
         </div>
         <DialogFooter>
           <Button className="w-full" onClick={() => void close()}>

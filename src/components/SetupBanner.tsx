@@ -183,17 +183,21 @@ export function SetupBanner({
               }
             />
             <ProviderOptionButton
-              label={
-                subscription.data?.pending
-                  ? "Waiting for sign-in…"
-                  : "ChatGPT subscription"
+              label="ChatGPT subscription"
+              chip={
+                settings &&
+                !hasPro &&
+                subscription.data &&
+                !subscription.data.pending
+                  ? "Free"
+                  : undefined
               }
               onClick={handleSubscriptionSetupClick}
               disabled={
-                !settings ||
                 connection.isPending ||
-                subscription.isLoading ||
-                subscription.data?.pending
+                subscription.data?.pending ||
+                !settings ||
+                subscription.isLoading
               }
               icon={<ProviderIcon providerId="openai" className="size-4" />}
             />
@@ -203,31 +207,31 @@ export function SetupBanner({
               icon={<Settings className="size-4 text-muted-foreground" />}
             />
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {!settings
-              ? "Checking Dyad Pro status…"
-              : hasPro
-                ? "ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens."
-                : "ChatGPT subscription required. No Dyad usage fees; Basic Agent limits apply."}
-          </p>
-          {subscription.data?.pending && (
-            <p
-              role="status"
-              aria-live="polite"
-              className="mt-2 text-xs text-muted-foreground"
-            >
-              Waiting for ChatGPT sign-in in your browser…
+          {(!settings || hasPro) && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {!settings
+                ? "Checking Dyad Pro status…"
+                : "ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens."}
             </p>
           )}
           {subscription.data?.pending && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={connection.isPending}
-              onClick={() => connection.mutate(true)}
-            >
-              Cancel sign-in
-            </Button>
+            <div className="mt-2 flex items-center justify-center gap-2">
+              <p
+                role="status"
+                aria-live="polite"
+                className="text-xs text-muted-foreground"
+              >
+                Waiting for ChatGPT sign-in in your browser…
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={connection.isPending}
+                onClick={() => connection.mutate(true)}
+              >
+                Cancel sign-in
+              </Button>
+            </div>
           )}
           {(connection.error ||
             subscription.error ||

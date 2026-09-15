@@ -114,17 +114,17 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
           </Badge>
         )}
       </DropdownMenuLabel>
-      <p className="px-2 py-2 text-sm text-muted-foreground">
-        {!settings
-          ? "Checking Dyad Pro status…"
-          : status.data?.credentialError
-            ? "Your saved ChatGPT connection could not be opened. Disconnect it to clear the saved connection, then reconnect or use your OpenAI API key."
-            : hasPro
-              ? connected
+      {(!settings || status.data?.credentialError || hasPro) && (
+        <p className="px-2 py-2 text-sm text-muted-foreground">
+          {!settings
+            ? "Checking Dyad Pro status…"
+            : status.data?.credentialError
+              ? "Your saved ChatGPT connection could not be opened. Disconnect it to clear the saved connection, then reconnect or use your OpenAI API key."
+              : connected
                 ? "Get up to 5× usage with your ChatGPT subscription."
-                : "Get up to 5x usage with Pro credits by connecting your ChatGPT subscription"
-              : "Use your ChatGPT subscription with no Dyad usage fees. Basic Agent limits still apply."}
-      </p>
+                : "Get up to 5x usage with Pro credits by connecting your ChatGPT subscription"}
+        </p>
+      )}
       {settings && hasPro && connected && (
         <p className="px-2 pb-2 text-xs text-muted-foreground">
           ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens.

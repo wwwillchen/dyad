@@ -13,12 +13,13 @@ const mocks = vi.hoisted(() => ({
   },
   resume: vi.fn(),
   getSettings: vi.fn(),
+  settings: undefined as UserSettings | undefined,
 }));
 vi.mock("@/first_prompt/FirstPromptProvider", () => ({
   useFirstPromptProviderResume: () => mocks.resume,
 }));
 vi.mock("@/hooks/useSettings", () => ({
-  useSettings: () => ({ settings: undefined }),
+  useSettings: () => ({ settings: mocks.settings }),
 }));
 vi.mock("@/hooks/useSubscriptionAccount", () => ({
   useSubscriptionAccount: () => ({ data: mocks.status }),
@@ -29,6 +30,7 @@ vi.mock("@/ipc/types", () => ({
 }));
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.settings = undefined;
   mocks.status = {
     connected: true,
     pending: false,
@@ -47,6 +49,40 @@ function setup() {
   );
   return { ...view, client };
 }
+it.each(["loading", "free", "pro"])(
+  "shows the appropriate billing copy for %s settings",
+  (state) => {
+    if (state !== "loading") {
+      mocks.settings = {
+        enableDyadPro: state === "pro",
+        providerSettings:
+          state === "pro" ? { auto: { apiKey: { value: "test-key" } } } : {},
+      } as UserSettings;
+    }
+    mocks.getSettings.mockReturnValue(new Promise(() => {}));
+    setup();
+    expect(
+      screen.getByText("Your ChatGPT subscription is connected."),
+    ).toBeVisible();
+    if (state === "loading") {
+      expect(screen.getByText("Checking Dyad Pro status…")).toBeVisible();
+    } else {
+      expect(
+        screen.queryByText("Checking Dyad Pro status…"),
+      ).not.toBeInTheDocument();
+    }
+    if (state === "pro") {
+      expect(screen.getByText(/Uses up to 1.5 Dyad Pro credits/)).toBeVisible();
+    } else {
+      expect(
+        screen.queryByText(/Uses up to 1.5 Dyad Pro credits/),
+      ).not.toBeInTheDocument();
+    }
+    expect(
+      screen.queryByText(/No Dyad usage fees|Basic Agent quota/),
+    ).not.toBeInTheDocument();
+  },
+);
 it("resumes the saved prompt only after completed setup and refreshed settings", async () => {
   let resolve!: (value: UserSettings) => void;
   mocks.getSettings.mockImplementation(

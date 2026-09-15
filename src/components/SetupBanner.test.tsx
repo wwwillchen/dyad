@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   pending: false,
   settingsLoading: false,
+  subscriptionLoading: false,
   pro: false,
 }));
 vi.mock("react-i18next", () => ({
@@ -39,8 +40,10 @@ vi.mock("@/hooks/useScrollAndNavigateTo", () => ({
 }));
 vi.mock("@/hooks/useSubscriptionAccount", () => ({
   useSubscriptionAccount: () => ({
-    data: { connected: false, pending: mocks.pending },
-    isLoading: false,
+    data: mocks.subscriptionLoading
+      ? undefined
+      : { connected: false, pending: mocks.pending },
+    isLoading: mocks.subscriptionLoading,
   }),
 }));
 vi.mock("@/hooks/useSettings", () => ({
@@ -69,6 +72,7 @@ vi.mock("@/ipc/types", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.settingsLoading = false;
+  mocks.subscriptionLoading = false;
   mocks.pending = false;
   mocks.pro = false;
 });
@@ -89,10 +93,13 @@ it("offers ChatGPT sign-in without a Pro key and keeps other providers accessibl
   expect(
     screen.queryByRole("button", { name: "Google Free" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByText(/No Dyad usage fees/)).toBeVisible();
+  expect(screen.queryByText(/No Dyad usage fees/)).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "ChatGPT subscription Free" }),
+  ).toBeVisible();
   expect(screen.getByText(/Your prompt is saved/)).toBeVisible();
   await user.click(
-    screen.getByRole("button", { name: "ChatGPT subscription" }),
+    screen.getByRole("button", { name: "ChatGPT subscription Free" }),
   );
   expect(mocks.connect).toHaveBeenCalledWith({
     acceptCharges: true,
@@ -105,28 +112,38 @@ it("keeps sign-in errors visible so users can retry", async () => {
   mocks.connect.mockRejectedValueOnce(new Error("Secure storage unavailable"));
   const user = setup();
   await user.click(
-    screen.getByRole("button", { name: "ChatGPT subscription" }),
+    screen.getByRole("button", { name: "ChatGPT subscription Free" }),
   );
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Secure storage unavailable",
   );
   expect(
-    screen.getByRole("button", { name: "ChatGPT subscription" }),
+    screen.getByRole("button", { name: "ChatGPT subscription Free" }),
   ).toBeEnabled();
 });
-it("shows pending sign-in with cancellation", async () => {
+it("keeps the pending provider disabled and offers a separate cancellation action", async () => {
   mocks.pending = true;
   const user = setup();
-  expect(
-    screen.getByRole("button", { name: "Waiting for sign-in…" }),
-  ).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: "Cancel sign-in" }));
+  const cancelButton = screen.getByRole("button", { name: "Cancel sign-in" });
+  expect(cancelButton).toBeEnabled();
+  const providerButton = screen.getByRole("button", {
+    name: "ChatGPT subscription",
+  });
+  expect(providerButton).toBeDisabled();
+  await user.click(providerButton);
+  expect(mocks.disconnect).not.toHaveBeenCalled();
+  expect(mocks.connect).not.toHaveBeenCalled();
+  await user.click(cancelButton);
   expect(mocks.disconnect).toHaveBeenCalledOnce();
+  expect(mocks.connect).not.toHaveBeenCalled();
 });
 it("discloses the existing subscription charge when Pro is active", () => {
   mocks.pro = true;
   setup();
   expect(screen.getByText(/1.5 Pro credits/)).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "ChatGPT subscription" }),
+  ).toBeVisible();
   expect(screen.queryByText(/No Dyad usage fees/)).not.toBeInTheDocument();
 });
 
@@ -135,6 +152,13 @@ it("waits for settings before showing fees or permitting connection", () => {
   setup();
   expect(screen.getByText("Checking Dyad Pro status…")).toBeVisible();
   expect(screen.queryByText(/No Dyad usage fees/)).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "ChatGPT subscription" }),
+  ).toBeDisabled();
+});
+it("waits for subscription status before showing the Free badge", () => {
+  mocks.subscriptionLoading = true;
+  setup();
   expect(
     screen.getByRole("button", { name: "ChatGPT subscription" }),
   ).toBeDisabled();
