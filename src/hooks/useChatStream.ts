@@ -37,7 +37,11 @@ export function useDisplayedChatMessages(
   return useMemo(() => {
     const visible = pending.filter(
       (entry) =>
-        !messages.some((message) => message.id === entry.acceptedMessageId),
+        !messages.some(
+          (message) =>
+            message.id === entry.acceptedMessageId ||
+            message.chatTurnIntentId === entry.intentId,
+        ),
     );
     return visible.length
       ? [...messages, ...visible.map((entry) => entry.message)]

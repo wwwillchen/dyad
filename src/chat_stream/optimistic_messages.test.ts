@@ -29,10 +29,20 @@ describe("optimistic chat messages", () => {
     const messages = new OptimisticChatMessages();
     messages.add("first", { chatId: 1, prompt: "Hello" });
     const history = new Map([
-      [1, [{ id: 10, role: "user" as const, content: "Hello" }]],
+      [
+        1,
+        [
+          {
+            id: 10,
+            role: "user" as const,
+            content: "Hello",
+            chatTurnIntentId: "first",
+          },
+        ],
+      ],
     ]);
     messages.reconcile(history);
-    expect(messages.getSnapshot(1)).toHaveLength(1);
+    expect(messages.getSnapshot(1)).toHaveLength(0);
     messages.accept(1, "first", 10);
     messages.reconcile(history);
     expect(messages.getSnapshot(1)).toHaveLength(0);

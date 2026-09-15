@@ -66,6 +66,7 @@ export function useStreamChat({
       requestedChatMode,
       planAcceptInNewChat,
       showOptimisticMessage,
+      optimisticDisplayContent,
       onAccepted,
       onAcceptanceError,
       onAcceptanceRejected,
@@ -80,6 +81,7 @@ export function useStreamChat({
       requestedChatMode?: Chat["chatMode"] | null;
       planAcceptInNewChat?: boolean;
       showOptimisticMessage?: boolean;
+      optimisticDisplayContent?: string;
       onAccepted?: StreamRequest["onAccepted"];
       onAcceptanceError?: StreamRequest["onAcceptanceError"];
       onAcceptanceRejected?: StreamRequest["onAcceptanceRejected"];
@@ -123,6 +125,7 @@ export function useStreamChat({
           requestedChatMode,
           planAcceptInNewChat,
           showOptimisticMessage,
+          optimisticDisplayContent,
           onAccepted,
           onAcceptanceError,
           onAcceptanceRejected,

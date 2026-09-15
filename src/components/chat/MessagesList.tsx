@@ -682,7 +682,7 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
     // Create context object for Footer component with stable references
     const footerContext = useMemo<FooterContext>(
       () => ({
-        messages,
+        messages: persistedMessages,
         messagesEndRef,
         isStreaming,
         isUndoLoading,
@@ -699,7 +699,7 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
         renderSetupBanner,
       }),
       [
-        messages,
+        persistedMessages,
         messagesEndRef,
         isStreaming,
         isUndoLoading,

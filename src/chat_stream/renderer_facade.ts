@@ -23,6 +23,7 @@ export interface StreamRequest {
   owner?: UserInputFollowUpQueueOwner;
   /** Show composer submissions immediately, without changing durable history. */
   showOptimisticMessage?: boolean;
+  optimisticDisplayContent?: string;
   onAccepted?: () => void;
   onAcceptanceError?: (error: Error) => void;
   onAcceptanceRejected?: (reason: string) => void | Promise<void>;

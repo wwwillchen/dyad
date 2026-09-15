@@ -1,6 +1,6 @@
 import type { Message } from "@/ipc/types";
 import { SnapshotStore } from "@/state_machines/snapshot_store";
-import { escapeXmlAttr } from "../../shared/xmlEscape";
+import { buildDyadAttachmentTag } from "../../shared/dyadAttachment";
 import type { StreamRequest } from "./renderer_facade";
 
 interface OptimisticMessage {
@@ -32,7 +32,13 @@ export class OptimisticChatMessages {
       .map(({ file, type }) => {
         const url = URL.createObjectURL(file);
         objectUrls.push(url);
-        return `\n<dyad-attachment name="${escapeXmlAttr(file.name)}" type="${escapeXmlAttr(file.type)}" url="${escapeXmlAttr(url)}" path="" attachment-type="${escapeXmlAttr(type)}"></dyad-attachment>\n`;
+        return buildDyadAttachmentTag({
+          name: file.name,
+          type: file.type,
+          url,
+          path: "",
+          attachmentType: type,
+        });
       })
       .join("");
     this.set(request.chatId, [
@@ -42,7 +48,9 @@ export class OptimisticChatMessages {
         message: {
           id: this.nextMessageId--,
           role: "user",
-          content: request.prompt + attachmentInfo,
+          content:
+            (request.optimisticDisplayContent ?? request.prompt) +
+            attachmentInfo,
         },
         objectUrls,
       },
@@ -65,19 +73,19 @@ export class OptimisticChatMessages {
   }
 
   reconcile(messagesByChat: ReadonlyMap<number, Message[]>): void {
-    for (const [chatId, entries] of this.store.getSnapshot()) {
+    for (const chatId of this.store.getSnapshot().keys()) {
       const messages = messagesByChat.get(chatId);
-      if (
-        !messages ||
-        !entries.some((entry) => entry.acceptedMessageId !== undefined)
-      )
-        continue;
+      if (!messages) continue;
       const ids = new Set(messages.map((message) => message.id));
+      const intents = new Set(
+        messages.map((message) => message.chatTurnIntentId),
+      );
       this.retain(
         chatId,
         (entry) =>
-          entry.acceptedMessageId === undefined ||
-          !ids.has(entry.acceptedMessageId),
+          !intents.has(entry.intentId) &&
+          (entry.acceptedMessageId === undefined ||
+            !ids.has(entry.acceptedMessageId)),
       );
     }
   }
