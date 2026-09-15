@@ -1,4 +1,5 @@
 import { SubscriptionBillingError } from "@/shared/subscription_billing_error";
+import { modelForChatBackend } from "@/shared/execution_backend";
 import { isDotenvFilePath } from "@/utils/dotenv_redaction";
 import type { ExternalModelAdmission } from "../services/external_model_admission";
 import { awaitTurnPreflight } from "../services/await_turn_preflight";
@@ -1155,7 +1156,10 @@ export function registerChatStreamHandlers() {
       let baseSettings = readSettings();
       let selectedModel = chat.modelSelection
         ? await normalizeModelSelection(chat.modelSelection)
-        : await resolveDefaultModelSelection(baseSettings);
+        : await resolveDefaultModelSelection({
+            ...baseSettings,
+            selectedModel: modelForChatBackend(chat, baseSettings),
+          });
       let { settings: storedSettings, mode: selectedChatMode } =
         await resolveChatModeForTurn({
           storedChatMode: chat.chatMode,
@@ -1614,12 +1618,13 @@ ${componentSnippet}
             (async () => {
               const model = snapshot.modelSelection
                 ? await normalizeModelSelection(snapshot.modelSelection)
-                : await resolveDefaultModelSelection(attemptSettings);
+                : await resolveDefaultModelSelection({
+                    ...attemptSettings,
+                    selectedModel: modelForChatBackend(chat, attemptSettings),
+                  });
               const { mode } = await resolveChatModeForTurn({
                 storedChatMode: snapshot.chatMode,
-                requestedChatMode:
-                  req.requestedChatMode ??
-                  normalizeStoredChatMode(snapshot.chatMode),
+                requestedChatMode: req.requestedChatMode ?? normalizeStoredChatMode(snapshot.chatMode),
                 settings: { ...attemptSettings, selectedModel: model },
               });
               return isAcceptedReplay
