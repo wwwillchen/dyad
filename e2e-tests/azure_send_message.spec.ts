@@ -1,8 +1,23 @@
 import { testWithConfigSkipIfWindows } from "./helpers/test_helper";
 
-// Set environment variables before the test runs to enable Azure testing
+// Keep fake Azure credentials scoped to this Electron launch, not later tests.
+const azureEnvNames = [
+  "TEST_AZURE_BASE_URL",
+  "AZURE_API_KEY",
+  "AZURE_RESOURCE_NAME",
+] as const;
+const originalAzureEnv = new Map(
+  azureEnvNames.map((name) => [name, process.env[name]]),
+);
 
 const testAzure = testWithConfigSkipIfWindows({
+  postLaunchHook: async () => {
+    for (const name of azureEnvNames) {
+      const value = originalAzureEnv.get(name);
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  },
   preLaunchHook: async ({ fakeLlmPort }) => {
     process.env.TEST_AZURE_BASE_URL = `http://localhost:${fakeLlmPort}/azure`;
     process.env.AZURE_API_KEY = "fake-azure-key-for-testing";

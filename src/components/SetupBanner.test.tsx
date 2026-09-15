@@ -146,3 +146,15 @@ it("announces the browser sign-in wait", () => {
     "Waiting for ChatGPT sign-in in your browser",
   );
 });
+
+it("preserves Pro model and mode preferences when connecting", async () => {
+  mocks.pro = true;
+  const user = setup();
+  await user.click(
+    screen.getByRole("button", { name: "ChatGPT subscription" }),
+  );
+  expect(mocks.connect).toHaveBeenCalledWith({
+    acceptCharges: true,
+    selectModel: false,
+  });
+});

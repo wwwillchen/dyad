@@ -239,6 +239,7 @@ describe("global subscription turn routing", () => {
         name: expected,
         connection: "subscription",
       });
+      expect(mocks.account).toHaveBeenCalled();
       expect(mocks.credentials).toHaveBeenCalled();
       expect(mocks.credits).not.toHaveBeenCalled();
     },
@@ -254,6 +255,7 @@ describe("global subscription turn routing", () => {
       name: "eligible-model",
       connection: "subscription",
     });
+    expect(mocks.account).toHaveBeenCalled();
   });
   it("keeps disconnected Auto on its existing provider-key path", async () => {
     mocks.account.mockResolvedValue({ connected: false, models: [] });
@@ -264,6 +266,7 @@ describe("global subscription turn routing", () => {
         signal,
       ),
     ).toEqual({ provider: "auto", name: "auto", effortLevel: "medium" });
+    expect(mocks.account).toHaveBeenCalled();
     expect(mocks.credentials).not.toHaveBeenCalled();
   });
   it("preserves own-key routing when Pro is off", async () => {

@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   subscription: {
     connected: false,
     pending: false,
+    setupError: undefined as string | undefined,
     models: ["subscription-model"],
   },
 }));
@@ -53,6 +54,7 @@ describe("useLanguageModelProviders", () => {
     mocks.subscription = {
       connected: false,
       pending: false,
+      setupError: undefined as string | undefined,
       models: ["subscription-model"],
     };
     mocks.selectedModel = {
@@ -111,4 +113,16 @@ describe("useLanguageModelProviders", () => {
     rerender();
     expect(result.current.isAnyProviderSetup()).toBe(false);
   });
+});
+
+it.each([
+  { provider: "auto", name: "auto" },
+  { provider: "openai", name: "subscription-model" },
+])("does not resume after incomplete subscription setup (%j)", (model) => {
+  mocks.selectedModel = model;
+  mocks.subscription.connected = true;
+  mocks.subscription.setupError = "Catalog unavailable";
+  mocks.useQueryResult.isLoading = false;
+  const { result } = renderHook(() => useLanguageModelProviders());
+  expect(result.current.isAnyProviderSetup()).toBe(false);
 });

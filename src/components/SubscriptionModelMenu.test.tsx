@@ -108,9 +108,7 @@ it("shows account usage limits without a duplicate model catalog", async () => {
   expect(
     screen.getByText("Get up to 5× usage with your ChatGPT subscription."),
   ).toBeVisible();
-  expect(
-    screen.queryByText(/Uses up to 1.5 Pro credits/),
-  ).not.toBeInTheDocument();
+  expect(screen.getByText(/1.5 Pro credits/)).toBeVisible();
   expect(screen.getByText("New")).toBeVisible();
   expect(screen.getByText("25% used")).toBeVisible();
   expect(

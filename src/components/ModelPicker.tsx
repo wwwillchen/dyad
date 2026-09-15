@@ -661,7 +661,7 @@ export function ModelPicker() {
       settingsLoading ||
       dyadProEnabled ||
       providerId === "auto" ||
-      (providerId === "openai" && !subscription.data)
+      (providerId === "openai" && subscription.isLoading)
     ) {
       return false;
     }

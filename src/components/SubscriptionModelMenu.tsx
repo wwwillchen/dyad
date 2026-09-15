@@ -117,6 +117,11 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
               : "Get up to 5x usage with Pro credits by connecting your ChatGPT subscription"
             : "Use your ChatGPT subscription with no Dyad usage fees. Basic Agent limits still apply."}
       </p>
+      {settings && hasPro && connected && (
+        <p className="px-2 pb-2 text-xs text-muted-foreground">
+          ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens.
+        </p>
+      )}
       {settings && !hasPro && !connected && (
         <p className="px-2 pb-2 text-xs text-muted-foreground">
           Connecting selects a ChatGPT model and sets Agent as your default

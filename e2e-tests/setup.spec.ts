@@ -10,9 +10,14 @@ testSetup("setup ai provider", async ({ po }) => {
   const providerButtons = dialog.locator(".grid").getByRole("button");
 
   await expect(providerButtons.nth(0)).toHaveAccessibleName(/OpenRouter/);
-  await expect(providerButtons.nth(1)).toHaveAccessibleName(/Google/);
+  await expect(providerButtons.nth(1)).toHaveAccessibleName(
+    /ChatGPT subscription/,
+  );
 
-  await dialog.getByRole("button", { name: /Google/ }).click();
+  await dialog.getByRole("button", { name: "Other providers" }).click();
+  await po.page
+    .getByRole("heading", { name: /^Google\s*(?:Needs Setup|Ready)$/ })
+    .click();
   await expect(
     po.page.getByRole("heading", { name: "Configure Google" }),
   ).toBeVisible();
@@ -33,6 +38,7 @@ testSetup("setup ai provider", async ({ po }) => {
 });
 
 async function openAiSetupDialog(po: PageObject) {
+  await po.navigation.goToAppsTab();
   await po.chatActions.getChatInput().fill("Build a todo app");
   await po.chatActions
     .getHomeChatInputContainer()
@@ -40,6 +46,8 @@ async function openAiSetupDialog(po: PageObject) {
     .click();
   const dialog = po.page.getByRole("dialog");
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("button", { name: /Google/ })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: /ChatGPT subscription/ }),
+  ).toBeVisible();
   return dialog;
 }

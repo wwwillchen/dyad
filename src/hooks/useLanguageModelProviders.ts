@@ -36,6 +36,7 @@ export function useLanguageModelProviders() {
     if (
       settings &&
       !subscription.data?.pending &&
+      !subscription.data?.setupError &&
       (usesChatGPTSubscription(
         settings.selectedModel,
         settings,

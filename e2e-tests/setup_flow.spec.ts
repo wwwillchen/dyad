@@ -22,7 +22,9 @@ testSetup.describe("Setup Flow", () => {
     await expect(
       dialog.getByRole("button", { name: /Start free Dyad Pro trial/ }),
     ).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "Google" })).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: "ChatGPT subscription" }),
+    ).toBeVisible();
     await expect(
       dialog.getByRole("button", { name: "OpenRouter" }),
     ).toBeVisible();
@@ -39,7 +41,7 @@ testSetup.describe("Setup Flow", () => {
   testSetup("AI provider setup flow", async ({ po }) => {
     let dialog = await openAiSetupDialog(po);
 
-    await dialog.getByRole("button", { name: "Google" }).click();
+    await openGoogleSettings(po, dialog);
     await expect(
       po.page.getByRole("heading", { name: "Configure Google" }),
     ).toBeVisible({ timeout: Timeout.MEDIUM });
@@ -142,7 +144,7 @@ testSetup.describe("Setup Flow", () => {
       const apiKey = "test-google-clipboard-key-12345";
       const dialog = await openAiSetupDialog(po, prompt);
 
-      await dialog.getByRole("button", { name: "Google" }).click();
+      await openGoogleSettings(po, dialog);
       await expect(
         po.page.getByRole("heading", { name: "Configure Google" }),
       ).toBeVisible({ timeout: Timeout.MEDIUM });
@@ -175,7 +177,7 @@ testSetup.describe("Setup Flow", () => {
       const prompt = "Build a tiny focus timer";
       const dialog = await openAiSetupDialog(po, prompt);
 
-      await dialog.getByRole("button", { name: "Google" }).click();
+      await openGoogleSettings(po, dialog);
       await expect(
         po.page.getByRole("heading", { name: "Configure Google" }),
       ).toBeVisible({ timeout: Timeout.MEDIUM });
@@ -257,7 +259,7 @@ testSetup.describe("Setup Flow", () => {
         },
       });
 
-      await dialog.getByRole("button", { name: "Google" }).click();
+      await openGoogleSettings(po, dialog);
       await expect(
         po.page.getByRole("heading", { name: "Configure Google" }),
       ).toBeVisible({ timeout: Timeout.MEDIUM });
@@ -378,7 +380,7 @@ async function setupGoogleKeyAndExpectResume(
   dialog: Locator,
   prompt: string,
 ) {
-  await dialog.getByRole("button", { name: "Google" }).click();
+  await openGoogleSettings(po, dialog);
   await expect(
     po.page.getByRole("heading", { name: "Configure Google" }),
   ).toBeVisible({ timeout: Timeout.MEDIUM });
@@ -550,4 +552,11 @@ async function readLastServerDump(po: PageObject) {
   }
 
   return JSON.parse(fs.readFileSync(lastDumpPath, "utf-8"));
+}
+
+async function openGoogleSettings(po: PageObject, dialog: Locator) {
+  await dialog.getByRole("button", { name: "Other providers" }).click();
+  await po.page
+    .getByRole("heading", { name: /^Google\s*(?:Needs Setup|Ready)$/ })
+    .click();
 }

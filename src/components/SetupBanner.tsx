@@ -51,7 +51,7 @@ export function SetupBanner({
         ? ipc.settings.disconnectCodexSubscription()
         : ipc.settings.connectCodexSubscription({
             acceptCharges: true,
-            selectModel: true,
+            selectModel: !hasPro,
           }),
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: queryKeys.settings.all });

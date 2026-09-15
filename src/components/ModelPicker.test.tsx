@@ -14,6 +14,7 @@ vi.mock("./SubscriptionModelMenu", () => ({
 }));
 vi.mock("@/hooks/useSubscriptionAccount", () => ({
   useSubscriptionAccount: () => ({
+    isLoading: mocks.subscriptionLoading,
     data: mocks.subscriptionUnavailable
       ? undefined
       : {
@@ -27,6 +28,7 @@ vi.mock("@/hooks/useSubscriptionAccount", () => ({
 
 const mocks = vi.hoisted(() => ({
   subscriptionUnavailable: false,
+  subscriptionLoading: false,
   subscriptionConnected: true,
   invalidateQueries: vi.fn(),
   setChatMode: vi.fn(),
@@ -521,6 +523,7 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 describe("ModelPicker", () => {
   beforeEach(() => {
     mocks.subscriptionUnavailable = false;
+    mocks.subscriptionLoading = false;
     mocks.subscriptionConnected = true;
     mocks.settings.proModelUsage = "subscription";
     mocks.invalidateQueries.mockReset();
@@ -1335,17 +1338,21 @@ describe("ModelPicker", () => {
     expect(screen.getByText("Auto (balanced)")).toBeTruthy();
   });
 
-  it("defers OpenAI locks when the subscription query has no result", () => {
-    mocks.subscriptionUnavailable = true;
-    mocks.settings.enableDyadPro = false;
-    mocks.settings.providerSettings.auto.apiKey.value = "";
-    mocks.renderSubContent = true;
-    render(<ModelPicker />);
-    expect(
-      screen.getByText("GPT 5").closest("button")?.dataset.locked,
-    ).toBeUndefined();
-    expect(screen.queryByText("ChatGPT plan")).toBeNull();
-  });
+  it.each([true, false])(
+    "only defers OpenAI locks while loading (%s)",
+    (loading) => {
+      mocks.subscriptionLoading = loading;
+      mocks.subscriptionUnavailable = true;
+      mocks.settings.enableDyadPro = false;
+      mocks.settings.providerSettings.auto.apiKey.value = "";
+      mocks.renderSubContent = true;
+      render(<ModelPicker />);
+      expect(screen.getByText("GPT 5").closest("button")?.dataset.locked).toBe(
+        loading ? undefined : "true",
+      );
+      expect(screen.queryByText("ChatGPT plan")).toBeNull();
+    },
+  );
 
   it("unlocks only subscription-supported models for free users", async () => {
     mocks.settings.enableDyadPro = false;
