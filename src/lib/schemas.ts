@@ -395,6 +395,7 @@ export const LanguageSchema = z.enum([
   "fr",
   "de",
   "pt-BR",
+  "tr",
 ]);
 export type Language = z.infer<typeof LanguageSchema>;
 
