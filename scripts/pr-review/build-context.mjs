@@ -132,10 +132,10 @@ try {
     "application/vnd.github.v3.diff",
   );
   diff = await diffResponse.text();
-  const maxDiffBytes = 180 * 1024;
-  diffTruncated = diff.length > maxDiffBytes;
+  const maxDiffChars = 600000;
+  diffTruncated = diff.length > maxDiffChars;
   if (diffTruncated) {
-    diff = diff.slice(0, maxDiffBytes);
+    diff = diff.slice(0, maxDiffChars);
   }
 } catch {
   // GitHub returns 406 when the diff is too large to generate.
@@ -143,7 +143,7 @@ try {
   diffTruncated = true;
 }
 
-const maxPatchChars = 48000;
+const maxPatchChars = 100000;
 const normalizedFiles = files.map((file) => {
   const fullPatch = typeof file.patch === "string" ? file.patch : "";
   return {
