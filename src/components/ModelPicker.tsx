@@ -38,6 +38,9 @@ import {
   SparklesIcon,
 } from "lucide-react";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { SubscriptionModelMenu } from "@/components/SubscriptionModelMenu";
+import { useSubscriptionAccount } from "@/hooks/useSubscriptionAccount";
+import { usesChatGPTSubscription } from "@/lib/subscriptionModels";
 import {
   Dialog,
   DialogContent,
@@ -255,6 +258,7 @@ export function ModelPicker() {
     queryClient.invalidateQueries({ queryKey: queryKeys.tokenCount.all });
   };
 
+  const subscription = useSubscriptionAccount();
   const [open, setOpen] = useState(false);
   const [unlockTarget, setUnlockTarget] = useState<{
     providerId: string;
@@ -792,9 +796,15 @@ export function ModelPicker() {
         }).effortLevel;
     const effortLabel = formatEffortLevel(currentEffort);
     const compactEffortLabel = formatCompactEffortLevel(currentEffort);
+    const subscriptionEligible = usesChatGPTSubscription(
+      { provider: providerId, name: model.apiName },
+      settings,
+      subscription.data ?? { connected: false, models: [] },
+    );
     const unlockedAriaLabel = [
       model.displayName,
-      showPrice && model.dollarSigns != null
+      subscriptionEligible ? "ChatGPT plan" : null,
+      showPrice && !subscriptionEligible && model.dollarSigns != null
         ? model.dollarSigns === 0
           ? "Free"
           : `Price: ${(model.dollarSigns / 2).toFixed(1)}`
@@ -828,7 +838,25 @@ export function ModelPicker() {
           </span>
         </span>
         <span className="flex min-w-fit items-center gap-1.5">
-          {showPrice && <PriceBadge dollarSigns={model.dollarSigns} />}
+          {subscriptionEligible && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    className={cn(PILL_CLASS, "bg-primary/10 text-primary")}
+                  >
+                    ChatGPT plan
+                  </span>
+                }
+              />
+              <TooltipContent>
+                Uses your connected ChatGPT subscription
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {showPrice && !subscriptionEligible && (
+            <PriceBadge dollarSigns={model.dollarSigns} />
+          )}
           {model.tag && !isFreeProRow && (
             <span
               className={cn(
@@ -1299,6 +1327,8 @@ export function ModelPicker() {
           </span>
         </DropdownMenuTrigger>
         <DropdownMenuContent className={MODEL_MENU_WIDTH_CLASS} align="start">
+          <SubscriptionModelMenu />
+          <DropdownMenuSeparator />
           {/* Trial user upgrade banner */}
           {isTrial && (
             <>

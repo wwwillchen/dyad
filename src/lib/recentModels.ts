@@ -21,6 +21,7 @@ export function getEffectiveRecentModels(
     recentModels ?? (selectedModel.provider === "auto" ? [] : [selectedModel]);
 
   return candidates
+    .map(({ connection: _connection, ...model }) => model)
     .filter((model) => model.provider !== "auto")
     .filter(
       (model, index, models) =>

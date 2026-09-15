@@ -1,3 +1,9 @@
+import {
+  getInferenceSource,
+  type InferenceSource,
+} from "@/shared/inference_source";
+import type { ExternalModelAdmission } from "@/ipc/services/external_model_admission";
+import type { AutoModelCandidates } from "@/ipc/services/auto_model_candidates";
 /**
  * Local Agent v2 Handler
  * Main orchestrator for tool-based agent mode with parallel execution
@@ -307,10 +313,15 @@ export function buildChatMessageHistory(
   chatMessages: Array<
     DbMessageForParsing & {
       isCompactionSummary: boolean | null;
+      model?: string | null;
+      inferenceSource?: InferenceSource | null;
       createdAt: Date;
     }
   >,
-  options?: { excludeMessageIds?: Set<number> },
+  options?: {
+    excludeMessageIds?: Set<number>;
+    inferenceSource?: InferenceSource;
+  },
 ): ModelMessage[] {
   const excludedIds = options?.excludeMessageIds;
   const relevantMessages = getPostCompactionMessages(chatMessages);
@@ -385,7 +396,27 @@ export function buildChatMessageHistory(
   let pendingReminder = buildGitReminder(precedingAssistant);
 
   for (const msg of filtered) {
-    let parsed = parseAiMessagesJson(msg);
+    const source =
+      msg.inferenceSource ??
+      (msg.model?.startsWith("ChatGPT subscription (") ? "subscription" : null);
+    // Parsing can clean provider metadata in place. Never mutate stored history.
+    let parsed = parseAiMessagesJson(structuredClone(msg));
+    if (
+      source === "subscription" &&
+      options?.inferenceSource &&
+      options.inferenceSource !== "subscription"
+    ) {
+      parsed = parsed.flatMap((message): ModelMessage[] => {
+        if (message.role !== "assistant" || !Array.isArray(message.content))
+          return [message];
+        const content = message.content.filter(
+          (part) =>
+            part.type !== "reasoning" ||
+            !part.providerOptions?.openai?.reasoningEncryptedContent,
+        );
+        return content.length ? [{ ...message, content }] : [];
+      });
+    }
     if (pendingReminder && msg.role === "user") {
       const withReminders = appendGitReminderToUserMessage(
         parsed,
@@ -585,6 +616,8 @@ export async function handleLocalAgentStream(
     messageOverride,
     settingsOverride,
     modelSelectionOverride,
+    autoModelCandidates,
+    externalModelAdmission,
     freeModelMode,
     toolProfile = "agent",
     preCommitHookAvailable = false,
@@ -615,6 +648,8 @@ export async function handleLocalAgentStream(
     messageOverride?: ModelMessage[];
     settingsOverride?: UserSettings;
     modelSelectionOverride?: ModelSelection;
+    autoModelCandidates?: AutoModelCandidates;
+    externalModelAdmission?: ExternalModelAdmission;
     freeModelMode?: boolean;
     /** Fail-closed tool and orchestration surface for this mode. */
     toolProfile?: "agent" | "build";
@@ -657,12 +692,14 @@ export async function handleLocalAgentStream(
   let activeRetryReplayEvents: RetryReplayEvent[] | null = null;
   let postCompactionContentStart: number | null = null;
   let savedFinalAiMessages = false;
+  let currentInferenceSource: () => InferenceSource | null = () => null;
   const persistCompactionFallback = async () => {
     if (postCompactionContentStart === null || savedFinalAiMessages) return;
     try {
       await db
         .update(messages)
         .set({
+          inferenceSource: currentInferenceSource(),
           aiMessagesJson: getAiMessagesJsonIfWithinLimit([
             {
               role: "assistant",
@@ -931,11 +968,17 @@ export async function handleLocalAgentStream(
 
   try {
     // Get model client
-    const { modelClient, runtimeModel } = await getModelClient(
+    const { modelClient, runtimeModel, isEngineEnabled } = await getModelClient(
       settings.selectedModel,
       settings,
       selectedModel,
+      { chatId: req.chatId, autoModelCandidates, externalModelAdmission },
     );
+    currentInferenceSource = () =>
+      getInferenceSource(
+        modelClient.getRuntimeModel?.() ?? runtimeModel,
+        Boolean(isEngineEnabled),
+      );
     const normalizeToolCallIdsForTarget = <T extends ModelMessage>(
       messages: T[],
     ): T[] =>
@@ -1205,7 +1248,10 @@ export async function handleLocalAgentStream(
     // If a compaction summary exists, only include messages from that point onward
     // (pre-compaction messages are preserved in DB for the user but not sent to LLM)
     const messageHistory: ModelMessage[] =
-      messageOverride ?? buildChatMessageHistory(chat.messages);
+      messageOverride ??
+      buildChatMessageHistory(chat.messages, {
+        inferenceSource: currentInferenceSource() ?? undefined,
+      });
     const latestUserMessage = [...messageHistory]
       .reverse()
       .find((message) => message.role === "user");
@@ -1423,6 +1469,7 @@ export async function handleLocalAgentStream(
                       // Keep the structured in-flight assistant/tool messages from
                       // the current stream instead of the placeholder DB content.
                       excludeMessageIds: new Set([placeholderMessageId]),
+                      inferenceSource: currentInferenceSource() ?? undefined,
                     },
                   );
                   // The referenced-apps reminder lives only in-memory on the
@@ -1546,6 +1593,19 @@ export async function handleLocalAgentStream(
               return result;
             },
             onStepFinish: async (step) => {
+              const actualModel =
+                modelClient.getRuntimeModel?.() ?? runtimeModel;
+              await db
+                .update(messages)
+                .set({
+                  inferenceSource: currentInferenceSource(),
+                  ...(actualModel.connection === "subscription"
+                    ? {
+                        model: `ChatGPT subscription (${step.response.modelId || actualModel.name})`,
+                      }
+                    : {}),
+                })
+                .where(eq(messages.id, placeholderMessageId));
               if (!hasInjectedPlanningQuestionnaireReflection) {
                 const questionnaireError =
                   getPlanningQuestionnaireErrorFromStep(step);
@@ -2261,7 +2321,7 @@ export async function handleLocalAgentStream(
       if (aiMessagesJson) {
         await db
           .update(messages)
-          .set({ aiMessagesJson })
+          .set({ aiMessagesJson, inferenceSource: currentInferenceSource() })
           .where(eq(messages.id, placeholderMessageId));
         savedFinalAiMessages = true;
       }

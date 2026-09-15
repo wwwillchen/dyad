@@ -8,8 +8,22 @@ import {
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelPicker } from "./ModelPicker";
+vi.mock("./SubscriptionModelMenu", () => ({
+  SubscriptionModelMenu: () => null,
+}));
+vi.mock("@/hooks/useSubscriptionAccount", () => ({
+  useSubscriptionAccount: () => ({
+    data: {
+      connected: mocks.subscriptionConnected,
+      models: ["gpt-5"],
+      windows: [],
+      limitReached: false,
+    },
+  }),
+}));
 
 const mocks = vi.hoisted(() => ({
+  subscriptionConnected: true,
   invalidateQueries: vi.fn(),
   setChatMode: vi.fn(),
   setChatModelSelection: vi.fn(),
@@ -79,6 +93,7 @@ const mocks = vi.hoisted(() => ({
     resetTime: new Date("2026-06-26T00:00:00Z").getTime(),
   },
   settings: {
+    proModelUsage: "subscription" as "subscription" | "pro",
     enableDyadPro: true,
     providerSettings: {
       auto: {
@@ -395,7 +410,7 @@ vi.mock("@/hooks/useLMStudioModels", () => ({
 }));
 
 vi.mock("@/components/PriceBadge", () => ({
-  PriceBadge: () => null,
+  PriceBadge: () => <span data-testid="price-badge" />,
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
@@ -501,6 +516,8 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 
 describe("ModelPicker", () => {
   beforeEach(() => {
+    mocks.subscriptionConnected = true;
+    mocks.settings.proModelUsage = "subscription";
     mocks.invalidateQueries.mockReset();
     mocks.setChatMode.mockReset();
     mocks.setChatMode.mockResolvedValue(undefined);
@@ -1204,6 +1221,63 @@ describe("ModelPicker", () => {
     });
     expect(mocks.updateChat).not.toHaveBeenCalled();
   });
+
+  it("selects a subscription-eligible model in an existing chat without replacing its history", async () => {
+    mocks.renderSubContent = true;
+    mocks.pathname = "/chat";
+    mocks.search = { id: 42 };
+    mocks.chat = {
+      id: 42,
+      messages: [{ id: 1 }],
+      modelSelection: { provider: "auto", name: "auto", effortLevel: "medium" },
+    };
+    render(<ModelPicker />);
+    fireEvent.click(screen.getAllByText("GPT 5")[0]);
+    await waitFor(() =>
+      expect(mocks.setChatSelection).toHaveBeenCalledWith({
+        modelSelection: expect.objectContaining({
+          provider: "openai",
+          name: "gpt-5",
+        }),
+      }),
+    );
+    expect(mocks.chat.messages).toEqual([{ id: 1 }]);
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "replaces price with ChatGPT plan for subscription models (selected: %s)",
+    (selected) => {
+      mocks.renderSubContent = true;
+      if (selected) {
+        mocks.settings.selectedModel = { provider: "openai", name: "gpt-5" };
+      }
+      render(<ModelPicker />);
+
+      const row = screen.getAllByRole("button", {
+        name: /^GPT 5\. ChatGPT plan\./,
+      })[0];
+      expect(within(row).getByText("ChatGPT plan")).toBeTruthy();
+      expect(within(row).queryByTestId("price-badge")).toBeNull();
+      expect(row.getAttribute("aria-label")).toContain("ChatGPT plan");
+      expect(row.getAttribute("aria-label")).not.toContain("Price:");
+    },
+  );
+
+  it.each(["disconnected", "pro"])(
+    "keeps the price badge when subscription usage is %s",
+    (mode) => {
+      mocks.renderSubContent = true;
+      if (mode === "disconnected") mocks.subscriptionConnected = false;
+      else mocks.settings.proModelUsage = "pro";
+      render(<ModelPicker />);
+
+      const row = screen.getAllByText("GPT 5")[0].closest("button")!;
+      expect(within(row).queryByText("ChatGPT plan")).toBeNull();
+      expect(within(row).getByTestId("price-badge")).toBeTruthy();
+      expect(row.getAttribute("aria-label")).toContain("Price:");
+    },
+  );
 
   it("sorts the All models catalog by price and provider", () => {
     mocks.renderSubContent = true;

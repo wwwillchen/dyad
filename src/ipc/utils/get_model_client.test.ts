@@ -1,5 +1,27 @@
+import { preflightSubscriptionTurn } from "../services/subscription_turn_preflight";
+import type { AutoModelCandidates } from "../services/auto_model_candidates";
+vi.mock("../services/codex_subscription_auth", () => ({
+  getCodexSubscriptionCredentials: vi.fn(async () => ({})),
+}));
+vi.mock("../services/codex_subscription_credit_check", () => ({
+  checkSubscriptionCredits: vi.fn(async () => {}),
+}));
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { generateText } from "ai";
+import { generateText, streamText } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
+import { getSubscriptionAccount } from "../services/codex_subscription_account";
+import { createCodexSubscriptionModel } from "./codex_subscription_provider";
+import { resolveBuiltinModelAlias } from "../shared/remote_language_model_catalog";
+
+vi.mock("../services/codex_subscription_account", () => ({
+  getSubscriptionAccount: vi.fn(async () => ({ connected: false, models: [] })),
+}));
+vi.mock("./codex_subscription_provider", () => ({
+  createCodexSubscriptionModel: vi.fn(
+    async (modelId: string) =>
+      new MockLanguageModelV3({ modelId, provider: "chatgpt-subscription" }),
+  ),
+}));
 
 import type { UserSettings } from "../../lib/schemas";
 import {
@@ -39,6 +61,12 @@ vi.mock("../shared/language_model_helpers", () => ({
   // conservative path without inventing model entries these tests don't need.
   getLanguageModels: vi.fn(async () => []),
   getLanguageModelProviders: vi.fn(async () => [
+    ...["custom", "lmstudio", "ollama"].map((id) => ({
+      id,
+      name: id,
+      type: id === "custom" ? "custom" : "local",
+      apiBaseUrl: "http://localhost:1234/v1",
+    })),
     {
       id: "auto",
       name: "Dyad",
@@ -108,7 +136,340 @@ vi.mock("../shared/remote_language_model_catalog", () => ({
 }));
 
 describe("getModelClient", () => {
+  test.each(["custom", "lmstudio", "ollama"])(
+    "reports %s streaming usage only with Pro enabled",
+    async (provider) => {
+      for (const enableDyadPro of [true, false]) {
+        const reports = vi.fn<typeof fetch>(async () =>
+          Response.json({ chargedUsd: 0.1 }),
+        );
+        vi.stubGlobal("fetch", reports);
+        let requestBody: Record<string, unknown> = {};
+        let providerHeaders: unknown;
+        setModelClientFetchForTesting(async (_url, init) => {
+          requestBody = JSON.parse(String(init?.body));
+          providerHeaders = init?.headers;
+          const chunks = [
+            {
+              id: "test",
+              model: "resolved-model",
+              choices: [
+                { index: 0, delta: { content: "hello" }, finish_reason: null },
+              ],
+            },
+            {
+              id: "test",
+              model: "resolved-model",
+              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+              usage: {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+              },
+            },
+          ];
+          return new Response(
+            chunks.map((c) => "data: " + JSON.stringify(c) + "\n\n").join("") +
+              "data: [DONE]\n\n",
+            { headers: { "Content-Type": "text/event-stream" } },
+          );
+        });
+        try {
+          const result = await getModelClient(
+            { provider, name: "test-model" },
+            {
+              enableDyadPro,
+              providerSettings: {
+                auto: { apiKey: { value: "test-pro" } },
+                custom: { apiKey: { value: "test-custom" } },
+              },
+            } as unknown as UserSettings,
+          );
+          expect(
+            await streamText({
+              model: result.modelClient.model,
+              prompt: "hello",
+            }).text,
+          ).toBe("hello");
+          expect(JSON.stringify(providerHeaders)).not.toContain("test-pro");
+          if (provider === "custom")
+            expect(JSON.stringify(providerHeaders)).toContain("test-custom");
+          expect(reports).toHaveBeenCalledTimes(enableDyadPro ? 1 : 0);
+          expect(requestBody.stream_options).toEqual(
+            enableDyadPro ? { include_usage: true } : undefined,
+          );
+          if (enableDyadPro)
+            expect(
+              JSON.parse(String(reports.mock.calls[0][1]?.body)),
+            ).toMatchObject({
+              connection: provider === "custom" ? "byok" : "local",
+              modelProvider: provider,
+              totalTokens: 150,
+            });
+        } finally {
+          setModelClientFetchForTesting(undefined);
+          vi.unstubAllGlobals();
+        }
+      }
+    },
+  );
+  test.each(["custom", "lmstudio", "ollama"])(
+    "keeps %s direct with Pro enabled and disabled",
+    async (provider) => {
+      for (const enableDyadPro of [true, false]) {
+        const result = await getModelClient({ provider, name: "test-model" }, {
+          enableDyadPro,
+          providerSettings: {
+            auto: { apiKey: { value: "test-pro" } },
+            custom: { apiKey: { value: "test-custom" } },
+          },
+        } as unknown as UserSettings);
+        expect(
+          (result.modelClient.model as { provider: string }).provider,
+        ).toContain(provider);
+        expect(result.isEngineEnabled).not.toBe(true);
+      }
+    },
+  );
+  test("legacy API key selection cannot bypass enabled Pro credits", async () => {
+    const { modelClient, isEngineEnabled } = await getModelClient(
+      { provider: "openai", name: "gpt-5.4", connection: "api-key" },
+      {
+        enableDyadPro: true,
+        providerSettings: {
+          auto: { apiKey: { value: "test-pro" } },
+          openai: { apiKey: { value: "test-api" } },
+        },
+      } as unknown as UserSettings,
+    );
+    expect(isEngineEnabled).toBe(true);
+    expect((modelClient.model as { provider: string }).provider).toContain(
+      "dyad-engine",
+    );
+  });
+  test("explicit Pro selection does not fall back to a configured API key", async () => {
+    await expect(
+      getModelClient(
+        { provider: "openai", name: "gpt-5.4", connection: "pro" },
+        {
+          enableDyadPro: false,
+          providerSettings: { openai: { apiKey: { value: "test-api" } } },
+        } as unknown as UserSettings,
+      ),
+    ).rejects.toThrow("Enable Dyad Pro");
+  });
+  test("an explicit auxiliary model does not inherit the default subscription connection", async () => {
+    const { modelClient } = await getModelClient(
+      { provider: "anthropic", name: "claude-sonnet-4-20250514" },
+      {
+        selectedModel: {
+          provider: "openai",
+          name: "gpt-5.4",
+          connection: "subscription",
+        },
+        enableDyadPro: true,
+        providerSettings: { auto: { apiKey: { value: "test-pro" } } },
+      } as unknown as UserSettings,
+    );
+    expect((modelClient.model as { modelId: string }).modelId).toBe(
+      "anthropic/claude-sonnet-4-20250514",
+    );
+  });
+
+  test.each(["local-agent", "build", "ask", "plan"])(
+    "routes resolved Auto GPT through subscription in %s mode",
+    async (selectedChatMode) => {
+      vi.mocked(getSubscriptionAccount).mockResolvedValue({
+        connected: true,
+        models: ["gpt-5.5"],
+      } as any);
+      const settings = {
+        enableDyadPro: true,
+        selectedChatMode,
+        providerSettings: { auto: { apiKey: { value: "pro-key" } } },
+      } as unknown as UserSettings;
+      const result = await getModelClient(
+        { provider: "auto", name: "auto" },
+        settings,
+        {
+          provider: "auto",
+          name: "auto",
+          effortLevel: "high",
+          connection: "pro",
+        },
+        { chatId: 42 },
+      );
+      const chain = (result.modelClient.model as any).settings;
+      expect(chain.models.map((model: any) => model.modelId)).toEqual([
+        "gpt-5.5",
+        "anthropic/claude-sonnet-4-20250514",
+        "gemini/gemini-3.5-flash",
+      ]);
+      expect(chain.models[0].provider).toBe("chatgpt-subscription");
+      expect(chain.allowFallback).toEqual([false, true, true]);
+      expect(result.modelClient.getRuntimeModel?.()).toMatchObject({
+        provider: "openai",
+        name: "gpt-5.5",
+        connection: "subscription",
+      });
+      expect(createCodexSubscriptionModel).toHaveBeenCalledWith("gpt-5.5", {
+        chatId: 42,
+      });
+    },
+  );
+
+  test("routes an eligible auxiliary model without inheriting the default model", async () => {
+    vi.mocked(getSubscriptionAccount).mockResolvedValue({
+      connected: true,
+      models: ["gpt-aux"],
+    } as any);
+    const result = await getModelClient(
+      { provider: "openai", name: "gpt-aux" },
+      {
+        selectedModel: { provider: "anthropic", name: "claude" },
+        enableDyadPro: true,
+        providerSettings: { auto: { apiKey: { value: "pro-key" } } },
+      } as unknown as UserSettings,
+    );
+    expect((result.modelClient.model as any).provider).toBe(
+      "chatgpt-subscription",
+    );
+    expect(result.runtimeModel).toMatchObject({
+      name: "gpt-aux",
+      connection: "subscription",
+    });
+  });
+
+  test("routes Auto Balanced after resolving its catalog alias", async () => {
+    vi.mocked(getSubscriptionAccount).mockResolvedValue({
+      connected: true,
+      models: ["gpt-balanced"],
+    } as any);
+    vi.mocked(resolveBuiltinModelAlias).mockResolvedValueOnce({
+      providerId: "openai",
+      apiName: "gpt-balanced",
+      apiProtocol: "responses",
+    } as any);
+    const result = await getModelClient(
+      { provider: "auto", name: "balanced" },
+      {
+        enableDyadPro: true,
+        providerSettings: { auto: { apiKey: { value: "pro-key" } } },
+      } as unknown as UserSettings,
+    );
+    expect((result.modelClient.model as any).provider).toBe(
+      "chatgpt-subscription",
+    );
+    expect(result.modelClient.getRuntimeModel?.()).toMatchObject({
+      name: "gpt-balanced",
+      connection: "subscription",
+    });
+  });
+
+  test.each(["auto", "auto-sidekick", "balanced"])(
+    "reuses preflight candidates for %s without resolving aliases or billing again",
+    async (name) => {
+      const auto = { provider: "auto", name, effortLevel: "medium" };
+      const settings = {
+        enableDyadPro: true,
+        providerSettings: { auto: { apiKey: { value: "pro-key" } } },
+      } as unknown as UserSettings;
+      vi.mocked(getSubscriptionAccount).mockResolvedValue({
+        connected: true,
+        models: ["gpt-5.5"],
+      } as any);
+      if (name === "balanced") {
+        vi.mocked(resolveBuiltinModelAlias).mockResolvedValueOnce({
+          providerId: "openai",
+          apiName: "gpt-5.5",
+          apiProtocol: "responses",
+        } as any);
+      }
+      const autoModelCandidates: AutoModelCandidates = new Map();
+      const { model: selection } = await preflightSubscriptionTurn(
+        auto,
+        settings,
+        new AbortController().signal,
+        autoModelCandidates,
+      );
+      const aliasCalls = vi.mocked(resolveBuiltinModelAlias).mock.calls.length;
+      const accountCalls = vi.mocked(getSubscriptionAccount).mock.calls.length;
+      vi.mocked(getSubscriptionAccount).mockResolvedValue({
+        connected: false,
+        models: [],
+      } as any);
+      const result = await getModelClient(auto, settings, selection, {
+        chatId: 1,
+        autoModelCandidates,
+      });
+      expect(result.modelClient.getRuntimeModel?.()).toMatchObject({
+        name: "gpt-5.5",
+        connection: "subscription",
+      });
+      expect(resolveBuiltinModelAlias).toHaveBeenCalledTimes(aliasCalls);
+      expect(getSubscriptionAccount).toHaveBeenCalledTimes(accountCalls);
+    },
+  );
+
+  test("honors explicit Pro credits even for eligible resolved Auto models", async () => {
+    vi.mocked(getSubscriptionAccount).mockResolvedValue({
+      connected: true,
+      models: ["gpt-5.5"],
+    } as any);
+    const result = await getModelClient({ provider: "auto", name: "auto" }, {
+      enableDyadPro: true,
+      proModelUsage: "pro",
+      selectedChatMode: "local-agent",
+      providerSettings: { auto: { apiKey: { value: "pro-key" } } },
+    } as unknown as UserSettings);
+    expect(
+      (result.modelClient.model as any).settings.models[0].provider,
+    ).toContain("dyad-engine");
+    expect(createCodexSubscriptionModel).not.toHaveBeenCalled();
+  });
+  test("does not inherit legacy source fields when resolving an auxiliary model", async () => {
+    vi.mocked(getSubscriptionAccount).mockResolvedValue({
+      connected: true,
+      models: ["gpt-aux"],
+    } as any);
+    const result = await getModelClient(
+      { provider: "openai", name: "gpt-aux", connection: "api-key" },
+      {
+        enableDyadPro: true,
+        providerSettings: { auto: { apiKey: { value: "pro-key" } } },
+      } as unknown as UserSettings,
+    );
+    expect((result.modelClient.model as any).provider).toBe(
+      "chatgpt-subscription",
+    );
+  });
+  test("keeps the accepted turn source pinned", async () => {
+    vi.mocked(getSubscriptionAccount).mockResolvedValue({
+      connected: true,
+      models: ["gpt-aux"],
+    } as any);
+    const result = await getModelClient(
+      { provider: "openai", name: "gpt-aux" },
+      {
+        enableDyadPro: true,
+        providerSettings: { auto: { apiKey: { value: "pro-key" } } },
+      } as unknown as UserSettings,
+      {
+        provider: "openai",
+        name: "gpt-aux",
+        effortLevel: "high",
+        connection: "pro",
+      },
+    );
+    expect((result.modelClient.model as any).provider).toContain("dyad-engine");
+    expect(createCodexSubscriptionModel).not.toHaveBeenCalled();
+  });
   afterEach(() => {
+    vi.mocked(getSubscriptionAccount).mockResolvedValue({
+      connected: false,
+      models: [],
+    } as any);
+    vi.mocked(createCodexSubscriptionModel).mockClear();
     setModelClientFetchForTesting(undefined);
     vi.mocked(getLanguageModels).mockResolvedValue([]);
   });
