@@ -185,15 +185,23 @@ export function SetupBanner({
             <ProviderOptionButton
               label={
                 subscription.data?.pending
-                  ? "Waiting for sign-in…"
+                  ? "Cancel sign-in"
                   : "ChatGPT subscription"
               }
-              onClick={handleSubscriptionSetupClick}
-              disabled={
-                !settings ||
-                connection.isPending ||
-                subscription.isLoading ||
+              chip={
+                settings && !hasPro && !subscription.data?.pending
+                  ? "Free"
+                  : undefined
+              }
+              onClick={
                 subscription.data?.pending
+                  ? () => connection.mutate(true)
+                  : handleSubscriptionSetupClick
+              }
+              disabled={
+                connection.isPending ||
+                (!subscription.data?.pending &&
+                  (!settings || subscription.isLoading))
               }
               icon={<ProviderIcon providerId="openai" className="size-4" />}
             />
@@ -203,13 +211,13 @@ export function SetupBanner({
               icon={<Settings className="size-4 text-muted-foreground" />}
             />
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {!settings
-              ? "Checking Dyad Pro status…"
-              : hasPro
-                ? "ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens."
-                : "ChatGPT subscription required. No Dyad usage fees; Basic Agent limits apply."}
-          </p>
+          {(!settings || hasPro) && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {!settings
+                ? "Checking Dyad Pro status…"
+                : "ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens."}
+            </p>
+          )}
           {subscription.data?.pending && (
             <p
               role="status"
@@ -218,16 +226,6 @@ export function SetupBanner({
             >
               Waiting for ChatGPT sign-in in your browser…
             </p>
-          )}
-          {subscription.data?.pending && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={connection.isPending}
-              onClick={() => connection.mutate(true)}
-            >
-              Cancel sign-in
-            </Button>
           )}
           {(connection.error ||
             subscription.error ||

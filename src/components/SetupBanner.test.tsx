@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { beforeEach, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SetupBanner } from "./SetupBanner";
@@ -89,10 +89,13 @@ it("offers ChatGPT sign-in without a Pro key and keeps other providers accessibl
   expect(
     screen.queryByRole("button", { name: "Google Free" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByText(/No Dyad usage fees/)).toBeVisible();
+  expect(screen.queryByText(/No Dyad usage fees/)).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "ChatGPT subscription Free" }),
+  ).toBeVisible();
   expect(screen.getByText(/Your prompt is saved/)).toBeVisible();
   await user.click(
-    screen.getByRole("button", { name: "ChatGPT subscription" }),
+    screen.getByRole("button", { name: /^ChatGPT subscription/ }),
   );
   expect(mocks.connect).toHaveBeenCalledWith({
     acceptCharges: true,
@@ -105,28 +108,37 @@ it("keeps sign-in errors visible so users can retry", async () => {
   mocks.connect.mockRejectedValueOnce(new Error("Secure storage unavailable"));
   const user = setup();
   await user.click(
-    screen.getByRole("button", { name: "ChatGPT subscription" }),
+    screen.getByRole("button", { name: /^ChatGPT subscription/ }),
   );
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Secure storage unavailable",
   );
   expect(
-    screen.getByRole("button", { name: "ChatGPT subscription" }),
+    screen.getByRole("button", { name: /^ChatGPT subscription/ }),
   ).toBeEnabled();
 });
-it("shows pending sign-in with cancellation", async () => {
+it("replaces the ChatGPT option with cancellation while sign-in is pending", async () => {
   mocks.pending = true;
   const user = setup();
+  const cancelButton = screen.getByRole("button", { name: "Cancel sign-in" });
+  expect(cancelButton).toBeEnabled();
+  expect(within(cancelButton).queryByText("Free")).not.toBeInTheDocument();
   expect(
-    screen.getByRole("button", { name: "Waiting for sign-in…" }),
-  ).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: "Cancel sign-in" }));
+    screen.queryByRole("button", {
+      name: /ChatGPT subscription|Waiting for sign-in/,
+    }),
+  ).not.toBeInTheDocument();
+  await user.click(cancelButton);
   expect(mocks.disconnect).toHaveBeenCalledOnce();
+  expect(mocks.connect).not.toHaveBeenCalled();
 });
 it("discloses the existing subscription charge when Pro is active", () => {
   mocks.pro = true;
   setup();
   expect(screen.getByText(/1.5 Pro credits/)).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "ChatGPT subscription" }),
+  ).toBeVisible();
   expect(screen.queryByText(/No Dyad usage fees/)).not.toBeInTheDocument();
 });
 
@@ -136,7 +148,7 @@ it("waits for settings before showing fees or permitting connection", () => {
   expect(screen.getByText("Checking Dyad Pro status…")).toBeVisible();
   expect(screen.queryByText(/No Dyad usage fees/)).not.toBeInTheDocument();
   expect(
-    screen.getByRole("button", { name: "ChatGPT subscription" }),
+    screen.getByRole("button", { name: /^ChatGPT subscription/ }),
   ).toBeDisabled();
 });
 it("announces the browser sign-in wait", () => {
@@ -151,7 +163,7 @@ it("preserves Pro model and mode preferences when connecting", async () => {
   mocks.pro = true;
   const user = setup();
   await user.click(
-    screen.getByRole("button", { name: "ChatGPT subscription" }),
+    screen.getByRole("button", { name: /^ChatGPT subscription/ }),
   );
   expect(mocks.connect).toHaveBeenCalledWith({
     acceptCharges: true,
