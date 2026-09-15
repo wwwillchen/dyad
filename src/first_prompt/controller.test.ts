@@ -340,9 +340,18 @@ describe("FirstPromptController", () => {
     expect(harness.controller.getSnapshot().type).toBe("idle");
   });
 
-  it("preserves a rejected prompt in the created chat", async () => {
+  it("preserves a rejected prompt and its attachments in the created chat", async () => {
     const harness = createHarness();
-    harness.controller.send({ type: "SUBMIT", payload });
+    const submittedPayload: FirstPromptPayload = {
+      ...payload,
+      attachments: [
+        {
+          file: new File(["reference"], "reference.txt"),
+          type: "chat-context",
+        },
+      ],
+    };
+    harness.controller.send({ type: "SUBMIT", payload: submittedPayload });
     harness.controller.send({ type: "PROVIDERS_LOADED", anySetup: true });
     await flushCommands();
 
@@ -353,7 +362,7 @@ describe("FirstPromptController", () => {
 
     expect(harness.deps.preserveRejectedPrompt).toHaveBeenCalledExactlyOnceWith(
       2,
-      payload,
+      submittedPayload,
     );
     expect(harness.deps.clearEditingBuffer).not.toHaveBeenCalled();
   });

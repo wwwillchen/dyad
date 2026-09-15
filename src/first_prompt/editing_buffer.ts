@@ -34,3 +34,23 @@ export function mergeRejectedPromptIntoChatDraft(
   );
   return next;
 }
+
+export function mergeRejectedAttachmentsIntoChatDraft(
+  current: Map<number, FirstPromptAttachment[]>,
+  chatId: number,
+  submitted: readonly FirstPromptAttachment[],
+): Map<number, FirstPromptAttachment[]> {
+  const destination = current.get(chatId) ?? [];
+  const missing = submitted.filter(
+    (attachment) =>
+      !destination.some(
+        (existing) =>
+          existing.file === attachment.file &&
+          existing.type === attachment.type,
+      ),
+  );
+  if (missing.length === 0) return current;
+  const next = new Map(current);
+  next.set(chatId, [...missing, ...destination]);
+  return next;
+}
