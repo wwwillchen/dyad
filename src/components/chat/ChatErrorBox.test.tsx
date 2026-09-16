@@ -5,7 +5,7 @@ import { ChatErrorBox } from "./ChatErrorBox";
 
 const mocks = vi.hoisted(() => ({
   openExternalUrl: vi.fn(),
-  isTrial: false,
+  isTrial: false as boolean | null,
 }));
 
 vi.mock("@/ipc/types", () => ({
@@ -27,7 +27,9 @@ vi.mock("@/hooks/useFreeModelQuota", () => ({
 }));
 
 vi.mock("@/hooks/useUserBudgetInfo", () => ({
-  useUserBudgetInfo: () => ({ userBudget: { isTrial: mocks.isTrial } }),
+  useUserBudgetInfo: () => ({
+    userBudget: mocks.isTrial === null ? null : { isTrial: mocks.isTrial },
+  }),
 }));
 
 describe("ChatErrorBox Basic Agent quota error", () => {
@@ -135,7 +137,7 @@ describe("ChatErrorBox subscription billing errors", () => {
 });
 
 describe("ChatErrorBox exhausted credit notice", () => {
-  it.each([false, true])(
+  it.each([false, true, null])(
     "shows actionable credit recovery (trial: %s)",
     (isTrial) => {
       mocks.isTrial = isTrial;
@@ -151,7 +153,7 @@ describe("ChatErrorBox exhausted credit notice", () => {
       );
       expect(screen.getByText("You’re out of AI credits")).toBeTruthy();
       expect(screen.queryByText(/this month/)).toBeNull();
-      if (isTrial) {
+      if (isTrial !== false) {
         expect(screen.queryByText(/Switch to the Free model/)).toBeNull();
         expect(screen.getByText("Add credits to continue.")).toBeTruthy();
       } else {
@@ -164,7 +166,7 @@ describe("ChatErrorBox exhausted credit notice", () => {
       expect(screen.queryByText("Start new chat")).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "Get more credits" }));
       expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith(
-        "https://academy.dyad.sh/subscription?utm_source=dyad-app&utm_medium=app&utm_campaign=exceeded-budget-error",
+        "https://academy.dyad.sh/subscription",
       );
       fireEvent.click(
         screen.getByRole("button", { name: "Dismiss billing notice" }),
@@ -206,4 +208,19 @@ describe("ChatErrorBox legacy rejected Pro key", () => {
       expect(onDismiss).toHaveBeenCalledOnce();
     },
   );
+});
+
+it("recognizes a legacy rejected key inside fallback details", () => {
+  render(
+    <ChatErrorBox
+      error={
+        'All models failed. Fallbacks=[{"error":"LiteLLM Virtual Key expected"}]'
+      }
+      isDyadProEnabled
+      onDismiss={vi.fn()}
+    />,
+  );
+  expect(
+    screen.getByRole("button", { name: "Open membership portal" }),
+  ).toBeTruthy();
 });

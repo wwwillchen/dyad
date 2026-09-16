@@ -54,11 +54,11 @@ export function ChatErrorBox({
   const { userBudget } = useUserBudgetInfo();
   // Trial Pro users cannot use the Free model (it is hidden from the picker and
   // rejected by the engine), so don't suggest it to them.
-  const isTrialProUser = userBudget?.isTrial === true;
+  const canSuggestFreeModel = userBudget?.isTrial === false;
 
   const billingError =
     parseSubscriptionBillingError(normalizedError) ??
-    (normalizedError.includes("LiteLLM Virtual Key expected")
+    (error.includes("LiteLLM Virtual Key expected")
       ? SUBSCRIPTION_BILLING_ERRORS.KEY_REJECTED
       : null);
   if (billingError) {
@@ -125,14 +125,14 @@ export function ChatErrorBox({
     return (
       <BillingNotice
         onDismiss={onDismiss}
-        title="You’re out of AI credits"
+        title={SUBSCRIPTION_BILLING_ERRORS.OUT_OF_CREDITS.title}
         message={
-          isTrialProUser
-            ? "Add credits to continue."
-            : `Switch to the Free model for ${freeModelMessagesLimit} free messages per day, or add credits to continue.`
+          canSuggestFreeModel
+            ? `Switch to the Free model for ${freeModelMessagesLimit} free messages per day, or add credits to continue.`
+            : "Add credits to continue."
         }
-        action="Get more credits"
-        href="https://academy.dyad.sh/subscription?utm_source=dyad-app&utm_medium=app&utm_campaign=exceeded-budget-error"
+        action={SUBSCRIPTION_BILLING_ERRORS.OUT_OF_CREDITS.action}
+        href={SUBSCRIPTION_BILLING_ERRORS.OUT_OF_CREDITS.url}
       />
     );
   }

@@ -1057,7 +1057,13 @@ describe("budget exhaustion", () => {
           }),
         ],
       });
-      const result = streamText({ model, prompt: "hello", maxRetries: 2 });
+      const onError = vi.fn();
+      const result = streamText({
+        model,
+        prompt: "hello",
+        maxRetries: 2,
+        onError,
+      });
       const errors: unknown[] = [];
       const consume = async () => {
         for await (const part of result.fullStream) {
@@ -1072,6 +1078,7 @@ describe("budget exhaustion", () => {
       await consume();
       expect(calls).toEqual(["primary"]);
       expect(errors).toHaveLength(1);
+      expect(onError).toHaveBeenCalledExactlyOnceWith({ error: errors[0] });
       expect(errors[0]).toMatchObject({ message });
       if (type === "throw") {
         expect(errors[0]).toMatchObject({ kind: DyadErrorKind.Precondition });
@@ -1105,4 +1112,23 @@ describe("budget exhaustion", () => {
     await drain(result.stream);
     expect(calls).toEqual(["primary", "primary"]);
   });
+});
+
+it("preserves classified errors containing the budget marker", async () => {
+  const calls: string[] = [];
+  const error = new DyadError(
+    "ExceededBudget: account exhausted",
+    DyadErrorKind.Auth,
+  );
+  const model = createFallback({
+    models: [
+      sequencedModel({
+        modelId: "primary",
+        outcomes: [{ type: "throw", error }],
+        calls,
+      }),
+    ],
+  }) as unknown as LanguageModelV3;
+  await expect(model.doStream({ prompt: [] })).rejects.toBe(error);
+  expect(calls).toEqual(["primary"]);
 });

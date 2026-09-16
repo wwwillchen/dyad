@@ -661,6 +661,7 @@ class FallbackModel implements LanguageModelV3 {
             logger.warn(
               `Request error from model ${failedModelId}; not retrying or falling back (requestId=${requestId}, stage=initial-request, attempt=${state.attemptNumber}/${this.maxAttempts}, error="${formatFallbackErrorForLog(error)}")`,
             );
+            if (error instanceof DyadError) throw error;
             // The caller's AI SDK also retries APICallError.isRetryable. Keep
             // the billing message, but prevent that outer retry layer too.
             if (
