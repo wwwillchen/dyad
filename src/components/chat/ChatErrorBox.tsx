@@ -56,14 +56,13 @@ export function ChatErrorBox({
   const billingError = parseSubscriptionBillingError(normalizedError);
   if (billingError) {
     return (
-      <ChatInfoContainer onDismiss={onDismiss}>
-        <span>{billingError.message}</span>
-        <div className="mt-2">
-          <ExternalLink href={billingError.url} variant="primary">
-            {billingError.action}
-          </ExternalLink>
-        </div>
-      </ChatInfoContainer>
+      <BillingNotice
+        onDismiss={onDismiss}
+        title={billingError.title}
+        message={billingError.description}
+        action={billingError.action}
+        href={billingError.url}
+      />
     );
   }
 
@@ -133,23 +132,17 @@ export function ChatErrorBox({
   }
   if (isDyadProEnabled && error.includes("ExceededBudget:")) {
     return (
-      <ChatInfoContainer onDismiss={onDismiss}>
-        <span>
-          You have used all of your Dyad AI credits this month.{" "}
-          {!isTrialProUser && (
-            <>
-              Switch to the Free model and send {freeModelMessagesLimit} free
-              messages per day.{" "}
-            </>
-          )}
-          <ExternalLink
-            href="https://academy.dyad.sh/subscription?utm_source=dyad-app&utm_medium=app&utm_campaign=exceeded-budget-error"
-            variant="primary"
-          >
-            Get more AI credits
-          </ExternalLink>
-        </span>
-      </ChatInfoContainer>
+      <BillingNotice
+        onDismiss={onDismiss}
+        title="You’re out of AI credits"
+        message={
+          isTrialProUser
+            ? "Add credits to continue."
+            : `Switch to the Free model for ${freeModelMessagesLimit} free messages per day, or add credits to continue.`
+        }
+        action="Get more credits"
+        href="https://academy.dyad.sh/subscription?utm_source=dyad-app&utm_medium=app&utm_campaign=exceeded-budget-error"
+      />
     );
   }
   // This is a very long list of model fallbacks that clutters the error message.
@@ -403,6 +396,50 @@ function ChatInfoContainer({
       <div className="pl-8 py-1 text-sm">
         <div className="text-sky-800 text-wrap">{children}</div>
       </div>
+    </div>
+  );
+}
+
+function BillingNotice({
+  onDismiss,
+  title,
+  message,
+  action,
+  href,
+}: {
+  onDismiss: () => void;
+  title: string;
+  message: string;
+  action: string;
+  href: string;
+}) {
+  return (
+    <div className="relative mx-4 mt-2 rounded-lg border border-sky-200/60 bg-sky-50 p-4 text-sky-900 dark:border-sky-800/60 dark:bg-sky-950/40 dark:text-sky-100">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label="Dismiss billing notice"
+        onClick={onDismiss}
+        className="absolute right-2 top-2 size-7 text-sky-700 hover:bg-sky-100 hover:text-sky-900 dark:text-sky-300 dark:hover:bg-sky-900 dark:hover:text-sky-100"
+      >
+        <X className="size-4" />
+      </Button>
+      <div className="space-y-1 pr-6">
+        <p className="text-sm font-semibold leading-5">{title}</p>
+        <p className="text-sm leading-5 text-sky-800 dark:text-sky-200">
+          {message}
+        </p>
+      </div>
+      <Button
+        type="button"
+        size="sm"
+        onClick={() => ipc.system.openExternalUrl(href)}
+        className="mt-3 bg-blue-600 text-white shadow-none hover:bg-blue-700"
+      >
+        {action}
+        <ExternalLinkIcon className="size-3.5" />
+      </Button>
     </div>
   );
 }

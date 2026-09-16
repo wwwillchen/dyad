@@ -5,6 +5,7 @@ import { ChatErrorBox } from "./ChatErrorBox";
 
 const mocks = vi.hoisted(() => ({
   openExternalUrl: vi.fn(),
+  isTrial: false,
 }));
 
 vi.mock("@/ipc/types", () => ({
@@ -26,7 +27,7 @@ vi.mock("@/hooks/useFreeModelQuota", () => ({
 }));
 
 vi.mock("@/hooks/useUserBudgetInfo", () => ({
-  useUserBudgetInfo: () => ({ userBudget: null }),
+  useUserBudgetInfo: () => ({ userBudget: { isTrial: mocks.isTrial } }),
 }));
 
 describe("ChatErrorBox Basic Agent quota error", () => {
@@ -102,13 +103,13 @@ describe("ChatErrorBox subscription billing errors", () => {
   it.each([
     [
       "OUT_OF_CREDITS",
-      "You're out of Dyad credits. Add credits to continue using your subscription.",
+      "Add credits to continue using your subscription.",
       "Get more credits",
       "https://academy.dyad.sh/subscription",
     ],
     [
       "KEY_REJECTED",
-      "Your Dyad Pro key was rejected. Get your current Pro key.",
+      "Get your current Pro key.",
       "Open membership portal",
       "https://academy.dyad.sh",
     ],
@@ -129,6 +130,47 @@ describe("ChatErrorBox subscription billing errors", () => {
       expect(screen.queryByText("Read docs")).toBeNull();
       fireEvent.click(screen.getByText(action));
       expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith(url);
+    },
+  );
+});
+
+describe("ChatErrorBox exhausted credit notice", () => {
+  it.each([false, true])(
+    "shows actionable credit recovery (trial: %s)",
+    (isTrial) => {
+      mocks.isTrial = isTrial;
+      mocks.openExternalUrl.mockReset();
+      const onDismiss = vi.fn();
+      render(
+        <ChatErrorBox
+          error="ExceededBudget: exhausted"
+          isDyadProEnabled
+          onDismiss={onDismiss}
+          onStartNewChat={vi.fn()}
+        />,
+      );
+      expect(screen.getByText("You’re out of AI credits")).toBeTruthy();
+      expect(screen.queryByText(/this month/)).toBeNull();
+      if (isTrial) {
+        expect(screen.queryByText(/Switch to the Free model/)).toBeNull();
+        expect(screen.getByText("Add credits to continue.")).toBeTruthy();
+      } else {
+        expect(
+          screen.getByText(
+            "Switch to the Free model for 5 free messages per day, or add credits to continue.",
+          ),
+        ).toBeTruthy();
+      }
+      expect(screen.queryByText("Start new chat")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Get more credits" }));
+      expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith(
+        "https://academy.dyad.sh/subscription?utm_source=dyad-app&utm_medium=app&utm_campaign=exceeded-budget-error",
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Dismiss billing notice" }),
+      );
+      expect(onDismiss).toHaveBeenCalledOnce();
+      mocks.isTrial = false;
     },
   );
 });

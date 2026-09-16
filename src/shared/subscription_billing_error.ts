@@ -2,12 +2,16 @@ import { DyadError, DyadErrorKind } from "../errors/dyad_error";
 
 export const SUBSCRIPTION_BILLING_ERRORS = {
   OUT_OF_CREDITS: {
+    title: "You’re out of AI credits",
+    description: "Add credits to continue using your subscription.",
     message:
       "You're out of Dyad credits. Add credits to continue using your subscription.",
     action: "Get more credits",
     url: "https://academy.dyad.sh/subscription",
   },
   KEY_REJECTED: {
+    title: "Your Dyad Pro key was rejected",
+    description: "Get your current Pro key.",
     message: "Your Dyad Pro key was rejected. Get your current Pro key.",
     action: "Open membership portal",
     url: "https://academy.dyad.sh",
