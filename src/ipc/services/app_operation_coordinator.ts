@@ -89,15 +89,9 @@ interface PendingOperation {
   reject: (error: unknown) => void;
 }
 
-interface BlockedOperation {
-  request: NormalizedAppOperationRequest;
-  error: DyadError;
-}
-
 interface AppOperationState {
   active: Set<PendingOperation>;
   queue: PendingOperation[];
-  blocks: Set<BlockedOperation>;
   deletion?: {
     token: symbol;
     drainWaiters: Set<() => void>;
@@ -236,10 +230,6 @@ export class AppOperationCoordinator {
       ...request,
       resources: normalizeResources(request.resources),
     };
-    const block = [...state.blocks].find((blocked) =>
-      requestsConflict(blocked.request, normalizedRequest),
-    );
-    if (block) return Promise.reject(block.error);
 
     return new Promise<Result>((resolve, reject) => {
       state.queue.push({
@@ -252,37 +242,6 @@ export class AppOperationCoordinator {
     });
   }
 
-  /**
-   * Keep unsafe resources fenced after their owning callback finishes. Call
-   * while holding the corresponding claims, before returning from failed
-   * cleanup. Already queued conflicts are rejected too, so callers get a
-   * recovery error instead of waiting indefinitely. Unrelated work may run.
-   *
-   * Release only after independently confirming recovery. An unconfirmed
-   * process shutdown keeps this block for the rest of the main-process lifetime.
-   */
-  blockConflictingOperations(
-    request: AppOperationRequest,
-    reason: string,
-  ): () => void {
-    const state = this.getOrCreateState(request.appId);
-    const block: BlockedOperation = {
-      request: { ...request, resources: normalizeResources(request.resources) },
-      error: new DyadError(reason, DyadErrorKind.Precondition),
-    };
-    state.blocks.add(block);
-    state.queue = state.queue.filter((pending) => {
-      if (!requestsConflict(block.request, pending.request)) return true;
-      pending.reject(block.error);
-      return false;
-    });
-    this.pump(request.appId, state);
-    return () => {
-      if (!state.blocks.delete(block)) return;
-      this.pump(request.appId, state);
-    };
-  }
-
   isBusy(appId: number, resources: AppOperationRequest["resources"]): boolean {
     const state = this.states.get(appId);
     if (!state) return false;
@@ -291,18 +250,13 @@ export class AppOperationCoordinator {
       operation: "inspect",
       resources: normalizeResources(resources),
     };
-    return [...state.active, ...state.queue, ...state.blocks].some((pending) =>
+    return [...state.active, ...state.queue].some((pending) =>
       requestsConflict(pending.request, request),
     );
   }
 
   beginAppDeletion(appId: number): AppOperationDeletion {
     const state = this.getOrCreateState(appId);
-    const assertSafeToDelete = () => {
-      const block = state.blocks.values().next().value;
-      if (block) throw block.error;
-    };
-    assertSafeToDelete();
     if (state.deletion) {
       throw new AppDeletionInProgressError(appId);
     }
@@ -322,19 +276,16 @@ export class AppOperationCoordinator {
     return {
       drain: async () => {
         assertOwner();
-        assertSafeToDelete();
         if (state.active.size > 0 || state.queue.length > 0) {
           await new Promise<void>((resolve) => {
             state.deletion!.drainWaiters.add(resolve);
           });
         }
         assertOwner();
-        assertSafeToDelete();
         drained = true;
       },
       runExclusive: async <Result>(operation: () => Promise<Result>) => {
         assertOwner();
-        assertSafeToDelete();
         if (!drained || state.active.size > 0 || state.queue.length > 0) {
           throw new Error(
             `App ${appId} deletion must drain admitted operations before running exclusively`,
@@ -370,7 +321,7 @@ export class AppOperationCoordinator {
   private getOrCreateState(appId: number): AppOperationState {
     let state = this.states.get(appId);
     if (!state) {
-      state = { active: new Set(), queue: [], blocks: new Set() };
+      state = { active: new Set(), queue: [] };
       this.states.set(appId, state);
     }
     return state;
@@ -429,7 +380,6 @@ export class AppOperationCoordinator {
   private removeStateIfIdle(appId: number, state: AppOperationState): void {
     if (
       !state.deletion &&
-      state.blocks.size === 0 &&
       state.active.size === 0 &&
       state.queue.length === 0 &&
       this.states.get(appId) === state

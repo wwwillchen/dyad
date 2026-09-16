@@ -706,14 +706,7 @@ export async function waitForPreviewView(
     pollMs = 250,
     signal,
   }: {
-    /**
-     * The page the view must already be showing. Omitted when the caller is
-     * about to navigate the view itself — a sandboxed run serves the app on a
-     * port of its own that nothing has pointed the panel at, and `rotate()`
-     * loads it before the first test. Waiting for a URL that only this run can
-     * produce would fail every time; what it needs is a live view to rotate.
-     */
-    url?: string;
+    url: string;
     timeoutMs?: number;
     pollMs?: number;
     signal?: AbortSignal;
@@ -727,18 +720,19 @@ export async function waitForPreviewView(
     }
 
     const status = getPreviewViewStatus(window);
-    const showsTarget = url
-      ? !!status.currentUrl && sameOrigin(status.currentUrl, url)
-      : status.exists;
-    if (showsTarget && !status.isLoading) {
+    if (
+      status.currentUrl &&
+      sameOrigin(status.currentUrl, url) &&
+      !status.isLoading
+    ) {
       return { ok: true };
     }
 
     if (Date.now() >= deadline) {
-      if (showsTarget) {
+      if (status.currentUrl && sameOrigin(status.currentUrl, url)) {
         return {
           ok: false,
-          reason: `it is still loading ${status.currentUrl ?? "a page"}`,
+          reason: `it is still loading ${status.currentUrl}`,
         };
       }
       return {
