@@ -1,3 +1,4 @@
+import { SubscriptionBillingError } from "@/shared/subscription_billing_error";
 import log from "electron-log";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { fetchUserInfo, UserInfoApiError } from "./user_budget_service";
@@ -20,15 +21,9 @@ export async function checkSubscriptionCredits(
       );
     if (error instanceof UserInfoApiError) {
       if (error.status === 401 || error.status === 403)
-        throw new DyadError(
-          "Your Dyad key was rejected. Update it in settings to use your subscription.",
-          DyadErrorKind.Auth,
-        );
+        throw new SubscriptionBillingError("KEY_REJECTED");
       if (error.status === 402)
-        throw new DyadError(
-          "You're out of Dyad credits. Add credits to continue using your subscription.",
-          DyadErrorKind.Precondition,
-        );
+        throw new SubscriptionBillingError("OUT_OF_CREDITS");
     }
     // No upstream bodies, request objects, or credentials in logs.
     logger.warn(
@@ -43,8 +38,5 @@ export async function checkSubscriptionCredits(
       DyadErrorKind.UserCancelled,
     );
   if (info.totalCredits <= info.usedCredits)
-    throw new DyadError(
-      "You're out of Dyad credits. Add credits to continue using your subscription.",
-      DyadErrorKind.Precondition,
-    );
+    throw new SubscriptionBillingError("OUT_OF_CREDITS");
 }

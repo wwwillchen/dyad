@@ -1,3 +1,4 @@
+import { streamText } from "ai";
 import {
   APICallError,
   type LanguageModelV3,
@@ -1020,4 +1021,114 @@ describe("subscription billing-source boundary", () => {
       expect(calls).toEqual(["subscription"]);
     },
   );
+});
+
+describe("budget exhaustion", () => {
+  const message = "ExceededBudget: account over budget";
+  it.each([
+    apiCallError({ message, statusCode: 429, isRetryable: true }),
+    { status: 429, error: { message } },
+    new Error("429 " + message),
+    "429 " + message,
+  ])("stops billing errors before retry policy: %j", (error) => {
+    expect(getFallbackFailureAction(error)).toBe("fail");
+  });
+
+  it.each(["throw", "stream-error", "stream-error-event"] as const)(
+    "does not retry or switch models for %s, including SDK retries",
+    async (type) => {
+      const calls: string[] = [];
+      const error = apiCallError({
+        message,
+        statusCode: 429,
+        isRetryable: true,
+      });
+      const model = createFallback({
+        models: [
+          sequencedModel({
+            modelId: "primary",
+            outcomes: [{ type, error }],
+            calls,
+          }),
+          sequencedModel({
+            modelId: "fallback",
+            outcomes: [{ type: "succeed" }],
+            calls,
+          }),
+        ],
+      });
+      const onError = vi.fn();
+      const result = streamText({
+        model,
+        prompt: "hello",
+        maxRetries: 2,
+        onError,
+      });
+      const errors: unknown[] = [];
+      const consume = async () => {
+        for await (const part of result.fullStream) {
+          if (part.type === "error") errors.push(part.error);
+        }
+      };
+      if (type === "stream-error") {
+        await expect(consume()).rejects.toBe(error);
+        expect(calls).toEqual(["primary"]);
+        return;
+      }
+      await consume();
+      expect(calls).toEqual(["primary"]);
+      expect(errors).toHaveLength(1);
+      expect(onError).toHaveBeenCalledExactlyOnceWith({ error: errors[0] });
+      expect(errors[0]).toMatchObject({ message });
+      if (type === "throw") {
+        expect(errors[0]).toMatchObject({ kind: DyadErrorKind.Precondition });
+      }
+    },
+  );
+
+  it("still retries ordinary 429 rate limits", async () => {
+    const calls: string[] = [];
+    const model = createFallback({
+      models: [
+        sequencedModel({
+          modelId: "primary",
+          outcomes: [
+            {
+              type: "throw",
+              error: apiCallError({
+                message: "Too many requests",
+                statusCode: 429,
+                isRetryable: true,
+                responseHeaders: { "retry-after": "0" },
+              }),
+            },
+            { type: "succeed" },
+          ],
+          calls,
+        }),
+      ],
+    }) as unknown as LanguageModelV3;
+    const result = await model.doStream({ prompt: [] });
+    await drain(result.stream);
+    expect(calls).toEqual(["primary", "primary"]);
+  });
+});
+
+it("preserves classified errors containing the budget marker", async () => {
+  const calls: string[] = [];
+  const error = new DyadError(
+    "ExceededBudget: account exhausted",
+    DyadErrorKind.Auth,
+  );
+  const model = createFallback({
+    models: [
+      sequencedModel({
+        modelId: "primary",
+        outcomes: [{ type: "throw", error }],
+        calls,
+      }),
+    ],
+  }) as unknown as LanguageModelV3;
+  await expect(model.doStream({ prompt: [] })).rejects.toBe(error);
+  expect(calls).toEqual(["primary"]);
 });

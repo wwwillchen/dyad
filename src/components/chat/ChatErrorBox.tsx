@@ -1,3 +1,7 @@
+import {
+  parseSubscriptionBillingError,
+  SUBSCRIPTION_BILLING_ERRORS,
+} from "@/shared/subscription_billing_error";
 import { ipc } from "@/ipc/types";
 import { useFreeAgentQuota } from "@/hooks/useFreeAgentQuota";
 import { useFreeModelQuota } from "@/hooks/useFreeModelQuota";
@@ -50,7 +54,24 @@ export function ChatErrorBox({
   const { userBudget } = useUserBudgetInfo();
   // Trial Pro users cannot use the Free model (it is hidden from the picker and
   // rejected by the engine), so don't suggest it to them.
-  const isTrialProUser = userBudget?.isTrial === true;
+  const canSuggestFreeModel = userBudget?.isTrial === false;
+
+  const billingError =
+    parseSubscriptionBillingError(normalizedError) ??
+    (error.includes("LiteLLM Virtual Key expected")
+      ? SUBSCRIPTION_BILLING_ERRORS.KEY_REJECTED
+      : null);
+  if (billingError) {
+    return (
+      <BillingNotice
+        onDismiss={onDismiss}
+        title={billingError.title}
+        message={billingError.description}
+        action={billingError.action}
+        href={billingError.url}
+      />
+    );
+  }
 
   if (error.includes("doesn't have a free quota tier")) {
     return (
@@ -100,41 +121,19 @@ export function ChatErrorBox({
     );
   }
 
-  if (error.includes("LiteLLM Virtual Key expected")) {
-    return (
-      <ChatInfoContainer onDismiss={onDismiss}>
-        <span>
-          Looks like you don't have a valid Dyad Pro key.{" "}
-          <ExternalLink
-            href="https://dyad.sh/pro?utm_source=dyad-app&utm_medium=app&utm_campaign=invalid-pro-key-error"
-            variant="primary"
-          >
-            Upgrade to Dyad Pro
-          </ExternalLink>{" "}
-          today.
-        </span>
-      </ChatInfoContainer>
-    );
-  }
   if (isDyadProEnabled && error.includes("ExceededBudget:")) {
     return (
-      <ChatInfoContainer onDismiss={onDismiss}>
-        <span>
-          You have used all of your Dyad AI credits this month.{" "}
-          {!isTrialProUser && (
-            <>
-              Switch to the Free model and send {freeModelMessagesLimit} free
-              messages per day.{" "}
-            </>
-          )}
-          <ExternalLink
-            href="https://academy.dyad.sh/subscription?utm_source=dyad-app&utm_medium=app&utm_campaign=exceeded-budget-error"
-            variant="primary"
-          >
-            Get more AI credits
-          </ExternalLink>
-        </span>
-      </ChatInfoContainer>
+      <BillingNotice
+        onDismiss={onDismiss}
+        title={SUBSCRIPTION_BILLING_ERRORS.OUT_OF_CREDITS.title}
+        message={
+          canSuggestFreeModel
+            ? `Switch to the Free model for ${freeModelMessagesLimit} free messages per day, or add credits to continue.`
+            : "Add credits to continue."
+        }
+        action={SUBSCRIPTION_BILLING_ERRORS.OUT_OF_CREDITS.action}
+        href={SUBSCRIPTION_BILLING_ERRORS.OUT_OF_CREDITS.url}
+      />
     );
   }
   // This is a very long list of model fallbacks that clutters the error message.
@@ -370,24 +369,46 @@ function ErrorMarkdown({ children }: { children: string }) {
   );
 }
 
-function ChatInfoContainer({
+function BillingNotice({
   onDismiss,
-  children,
+  title,
+  message,
+  action,
+  href,
 }: {
   onDismiss: () => void;
-  children: React.ReactNode;
+  title: string;
+  message: string;
+  action: string;
+  href: string;
 }) {
   return (
-    <div className="relative mt-2 bg-sky-50 border border-sky-200 rounded-md shadow-sm p-2 mx-4">
-      <button
+    <div className="relative mx-4 mt-2 rounded-lg border border-sky-200/60 bg-sky-50 p-4 text-sky-900 dark:border-sky-800/60 dark:bg-sky-950/40 dark:text-sky-100">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label="Dismiss billing notice"
         onClick={onDismiss}
-        className="absolute top-2.5 left-2 p-1 hover:bg-sky-100 rounded"
+        className="absolute right-2 top-2 size-7 text-sky-700 hover:bg-sky-100 hover:text-sky-900 dark:text-sky-300 dark:hover:bg-sky-900 dark:hover:text-sky-100"
       >
-        <X size={14} className="text-sky-600" />
-      </button>
-      <div className="pl-8 py-1 text-sm">
-        <div className="text-sky-800 text-wrap">{children}</div>
+        <X className="size-4" />
+      </Button>
+      <div className="space-y-1 pr-6">
+        <p className="text-sm font-semibold leading-5">{title}</p>
+        <p className="text-sm leading-5 text-sky-800 dark:text-sky-200">
+          {message}
+        </p>
       </div>
+      <Button
+        type="button"
+        size="sm"
+        onClick={() => ipc.system.openExternalUrl(href)}
+        className="mt-3 bg-blue-600 text-white shadow-none hover:bg-blue-700"
+      >
+        {action}
+        <ExternalLinkIcon className="size-3.5" />
+      </Button>
     </div>
   );
 }

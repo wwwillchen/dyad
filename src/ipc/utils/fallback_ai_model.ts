@@ -217,9 +217,12 @@ export function getFallbackFailureAction(
     return "fail";
 
   try {
+    const { statusCode, errorString } = getErrorDetails(error);
+    // Billing exhaustion is account-wide, even when the gateway returns 429.
+    if (errorString.includes("exceededbudget:")) return "fail";
+
     if (APICallError.isInstance(error)) {
       if (error.statusCode === 404) return "fallback-next";
-      const { errorString } = getErrorDetails(error);
       if (
         FALLBACK_NEXT_ERROR_PATTERNS.some((pattern) =>
           errorString.includes(pattern),
@@ -241,7 +244,6 @@ export function getFallbackFailureAction(
       return "fail";
     }
 
-    const { statusCode, errorString } = getErrorDetails(error);
     if (statusCode === 404) return "fallback-next";
     if (
       FALLBACK_NEXT_ERROR_PATTERNS.some((pattern) =>
@@ -659,6 +661,20 @@ class FallbackModel implements LanguageModelV3 {
             logger.warn(
               `Request error from model ${failedModelId}; not retrying or falling back (requestId=${requestId}, stage=initial-request, attempt=${state.attemptNumber}/${this.maxAttempts}, error="${formatFallbackErrorForLog(error)}")`,
             );
+            if (error instanceof DyadError) throw error;
+            // The caller's AI SDK also retries APICallError.isRetryable. Keep
+            // the billing message, but prevent that outer retry layer too.
+            if (
+              getErrorDetails(error).errorString.includes("exceededbudget:")
+            ) {
+              throw new DyadError(
+                error instanceof Error
+                  ? error.message
+                  : "ExceededBudget: You're out of AI credits.",
+                DyadErrorKind.Precondition,
+                { cause: error },
+              );
+            }
             throw error;
           }
 

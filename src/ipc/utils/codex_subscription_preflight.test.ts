@@ -104,6 +104,7 @@ describe("BYO subscription preflight through the actual provider", () => {
       );
       await expect(run()).rejects.toMatchObject({
         kind: DyadErrorKind.Precondition,
+        code: "OUT_OF_CREDITS",
       });
       expect(fetch).not.toHaveBeenCalled();
     },
@@ -116,6 +117,7 @@ describe("BYO subscription preflight through the actual provider", () => {
       );
       await expect(run()).rejects.toMatchObject({
         kind: status === 402 ? DyadErrorKind.Precondition : DyadErrorKind.Auth,
+        code: status === 402 ? "OUT_OF_CREDITS" : "KEY_REJECTED",
       });
       expect(fetch).not.toHaveBeenCalled();
     },

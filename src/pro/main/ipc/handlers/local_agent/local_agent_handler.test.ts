@@ -1,3 +1,4 @@
+import { SubscriptionBillingError } from "@/shared/subscription_billing_error";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { InvalidToolInputError, streamText, type ModelMessage } from "ai";
@@ -1507,6 +1508,48 @@ describe("handleLocalAgentStream", () => {
       expect(JSON.stringify(streamOptions.messages)).not.toContain(
         "code_search",
       );
+    });
+  });
+
+  describe("billing errors after admission", () => {
+    it.each([
+      ["OUT_OF_CREDITS", "callback"],
+      ["KEY_REJECTED", "callback"],
+      ["OUT_OF_CREDITS", "iteration"],
+      ["KEY_REJECTED", "iteration"],
+    ] as const)("preserves %s from %s", async (code, source) => {
+      const { event, getMessagesByChannel } = createFakeEvent();
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat();
+      const billingError = new SubscriptionBillingError(code);
+      mockStreamTextImpl = (options) => ({
+        ...createFakeStream([]),
+        fullStream: (async function* () {
+          yield { type: "text-delta", text: "Earlier step completed." };
+          if (source === "callback") {
+            options.onError?.({ error: billingError });
+          } else {
+            throw billingError;
+          }
+        })(),
+      });
+      const succeeded = await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+        },
+      );
+      expect(succeeded).toBe(false);
+      expect(getMessagesByChannel("chat:response:error")).toEqual([
+        expect.objectContaining({
+          args: [expect.objectContaining({ error: billingError.serialize() })],
+        }),
+      ]);
+      expect(streamText).toHaveBeenCalledOnce();
     });
   });
 
