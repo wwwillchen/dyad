@@ -1,16 +1,14 @@
 import { useSettings } from "@/hooks/useSettings";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { DEFAULT_ENABLE_SANDBOX_E2E_TESTS } from "@/shared/settings_defaults";
 
 /**
- * Persist only explicit choices so users without a preference follow the
- * shared default when it changes.
+ * Persist only explicit choices so a future default change can distinguish
+ * users without a preference from those who opted out.
  */
 export function SandboxedE2eTestsSwitch() {
   const { settings, updateSettings } = useSettings();
-  const enabled =
-    settings?.enableSandboxE2eTests ?? DEFAULT_ENABLE_SANDBOX_E2E_TESTS;
+  const enabled = Boolean(settings?.enableSandboxE2eTests);
   return (
     <div className="flex items-center space-x-2">
       <Switch

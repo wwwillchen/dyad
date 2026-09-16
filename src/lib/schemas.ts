@@ -534,7 +534,7 @@ const BaseUserSettingsFields = {
   testHeaded: z.boolean().optional(),
   testParallel: z.boolean().optional(),
   testSlowMo: z.boolean().optional(),
-  // Explicit preference only; unset follows DEFAULT_ENABLE_SANDBOX_E2E_TESTS.
+  // Explicit preference only; unset currently means disabled.
   // Do not persist the effective default, so later rollouts can change it.
   enableSandboxE2eTests: z.boolean().optional(),
   autoExpandPreviewPanel: z.boolean().optional(),

@@ -1,5 +1,4 @@
 import type { UserSettings } from "@/lib/schemas";
-import { DEFAULT_ENABLE_SANDBOX_E2E_TESTS } from "@/shared/settings_defaults";
 
 /**
  * Whether an E2E test run for this app will execute in an isolated sandbox: a
@@ -18,7 +17,7 @@ export function usesSandboxedE2eTests(
   if (!settings) return false;
   return (
     (settings.runtimeMode2 ?? "host") === "host" &&
-    (settings.enableSandboxE2eTests ?? DEFAULT_ENABLE_SANDBOX_E2E_TESTS)
+    Boolean(settings.enableSandboxE2eTests)
   );
 }
 
