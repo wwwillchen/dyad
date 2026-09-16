@@ -246,9 +246,10 @@ describe("tests handlers", () => {
     queueCloudSandboxSnapshotSyncMock.mockClear();
     prepareIsolatedTestDatabaseMock.mockReset();
     readSettingsMock.mockReset();
-    readSettingsMock.mockImplementation(() =>
-      structuredClone(DEFAULT_SETTINGS),
-    );
+    readSettingsMock.mockImplementation(() => ({
+      ...structuredClone(DEFAULT_SETTINGS),
+      enableSandboxE2eTests: true,
+    }));
     sendTelemetryEventMock.mockReset();
     ensurePlaywrightBootstrapMock.mockReset();
     ensurePlaywrightBootstrapMock.mockResolvedValue({ installed: false });
@@ -1704,7 +1705,7 @@ describe("tests handlers", () => {
         .run();
       readSettingsMock.mockImplementation(() => ({
         ...structuredClone(DEFAULT_SETTINGS),
-        disableSandboxedE2eTests: true,
+        enableSandboxE2eTests: false,
       }));
       runningApps.set(appId, { proxyUrl: "http://localhost:32100" } as any);
       prepareIsolatedTestDatabaseMock.mockResolvedValue({
@@ -1749,7 +1750,7 @@ describe("tests handlers", () => {
         .run();
       readSettingsMock.mockImplementation(() => ({
         ...structuredClone(DEFAULT_SETTINGS),
-        disableSandboxedE2eTests: true,
+        enableSandboxE2eTests: false,
       }));
       runningApps.set(appId, { proxyUrl: "http://localhost:32100" } as any);
       prepareIsolatedTestDatabaseMock.mockResolvedValue({
@@ -1795,7 +1796,7 @@ describe("tests handlers", () => {
           .run();
         readSettingsMock.mockImplementation(() => ({
           ...structuredClone(DEFAULT_SETTINGS),
-          disableSandboxedE2eTests: route === "disabled",
+          enableSandboxE2eTests: route !== "disabled",
           runtimeMode2: route === "docker" ? "docker" : "host",
         }));
         runningApps.set(appId, { proxyUrl: "http://localhost:32100" } as any);
@@ -1895,7 +1896,7 @@ describe("tests handlers", () => {
           .run();
         readSettingsMock.mockImplementation(() => ({
           ...structuredClone(DEFAULT_SETTINGS),
-          disableSandboxedE2eTests: route === "disabled",
+          enableSandboxE2eTests: route !== "disabled",
           runtimeMode2: route === "disabled" ? "host" : route,
         }));
         runningApps.set(appId, { proxyUrl: "http://localhost:32100" } as any);
@@ -2026,7 +2027,7 @@ describe("tests handlers", () => {
         .run();
       readSettingsMock.mockImplementation(() => ({
         ...structuredClone(DEFAULT_SETTINGS),
-        disableSandboxedE2eTests: true,
+        enableSandboxE2eTests: false,
       }));
       runningApps.set(appId, { proxyUrl: "http://localhost:32100" } as any);
       const originalRun = appOperationCoordinator.run.bind(
@@ -2235,7 +2236,7 @@ describe("tests handlers", () => {
       const appId = seedTestableApp("app");
       readSettingsMock.mockImplementation(() => ({
         ...structuredClone(DEFAULT_SETTINGS),
-        disableSandboxedE2eTests: true,
+        enableSandboxE2eTests: false,
       }));
       runningApps.set(appId, { proxyUrl: "http://localhost:32100" } as any);
       prepareIsolatedTestDatabaseMock.mockResolvedValue({

@@ -38,7 +38,7 @@ describe("local-agent run_tests (integration)", () => {
         enableDyadPro: true,
         providerSettings: { auto: { apiKey: { value: "testdyadkey" } } },
         enableCodeExplorer: false,
-        disableSandboxedE2eTests: true,
+        enableSandboxE2eTests: false,
       },
     });
     // The run_tests tool is gated on the app having opted into testing.

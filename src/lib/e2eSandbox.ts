@@ -1,4 +1,5 @@
 import type { UserSettings } from "@/lib/schemas";
+import { DEFAULT_ENABLE_SANDBOX_E2E_TESTS } from "@/shared/settings_defaults";
 
 /**
  * Whether an E2E test run for this app will execute in an isolated sandbox: a
@@ -6,18 +7,18 @@ import type { UserSettings } from "@/lib/schemas";
  *
  * Shared by the main process (which routes the run) and the renderer/agent
  * (which gate on whether the user's normal preview is required at all). The
- * sandbox is host-only for now, and the user can opt out of it.
+ * sandbox is host-only for now, and the user can opt into it.
  */
 export function usesSandboxedE2eTests(
   settings:
-    | Pick<UserSettings, "runtimeMode2" | "disableSandboxedE2eTests">
+    | Pick<UserSettings, "runtimeMode2" | "enableSandboxE2eTests">
     | null
     | undefined,
 ): boolean {
   if (!settings) return false;
   return (
     (settings.runtimeMode2 ?? "host") === "host" &&
-    !settings.disableSandboxedE2eTests
+    (settings.enableSandboxE2eTests ?? DEFAULT_ENABLE_SANDBOX_E2E_TESTS)
   );
 }
 

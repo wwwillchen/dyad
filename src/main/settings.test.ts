@@ -103,6 +103,9 @@ describe("readSettings", () => {
         mockSettingsPath,
         expect.stringContaining('"selectedModel"'),
       );
+      expect(
+        JSON.parse(String(mockFs.writeFileSync.mock.calls[0][1])),
+      ).not.toHaveProperty("enableSandboxE2eTests");
       expect(scrubSettings(result)).toMatchInlineSnapshot(`
         {
           "autoApproveNonSchemaSql": true,
@@ -110,7 +113,6 @@ describe("readSettings", () => {
           "autoFixReviewIssues": false,
           "chatgptFastMode": false,
           "disablePreviewNodeAutoInstall": false,
-          "disableSandboxedE2eTests": true,
           "enableAdvancedSubagents": false,
           "enableAppBlueprint": true,
           "enableAutoReview": false,
@@ -180,19 +182,36 @@ describe("readSettings", () => {
       expect(result.blockUnsafeNpmPackages).toBeUndefined();
       expect(result.enableAutoUpdate).toBe(true);
       expect(result.releaseChannel).toBe("stable");
-      expect(result.disableSandboxedE2eTests).toBe(true);
+      expect(result.enableSandboxE2eTests).toBeUndefined();
     });
 
     it.each([false, true])(
-      "preserves the saved sandboxed E2E preference %s",
+      "does not derive the new preference from legacy disableSandboxedE2eTests=%s",
       (disableSandboxedE2eTests) => {
         mockFs.existsSync.mockReturnValue(true);
         mockFs.readFileSync.mockReturnValue(
           JSON.stringify({ disableSandboxedE2eTests }),
         );
 
-        expect(readSettings().disableSandboxedE2eTests).toBe(
-          disableSandboxedE2eTests,
+        expect(readSettings().enableSandboxE2eTests).toBeUndefined();
+        writeSettings({ enableAutoUpdate: false });
+        const stored = JSON.parse(
+          String(mockFs.writeFileSync.mock.calls.at(-1)?.[1]),
+        );
+        expect(stored).not.toHaveProperty("enableSandboxE2eTests");
+      },
+    );
+
+    it.each([false, true])(
+      "preserves the saved sandboxed E2E preference %s",
+      (enableSandboxE2eTests) => {
+        mockFs.existsSync.mockReturnValue(true);
+        mockFs.readFileSync.mockReturnValue(
+          JSON.stringify({ enableSandboxE2eTests }),
+        );
+
+        expect(readSettings().enableSandboxE2eTests).toBe(
+          enableSandboxE2eTests,
         );
       },
     );
@@ -568,7 +587,6 @@ describe("readSettings", () => {
           "autoFixReviewIssues": false,
           "chatgptFastMode": false,
           "disablePreviewNodeAutoInstall": false,
-          "disableSandboxedE2eTests": true,
           "enableAdvancedSubagents": false,
           "enableAppBlueprint": true,
           "enableAutoReview": false,

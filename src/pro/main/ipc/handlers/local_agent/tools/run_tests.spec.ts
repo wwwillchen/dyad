@@ -234,7 +234,7 @@ describe("runTestsTool", () => {
     // app itself (covered separately below).
     baseUrl.mockReturnValue(null);
     settingsReader.mockReturnValue({
-      disableSandboxedE2eTests: true,
+      enableSandboxE2eTests: false,
     } as ReturnType<typeof readSettings>);
     const ctx = makeCtx();
     const out = await runTestsTool.execute(
@@ -428,6 +428,9 @@ describe("runTestsTool", () => {
   });
 
   it("does not require the dev server for a sandboxed run", async () => {
+    settingsReader.mockReturnValue({
+      enableSandboxE2eTests: true,
+    } as ReturnType<typeof readSettings>);
     baseUrl.mockReturnValue(null);
     runner.mockResolvedValue(passedResult);
     const ctx = makeCtx();

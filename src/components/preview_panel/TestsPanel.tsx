@@ -746,8 +746,8 @@ export function TestsPanel() {
   const devServerRunning = appUrl.appUrl !== null;
   // A sandboxed run serves the app itself, on its own port, from its own copy —
   // the user's preview is not involved, so requiring it would block the whole
-  // point of the feature. The fallback path (Docker/cloud runtime, or the
-  // opt-out) still runs Playwright against the preview and still needs it up.
+  // point of the feature. The fallback path (Docker/cloud runtime, or disabled
+  // sandboxing) still runs Playwright against the preview and needs it up.
   // Recording is unaffected either way: it drives the live preview.
   //
   // While settings are still loading there is nothing to disclose yet:
@@ -758,9 +758,7 @@ export function TestsPanel() {
   // Tri-state on purpose: `undefined` means settings haven't loaded, and that
   // is neither a refusal nor a promise. `usesSandboxedE2eTests` answers false
   // for absent settings, so reading it directly would flash the amber gate on
-  // every mount — and the Neon disclosure below has the opposite default, so
-  // reading `!disableSandboxedE2eTests` there would briefly promise sandboxing
-  // to a user who turned it off. One value, two explicit comparisons.
+  // every mount. One value, two explicit comparisons.
   const sandboxAvailable = settings
     ? usesSandboxedE2eTests(settings)
     : undefined;
@@ -1801,7 +1799,7 @@ export function TestsPanel() {
               {neonRefusalRemedy === "sandbox-setting" ? (
                 <button
                   onClick={() =>
-                    updateSettings({ disableSandboxedE2eTests: false })
+                    updateSettings({ enableSandboxE2eTests: true })
                   }
                   className="shrink-0 px-2 py-1 rounded-md bg-amber-200 dark:bg-amber-800 hover:bg-amber-300 dark:hover:bg-amber-700 cursor-pointer text-xs font-medium"
                 >

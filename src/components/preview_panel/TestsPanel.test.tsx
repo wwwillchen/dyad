@@ -175,7 +175,7 @@ describe("TestsPanel", () => {
     mocks.previewUrl = "http://localhost:32100/";
     mocks.previewUrlSource = "dyad";
     mocks.app = { id: 1, testingEnabled: true };
-    mocks.settings = {};
+    mocks.settings = { enableSandboxE2eTests: true };
     mocks.settingsLoading = false;
     mocks.listAppTests.mockResolvedValue({
       specs: [
@@ -193,7 +193,7 @@ describe("TestsPanel", () => {
       committed: true,
       uncommittedReason: null,
     });
-    mocks.settings = {};
+    mocks.settings = { enableSandboxE2eTests: true };
   });
 
   describe("headed runs in preview", () => {
@@ -575,7 +575,7 @@ describe("TestsPanel", () => {
     // The fallback path runs Playwright against the user's preview, so the
     // gate is still correct there.
     mocks.appUrl = null;
-    mocks.settings = { disableSandboxedE2eTests: true };
+    mocks.settings = { enableSandboxE2eTests: false };
 
     renderPanel();
 
@@ -652,7 +652,7 @@ describe("TestsPanel", () => {
 
     it("drops the sandbox disclosure when the sandbox is turned off", async () => {
       mocks.app = { id: 1, testingEnabled: true, neonProjectId: "neon-proj" };
-      mocks.settings = { disableSandboxedE2eTests: true };
+      mocks.settings = { enableSandboxE2eTests: false };
       renderPanel();
 
       await screen.findByText("signup.spec.ts");
@@ -664,7 +664,7 @@ describe("TestsPanel", () => {
       // touching the real database. Leaving Run enabled would hide that behind
       // a click; starting the preview would not help either.
       mocks.app = { id: 1, testingEnabled: true, neonProjectId: "neon-proj" };
-      mocks.settings = { disableSandboxedE2eTests: true };
+      mocks.settings = { enableSandboxE2eTests: false };
       renderPanel();
 
       expect(
@@ -684,12 +684,12 @@ describe("TestsPanel", () => {
       // The banner names a setting the user then has to go and find. For the
       // sandbox toggle that setting is one this panel already owns.
       mocks.app = { id: 1, testingEnabled: true, neonProjectId: "neon-proj" };
-      mocks.settings = { disableSandboxedE2eTests: true };
+      mocks.settings = { enableSandboxE2eTests: false };
       renderPanel();
 
       fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
       expect(mocks.updateSettings).toHaveBeenCalledWith({
-        disableSandboxedE2eTests: false,
+        enableSandboxE2eTests: true,
       });
     });
 
@@ -729,7 +729,7 @@ describe("TestsPanel", () => {
         neonProjectId: "neon-proj",
         supabaseProjectId: "sb-proj",
       };
-      mocks.settings = { disableSandboxedE2eTests: true };
+      mocks.settings = { enableSandboxE2eTests: false };
       renderPanel();
 
       await screen.findByText("signup.spec.ts");
@@ -747,7 +747,7 @@ describe("TestsPanel", () => {
       // Nothing to refuse: without a Neon project the fallback path runs
       // against the preview, which is exactly what the dev-server gate covers.
       mocks.app = { id: 1, testingEnabled: true };
-      mocks.settings = { disableSandboxedE2eTests: true };
+      mocks.settings = { enableSandboxE2eTests: false };
       renderPanel();
 
       await screen.findByText("signup.spec.ts");
