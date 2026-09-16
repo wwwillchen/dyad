@@ -149,6 +149,17 @@ deleted_path_matches_ignored_file() {
   return 1
 }
 
+stage_path_if_present() {
+  local path="$1"
+
+  # Staged deletions (including rename sources) are already absent from the
+  # index. Only add paths still on disk or in the index; the latter includes
+  # unstaged deletions. -L also preserves dangling symlinks.
+  if [[ -e "$path" || -L "$path" ]] || git --literal-pathspecs ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+    git --literal-pathspecs add -A -- "$path"
+  fi
+}
+
 stage_relevant_changes() {
   restore_spurious_package_lock
 
@@ -186,8 +197,8 @@ stage_relevant_changes() {
       continue
     fi
 
-    git add -A -- "$path"
-    [[ -z "$paired_path" ]] || git add -A -- "$paired_path"
+    stage_path_if_present "$path"
+    [[ -z "$paired_path" ]] || stage_path_if_present "$paired_path"
   done < <(git status --porcelain=v1 -z -uall)
 }
 

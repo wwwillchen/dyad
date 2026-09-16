@@ -184,7 +184,7 @@ When native Git commands accept a revision followed by optional paths, append
 name a project file or directory (for example `src`), and omitting the separator
 makes commands such as `git log src` fail with an ambiguous-argument error.
 
-If `pr_push.sh` fails while staging a rename with `fatal: pathspec '<old path>' did not match any files`, run the required format/lint/type checks, commit the already-staged rename manually, then rerun the script so it can complete its checks, push, and PR handling.
+Staged deletions and staged rename sources are absent from both disk and Git's index, so re-adding them by path fails with `pathspec did not match any files`. Publishing helpers should preserve those staged removals while still staging index-present unstaged deletions and files recreated on disk.
 
 For filesystem traversal or bulk sync, do not run `git check-ignore` once per path: it spawns excessive Git processes, and a Git-enumeration fallback may fail open because it depends on the same valid-repository state. Use the cached standalone `ignore` parser for `.gitignore` rules, and stop evaluating nested ignore files below an ignored parent directory because Git never descends into it.
 
