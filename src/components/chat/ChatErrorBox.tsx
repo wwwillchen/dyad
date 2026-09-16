@@ -1,4 +1,7 @@
-import { parseSubscriptionBillingError } from "@/shared/subscription_billing_error";
+import {
+  parseSubscriptionBillingError,
+  SUBSCRIPTION_BILLING_ERRORS,
+} from "@/shared/subscription_billing_error";
 import { ipc } from "@/ipc/types";
 import { useFreeAgentQuota } from "@/hooks/useFreeAgentQuota";
 import { useFreeModelQuota } from "@/hooks/useFreeModelQuota";
@@ -53,7 +56,11 @@ export function ChatErrorBox({
   // rejected by the engine), so don't suggest it to them.
   const isTrialProUser = userBudget?.isTrial === true;
 
-  const billingError = parseSubscriptionBillingError(normalizedError);
+  const billingError =
+    parseSubscriptionBillingError(normalizedError) ??
+    (normalizedError.includes("LiteLLM Virtual Key expected")
+      ? SUBSCRIPTION_BILLING_ERRORS.KEY_REJECTED
+      : null);
   if (billingError) {
     return (
       <BillingNotice
@@ -114,22 +121,6 @@ export function ChatErrorBox({
     );
   }
 
-  if (error.includes("LiteLLM Virtual Key expected")) {
-    return (
-      <ChatInfoContainer onDismiss={onDismiss}>
-        <span>
-          Looks like you don't have a valid Dyad Pro key.{" "}
-          <ExternalLink
-            href="https://dyad.sh/pro?utm_source=dyad-app&utm_medium=app&utm_campaign=invalid-pro-key-error"
-            variant="primary"
-          >
-            Upgrade to Dyad Pro
-          </ExternalLink>{" "}
-          today.
-        </span>
-      </ChatInfoContainer>
-    );
-  }
   if (isDyadProEnabled && error.includes("ExceededBudget:")) {
     return (
       <BillingNotice
@@ -375,28 +366,6 @@ function ErrorMarkdown({ children }: { children: string }) {
     >
       {children}
     </ReactMarkdown>
-  );
-}
-
-function ChatInfoContainer({
-  onDismiss,
-  children,
-}: {
-  onDismiss: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="relative mt-2 bg-sky-50 border border-sky-200 rounded-md shadow-sm p-2 mx-4">
-      <button
-        onClick={onDismiss}
-        className="absolute top-2.5 left-2 p-1 hover:bg-sky-100 rounded"
-      >
-        <X size={14} className="text-sky-600" />
-      </button>
-      <div className="pl-8 py-1 text-sm">
-        <div className="text-sky-800 text-wrap">{children}</div>
-      </div>
-    </div>
   );
 }
 

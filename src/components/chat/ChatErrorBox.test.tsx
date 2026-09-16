@@ -174,3 +174,36 @@ describe("ChatErrorBox exhausted credit notice", () => {
     },
   );
 });
+
+describe("ChatErrorBox legacy rejected Pro key", () => {
+  it.each([false, true])(
+    "offers the membership portal (Pro enabled: %s)",
+    (isDyadProEnabled) => {
+      mocks.openExternalUrl.mockReset();
+      const onDismiss = vi.fn();
+      render(
+        <ChatErrorBox
+          error="Provider returned error: LiteLLM Virtual Key expected"
+          isDyadProEnabled={isDyadProEnabled}
+          onDismiss={onDismiss}
+          onStartNewChat={vi.fn()}
+        />,
+      );
+      expect(screen.getByText("Your Dyad Pro key was rejected")).toBeTruthy();
+      expect(screen.getByText("Get your current Pro key.")).toBeTruthy();
+      expect(screen.queryByText("Upgrade to Dyad Pro")).toBeNull();
+      expect(screen.queryByText("Start new chat")).toBeNull();
+      expect(screen.queryByText("Read docs")).toBeNull();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Open membership portal" }),
+      );
+      expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith(
+        "https://academy.dyad.sh",
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Dismiss billing notice" }),
+      );
+      expect(onDismiss).toHaveBeenCalledOnce();
+    },
+  );
+});
