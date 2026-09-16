@@ -124,6 +124,31 @@ describe("runExploreCodeSubagent", () => {
     }));
   });
 
+  it.each(["build", "ask", "plan", "local-agent"] as const)(
+    "inherits accepted %s billing settings instead of the live default",
+    async (selectedChatMode) => {
+      const ctx = createMockContext();
+      ctx.inferenceSettings = { ...mocks.readSettings(), selectedChatMode };
+      mocks.readSettings.mockReturnValue({
+        ...ctx.inferenceSettings,
+        selectedChatMode:
+          selectedChatMode === "local-agent" ? "build" : "local-agent",
+      });
+      await runExploreCodeSubagent({
+        args: { query: "find the save handler", intent: "locate" },
+        ctx,
+      });
+      expect(mocks.getModelClient).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          selectedChatMode,
+          providerSettings: ctx.inferenceSettings?.providerSettings,
+        }),
+        expect.any(Object),
+      );
+    },
+  );
+
   it("runs one conversation that forces explore_code first and accepts a candidate-ID report", async () => {
     mocks.streamText.mockImplementationOnce((options: any) => ({
       fullStream: createToolStream(async () => {
@@ -1129,6 +1154,10 @@ describe("explore_code subagent observation helpers", () => {
 
 function createMockContext(appPath = "/tmp/app"): AgentContext {
   return {
+    inferenceSettings: {
+      ...mocks.readSettings(),
+      selectedChatMode: "local-agent",
+    },
     appId: 1,
     chatId: 2,
     appPath,

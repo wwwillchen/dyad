@@ -884,6 +884,7 @@ export async function handleLocalAgentStream(
           ? "now"
           : "before-latest-user",
         abortSignal: abortController.signal,
+        settingsOverride: settings,
       },
     );
     if (compactionResult.skipped) {
@@ -1014,6 +1015,7 @@ export async function handleLocalAgentStream(
     const effectiveFreeModelMode =
       freeModelMode ?? isFreeProModel(settings.selectedModel);
     const ctx: AgentContext = {
+      inferenceSettings: settings,
       mutationActivityOwner: (rootMutationOwner = createMutationActivityOwner({
         appId: chat.app.id,
         turnId: mutationTurnId,
@@ -2893,7 +2895,7 @@ async function getMcpTools(
                     : JSON.stringify(args).slice(0, 500);
 
               const autoApprove = buildMcpAutoApprove({
-                settings: readSettings(),
+                settings: ctx.inferenceSettings ?? readSettings(),
                 isDyadPro: ctx.isDyadPro,
                 freeModelMode: ctx.freeModelMode,
                 chatId: ctx.chatId,

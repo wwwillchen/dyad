@@ -1,7 +1,7 @@
 import { streamText, stepCountIs, type ModelMessage, type ToolSet } from "ai";
 import log from "electron-log";
 
-import { readSettings } from "@/main/settings";
+import { getChatInferenceSettings } from "@/ipc/services/chat_inference_settings";
 import { resolveModelSelection } from "@/ipc/utils/model_effort";
 import { getModelPreferenceKey } from "@/lib/modelEffort";
 import { cleanMessage } from "@/ipc/utils/ai_messages_utils";
@@ -58,7 +58,10 @@ export async function runExploreChatHistorySubagent({
   ctx: AgentContext;
   onProgress?: (progressText: string) => void;
 }): Promise<ExploreChatHistoryRunResult> {
-  const storedSettings = readSettings();
+  const storedSettings = await getChatInferenceSettings(
+    ctx.chatId,
+    ctx.inferenceSettings,
+  );
   assertHistoryExplorerAvailable(storedSettings, ctx);
   const selectedModel = await resolveModelSelection({
     model: SUBAGENT_MODEL,

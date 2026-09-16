@@ -88,7 +88,7 @@ const settings = () =>
   ({
     enableDyadPro: true,
     proModelUsage: "subscription",
-    selectedChatMode: "ask",
+    selectedChatMode: "local-agent",
     providerSettings: {
       auto: { apiKey: { value: mocks.key } },
       custom: { apiKey: { value: "provider-key" } },
@@ -374,3 +374,67 @@ it("subscription requests cannot spend another account's admission after a setti
   );
   expect(inference).not.toHaveBeenCalled();
 });
+
+it.each(
+  (["build", "ask", "plan", "local-agent"] as const).flatMap(
+    (selectedChatMode) =>
+      [true, false].map((enableDyadPro) => ({
+        selectedChatMode,
+        enableDyadPro,
+      })),
+  ),
+)(
+  "reports subscription usage only for Pro Agent ($selectedChatMode, Pro=$enableDyadPro)",
+  async ({ selectedChatMode, enableDyadPro }) => {
+    const billed = enableDyadPro && selectedChatMode === "local-agent";
+    const turnSettings = { ...settings(), selectedChatMode, enableDyadPro };
+    if (!billed) mocks.credits.mockImplementation(async () => denied());
+    const requests = vi.fn(async (url: string) => {
+      if (url.endsWith("/track-usage"))
+        return Response.json({ chargedUsd: 0.1 });
+      return new Response(
+        `data: ${JSON.stringify({
+          type: "response.completed",
+          response: {
+            id: "response-test",
+            created_at: 1,
+            model: "test-model",
+            status: "completed",
+            output: [],
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              input_tokens_details: { cached_tokens: 0 },
+            },
+          },
+        })}\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    });
+    vi.stubGlobal("fetch", requests);
+    const admitted = await preflightSubscriptionTurn(
+      { provider: "openai", name: "test-model", effortLevel: "medium" },
+      turnSettings,
+      signal(),
+    );
+    const { modelClient } = await getModelClient(
+      admitted.model,
+      turnSettings,
+      admitted.model,
+      { chatId: 42, externalModelAdmission: admitted.externalModelAdmission },
+    );
+    const model = modelClient.model as LanguageModelV3;
+    // Exercise both the tool-loop stream and auxiliary nonstreaming adapter.
+    const stream = await model.doStream({ prompt: [] });
+    const reader = stream.stream.getReader();
+    while (!(await reader.read()).done) {
+      /* consume final usage */
+    }
+    await model.doGenerate({ prompt: [] });
+    expect(mocks.credits).toHaveBeenCalledTimes(billed ? 2 : 0);
+    const reports = requests.mock.calls.filter(([url]) =>
+      url.endsWith("/track-usage"),
+    );
+    expect(reports).toHaveLength(billed ? 2 : 0);
+  },
+);

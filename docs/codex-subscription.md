@@ -11,8 +11,11 @@ application. An available OS keyring is required; there is no plaintext fallback
 Free Dyad users can connect their ChatGPT subscription without a Dyad Pro key.
 Subscription inference has no Dyad usage fees when Pro is off or no Pro key is
 configured; the existing Basic Agent quota and free-tier feature limits still
-apply. With Pro enabled, subscription inference retains its existing credit
-checks and usage charges.
+apply. With Pro enabled, Build, Ask, and Plan subscription inference also skips
+Dyad credit checks and usage charges, including with an exhausted Dyad balance.
+Agent mode retains its existing credit checks and usage charges. The resolved
+chat mode controls billing, not the global default mode. Explicit Pro-credit
+routing and local/custom-provider billing are unchanged.
 
 Onboarding offers **ChatGPT subscription** in place of the Google shortcut.
 Google Gemini remains available through **Other providers**. Successful onboarding
@@ -71,9 +74,9 @@ existing routes; the client cannot redirect a model selected inside a remote ser
 Browser OAuth success returns a static celebration page with automatic
 `dyad://chatgpt-connected` navigation and a manual Open Dyad button. No credentials
 are in that link. The app only shows success for a verified pending local
-connection. Pro copy discloses **up to 1.5 Pro credits / 1M tokens**. Non-Pro
-setup, connection-success, and model-menu surfaces omit the usage-fee/Basic Agent
-quota sentence. Setup shows a **Free** badge on the ChatGPT subscription option
+connection. Pricing is explained on the website rather than in the setup or
+subscription menu. Fast mode uses a toggle and disconnect has an action icon.
+Setup shows a **Free** badge on the ChatGPT subscription option
 only once settings and subscription status have loaded and sign-in is not pending.
 During browser sign-in, the provider option stays disabled and a separate cancel
 button appears beside the waiting status.
@@ -123,7 +126,9 @@ test-build mock balance. Recreating a model client does not recreate admission.
   invalid response: log a redacted warning and **allow generation**. No retry.
 - User cancellation is not an outage; it stops the request.
 
-Subscription, local, and custom-provider generation with Pro enabled is gated.
+Agent subscription generation and local/custom-provider generation with Pro
+enabled are gated. Build, Ask, and Plan subscription requests bypass both this
+check and `/track-usage` reporting by capturing an explicit null billing key.
 Existing gateway inference routes are unchanged, and the account display still returns null on lookup failure.
 This is an eligibility check, not a reservation: spend may lag, concurrent calls
 can pass together, and outages intentionally fail open. Post-generation usage

@@ -116,6 +116,31 @@ describe("runExploreChatHistorySubagent", () => {
     harness.dispose();
   });
 
+  it.each(["build", "ask", "plan", "local-agent"] as const)(
+    "inherits accepted %s billing settings instead of the live default",
+    async (selectedChatMode) => {
+      const ctx = makeAgentContext({ isDyadPro: true });
+      ctx.inferenceSettings = { ...mocks.readSettings(), selectedChatMode };
+      mocks.readSettings.mockReturnValue({
+        ...ctx.inferenceSettings,
+        selectedChatMode:
+          selectedChatMode === "local-agent" ? "build" : "local-agent",
+      });
+      await runExploreChatHistorySubagent({
+        query: "find the save discussion",
+        ctx,
+      });
+      expect(mocks.getModelClient).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          selectedChatMode,
+          providerSettings: ctx.inferenceSettings?.providerSettings,
+        }),
+        expect.any(Object),
+      );
+    },
+  );
+
   it("throws a Precondition error when the context is not Dyad Pro", async () => {
     // makeAgentContext defaults to isDyadPro: false.
     await expect(

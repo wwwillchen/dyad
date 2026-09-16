@@ -11,6 +11,8 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { chats, messages } from "@/db/schema";
 import { readSettings } from "@/main/settings";
+import { getChatInferenceSettings } from "@/ipc/services/chat_inference_settings";
+import type { UserSettings } from "@/lib/schemas";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 import {
   getCompactionThreshold,
@@ -165,6 +167,7 @@ export async function performCompaction(
   options?: {
     createdAtStrategy?: "before-latest-user" | "now";
     abortSignal?: AbortSignal;
+    settingsOverride?: UserSettings;
   },
 ): Promise<CompactionResult> {
   const abortSignal = options?.abortSignal;
@@ -187,7 +190,10 @@ export async function performCompaction(
   compactionChatsInFlight.add(chatId);
 
   try {
-    const storedSettings = readSettings();
+    const storedSettings = await getChatInferenceSettings(
+      chatId,
+      options?.settingsOverride,
+    );
     const chat = await db.query.chats.findFirst({
       where: eq(chats.id, chatId),
       columns: { modelSelection: true },

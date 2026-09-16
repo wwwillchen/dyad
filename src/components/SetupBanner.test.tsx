@@ -137,10 +137,10 @@ it("keeps the pending provider disabled and offers a separate cancellation actio
   expect(mocks.disconnect).toHaveBeenCalledOnce();
   expect(mocks.connect).not.toHaveBeenCalled();
 });
-it("discloses the existing subscription charge when Pro is active", () => {
+it("omits subscription pricing when Pro is active", () => {
   mocks.pro = true;
   setup();
-  expect(screen.getByText(/1.5 Pro credits/)).toBeVisible();
+  expect(screen.queryByText(/1.5 Pro credits/)).not.toBeInTheDocument();
   expect(
     screen.getByRole("button", { name: "ChatGPT subscription" }),
   ).toBeVisible();

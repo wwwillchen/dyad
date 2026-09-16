@@ -1547,6 +1547,8 @@ ${componentSnippet}
           proModelUsage: current.proModelUsage,
           providerSettings: current.providerSettings,
           selectedModel: current.selectedModel,
+          selectedChatMode: current.selectedChatMode,
+          defaultChatMode: current.defaultChatMode,
           modelEffortPreferences: current.modelEffortPreferences,
         };
       };
@@ -1565,11 +1567,18 @@ ${componentSnippet}
               const model = snapshot.modelSelection
                 ? await normalizeModelSelection(snapshot.modelSelection)
                 : await resolveDefaultModelSelection(attemptSettings);
+              const { mode } = await resolveChatModeForTurn({
+                storedChatMode: snapshot.chatMode,
+                requestedChatMode:
+                  req.requestedChatMode ??
+                  normalizeStoredChatMode(snapshot.chatMode),
+                settings: { ...attemptSettings, selectedModel: model },
+              });
               return isAcceptedReplay
                 ? { model, externalModelAdmission: undefined }
                 : preflightSubscriptionTurn(
                     model,
-                    attemptSettings,
+                    { ...attemptSettings, selectedChatMode: mode },
                     abortController.signal,
                     candidates,
                   );

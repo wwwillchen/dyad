@@ -14,7 +14,7 @@ import { useSubscriptionAccount } from "@/hooks/useSubscriptionAccount";
 import { useSettings } from "@/hooks/useSettings";
 import { isDyadProEnabled } from "@/lib/schemas";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, ChevronRight, Unplug } from "lucide-react";
 import { Badge } from "./ui/badge";
 import {
   CHATGPT_PLAN_LABELS,
@@ -125,11 +125,6 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
                 : "Get up to 5x usage with Pro credits by connecting your ChatGPT subscription"}
         </p>
       )}
-      {settings && hasPro && connected && (
-        <p className="px-2 pb-2 text-xs text-muted-foreground">
-          ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens.
-        </p>
-      )}
       {settings && !hasPro && !canDisconnect && (
         <p className="px-2 pb-2 text-xs text-muted-foreground">
           Connecting sets a ChatGPT model and Agent mode as defaults for new
@@ -162,6 +157,7 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
         }
         onClick={() => action.mutate(canDisconnect ? "disconnect" : "connect")}
       >
+        {canDisconnect && <Unplug className="size-4" aria-hidden="true" />}
         {status.data?.pending
           ? "Waiting for browser sign-in…"
           : canDisconnect
@@ -180,6 +176,7 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
         <>
           <DropdownMenuSeparator />
           <DropdownMenuCheckboxItem
+            variant="switch"
             closeOnClick={false}
             checked={settings?.chatgptFastMode ?? false}
             disabled={!settings || fastMode.isPending}

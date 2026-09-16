@@ -11,6 +11,7 @@ import {
 } from "./external_model_admission";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { getAutoSidekickRuntimeModel } from "@/lib/autoSidekick";
+import { shouldBillChatGPTSubscription } from "./subscription_billing";
 import {
   AUTO_BALANCED_ALIAS,
   AUTO_DYAD_PRO_MODEL_ALIASES,
@@ -54,7 +55,8 @@ export async function preflightSubscriptionTurn(
     isDyadProEnabled(settings) &&
     selections.some(
       (selection) =>
-        selection.connection === "subscription" ||
+        (selection.connection === "subscription" &&
+          shouldBillChatGPTSubscription(settings)) ||
         selection.connection === "api-key",
     )
   ) {

@@ -352,7 +352,7 @@ describe("getModelClient", () => {
       });
       expect(createCodexSubscriptionModel).toHaveBeenCalledWith(
         "gpt-5.5",
-        settings.providerSettings?.auto?.apiKey?.value,
+        selectedChatMode === "local-agent" ? "pro-key" : null,
         {
           chatId: 42,
         },

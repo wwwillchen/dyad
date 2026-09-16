@@ -153,7 +153,7 @@ it("shows account usage limits without a duplicate model catalog", async () => {
   expect(
     screen.getByText("Get up to 5× usage with your ChatGPT subscription."),
   ).toBeVisible();
-  expect(screen.getByText(/1.5 Pro credits/)).toBeVisible();
+  expect(screen.queryByText(/1.5 Pro credits/)).not.toBeInTheDocument();
   expect(screen.getByText("New")).toBeVisible();
   expect(screen.getByText("25% used")).toBeVisible();
   expect(
@@ -299,4 +299,25 @@ it("keeps subscription status errors visible alongside Fast mode save errors", a
   );
   expect(await screen.findByText("Could not save settings")).toBeVisible();
   expect(screen.getByText("Subscription status unavailable")).toBeVisible();
+});
+
+it("toggles Fast mode with the keyboard and keeps the menu open", async () => {
+  mocks.connected = true;
+  mocks.updateSettings.mockImplementationOnce(async ({ chatgptFastMode }) => {
+    mocks.fastMode = chatgptFastMode;
+  });
+  const user = await open();
+  const toggle = await screen.findByRole("menuitemcheckbox", {
+    name: /Fast mode/,
+  });
+  toggle.focus();
+  await user.keyboard(" ");
+  expect(mocks.updateSettings).toHaveBeenCalledExactlyOnceWith({
+    chatgptFastMode: true,
+  });
+  await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+  expect(
+    toggle.querySelector('[data-slot="switch-indicator"]'),
+  ).toHaveAttribute("data-checked");
+  expect(toggle).toBeVisible();
 });
