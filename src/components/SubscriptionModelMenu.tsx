@@ -1,8 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Menu } from "@base-ui/react/menu";
 import { ipc } from "@/ipc/types";
 import { queryKeys } from "@/lib/queryKeys";
 import {
-  DropdownMenuCheckboxItem,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -14,7 +14,7 @@ import { useSubscriptionAccount } from "@/hooks/useSubscriptionAccount";
 import { useSettings } from "@/hooks/useSettings";
 import { isDyadProEnabled } from "@/lib/schemas";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, ChevronRight, Unplug } from "lucide-react";
 import { Badge } from "./ui/badge";
 import {
   CHATGPT_PLAN_LABELS,
@@ -125,11 +125,6 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
                 : "Get up to 5x usage with Pro credits by connecting your ChatGPT subscription"}
         </p>
       )}
-      {settings && hasPro && connected && (
-        <p className="px-2 pb-2 text-xs text-muted-foreground">
-          ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens.
-        </p>
-      )}
       {settings && !hasPro && !canDisconnect && (
         <p className="px-2 pb-2 text-xs text-muted-foreground">
           Connecting sets a ChatGPT model and Agent mode as defaults for new
@@ -162,6 +157,7 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
         }
         onClick={() => action.mutate(canDisconnect ? "disconnect" : "connect")}
       >
+        {canDisconnect && <Unplug className="size-4" aria-hidden="true" />}
         {status.data?.pending
           ? "Waiting for browser sign-in…"
           : canDisconnect
@@ -179,7 +175,8 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
       {connected && status.data && (
         <>
           <DropdownMenuSeparator />
-          <DropdownMenuCheckboxItem
+          <Menu.CheckboxItem
+            className="group/fast-mode flex items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-sm outline-none focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50"
             closeOnClick={false}
             checked={settings?.chatgptFastMode ?? false}
             disabled={!settings || fastMode.isPending}
@@ -191,7 +188,13 @@ export function SubscriptionModelMenu({ children }: { children?: ReactNode }) {
                 Faster responses, 2x ChatGPT usage
               </p>
             </div>
-          </DropdownMenuCheckboxItem>
+            <span
+              aria-hidden="true"
+              className="bg-input group-data-checked/fast-mode:bg-primary inline-flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors"
+            >
+              <span className="bg-background size-4 rounded-full transition-transform group-data-checked/fast-mode:translate-x-full" />
+            </span>
+          </Menu.CheckboxItem>
           {fastMode.error && (
             <p role="alert" className="px-2 py-1 text-xs text-destructive">
               {fastMode.error.message}

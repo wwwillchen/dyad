@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { eq } from "drizzle-orm";
 import { chats, messages } from "@/db/schema";
+import { writeSettings } from "@/main/settings";
 import {
   setupChatFlowHarness,
   type ChatFlowHarness,
@@ -46,6 +47,15 @@ beforeAll(async () => {
   });
 }, 60_000);
 beforeEach(async () => {
+  writeSettings({
+    enableDyadPro: false,
+    selectedChatMode: "local-agent",
+    providerSettings: {},
+  });
+  await harness.db
+    .update(chats)
+    .set({ chatMode: "local-agent" })
+    .where(eq(chats.id, harness.chatId));
   h.credits
     .mockReset()
     .mockRejectedValue(new Error("Free users must not check Pro credits"));
@@ -88,6 +98,35 @@ beforeEach(async () => {
 afterAll(async () => {
   await harness?.dispose();
 });
+
+it.each(["build", "ask", "plan", "local-agent"] as const)(
+  "uses the stored %s mode for Pro subscription billing rather than the default",
+  async (chatMode) => {
+    writeSettings({
+      enableDyadPro: true,
+      selectedChatMode: chatMode === "local-agent" ? "build" : "local-agent",
+      providerSettings: { auto: { apiKey: { value: "pro-key" } } },
+    });
+    await harness.db
+      .update(chats)
+      .set({ chatMode })
+      .where(eq(chats.id, harness.chatId));
+    const result = await harness.streamChat(
+      "Say hello without changing files.",
+    );
+    if (chatMode === "local-agent") {
+      expect(result.eventsFor("chat:response:error")).not.toHaveLength(0);
+      expect(h.credits).toHaveBeenCalled();
+      expect(h.model).not.toHaveBeenCalled();
+    } else {
+      expect(result.eventsFor("chat:response:error")).toHaveLength(0);
+      expect(h.credits).not.toHaveBeenCalled();
+      expect(h.model).toHaveBeenCalled();
+      expect(h.model.mock.calls.every((call) => call[1] === null)).toBe(true);
+    }
+  },
+  30_000,
+);
 
 it("accepts a free subscription turn and records Basic Agent quota usage", async () => {
   const result = await harness.streamChat("Say hello without changing files.");

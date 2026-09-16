@@ -52,6 +52,21 @@ beforeEach(() => {
   });
 });
 describe("global subscription turn routing", () => {
+  it.each(["build", "ask", "plan"] as const)(
+    "allows %s subscription turns with no Dyad credits",
+    async (selectedChatMode) => {
+      mocks.credits.mockRejectedValue(new Error("Out of credits"));
+      const result = await preflightWithAdmission(
+        model,
+        { ...settings, selectedChatMode },
+        signal,
+      );
+      expect(result.model.connection).toBe("subscription");
+      expect(result.externalModelAdmission).toBeUndefined();
+      expect(mocks.credentials).toHaveBeenCalled();
+      expect(mocks.credits).not.toHaveBeenCalled();
+    },
+  );
   it("defaults connected eligible models to subscription, ignoring legacy chat source", async () => {
     expect(
       await preflightSubscriptionTurn(model, settings, signal),

@@ -207,11 +207,9 @@ export function SetupBanner({
               icon={<Settings className="size-4 text-muted-foreground" />}
             />
           </div>
-          {(!settings || hasPro) && (
+          {!settings && (
             <p className="mt-2 text-xs text-muted-foreground">
-              {!settings
-                ? "Checking Dyad Pro status…"
-                : "ChatGPT subscription usage costs up to 1.5 Pro credits / 1M tokens."}
+              Checking Dyad Pro status…
             </p>
           )}
           {subscription.data?.pending && (
