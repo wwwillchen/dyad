@@ -2615,7 +2615,10 @@ This conversation includes one or more image attachments. When the user uploads 
                 chatId: req.chatId,
                 invocationRef: req.invocationRef,
                 streamId: req.streamId,
-                error: `${AI_STREAMING_ERROR_MESSAGE_PREFIX}${requestIdPrefix}${message}`,
+                error:
+                  error?.error instanceof SubscriptionBillingError
+                    ? error.error.serialize()
+                    : `${AI_STREAMING_ERROR_MESSAGE_PREFIX}${requestIdPrefix}${message}`,
               } satisfies ChatStreamErrorPayload);
             },
             abortSignal: abortController.signal,

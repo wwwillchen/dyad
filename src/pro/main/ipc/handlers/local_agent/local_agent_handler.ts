@@ -1,3 +1,4 @@
+import { SubscriptionBillingError } from "@/shared/subscription_billing_error";
 import {
   getInferenceSource,
   type InferenceSource,
@@ -2451,7 +2452,10 @@ export async function handleLocalAgentStream(
       chatId: req.chatId,
       invocationRef: req.invocationRef,
       streamId: req.streamId,
-      error: `Error: ${getErrorMessageWithDetails(error)}`,
+      error:
+        error instanceof SubscriptionBillingError
+          ? error.serialize()
+          : `Error: ${getErrorMessageWithDetails(error)}`,
       warningMessages:
         warningMessages.length > 0 ? [...new Set(warningMessages)] : undefined,
     });
