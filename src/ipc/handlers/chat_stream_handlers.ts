@@ -1548,6 +1548,7 @@ ${componentSnippet}
           providerSettings: current.providerSettings,
           selectedModel: current.selectedModel,
           selectedChatMode: current.selectedChatMode,
+          defaultChatMode: current.defaultChatMode,
           modelEffortPreferences: current.modelEffortPreferences,
         };
       };

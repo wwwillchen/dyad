@@ -303,6 +303,9 @@ it("keeps subscription status errors visible alongside Fast mode save errors", a
 
 it("toggles Fast mode with the keyboard and keeps the menu open", async () => {
   mocks.connected = true;
+  mocks.updateSettings.mockImplementationOnce(async ({ chatgptFastMode }) => {
+    mocks.fastMode = chatgptFastMode;
+  });
   const user = await open();
   const toggle = await screen.findByRole("menuitemcheckbox", {
     name: /Fast mode/,
@@ -312,5 +315,9 @@ it("toggles Fast mode with the keyboard and keeps the menu open", async () => {
   expect(mocks.updateSettings).toHaveBeenCalledExactlyOnceWith({
     chatgptFastMode: true,
   });
+  await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+  expect(
+    toggle.querySelector('[data-slot="switch-indicator"]'),
+  ).toHaveAttribute("data-checked");
   expect(toggle).toBeVisible();
 });

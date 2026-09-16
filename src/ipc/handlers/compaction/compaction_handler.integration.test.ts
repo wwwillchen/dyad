@@ -121,6 +121,7 @@ describe("performCompaction", () => {
     mockGetModelClient.mockClear();
     settingsState.current = {
       selectedModel: { provider: "anthropic", name: "test-model" },
+      providerSettings: {},
     };
   });
 
@@ -255,6 +256,8 @@ describe("performCompaction", () => {
         effortLevel: "medium",
       },
       {
+        selectedChatMode: "local-agent",
+        providerSettings: {},
         selectedModel: {
           provider: "anthropic",
           name: "test-model",
@@ -295,6 +298,7 @@ describe("performCompaction", () => {
       },
       {
         enableDyadPro: true,
+        selectedChatMode: "local-agent",
         providerSettings: { auto: { apiKey: { value: "dyad-pro-key" } } },
         selectedModel: {
           provider: "openai",
@@ -309,6 +313,42 @@ describe("performCompaction", () => {
       },
     );
   });
+
+  it.each(["build", "ask", "plan", "local-agent"] as const)(
+    "uses the accepted %s mode and account during compaction",
+    async (selectedChatMode) => {
+      const accepted = {
+        selectedModel: { provider: "openai", name: "gpt-5" },
+        enableDyadPro: true,
+        selectedChatMode,
+        providerSettings: { auto: { apiKey: { value: "accepted-key" } } },
+      } as unknown as import("@/lib/schemas").UserSettings;
+      settingsState.current = {
+        ...accepted,
+        selectedChatMode:
+          selectedChatMode === "local-agent" ? "build" : "local-agent",
+        providerSettings: { auto: { apiKey: { value: "changed-key" } } },
+      };
+      mockStreamText.mockReturnValue({ textStream: textStream(["Summary"]) });
+      const result = await performCompaction(
+        { sender: {} } as never,
+        chatId,
+        "/tmp/test-app",
+        "request-id",
+        undefined,
+        { settingsOverride: accepted },
+      );
+      expect(result.success).toBe(true);
+      expect(mockGetModelClient).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          selectedChatMode,
+          providerSettings: accepted.providerSettings,
+        }),
+        expect.any(Object),
+      );
+    },
+  );
 
   it.each(["pro", "subscription"] as const)(
     "discards a saved %s connection after Pro is disabled",

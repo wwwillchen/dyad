@@ -3390,6 +3390,7 @@ describe("handleLocalAgentStream", () => {
         {
           createdAtStrategy: "now",
           abortSignal: expect.any(AbortSignal),
+          settingsOverride: expect.any(Object),
         },
       );
       expect(secondStepPreparedMessages).toBeDefined();

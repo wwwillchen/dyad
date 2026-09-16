@@ -63,6 +63,7 @@ describe("global subscription turn routing", () => {
       );
       expect(result.model.connection).toBe("subscription");
       expect(result.externalModelAdmission).toBeUndefined();
+      expect(mocks.account).toHaveBeenCalled();
       expect(mocks.credentials).toHaveBeenCalled();
       expect(mocks.credits).not.toHaveBeenCalled();
     },

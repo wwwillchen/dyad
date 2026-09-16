@@ -3,6 +3,7 @@ import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { SwitchIndicator } from "./switch";
 
 function DropdownMenu({ ...props }: MenuPrimitive.Root.Props) {
   return <MenuPrimitive.Root data-slot="dropdown-menu" {...props} />;
@@ -81,24 +82,38 @@ function DropdownMenuCheckboxItem({
   className,
   children,
   checked,
+  variant = "checkbox",
   ...props
-}: MenuPrimitive.CheckboxItem.Props) {
+}: MenuPrimitive.CheckboxItem.Props & { variant?: "checkbox" | "switch" }) {
   return (
     <MenuPrimitive.CheckboxItem
       data-slot="dropdown-menu-checkbox-item"
       className={cn(
         "focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-sm py-1.5 pr-2 pl-8 text-sm outline-hidden select-none data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        variant === "switch" && "justify-between gap-3 pl-2",
         className,
       )}
       checked={checked}
       {...props}
     >
-      <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
-        <MenuPrimitive.CheckboxItemIndicator>
-          <CheckIcon className="size-4" />
-        </MenuPrimitive.CheckboxItemIndicator>
-      </span>
+      {variant === "checkbox" && (
+        <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
+          <MenuPrimitive.CheckboxItemIndicator>
+            <CheckIcon className="size-4" />
+          </MenuPrimitive.CheckboxItemIndicator>
+        </span>
+      )}
       {children}
+      {variant === "switch" && (
+        <MenuPrimitive.CheckboxItemIndicator
+          keepMounted
+          render={(props, state) => (
+            <span {...props}>
+              <SwitchIndicator checked={state.checked} />
+            </span>
+          )}
+        />
+      )}
     </MenuPrimitive.CheckboxItem>
   );
 }

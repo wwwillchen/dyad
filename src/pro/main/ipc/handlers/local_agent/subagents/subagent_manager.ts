@@ -29,7 +29,8 @@ import type {
   SubagentThreadSummary,
 } from "@/ipc/types";
 import { isSubagentAcceptingMessages, isSubagentActive } from "@/ipc/types";
-import { isDyadProEnabled } from "@/lib/schemas";
+import { isDyadProEnabled, type UserSettings } from "@/lib/schemas";
+import { getChatInferenceSettings } from "@/ipc/services/chat_inference_settings";
 import { readSettings } from "@/main/settings";
 import { getDyadAppPath } from "@/paths/paths";
 import { sanitizeStepMessages } from "../prepare_step_utils";
@@ -468,7 +469,11 @@ export async function spawnModelSubagent(params: {
       DyadErrorKind.Validation,
     );
   }
-  await preflightPersonaModel(params.persona);
+  await preflightPersonaModel(
+    params.persona,
+    params.ctx.chatId,
+    params.ctx.inferenceSettings,
+  );
 
   const normalizedScope =
     params.persona === "implementer"
@@ -565,7 +570,7 @@ export async function startReview(params: {
   allowWhenAutoReviewDisabled?: boolean;
 }): Promise<SubagentThreadSummary> {
   assertPro("reviewer");
-  await preflightPersonaModel("reviewer");
+  await preflightPersonaModel("reviewer", params.chatId);
   if (
     params.invocationSource === "auto_review" &&
     !params.allowWhenAutoReviewDisabled &&
@@ -1620,6 +1625,8 @@ async function runThread(
           }
         : await runModel({
             threadId,
+            chatId: rootCtx.chatId,
+            inferenceSettings: rootCtx.inferenceSettings,
             appId,
             persona: thread.persona,
             assignment,
@@ -1706,6 +1713,7 @@ async function runReview(
     if (!(await updateStatus(threadId, "running"))) return;
     const reviewResult = await runModel({
       threadId,
+      chatId: thread.chatId,
       appId,
       persona: "reviewer",
       assignment: `Review this exact diff. ${STRUCTURED_REVIEW_INSTRUCTIONS}${followup ? `\n\nFollow-up request: ${followup}` : ""}\n\nFiles: ${target.files.join(", ")}\nExcluded: ${target.exclusions.join(", ") || "none"}\n\n${target.diff}`,
@@ -1755,6 +1763,8 @@ async function runReview(
 
 type RunModelParams = {
   threadId: string;
+  chatId: number;
+  inferenceSettings?: UserSettings;
   appId: number;
   persona: SubagentPersona;
   assignment: string;
@@ -1768,7 +1778,11 @@ async function runModel(
 ): Promise<{ text: string; hitStepLimit: boolean }> {
   assertPro(params.persona);
   const claimedRootMessageIds = new Set<number>();
-  const settings = personaModelSettings(params.persona);
+  const settings = await personaModelSettings(
+    params.persona,
+    params.chatId,
+    params.inferenceSettings,
+  );
   const modelInfo = await getModelClient(settings.selectedModel, settings);
   const history = await buildModelHistory(params.threadId, params.assignment);
   let streamError: unknown;
@@ -1887,10 +1901,14 @@ async function recordModelUsage(
   emit(thread.chatId, threadId);
 }
 
-function personaModelSettings(persona: SubagentPersona) {
+async function personaModelSettings(
+  persona: SubagentPersona,
+  chatId: number,
+  acceptedSettings?: UserSettings,
+) {
   const defaults = MODELS[persona];
   return {
-    ...readSettings(),
+    ...(await getChatInferenceSettings(chatId, acceptedSettings)),
     selectedModel: {
       provider: defaults.provider,
       name: defaults.name,
@@ -1900,7 +1918,11 @@ function personaModelSettings(persona: SubagentPersona) {
   };
 }
 
-async function preflightPersonaModel(persona: SubagentPersona): Promise<void> {
+async function preflightPersonaModel(
+  persona: SubagentPersona,
+  chatId: number,
+  acceptedSettings?: UserSettings,
+): Promise<void> {
   const defaults = MODELS[persona];
   const catalog = await getBuiltinLanguageModelCatalog();
   const available = catalog.modelsByProvider[defaults.provider]?.some(
@@ -1913,7 +1935,11 @@ async function preflightPersonaModel(persona: SubagentPersona): Promise<void> {
     );
   }
   try {
-    const settings = personaModelSettings(persona);
+    const settings = await personaModelSettings(
+      persona,
+      chatId,
+      acceptedSettings,
+    );
     await getModelClient(settings.selectedModel, settings);
   } catch (error) {
     throw new DyadError(

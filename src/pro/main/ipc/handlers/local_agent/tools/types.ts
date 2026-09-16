@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { IpcMainInvokeEvent } from "electron";
 import { jsonrepair } from "jsonrepair";
-import { AgentToolConsent } from "@/lib/schemas";
+import { AgentToolConsent, type UserSettings } from "@/lib/schemas";
 import { AgentTodo } from "@/ipc/types";
 import type { SubagentPersona } from "@/ipc/types";
 import type { AppFrameworkType } from "@/lib/framework_constants";
@@ -67,6 +67,8 @@ export const APP_MUTATING_TOOL_NAMES = [
 export type AppMutatingToolName = (typeof APP_MUTATING_TOOL_NAMES)[number];
 
 export interface AgentContext {
+  /** Accepted root settings, including resolved mode and billing account. */
+  inferenceSettings?: UserSettings;
   /** Owner-scoped identity used to join only this root turn's mutations. */
   mutationActivityOwner?: MutationActivityOwner;
   event: IpcMainInvokeEvent;

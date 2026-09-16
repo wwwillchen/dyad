@@ -1,7 +1,7 @@
 import { streamText, stepCountIs, type ModelMessage, type ToolSet } from "ai";
 import log from "electron-log";
 
-import { readSettings } from "@/main/settings";
+import { getChatInferenceSettings } from "@/ipc/services/chat_inference_settings";
 import { resolveModelSelection } from "@/ipc/utils/model_effort";
 import { getModelPreferenceKey } from "@/lib/modelEffort";
 import { cleanMessage } from "@/ipc/utils/ai_messages_utils";
@@ -110,7 +110,10 @@ export async function runExploreCodeSubagent({
     observationCount: number;
   }) => void;
 }): Promise<string> {
-  const storedSettings = readSettings();
+  const storedSettings = await getChatInferenceSettings(
+    ctx.chatId,
+    ctx.inferenceSettings,
+  );
   assertDyadValueAvailable(storedSettings);
   const selectedModel = await resolveModelSelection({
     model: SUBAGENT_MODEL,
