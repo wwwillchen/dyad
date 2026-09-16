@@ -110,7 +110,7 @@ describe("readSettings", () => {
           "autoFixReviewIssues": false,
           "chatgptFastMode": false,
           "disablePreviewNodeAutoInstall": false,
-          "disableSandboxedE2eTests": false,
+          "disableSandboxedE2eTests": true,
           "enableAdvancedSubagents": false,
           "enableAppBlueprint": true,
           "enableAutoReview": false,
@@ -180,7 +180,22 @@ describe("readSettings", () => {
       expect(result.blockUnsafeNpmPackages).toBeUndefined();
       expect(result.enableAutoUpdate).toBe(true);
       expect(result.releaseChannel).toBe("stable");
+      expect(result.disableSandboxedE2eTests).toBe(true);
     });
+
+    it.each([false, true])(
+      "preserves the saved sandboxed E2E preference %s",
+      (disableSandboxedE2eTests) => {
+        mockFs.existsSync.mockReturnValue(true);
+        mockFs.readFileSync.mockReturnValue(
+          JSON.stringify({ disableSandboxedE2eTests }),
+        );
+
+        expect(readSettings().disableSandboxedE2eTests).toBe(
+          disableSandboxedE2eTests,
+        );
+      },
+    );
 
     it("should treat existing settings files without hasRunBefore as already run", () => {
       const mockFileContent = {
@@ -553,7 +568,7 @@ describe("readSettings", () => {
           "autoFixReviewIssues": false,
           "chatgptFastMode": false,
           "disablePreviewNodeAutoInstall": false,
-          "disableSandboxedE2eTests": false,
+          "disableSandboxedE2eTests": true,
           "enableAdvancedSubagents": false,
           "enableAppBlueprint": true,
           "enableAutoReview": false,

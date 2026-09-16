@@ -79,7 +79,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   autoFixReviewIssues: false,
   autoApproveNonSchemaSql: true,
   autoExpandPreviewPanel: true,
-  disableSandboxedE2eTests: false,
+  disableSandboxedE2eTests: true,
   enableContextCompaction: true,
   enablePnpmMinimumReleaseAgeWarning: true,
   previewIdleTimeoutPolicy: "default",

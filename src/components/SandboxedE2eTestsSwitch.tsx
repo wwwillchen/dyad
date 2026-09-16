@@ -3,10 +3,9 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 
 /**
- * Escape hatch for the sandboxed E2E runtime. Stored inverted
- * (`disableSandboxedE2eTests`) so the sandbox stays the default for everyone
- * who never opens this, and only an explicit opt-out falls back to running
- * against the normal preview.
+ * Opt-in toggle for the sandboxed E2E runtime. Stored inverted
+ * (`disableSandboxedE2eTests`), which defaults to true so tests use the normal
+ * preview until sandboxing is enabled.
  */
 export function SandboxedE2eTestsSwitch() {
   const { settings, updateSettings } = useSettings();
