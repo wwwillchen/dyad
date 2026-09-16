@@ -1,3 +1,4 @@
+import { SubscriptionBillingError } from "@/shared/subscription_billing_error";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatErrorBox } from "./ChatErrorBox";
@@ -95,4 +96,39 @@ describe("ChatErrorBox error presentation", () => {
     expect(scrollRegion?.className).toContain("max-h-64");
     expect(scrollRegion?.className).toContain("scrollbar-on-hover");
   });
+});
+
+describe("ChatErrorBox subscription billing errors", () => {
+  it.each([
+    [
+      "OUT_OF_CREDITS",
+      "You're out of Dyad credits. Add credits to continue using your subscription.",
+      "Get more credits",
+      "https://academy.dyad.sh/subscription",
+    ],
+    [
+      "KEY_REJECTED",
+      "Your Dyad Pro key was rejected. Get your current Pro key.",
+      "Open membership portal",
+      "https://academy.dyad.sh",
+    ],
+  ] as const)(
+    "offers the right recovery for %s",
+    (code, message, action, url) => {
+      mocks.openExternalUrl.mockReset();
+      render(
+        <ChatErrorBox
+          error={new SubscriptionBillingError(code).serialize()}
+          isDyadProEnabled
+          onDismiss={vi.fn()}
+          onStartNewChat={vi.fn()}
+        />,
+      );
+      expect(screen.getByText(message)).toBeTruthy();
+      expect(screen.queryByText("Start new chat")).toBeNull();
+      expect(screen.queryByText("Read docs")).toBeNull();
+      fireEvent.click(screen.getByText(action));
+      expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith(url);
+    },
+  );
 });

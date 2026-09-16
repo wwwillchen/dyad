@@ -1,3 +1,4 @@
+import { SubscriptionBillingError } from "@/shared/subscription_billing_error";
 // @vitest-environment node
 import {
   afterAll,
@@ -90,6 +91,26 @@ describe("redo turn admission", () => {
         expect.objectContaining({
           payload: expect.objectContaining({
             error: expect.stringContaining(message),
+          }),
+        }),
+      ]);
+      expect(result.messages).toEqual(originalMessages);
+    },
+  );
+
+  it.each(["OUT_OF_CREDITS", "KEY_REJECTED"] as const)(
+    "preserves the exchange and sends structured billing recovery for %s",
+    async (code) => {
+      vi.mocked(preflightSubscriptionTurn).mockRejectedValue(
+        new SubscriptionBillingError(code),
+      );
+      const result = await harness.streamChat("tc=no-code-response", {
+        redo: true,
+      });
+      expect(result.eventsFor("chat:response:error")).toEqual([
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            error: JSON.stringify({ type: "SUBSCRIPTION_BILLING_ERROR", code }),
           }),
         }),
       ]);

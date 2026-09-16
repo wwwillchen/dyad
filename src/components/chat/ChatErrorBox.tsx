@@ -1,3 +1,4 @@
+import { parseSubscriptionBillingError } from "@/shared/subscription_billing_error";
 import { ipc } from "@/ipc/types";
 import { useFreeAgentQuota } from "@/hooks/useFreeAgentQuota";
 import { useFreeModelQuota } from "@/hooks/useFreeModelQuota";
@@ -51,6 +52,20 @@ export function ChatErrorBox({
   // Trial Pro users cannot use the Free model (it is hidden from the picker and
   // rejected by the engine), so don't suggest it to them.
   const isTrialProUser = userBudget?.isTrial === true;
+
+  const billingError = parseSubscriptionBillingError(normalizedError);
+  if (billingError) {
+    return (
+      <ChatInfoContainer onDismiss={onDismiss}>
+        <span>{billingError.message}</span>
+        <div className="mt-2">
+          <ExternalLink href={billingError.url} variant="primary">
+            {billingError.action}
+          </ExternalLink>
+        </div>
+      </ChatInfoContainer>
+    );
+  }
 
   if (error.includes("doesn't have a free quota tier")) {
     return (
