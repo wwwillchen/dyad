@@ -1,4 +1,8 @@
-import { claudeStatus } from "@/ipc/services/claude_code/runtime";
+import {
+  claudeStatus,
+  listClaudeModels,
+} from "@/ipc/services/claude_code/runtime";
+import { getClaudeUsageLimits } from "@/ipc/services/claude_code/usage_limits";
 import {
   hasClaudeDisclosure,
   acceptClaudeDisclosure,
@@ -102,6 +106,10 @@ async function mutateChatAfterDrainingStreams({
 }
 
 export function registerChatHandlers() {
+  createTypedHandler(chatContracts.claudeCodeModels, () => listClaudeModels());
+  createTypedHandler(chatContracts.claudeCodeUsage, async () =>
+    getClaudeUsageLimits(),
+  );
   createTypedHandler(chatContracts.claudeCodeStatus, async () => ({
     ...(await claudeStatus()),
     disclosed: await hasClaudeDisclosure(),

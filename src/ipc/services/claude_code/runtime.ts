@@ -1,14 +1,24 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { constants } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
+import {
+  claudeUsageGeneration,
+  recordClaudeUsageLimits,
+  setClaudeUsageAccount,
+} from "./usage_limits";
 import treeKill from "tree-kill";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { killProcessTreeSync } from "@/ipc/utils/kill_process_tree_sync";
+import {
+  ClaudeCodeModelsSchema,
+  type ClaudeCodeModel,
+} from "@/shared/claude_code_models";
 
 const execFileAsync = promisify(execFile);
 // Raw recursive Grep can expose dotenv values without passing a per-file guard.
@@ -96,9 +106,14 @@ export async function claudeStatus() {
         loggedIn: z.boolean(),
         authMethod: z.string().optional(),
         subscriptionType: z.string().nullable().optional(),
+        email: z.string().nullable().optional(),
+        orgId: z.string().nullable().optional(),
       })
       .parse(JSON.parse(stdout));
     const connected = auth.loggedIn && auth.authMethod === "claude.ai";
+    setClaudeUsageAccount(
+      connected ? JSON.stringify([auth.email, auth.orgId]) : null,
+    );
     return {
       installed: true,
       connected,
@@ -111,6 +126,7 @@ export async function claudeStatus() {
           : "Run claude auth login in your terminal to use your subscription.",
     };
   } catch {
+    setClaudeUsageAccount(null);
     return {
       installed,
       connected: false,
@@ -120,6 +136,129 @@ export async function claudeStatus() {
         ? "Claude Code is installed, but its status could not be checked. Run claude auth status in your terminal and reconnect with claude auth login if needed."
         : "Install Claude Code from code.claude.com, then run claude auth login in your terminal. Dyad never collects subscription credentials.",
     };
+  }
+}
+
+/** Read the same initialization catalog used by the SDK's supportedModels().
+ * No user message is sent, so discovery never starts an inference turn. */
+export async function listClaudeModels(): Promise<ClaudeCodeModel[]> {
+  const executable = await findClaudeExecutable();
+  const cwd = await mkdtemp(path.join(tmpdir(), "dyad-claude-models-"));
+  try {
+    return await new Promise<ClaudeCodeModel[]>((resolve, reject) => {
+      const requestId = randomUUID();
+      const child = spawn(
+        executable,
+        [
+          "-p",
+          "--restricted",
+          "--disable-slash-commands",
+          "--no-chrome",
+          "--strict-mcp-config",
+          "--mcp-config",
+          JSON.stringify({ mcpServers: {} }),
+          "--settings",
+          JSON.stringify({
+            disableAllHooks: true,
+            enabledPlugins: {},
+            autoMemoryEnabled: false,
+          }),
+          "--tools",
+          "",
+          "--no-session-persistence",
+          "--input-format",
+          "stream-json",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+        ],
+        {
+          cwd,
+          env: claudeEnvironment(),
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          detached: process.platform !== "win32",
+        },
+      );
+      running.add(child);
+      const decoder = new StringDecoder("utf8");
+      let buffer = "";
+      let bytes = 0;
+      let models: ClaudeCodeModel[] | undefined;
+      let failure: DyadError | undefined;
+      let closed = false;
+      const fail = () => {
+        failure ??= new DyadError(
+          "Could not load Claude Code models. Refresh the connection and try again.",
+          DyadErrorKind.External,
+        );
+        if (!closed) stopClaudeProcess(child);
+      };
+      const timeout = setTimeout(fail, 10_000);
+      const consume = (line: string) => {
+        if (!line.trim() || models || failure) return;
+        try {
+          const event = JSON.parse(line);
+          if (
+            event.type !== "control_response" ||
+            event.response?.request_id !== requestId
+          )
+            return;
+          if (event.response.subtype !== "success") {
+            fail();
+            return;
+          }
+          // Parse explicitly: never return the rest of the initialization response.
+          models = ClaudeCodeModelsSchema.parse(
+            event.response.response?.models,
+          );
+          // The disposable probe has no conversation or pending tools to finish.
+          if (!closed) stopClaudeProcess(child);
+        } catch {
+          fail();
+        }
+      };
+      child.stdout.on("data", (data: Buffer) => {
+        if (models || failure) return;
+        bytes += data.length;
+        if (bytes > 1024 * 1024) {
+          fail();
+          return;
+        }
+        buffer += decoder.write(data);
+        let newline: number;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+          consume(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+        }
+      });
+      // Do not expose CLI diagnostics or account information to logs/telemetry.
+      child.stderr.resume();
+      child.stdin.on("error", () => {
+        if (!models) fail();
+      });
+      child.once("error", fail);
+      child.once("close", () => {
+        closed = true;
+        clearTimeout(timeout);
+        running.delete(child);
+        consume(buffer + decoder.end());
+        if (models && !failure) resolve(models);
+        else {
+          fail();
+          reject(failure);
+        }
+      });
+      child.stdin.write(
+        JSON.stringify({
+          type: "control_request",
+          request_id: requestId,
+          request: { subtype: "initialize" },
+        }) + "\n",
+      );
+    });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
   }
 }
 
@@ -186,6 +325,7 @@ export function claudeArguments(
  * these events back through its AI-SDK model/tool loop. */
 export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
   turn.signal.throwIfAborted();
+  const usageGeneration = claudeUsageGeneration();
   const executable = await findClaudeExecutable();
   await new Promise<void>((resolve, reject) => {
     const child = spawn(executable, claudeArguments(turn), {
@@ -220,6 +360,7 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
         .then(async () => {
           if (failure) return;
           const parsed: CliEvent = JSON.parse(line);
+          recordClaudeUsageLimits(parsed, usageGeneration);
           await turn.onEvent(parsed);
         })
         .catch((error) => {
@@ -278,14 +419,16 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
   });
 }
 
-export function stopClaudeProcesses(): void {
-  for (const child of running) {
-    try {
-      if (process.platform !== "win32" && child.pid)
-        process.kill(-child.pid, "SIGKILL");
-      else if (child.pid) killProcessTreeSync(child.pid);
-    } catch {
-      /* already exited */
-    }
+function stopClaudeProcess(child: ChildProcess): void {
+  try {
+    if (process.platform !== "win32" && child.pid)
+      process.kill(-child.pid, "SIGKILL");
+    else if (child.pid) killProcessTreeSync(child.pid);
+  } catch {
+    /* already exited */
   }
+}
+
+export function stopClaudeProcesses(): void {
+  for (const child of running) stopClaudeProcess(child);
 }
