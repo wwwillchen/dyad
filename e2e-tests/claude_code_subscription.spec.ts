@@ -36,6 +36,14 @@ async function selectSubscription(po: PageObject) {
     localAgentUseAutoModel: true,
     autoApprove: false,
   });
+  await po.navigation.goToSettingsTab();
+  await po.page
+    .getByRole("switch", {
+      name: "Enable Claude Code subscription",
+      exact: true,
+    })
+    .click();
+  await po.navigation.goToAppsTab();
   await po.importApp("minimal");
   await configureBilling(po);
   await po.page.getByTestId("model-picker").click();
@@ -118,6 +126,7 @@ test("real Claude subscription: picker, approvals, edit, MCP, resume, attributio
     "PROTOTYPE_SECRET=dotenv-read-must-not-leak\n",
   );
   await po.chatActions.selectChatMode("ask");
+  const reportsBeforeAsk = billing.events.length;
   await po.sendPrompt(
     "Use Bash or Write to create forbidden.txt. Also use Read or Grep to show the value in .env.local. Do not substitute tools. If these operations are denied or unavailable, report that.",
     { timeout: 90_000 },
@@ -129,6 +138,7 @@ test("real Claude subscription: picker, approvals, edit, MCP, resume, attributio
   await expect(
     fs.access(path.join(appPath, "forbidden.txt")),
   ).rejects.toThrow();
+  expect(billing.events).toHaveLength(reportsBeforeAsk);
   const profile = { userDataDir: po.userDataDir, fakeLlmPort: po.fakeLlmPort };
   await terminateElectronApp(po.electronApp);
   const restartedApp = await launchElectronApp({

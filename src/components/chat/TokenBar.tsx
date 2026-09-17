@@ -56,16 +56,16 @@ export function SubscriptionUsage({ receipt }: { receipt?: string | null }) {
     >
       <div>
         {status === "unbilled"
-          ? "Pro was off for this turn: no Dyad credits charged."
+          ? "This turn does not use Dyad credits (Pro off, or Build, Ask or Plan mode)."
           : status === "attempted"
             ? "Usage reporting attempted. See your billing account for actual spend."
             : "Usage unavailable. No token count or charge has been inferred."}
       </div>
       <div>
-        Claude subscription usage applies. With Pro enabled, Dyad charges $0.02
-        per million total tokens for model IDs containing -luna, -mini or -nano;
-        $0.10 per million otherwise. Cached tokens count once. Reporting is best
-        effort, without retries.
+        Claude subscription usage applies. In Agent mode with Pro enabled, Dyad
+        charges $0.02 per million total tokens for model IDs containing -luna,
+        -mini or -nano; $0.10 per million otherwise. Cached tokens count once.
+        Reporting is best effort, without retries.
       </div>
       <div>
         CLI context is managed separately; Dyad's context estimate is not a

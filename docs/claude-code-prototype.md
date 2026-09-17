@@ -1,6 +1,6 @@
 # Claude Code subscription prototype
 
-Updated 2026-09-15: rebased onto current Dyad and aligned charging with #4483. **Live Claude charging and commercial release approval remain unverified.**
+Updated 2026-09-16: rebased onto current Dyad and aligned charging with the current Codex subscription policy. **Live Claude charging and commercial release approval remain unverified.**
 
 ## Implemented
 
@@ -9,9 +9,11 @@ Updated 2026-09-15: rebased onto current Dyad and aligned charging with #4483. *
 - Restricted Read/Glob/Edit/Write inventory; raw Grep and dotenv file access are disabled to prevent bypassing Dyad redaction; shell, subagents and external MCP configuration disabled. Ask/Plan remove mutations. App-bound operational MCP supports diagnostics, checks, package-manager-aware tests, dependency installation and preview restart. Approved project operations execute code; **not an OS sandbox**.
 - Attachments use actual local Read paths (including images); sticky referenced apps are permitted only for read tools. Selected-element context and app instructions remain in the prompt.
 - App resource coordination, checkpoints, preview refresh, review and undo. Interrupted sessions require new chats, independently of billing. Restore-created forks start fresh CLI sessions using copied visible history as context, never replaying old tool calls. Chat title/search indexing and final updates are preserved; streaming persistence is throttled.
-- Shared external-model charging: flat $0.02/M for -luna/-mini/-nano model IDs, $0.10/M otherwise when Pro is enabled. Pro off is unbilled by Dyad. Single-attempt reporting, no outbox or retries, engine-owned actual spend. See [contract](claude-code-track-usage-contract.md).
+- Shared external-model charging: flat $0.02/M for -luna/-mini/-nano model IDs, $0.10/M otherwise in Agent mode when Pro is enabled. Pro off, Build, Ask and Plan are unbilled by Dyad, matching Codex. Single-attempt reporting, no outbox or retries, engine-owned actual spend. See [contract](claude-code-track-usage-contract.md).
 
 ## Run and verify
+
+Enable **Settings → Experiments → Enable Claude Code subscription** first. The top-level `enableClaudeCodeSubscription` setting defaults to false. Disabling it hides Claude picker choices and blocks new Claude turns without modifying existing chats; new chats stop inheriting a disabled Claude default.
 
 Install dependencies with the repository-supported Node version. Authenticate the official native CLI through `claude auth login` outside Dyad; never paste credentials into Dyad. The current version guard accepts 2.1.259+ within 2.1; other series fail closed. Historical tested CLI versions: 2.1.260/261.
 

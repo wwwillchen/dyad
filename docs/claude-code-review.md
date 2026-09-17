@@ -1,5 +1,11 @@
 # Rebase and deep review — 2026-09-15
 
+## Follow-up — 2026-09-16
+
+Rebased onto `e9229ea22`. Added the default-off top-level `enableClaudeCodeSubscription` experiment in Settings, search, picker and turn admission. Disabling preserves existing history and prevents new chats inheriting a disabled Claude default. Claude and Codex now use the same accepted-turn billing key: Agent + Pro is billed, while Build/Ask/Plan or Pro off bypass Dyad credit checks and reports.
+
+Verification: 158 initial focused tests passed; the subsequent full run passed 8,454 tests with one skipped and one stale billing-text assertion. That assertion was updated and all three tests in its suite passed. Types and Electron build passed. Rebuilt real-subscription Electron smoke: **3/3 passed**, including Settings opt-in, no Ask-mode usage reports, restart, Undo continuation and cancellation. Accounting used the contract fixture; live engine charging remains unverified.
+
 PR #4485 was rebased onto `2e40b1690` and reopened. Charging now reuses the shared flat-rate external-model service from #4483/current main; the old 25% reservation/outbox design is removed.
 
 Six independent finder passes covered shallow diff, deep correctness, history, cross-file consistency, error/data flow and explicit project rules. Findings were deduplicated and independently challenged; all eight retained findings scored at least 75/100:

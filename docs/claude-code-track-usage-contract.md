@@ -4,8 +4,8 @@ Revised 2026-09-15 to follow [Dyad #4483](https://github.com/dyad-sh/dyad/pull/4
 
 ## Pricing and admission
 
-- With Pro enabled: $0.02 per million total tokens when the actual model ID contains `-luna`, `-mini`, or `-nano`; $0.10 per million otherwise. No API list-price multiplier or unknown-model special case. Cached tokens count once at the same rate.
-- With Pro off: no Dyad credit check or report. Claude subscription usage still applies. This is the existing shared subscription policy, not a fallback after an accounting failure.
+- In Agent mode with Pro enabled: $0.02 per million total tokens when the actual model ID contains `-luna`, `-mini`, or `-nano`; $0.10 per million otherwise. No API list-price multiplier or unknown-model special case. Cached tokens count once at the same rate.
+- With Pro off, or in Build, Ask or Plan: no Dyad credit check or report. Claude subscription usage still applies. As of the 2026-09-16 rebase, Claude and Codex share `subscriptionBillingKey` and the same mode-aware preflight policy. They capture an explicit null for unbilled turns, never rereading live billing settings. This is not a fallback after an accounting failure.
 - Pro requests capture the accepted Dyad key and consume a main-only, one-use admission. Confirmed insufficient balance or rejected credentials prevents acceptance. Network errors, timeouts, and malformed balance responses allow generation, matching #4483. No reservation or alternate payment source is selected.
 
 ## Reporting

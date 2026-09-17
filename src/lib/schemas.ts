@@ -546,6 +546,7 @@ const BaseUserSettingsFields = {
   enableCodeExplorer: z.boolean().optional(),
   runTypeScriptForWholeProject: z.boolean().optional(),
   enableMultiWindow: z.boolean().optional(),
+  enableClaudeCodeSubscription: z.boolean().optional(),
   enableExplorerSubagent: z.boolean().optional(),
   enableAutoReview: z.boolean().optional(),
   enableReviewButton: z.boolean().optional(),
