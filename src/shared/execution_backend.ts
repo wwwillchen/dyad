@@ -33,7 +33,10 @@ export function modelForChatBackend(
     | null
     | undefined,
   settings:
-    | Pick<UserSettings, "selectedModel" | "recentModels">
+    | Pick<
+        UserSettings,
+        "selectedModel" | "recentModels" | "enableClaudeCodeSubscription"
+      >
     | null
     | undefined,
 ): LargeLanguageModel {
@@ -42,6 +45,18 @@ export function modelForChatBackend(
     provider: "auto",
     name: "auto",
   };
+  // Disabling the experiment preserves existing chats, but must not strand
+  // newly created chats on the now-disabled remembered global selection.
+  if (
+    !chat &&
+    selected.provider === "claude-code" &&
+    !settings?.enableClaudeCodeSubscription
+  )
+    return (
+      settings?.recentModels?.find(
+        (model) => model.provider !== "claude-code",
+      ) ?? { provider: "auto", name: "auto" }
+    );
   if (
     !chat ||
     executionBackendForModel(selected) === (chat.executionBackend ?? "dyad")

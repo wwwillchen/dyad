@@ -1,4 +1,5 @@
 import { SubscriptionBillingError } from "@/shared/subscription_billing_error";
+import { subscriptionBillingKey } from "../services/subscription_billing";
 import { modelForChatBackend } from "@/shared/execution_backend";
 import { isDotenvFilePath } from "@/utils/dotenv_redaction";
 import type { ExternalModelAdmission } from "../services/external_model_admission";
@@ -1173,6 +1174,11 @@ export function registerChatStreamHandlers() {
       )
         throw new DyadError(BACKEND_SWITCH_MESSAGE, DyadErrorKind.Precondition);
       if (chat.executionBackend === "claude-code") {
+        if (!baseSettings.enableClaudeCodeSubscription)
+          throw new DyadError(
+            'Turn on "Enable Claude Code subscription" in Settings → Experiments before using this chat.',
+            DyadErrorKind.Precondition,
+          );
         if (req.redo)
           throw new DyadError(
             "Claude Code cannot replace an earlier turn without retaining hidden CLI context. Start a new chat to retry; your current chat stays unchanged.",
@@ -1596,6 +1602,7 @@ ${componentSnippet}
         const current = readSettings();
         return {
           enableDyadPro: current.enableDyadPro,
+          enableClaudeCodeSubscription: current.enableClaudeCodeSubscription,
           proModelUsage: current.proModelUsage,
           providerSettings: current.providerSettings,
           selectedModel: current.selectedModel,
@@ -1624,7 +1631,9 @@ ${componentSnippet}
                   });
               const { mode } = await resolveChatModeForTurn({
                 storedChatMode: snapshot.chatMode,
-                requestedChatMode: req.requestedChatMode ?? normalizeStoredChatMode(snapshot.chatMode),
+                requestedChatMode:
+                  req.requestedChatMode ??
+                  normalizeStoredChatMode(snapshot.chatMode),
                 settings: { ...attemptSettings, selectedModel: model },
               });
               return isAcceptedReplay
@@ -1991,9 +2000,7 @@ ${componentSnippet}
               selectedChatMode === "plan" ||
               securityReview ||
               summarize,
-            apiKey: isDyadProEnabled(settings)
-              ? settings.providerSettings?.auto?.apiKey?.value
-              : null,
+            apiKey: subscriptionBillingKey({ ...settings, selectedChatMode }),
             admission: externalModelAdmission,
           },
         );

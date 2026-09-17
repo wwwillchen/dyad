@@ -56,7 +56,7 @@ import { getAutoSidekickRuntimeModel } from "@/lib/autoSidekick";
 import { usesOpenAIResponsesApi } from "./openai_responses_utils";
 import { createCodexSubscriptionModel } from "./codex_subscription_provider";
 import { resolveSubscriptionModel } from "../services/resolve_subscription_model";
-import { shouldBillChatGPTSubscription } from "../services/subscription_billing";
+import { subscriptionBillingKey } from "../services/subscription_billing";
 
 // The test-only fetch seam lives in ./test_fetch_override (dependency-free,
 // so secondary factories can use it without import cycles). Re-exported here
@@ -81,13 +81,6 @@ export interface ModelClient {
   reasoningEffortProviderId?: string;
   /** Actual source, including the active candidate of an Auto fallback chain. */
   getRuntimeModel?: () => ModelSelection;
-}
-
-// Callers supply the accepted turn's settings (or an auxiliary-call snapshot).
-function subscriptionBillingKey(settings: UserSettings): string | null {
-  return shouldBillChatGPTSubscription(settings)
-    ? (settings.providerSettings?.auto?.apiKey?.value ?? null)
-    : null;
 }
 
 async function createResolvedAliasClient({

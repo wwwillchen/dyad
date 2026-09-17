@@ -199,9 +199,10 @@ export function ModelPicker() {
   const [open, setOpen] = useState(false);
   const claudeStatus = useQuery({
     enabled:
-      open ||
-      chat?.executionBackend === "claude-code" ||
-      settings?.selectedModel.provider === "claude-code",
+      !!settings?.enableClaudeCodeSubscription &&
+      (open ||
+        chat?.executionBackend === "claude-code" ||
+        settings?.selectedModel.provider === "claude-code"),
     queryKey: queryKeys.system.claudeCodeStatus,
     queryFn: () => ipc.chat.claudeCodeStatus(),
     staleTime: 10_000,
@@ -218,6 +219,11 @@ export function ModelPicker() {
     confirmed?: boolean;
   }) => {
     if (!settings || (isChatRoute && chatId != null && chatLoading)) return;
+    if (
+      model.provider === "claude-code" &&
+      !settings.enableClaudeCodeSubscription
+    )
+      return;
     const backendChange =
       isChatRoute &&
       chat &&
@@ -658,6 +664,8 @@ export function ModelPicker() {
   );
   const recentModelsWithoutStaleEntries = effectiveRecentModels.filter(
     (recentModel) => {
+      if (recentModel.provider === "claude-code")
+        return !!settings?.enableClaudeCodeSubscription;
       if (recentModel.provider === "ollama") {
         return (
           Boolean(ollamaError) ||
@@ -1415,17 +1423,17 @@ export function ModelPicker() {
               executionBackendForModel(pendingBackend.model) !==
                 (chat.executionBackend ?? "dyad")
                 ? BACKEND_SWITCH_MESSAGE
-                : "Claude subscription usage applies. With Pro enabled, a separate Dyad charge also applies."}
+                : "Claude subscription usage applies. Agent mode with Pro enabled also incurs a separate Dyad charge."}
             </DialogDescription>
           </DialogHeader>
           {pendingBackend?.model.provider === "claude-code" && (
             <p className="text-sm">
-              With Dyad Pro enabled, Claude subscription usage and a separate
-              Dyad charge apply: $0.02 per million total tokens for model IDs
-              containing -luna, -mini or -nano; $0.10 per million otherwise.
-              Cached tokens count once. With Pro off, no Dyad credits are
-              charged. Usage reporting is best effort; your billing account
-              shows actual spend.
+              In Agent mode with Dyad Pro enabled, Claude subscription usage and
+              a separate Dyad charge apply: $0.02 per million total tokens for
+              model IDs containing -luna, -mini or -nano; $0.10 per million
+              otherwise. Cached tokens count once. With Pro off or in Build, Ask
+              or Plan, no Dyad credits are charged. Usage reporting is best
+              effort; your billing account shows actual spend.
             </p>
           )}
           <p className="text-sm text-muted-foreground">
@@ -1475,38 +1483,44 @@ export function ModelPicker() {
           </span>
         </DropdownMenuTrigger>
         <DropdownMenuContent className={MODEL_MENU_WIDTH_CLASS} align="start">
-          <DropdownMenuLabel>Subscription</DropdownMenuLabel>
-          <div className="px-2 py-1 text-xs text-muted-foreground">
-            {claudeStatus.data?.detail ?? "Checking Claude Code connection…"}
-          </div>
-          {["sonnet", "opus", "haiku"].map((name) => (
-            <DropdownMenuItem
-              key={name}
-              disabled={
-                !claudeStatus.data?.connected || !claudeStatus.data?.compatible
-              }
-              onClick={() => {
-                void onModelSelect({
-                  model: { provider: "claude-code", name },
-                });
-                setOpen(false);
-              }}
-            >
-              Claude Code — {name}
-            </DropdownMenuItem>
-          ))}
-          <div className="px-2 py-1 text-xs text-muted-foreground">
-            Claude subscription usage applies. With Pro enabled, a separate Dyad
-            charge also applies.
-          </div>
-          <DropdownMenuItem
-            onClick={() => {
-              void claudeStatus.refetch();
-            }}
-          >
-            Refresh connection
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
+          {settings?.enableClaudeCodeSubscription && (
+            <>
+              <DropdownMenuLabel>Subscription</DropdownMenuLabel>
+              <div className="px-2 py-1 text-xs text-muted-foreground">
+                {claudeStatus.data?.detail ??
+                  "Checking Claude Code connection…"}
+              </div>
+              {["sonnet", "opus", "haiku"].map((name) => (
+                <DropdownMenuItem
+                  key={name}
+                  disabled={
+                    !claudeStatus.data?.connected ||
+                    !claudeStatus.data?.compatible
+                  }
+                  onClick={() => {
+                    void onModelSelect({
+                      model: { provider: "claude-code", name },
+                    });
+                    setOpen(false);
+                  }}
+                >
+                  Claude Code — {name}
+                </DropdownMenuItem>
+              ))}
+              <div className="px-2 py-1 text-xs text-muted-foreground">
+                Claude subscription usage applies. Agent mode with Pro enabled
+                adds a separate Dyad charge also applies.
+              </div>
+              <DropdownMenuItem
+                onClick={() => {
+                  void claudeStatus.refetch();
+                }}
+              >
+                Refresh connection
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <SubscriptionModelMenu>
             <DropdownMenuSeparator />
             {/* Trial user upgrade banner */}

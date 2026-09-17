@@ -1790,6 +1790,7 @@ describe("ModelPicker", () => {
 
 describe("Claude Code subscription picker", () => {
   beforeEach(() => {
+    Object.assign(mocks.settings, { enableClaudeCodeSubscription: true });
     mocks.pathname = "/chat";
     mocks.search = { id: 7 };
     mocks.chat = {
@@ -1803,6 +1804,15 @@ describe("Claude Code subscription picker", () => {
     mocks.claudeStatus.disclosed = true;
     mocks.createChat.mockClear();
     mocks.setChatSelection.mockClear();
+  });
+  it("hides Claude Code when the experiment is disabled, including recent choices", () => {
+    Object.assign(mocks.settings, {
+      enableClaudeCodeSubscription: false,
+      recentModels: [{ provider: "claude-code", name: "sonnet" }],
+    });
+    render(<ModelPicker />);
+    expect(screen.queryByText("Claude Code — sonnet")).toBeNull();
+    expect(screen.queryByText("Checking Claude Code connection…")).toBeNull();
   });
   it("preserves the existing chat when backend switching is cancelled", () => {
     render(<ModelPicker />);

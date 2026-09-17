@@ -12,7 +12,16 @@ it("keeps legacy Dyad chats on their backend when the global default is Claude",
   expect(
     modelForChatBackend({ executionBackend: "dyad" }, { selectedModel }),
   ).toEqual({ provider: "auto", name: "auto" });
-  expect(modelForChatBackend(null, { selectedModel })).toEqual(selectedModel);
+  expect(
+    modelForChatBackend(null, {
+      selectedModel,
+      enableClaudeCodeSubscription: true,
+    }),
+  ).toEqual(selectedModel);
+  expect(modelForChatBackend(null, { selectedModel })).toEqual({
+    provider: "auto",
+    name: "auto",
+  });
   expect(
     modelForChatBackend(
       {

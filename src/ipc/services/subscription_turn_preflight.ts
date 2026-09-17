@@ -30,6 +30,14 @@ export async function preflightSubscriptionTurn(
   externalModelAdmission?: ExternalModelAdmission;
 }> {
   signal.throwIfAborted();
+  if (
+    model.provider === "claude-code" &&
+    !settings.enableClaudeCodeSubscription
+  )
+    throw new DyadError(
+      'Turn on "Enable Claude Code subscription" in Settings → Experiments before using this chat.',
+      DyadErrorKind.Precondition,
+    );
   const resolved = await resolveSubscriptionModel(model, settings);
   const selections = [resolved];
   const runtimeModel = getAutoSidekickRuntimeModel(resolved);

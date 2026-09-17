@@ -14,9 +14,11 @@ it("does not present missing usage as a zero charge", () => {
   render(<SubscriptionUsage />);
   expect(screen.getByText(/Usage unavailable/)).toBeTruthy();
 });
-it("identifies turns accepted with Pro off", () => {
+it("identifies turns accepted with Pro off or in an unbilled mode", () => {
   render(
     <SubscriptionUsage receipt={JSON.stringify({ status: "unbilled" })} />,
   );
-  expect(screen.getByText(/no Dyad credits charged/)).toBeTruthy();
+  expect(
+    screen.getByText(/does not use Dyad credits.*Build, Ask or Plan/),
+  ).toBeTruthy();
 });

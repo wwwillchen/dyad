@@ -73,12 +73,14 @@ beforeAll(async () => {
   writeSettings({
     selectedModel: { provider: "claude-code", name: "sonnet" },
     enableDyadPro: false,
+    enableClaudeCodeSubscription: true,
     selectedChatMode: "build",
     defaultChatMode: "build",
   });
 }, 60_000);
 afterAll(async () => harness?.dispose());
 beforeEach(() => {
+  writeSettings({ enableClaudeCodeSubscription: true });
   calls.run.mockReset();
   calls.beforeDispatch.mockReset();
   calls.beforeAdmission.mockReset();
@@ -108,6 +110,31 @@ beforeEach(() => {
       },
     });
   });
+});
+
+it("disabling the experiment preserves existing chat history and blocks CLI dispatch", async () => {
+  const chatId = await ipc.chat.createChat({ appId: harness.appId });
+  await harness.db
+    .insert(messages)
+    .values({ chatId, role: "assistant", content: "Preserve me" });
+  writeSettings({ enableClaudeCodeSubscription: false });
+  try {
+    await harness.streamChat("Do not execute", { chatId });
+    expect(calls.run).not.toHaveBeenCalled();
+    const chat = await harness.db.query.chats.findFirst({
+      where: eq(chats.id, chatId),
+      with: { messages: true },
+    });
+    expect(chat?.executionBackend).toBe("claude-code");
+    expect(chat?.messages.map((m) => m.content)).toEqual(["Preserve me"]);
+    const freshId = await ipc.chat.createChat({ appId: harness.appId });
+    const fresh = await harness.db.query.chats.findFirst({
+      where: eq(chats.id, freshId),
+    });
+    expect(fresh?.executionBackend).toBe("dyad");
+  } finally {
+    writeSettings({ enableClaudeCodeSubscription: true });
+  }
 });
 it("creates Claude chats from defaults, expands summaries, and persists attribution/title", async () => {
   const source = await ipc.chat.createChat({ appId: harness.appId });

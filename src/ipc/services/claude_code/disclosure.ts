@@ -2,7 +2,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { getUserDataPath } from "@/paths/paths";
 
-const VERSION = "prototype-v2-flat-pro-usage";
+const VERSION = "prototype-v3-agent-pro-usage";
 export async function hasClaudeDisclosure(): Promise<boolean> {
   try {
     return (
