@@ -1,5 +1,5 @@
 import log from "electron-log";
-import { escapeXmlAttr } from "../../../../shared/xmlEscape";
+import { ClaudeToolCards } from "./tool_cards";
 import { spawnStreaming } from "@/ipc/utils/spawn_streaming";
 import { appRunActorService } from "@/ipc/services/app_run_actor_service";
 import { randomUUID } from "node:crypto";
@@ -92,7 +92,7 @@ export async function handleClaudeCodeTurn(
   const historyContext = restoredClaudeHistory(previousMessages.slice(0, -1));
   let content = "";
   const modelText = claudeTextFilter(req.prompt.startsWith("/security-review"));
-  const pendingToolCards = new Map<string, string>();
+  const toolCards = new ClaudeToolCards();
   let actualModel: string | null = null;
   let result: Record<string, any> | undefined;
   let failure: unknown;
@@ -259,10 +259,8 @@ export async function handleClaudeCodeTurn(
             restartRequested = true;
             return "Preview restart queued until this turn releases its repository claim.";
           },
-          onTool: async (name, complete, error) => {
-            content += `\n\n*Dyad ${name}: ${error ? "failed — " + claudeTextFilter()(error, true) : complete ? "completed" : "running"}*\n\n`;
-            await publish();
-          },
+          // CLI tool-use IDs own presentation; MCP execution callbacks have no ID.
+          onTool: async () => {},
         });
         try {
           await db
@@ -337,26 +335,31 @@ export async function handleClaudeCodeTurn(
                     : actualModel;
                 for (const block of value.message?.content ?? [])
                   if (block.type === "tool_use") {
-                    const card = `<dyad-status tool-use-id="${escapeXmlAttr(String(block.id))}" title="Claude Code: ${escapeXmlAttr(String(block.name))}" state="in-progress"></dyad-status>`;
-                    pendingToolCards.set(block.id, card);
-                    content += `\n\n${card}\n\n`;
+                    content = toolCards.start(
+                      content,
+                      block.id,
+                      block.name,
+                      block.input,
+                      appPath,
+                    );
                   }
                 await publish();
               }
               if (value.type === "user") {
-                for (const block of value.message?.content ?? []) {
-                  if (block.type !== "tool_result") continue;
-                  const card = pendingToolCards.get(block.tool_use_id);
-                  if (card) {
-                    content = content.replace(
-                      card,
-                      card.replace(
-                        'state="in-progress"',
-                        `state="${block.is_error ? "error" : "finished"}"`,
-                      ),
-                    );
-                    pendingToolCards.delete(block.tool_use_id);
-                  }
+                const toolResults = (value.message?.content ?? []).filter(
+                  (block: { type: string }) => block.type === "tool_result",
+                );
+                for (const block of toolResults) {
+                  content = toolCards.complete(
+                    content,
+                    block.tool_use_id,
+                    block.content,
+                    !!block.is_error,
+                    appPath,
+                    toolResults.length === 1
+                      ? value.tool_use_result
+                      : undefined,
+                  );
                 }
                 await publish();
               }
@@ -431,11 +434,7 @@ export async function handleClaudeCodeTurn(
     .update(messages)
     .set({ executionUsage: JSON.stringify(usage) })
     .where(eq(messages.id, input.messageId));
-  for (const card of pendingToolCards.values())
-    content = content.replace(
-      card,
-      card.replace('state="in-progress"', 'state="aborted"'),
-    );
+  content = toolCards.finish(content);
   if (failure && !controller.signal.aborted)
     content += `\n\n**${claudeTextFilter()(failureDetail, true)}**`;
   if (failure || controller.signal.aborted)

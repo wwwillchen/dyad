@@ -1,4 +1,11 @@
 import { modelForChatBackend } from "@/shared/execution_backend";
+import { ClaudeCodeSubscriptionMenu } from "./ClaudeCodeSubscriptionMenu";
+import {
+  claudeCodeModelId,
+  claudeCodeModelIdentity,
+  claudeCodeDisplayName,
+  withClaudeCodeModels,
+} from "@/lib/claudeCodeModels";
 import {
   executionBackendForModel,
   requiresNewChatForModel,
@@ -209,6 +216,27 @@ export function ModelPicker() {
     queryFn: () => ipc.chat.claudeCodeStatus(),
     staleTime: 10_000,
   });
+  const claudeModels = useQuery({
+    queryKey: queryKeys.system.claudeCodeModels,
+    queryFn: () => ipc.chat.claudeCodeModels(),
+    enabled:
+      !!settings?.enableClaudeCodeSubscription &&
+      !!claudeStatus.data?.connected &&
+      !!claudeStatus.data?.compatible &&
+      (open ||
+        chat?.executionBackend === "claude-code" ||
+        settings?.selectedModel.provider === "claude-code"),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const availableClaudeModels = claudeModels.isError
+    ? []
+    : (claudeModels.data ?? []);
+  const useClaudeCode =
+    !!settings?.enableClaudeCodeSubscription &&
+    settings.proModelUsage !== "pro" &&
+    !!claudeStatus.data?.connected &&
+    !!claudeStatus.data?.compatible;
   const requiresNewChat = (model: LargeLanguageModel) =>
     Boolean(
       isChatRoute && chat && requiresNewChatForModel(chat.messages, model),
@@ -435,7 +463,7 @@ export function ModelPicker() {
     displayModel: LargeLanguageModel = selectedModel,
   ) => {
     if (displayModel.provider === "claude-code")
-      return `Claude Code — ${displayModel.name}`;
+      return `Claude Code — ${claudeCodeDisplayName(displayModel.name, availableClaudeModels, modelsByProviders)}`;
     if (isAutoSidekickModel(displayModel)) {
       return AUTO_SIDEKICK_DISPLAY_NAME;
     }
@@ -540,7 +568,17 @@ export function ModelPicker() {
       chat?.modelSelection?.effortLevel ??
       settings.modelEffortPreferences?.[getModelPreferenceKey(selectedModel)],
   }).effortLevel;
-  const modelDisplayName = getModelDisplayName();
+  const selectedClaudeModelName = claudeCodeDisplayName(
+    selectedModel.name,
+    availableClaudeModels,
+    modelsByProviders,
+  )
+    .replace(/\s*\([^)]*\)/g, "")
+    .trim();
+  const modelDisplayName =
+    selectedModel.provider === "claude-code"
+      ? `${selectedClaudeModelName} (Claude Code)`
+      : getModelDisplayName();
   const trialAutoModel = autoModels.find((model) => model.apiName === "auto");
   const trialAutoEffortSettings = getEffortSettings(trialAutoModel);
   const trialAutoEffort = createModelSelection({
@@ -555,9 +593,12 @@ export function ModelPicker() {
   }).effortLevel;
   // The root menu is a quick switcher. The complete catalog is prepared here
   // for the nested "All models" menu.
+  const pickerCatalog = useClaudeCode
+    ? withClaudeCodeModels(modelsByProviders, availableClaudeModels)
+    : modelsByProviders;
   const providerEntries =
-    !loading && modelsByProviders
-      ? Object.entries(modelsByProviders).filter(
+    !loading && pickerCatalog
+      ? Object.entries(pickerCatalog).filter(
           ([providerId]) => providerId !== "auto",
         )
       : [];
@@ -575,6 +616,7 @@ export function ModelPicker() {
   };
   const primaryModelEntries = providerEntries
     .filter(([providerId]) => !isOtherProvider(providerId))
+    .filter(([providerId]) => !isTrial || providerId === "claude-code")
     .flatMap(([providerId, models], providerIndex) =>
       models.flatMap((model, modelIndex) => {
         if (!isVisibleCatalogModel(providerId, model)) {
@@ -595,6 +637,7 @@ export function ModelPicker() {
       return a.modelIndex - b.modelIndex;
     });
   const otherProviderEntries = providerEntries
+    .filter(() => !isTrial)
     .filter(([providerId]) => isOtherProvider(providerId))
     .map(
       ([providerId, models]) =>
@@ -609,8 +652,25 @@ export function ModelPicker() {
     settings.recentModels,
     toRecentModelIdentity(selectedModel),
   );
-  const recentModelEntries = effectiveRecentModels.flatMap<RecentModelEntry>(
+  const recentModelCandidates = effectiveRecentModels.flatMap<RecentModelEntry>(
     (recentModel) => {
+      if (useClaudeCode && recentModel.customModelId === undefined) {
+        const id = claudeCodeModelId(recentModel.provider, {
+          apiName: recentModel.name,
+          displayName: recentModel.name,
+        });
+        const model =
+          id &&
+          pickerCatalog?.["claude-code"]?.find(
+            (candidate) =>
+              claudeCodeModelIdentity(
+                candidate.apiName,
+                availableClaudeModels,
+              ) === claudeCodeModelIdentity(id, availableClaudeModels),
+          );
+        if (model)
+          return [{ type: "cloud" as const, providerId: "claude-code", model }];
+      }
       if (recentModel.provider === "ollama") {
         if (ollamaError) {
           return [];
@@ -679,6 +739,25 @@ export function ModelPicker() {
         : [];
     },
   );
+  const recentModelEntries = recentModelCandidates.filter(
+    (entry, index, entries) => {
+      if (
+        isTrial &&
+        (entry.type !== "cloud" || entry.providerId !== "claude-code")
+      )
+        return false;
+      return (
+        entry.type !== "cloud" ||
+        entry.providerId !== "claude-code" ||
+        entries.findIndex(
+          (candidate) =>
+            candidate.type === "cloud" &&
+            candidate.providerId === "claude-code" &&
+            candidate.model.apiName === entry.model.apiName,
+        ) === index
+      );
+    },
+  );
   const recentModelsWithoutStaleEntries = effectiveRecentModels.filter(
     (recentModel) => {
       if (recentModel.provider === "claude-code")
@@ -744,6 +823,7 @@ export function ModelPicker() {
   // While settings/env vars are still loading we can't tell whether a key
   // exists, so fail open rather than flash a lock at env-var-configured users.
   const isModelLocked = (providerId: string, model: LanguageModel) => {
+    if (providerId === "claude-code" && useClaudeCode) return false;
     if (
       settings &&
       usesChatGPTSubscription(
@@ -865,7 +945,14 @@ export function ModelPicker() {
       provider: providerId,
       customModelId: model.type === "custom" ? model.id : undefined,
     };
-    const isSelected = isSameModel(normalizedSelectedModel, modelRef);
+    const isClaudeCode = providerId === "claude-code";
+    const isSelected =
+      isClaudeCode && normalizedSelectedModel.provider === "claude-code"
+        ? claudeCodeModelIdentity(
+            normalizedSelectedModel.name,
+            availableClaudeModels,
+          ) === claudeCodeModelIdentity(model.apiName, availableClaudeModels)
+        : isSameModel(normalizedSelectedModel, modelRef);
     const modelKey = `${providerId}-${model.apiName}-${modelRef.customModelId ?? "catalog"}`;
     const isLocked = isModelLocked(providerId, model);
     const isAutoProviderRow = providerId === "auto";
@@ -906,14 +993,16 @@ export function ModelPicker() {
         }).effortLevel;
     const effortLabel = formatEffortLevel(currentEffort);
     const compactEffortLabel = formatCompactEffortLevel(currentEffort);
-    const subscriptionEligible = usesChatGPTSubscription(
+    const chatGPTSubscriptionEligible = usesChatGPTSubscription(
       { provider: providerId, name: model.apiName },
       settings,
       subscription.data ?? { connected: false, models: [] },
     );
+    const subscriptionEligible = isClaudeCode || chatGPTSubscriptionEligible;
+    const subscriptionLabel = isClaudeCode ? "Claude Code" : "ChatGPT plan";
     const unlockedAriaLabel = [
       model.displayName,
-      subscriptionEligible ? "ChatGPT plan" : null,
+      subscriptionEligible ? subscriptionLabel : null,
       showPrice && !subscriptionEligible && model.dollarSigns != null
         ? model.dollarSigns === 0
           ? "Free"
@@ -923,8 +1012,10 @@ export function ModelPicker() {
       isSelected ? "Selected" : null,
       isFreeProRow ? freeProQuotaLabel : null,
       shouldShowDataSharingDisclosure ? "Data sharing" : null,
-      `Effort: ${effortLabel}`,
-      "Press Enter to select; press Right Arrow to configure effort",
+      !isClaudeCode ? `Effort: ${effortLabel}` : null,
+      isClaudeCode
+        ? "Press Enter to select"
+        : "Press Enter to select; press Right Arrow to configure effort",
     ]
       .filter(Boolean)
       .join(". ");
@@ -933,7 +1024,10 @@ export function ModelPicker() {
       <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
         <span className="min-w-0 flex items-center gap-2">
           {!isAutoProviderRow && (
-            <ProviderIcon providerId={providerId} apiName={model.apiName} />
+            <ProviderIcon
+              providerId={isClaudeCode ? "anthropic" : providerId}
+              apiName={model.apiName}
+            />
           )}
           <span className="min-w-0 flex flex-col items-start">
             <span
@@ -955,12 +1049,14 @@ export function ModelPicker() {
                   <span
                     className={cn(PILL_CLASS, "bg-primary/10 text-primary")}
                   >
-                    ChatGPT plan
+                    {subscriptionLabel}
                   </span>
                 }
               />
               <TooltipContent>
-                Uses your connected ChatGPT subscription
+                {isClaudeCode
+                  ? "Uses your connected Claude Code subscription"
+                  : "Uses your connected ChatGPT subscription"}
               </TooltipContent>
             </Tooltip>
           )}
@@ -1021,7 +1117,7 @@ export function ModelPicker() {
               </TooltipContent>
             </Tooltip>
           )}
-          {!isLocked && (
+          {!isLocked && !isClaudeCode && (
             <>
               <span
                 data-effort-level
@@ -1061,7 +1157,16 @@ export function ModelPicker() {
       ),
     };
 
-    const item = isLocked ? (
+    const item = isClaudeCode ? (
+      <DropdownMenuItem
+        key={modelKey}
+        {...commonProps}
+        aria-label={`${unlockedAriaLabel}.`}
+        onClick={() => handleCloudModelSelect(providerId, model)}
+      >
+        {rowContent}
+      </DropdownMenuItem>
+    ) : isLocked ? (
       <DropdownMenuItem
         key={modelKey}
         {...commonProps}
@@ -1108,7 +1213,7 @@ export function ModelPicker() {
       item
     );
 
-    if (isLocked) {
+    if (isLocked || isClaudeCode) {
       return itemWithTooltip;
     }
 
@@ -1509,43 +1614,29 @@ export function ModelPicker() {
           </span>
         </DropdownMenuTrigger>
         <DropdownMenuContent className={MODEL_MENU_WIDTH_CLASS} align="start">
-          {settings?.enableClaudeCodeSubscription && (
-            <>
-              <DropdownMenuLabel>Subscription</DropdownMenuLabel>
-              <div className="px-2 py-1 text-xs text-muted-foreground">
-                {claudeStatus.data?.detail ??
-                  "Checking Claude Code connection…"}
-              </div>
-              {["sonnet", "opus", "haiku"].map((name) => (
-                <DropdownMenuItem
-                  key={name}
-                  disabled={
-                    !claudeStatus.data?.connected ||
-                    !claudeStatus.data?.compatible
-                  }
-                  onClick={() => {
-                    void onModelSelect({
-                      model: { provider: "claude-code", name },
-                    });
-                    setOpen(false);
-                  }}
-                >
-                  Claude Code — {name}
-                </DropdownMenuItem>
-              ))}
-              <div className="px-2 py-1 text-xs text-muted-foreground">
-                Claude subscription usage applies. Agent mode with Pro enabled
-                adds a separate Dyad charge also applies.
-              </div>
-              <DropdownMenuItem
-                onClick={() => {
-                  void claudeStatus.refetch();
-                }}
-              >
-                Refresh connection
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-            </>
+          {settings.enableClaudeCodeSubscription && (
+            <ClaudeCodeSubscriptionMenu
+              connected={
+                !!claudeStatus.data?.connected &&
+                !!claudeStatus.data?.compatible
+              }
+              detail={
+                claudeStatus.data?.detail ?? "Checking Claude Code connection…"
+              }
+              subscriptionSelected={settings.proModelUsage !== "pro"}
+              onUsageChange={(value) =>
+                updateSettings({ proModelUsage: value })
+              }
+              onRefresh={() => {
+                void claudeStatus.refetch();
+                void claudeModels.refetch();
+              }}
+              catalogMessage={
+                claudeModels.isError
+                  ? "Could not load Claude Code suggestions. Catalog models remain available. Refresh connection to try again."
+                  : undefined
+              }
+            />
           )}
           <SubscriptionModelMenu>
             <DropdownMenuSeparator />
@@ -1662,7 +1753,7 @@ export function ModelPicker() {
             )}
 
             {/* Non-trial users get a compact quick switcher. */}
-            {!isTrial && (
+            {(!isTrial || useClaudeCode) && (
               <>
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger
@@ -1775,7 +1866,7 @@ export function ModelPicker() {
                   </div>
                 ) : (
                   <>
-                    {autoModels.length > 0 && (
+                    {!isTrial && autoModels.length > 0 && (
                       <>
                         {autoModels.map((model) =>
                           renderCloudModelItem({

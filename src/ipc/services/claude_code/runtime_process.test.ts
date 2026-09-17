@@ -12,6 +12,7 @@ vi.mock("node:fs/promises", async (original) => ({
   access: vi.fn().mockResolvedValue(undefined),
 }));
 import { runClaudeTurn } from "./runtime";
+import { getClaudeUsageLimits, setClaudeUsageAccount } from "./usage_limits";
 
 function child() {
   return Object.assign(new EventEmitter(), {
@@ -36,6 +37,33 @@ function options(signal: AbortSignal) {
   };
 }
 afterEach(() => vi.restoreAllMocks());
+
+it("captures usage from the CLI stream while forwarding the original event", async () => {
+  state.spawn.mockClear();
+  setClaudeUsageAccount("stream-account");
+  const spawned = child();
+  state.spawn.mockReturnValue(spawned);
+  const turn = options(new AbortController().signal);
+  const running = runClaudeTurn(turn);
+  await vi.waitFor(() => expect(state.spawn).toHaveBeenCalled());
+  const event = {
+    type: "rate_limit_event",
+    rate_limit_info: {
+      status: "allowed",
+      unifiedWindows: {
+        five_hour: { utilization: 0.25, resetsAt: Date.now() / 1000 + 3600 },
+      },
+    },
+  };
+  spawned.stdout.write(JSON.stringify(event) + "\n");
+  spawned.emit("close", 0);
+  await running;
+  expect(turn.onEvent).toHaveBeenCalledWith(event);
+  expect(getClaudeUsageLimits().windows).toEqual([
+    expect.objectContaining({ name: "five_hour", usedPercent: 25 }),
+  ]);
+  setClaudeUsageAccount(null);
+});
 
 it("decodes split UTF-8 and drains ordered events before completion", async () => {
   const process = child();

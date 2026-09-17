@@ -31,6 +31,18 @@ const mocks = vi.hoisted(() => ({
   subscriptionLoading: false,
   subscriptionConnected: true,
   invalidateQueries: vi.fn(),
+  anthropicModels: [] as import("@/ipc/types").LanguageModel[],
+  claudeModels: [{ value: "sonnet", displayName: "sonnet", description: "" }] as
+    | Array<{
+        value: string;
+        resolvedModel?: string;
+        displayName: string;
+        description: string;
+      }>
+    | undefined,
+  claudeModelsError: false,
+  refetchClaudeModels: vi.fn(),
+  refetchClaudeStatus: vi.fn(),
   claudeStatus: {
     installed: true,
     connected: true,
@@ -151,8 +163,17 @@ vi.mock("@tanstack/react-query", () => ({
       queryKey.includes("claudeCodeStatus") ||
       queryKey.includes("claude-code-status")
         ? mocks.claudeStatus
-        : undefined,
-    refetch: vi.fn(),
+        : queryKey.includes("claudeCodeModels")
+          ? mocks.claudeModels
+          : undefined,
+    isError: queryKey.includes("claudeCodeModels") && mocks.claudeModelsError,
+    isPending:
+      queryKey.includes("claudeCodeModels") &&
+      !mocks.claudeModels &&
+      !mocks.claudeModelsError,
+    refetch: queryKey.includes("claudeCodeModels")
+      ? mocks.refetchClaudeModels
+      : mocks.refetchClaudeStatus,
   }),
   useMutation: ({ mutationFn }: { mutationFn: () => Promise<unknown> }) => ({
     mutate: () => {
@@ -260,6 +281,7 @@ vi.mock("@/hooks/useLanguageModelsByProviders", () => ({
     data: mocks.catalogUnavailable
       ? undefined
       : {
+          anthropic: mocks.anthropicModels,
           auto: [
             {
               apiName: "auto",
@@ -489,9 +511,14 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
       {children}
     </div>
   ),
-  DropdownMenuItem: ({ children, ...props }: { children: React.ReactNode }) => (
-    <button {...props}>{children}</button>
-  ),
+  DropdownMenuItem: ({
+    children,
+    closeOnClick: _closeOnClick,
+    ...props
+  }: {
+    children: React.ReactNode;
+    closeOnClick?: boolean;
+  }) => <button {...props}>{children}</button>,
   DropdownMenuLabel: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
@@ -593,6 +620,13 @@ describe("ModelPicker", () => {
     mocks.chat = null;
     mocks.claudeStatus.connected = true;
     mocks.claudeStatus.disclosed = true;
+    mocks.claudeStatus.compatible = true;
+    mocks.claudeModels = [
+      { value: "sonnet", displayName: "sonnet", description: "" },
+    ];
+    mocks.claudeModelsError = false;
+    mocks.refetchClaudeModels.mockClear();
+    mocks.refetchClaudeStatus.mockClear();
     mocks.createChat.mockClear();
     mocks.selectChat.mockClear();
     mocks.pathname = "/";
@@ -1793,6 +1827,19 @@ describe("ModelPicker", () => {
 
 describe("Claude Code subscription picker", () => {
   beforeEach(() => {
+    mocks.isTrial = false;
+    mocks.anthropicModels = [];
+    mocks.settings.proModelUsage = "subscription";
+    mocks.settings.recentModels = [];
+    mocks.settings.selectedModel = { provider: "auto", name: "auto" };
+    mocks.renderSubContent = true;
+    mocks.claudeStatus.compatible = true;
+    mocks.claudeModels = [
+      { value: "sonnet", displayName: "sonnet", description: "" },
+    ];
+    mocks.claudeModelsError = false;
+    mocks.refetchClaudeModels.mockClear();
+    mocks.refetchClaudeStatus.mockClear();
     Object.assign(mocks.settings, { enableClaudeCodeSubscription: true });
     mocks.pathname = "/chat";
     mocks.search = { id: 7 };
@@ -1808,6 +1855,230 @@ describe("Claude Code subscription picker", () => {
     mocks.createChat.mockClear();
     mocks.setChatSelection.mockClear();
   });
+  it("renders discovered labels and selects the CLI value, including new model variants", async () => {
+    mocks.chat!.messages = [];
+    mocks.claudeModels = [
+      {
+        value: "opus[1m]",
+        displayName: "Opus (1M context)",
+        description: "From installed CLI",
+      },
+    ];
+    render(<ModelPicker />);
+    expect(screen.queryByText("Claude Code — sonnet")).toBeNull();
+    fireEvent.click(screen.getByText("Opus (1M context)"));
+    await waitFor(() =>
+      expect(mocks.setChatSelection).toHaveBeenCalledWith({
+        modelSelection: expect.objectContaining({
+          provider: "claude-code",
+          name: "opus[1m]",
+        }),
+      }),
+    );
+  });
+  it.each([
+    ["Fable", "Fable"],
+    ["Default (recommended)", "Default"],
+    ["Opus (1M context)", "Opus"],
+  ])(
+    "shows %s without parenthetical details before the backend",
+    (displayName, shortName) => {
+      mocks.chat!.modelSelection = {
+        provider: "claude-code",
+        name: "claude-fable-5-1[1m]",
+        effortLevel: "medium",
+      };
+      mocks.claudeModels = [
+        {
+          value: "claude-fable-5-1[1m]",
+          displayName,
+          description: "",
+        },
+      ];
+      render(<ModelPicker />);
+      const trigger = screen.getByTestId("model-picker");
+      expect(trigger.textContent).toBe(`${shortName} (Claude Code)`);
+      expect(trigger.getAttribute("title")).toBe(`${shortName} (Claude Code)`);
+    },
+  );
+  it.each(["loading", "error", "empty"])(
+    "shows the %s catalog state without hardcoded choices",
+    (state) => {
+      mocks.claudeModels = state === "empty" ? [] : undefined;
+      mocks.claudeModelsError = state === "error";
+      render(<ModelPicker />);
+      expect(screen.queryByText("Claude Code — sonnet")).toBeNull();
+      expect(
+        document.querySelector(
+          '[data-model-provider="claude-code"][data-model-name="claude-sonnet-4-5"]',
+        ),
+      ).not.toBeNull();
+      if (state === "error")
+        expect(
+          screen.getByText(/Could not load Claude Code suggestions/),
+        ).toBeTruthy();
+    },
+  );
+  it("refreshes both the connection and the model catalog", () => {
+    render(<ModelPicker />);
+    fireEvent.click(screen.getByText("Refresh connection"));
+    expect(mocks.refetchClaudeModels).toHaveBeenCalledOnce();
+    expect(mocks.refetchClaudeStatus).toHaveBeenCalledOnce();
+  });
+  it.each(["claude-fable-5", "claude-fable-5-1"])(
+    "routes %s through Claude Code without substituting versions",
+    async (name) => {
+      mocks.chat!.messages = [];
+      mocks.anthropicModels = [
+        {
+          apiName: "claude-fable-5",
+          displayName: "Claude Fable 5",
+          dollarSigns: 5,
+        },
+        {
+          apiName: "claude-fable-5-1",
+          displayName: "Claude Fable 5.1",
+          dollarSigns: 3,
+        },
+      ];
+      mocks.claudeModels = [
+        {
+          value: "claude-fable-5-1[1m]",
+          resolvedModel: "claude-fable-5-1",
+          displayName: "Fable",
+          description: "",
+        },
+      ];
+      render(<ModelPicker />);
+      const row = document.querySelector(
+        `[data-model-provider="claude-code"][data-model-name="${name}"]`,
+      )!;
+      expect(within(row as HTMLElement).getByText("Claude Code")).toBeTruthy();
+      expect(row.querySelector("[data-effort-chevron]")).toBeNull();
+      expect(
+        document.querySelector('[data-model-name="claude-fable-5-1[1m]"]'),
+      ).toBeNull();
+      fireEvent.click(row);
+      await waitFor(() =>
+        expect(mocks.setChatSelection).toHaveBeenCalledWith({
+          modelSelection: expect.objectContaining({
+            provider: "claude-code",
+            name,
+          }),
+        }),
+      );
+    },
+  );
+  it("preserves the existing Fable 5 API selection until a backend switch is confirmed", () => {
+    mocks.anthropicModels = [
+      { apiName: "claude-fable-5", displayName: "Claude Fable 5" },
+    ];
+    mocks.chat!.modelSelection = {
+      provider: "anthropic",
+      name: "claude-fable-5",
+      effortLevel: "medium",
+    };
+    render(<ModelPicker />);
+    expect(screen.getByTestId("model-picker").textContent).toBe(
+      "Claude Fable 5",
+    );
+    expect(mocks.setChatSelection).not.toHaveBeenCalled();
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="claude-code"][data-model-name="claude-fable-5"]',
+      )!,
+    );
+    expect(
+      screen.getByText("Start a new chat with Claude Code — Fable 5?"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(mocks.createChat).not.toHaveBeenCalled();
+  });
+  it("restores API routing when Pro usage is selected", async () => {
+    mocks.settings.proModelUsage = "pro";
+    mocks.anthropicModels = [
+      { apiName: "claude-fable-5", displayName: "Claude Fable 5" },
+    ];
+    render(<ModelPicker />);
+    expect(
+      document.querySelector('[data-model-provider="claude-code"]'),
+    ).toBeNull();
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="anthropic"][data-model-name="claude-fable-5"]',
+      )!,
+    );
+    await waitFor(() =>
+      expect(mocks.setChatSelection).toHaveBeenCalledWith({
+        modelSelection: expect.objectContaining({
+          provider: "anthropic",
+          name: "claude-fable-5",
+        }),
+      }),
+    );
+  });
+  it("places Claude Code status and usage in a branded subscription submenu", () => {
+    mocks.renderSubContent = false;
+    render(<ModelPicker />);
+    const trigger = screen.getByRole("button", {
+      name: "Claude Code subscription. Open submenu.",
+    });
+    expect(trigger.querySelector("svg")).not.toBeNull();
+    expect(screen.queryByText("Connected")).toBeNull();
+    expect(screen.queryByText("Refresh connection")).toBeNull();
+    expect(screen.queryByText("Claude Code — sonnet")).toBeNull();
+  });
+  it("keeps Claude Code catalog choices available during a Dyad trial", () => {
+    mocks.isTrial = true;
+    render(<ModelPicker />);
+    expect(
+      document.querySelector(
+        '[data-model-provider="claude-code"][data-model-name="sonnet"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      document.querySelector(
+        '[data-model-provider="openai"][data-model-name="gpt-5"]',
+      ),
+    ).toBeNull();
+    mocks.isTrial = false;
+  });
+  it("deduplicates API and Claude Code versions of the same recent model", () => {
+    mocks.anthropicModels = [
+      { apiName: "claude-fable-5", displayName: "Claude Fable 5" },
+    ];
+    mocks.settings.recentModels = [
+      { provider: "anthropic", name: "claude-fable-5" },
+      { provider: "claude-code", name: "claude-fable-5" },
+    ];
+    render(<ModelPicker />);
+    // One entry in All models, one entry in Recent.
+    expect(
+      document.querySelectorAll(
+        '[data-model-provider="claude-code"][data-model-name="claude-fable-5"]',
+      ),
+    ).toHaveLength(2);
+  });
+  it("hides cached catalog choices when discovery fails", () => {
+    mocks.claudeModelsError = true;
+    render(<ModelPicker />);
+    expect(screen.queryByText("Claude Code — sonnet")).toBeNull();
+  });
+  it.each(["connected", "compatible"] as const)(
+    "keeps API catalog routes when %s is false",
+    (field) => {
+      mocks.claudeStatus[field] = false;
+      render(<ModelPicker />);
+      expect(
+        document.querySelector('[data-model-provider="claude-code"]'),
+      ).toBeNull();
+      expect(
+        document.querySelector(
+          '[data-model-provider="openrouter"][data-model-name="anthropic/claude-sonnet-4.5"]',
+        ),
+      ).not.toBeNull();
+    },
+  );
   it.each(["dyad", "claude-code"] as const)(
     "switches an empty %s chat in place without asking for a new chat",
     async (backend) => {
@@ -1817,7 +2088,9 @@ describe("Claude Code subscription picker", () => {
       render(<ModelPicker />);
       fireEvent.click(
         backend === "dyad"
-          ? screen.getByText("Claude Code — sonnet")
+          ? document.querySelector(
+              '[data-model-provider="claude-code"][data-model-name="sonnet"]',
+            )!
           : document.querySelector(
               '[data-model-provider="auto"][data-model-name="auto"]',
             )!,
@@ -1837,7 +2110,11 @@ describe("Claude Code subscription picker", () => {
     mocks.chat!.messages = [];
     mocks.claudeStatus.disclosed = false;
     render(<ModelPicker />);
-    fireEvent.click(screen.getByText("Claude Code — sonnet"));
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="claude-code"][data-model-name="sonnet"]',
+      )!,
+    );
     expect(screen.getByText("Use Claude Code subscription?")).toBeTruthy();
     expect(screen.queryByText("Start a new chat?")).toBeNull();
     fireEvent.click(screen.getByText("Accept and select"));
@@ -1855,7 +2132,11 @@ describe("Claude Code subscription picker", () => {
   });
   it("preserves the existing chat when backend switching is cancelled", () => {
     render(<ModelPicker />);
-    fireEvent.click(screen.getByText("Claude Code — sonnet"));
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="claude-code"][data-model-name="sonnet"]',
+      )!,
+    );
     expect(
       screen.getByText(
         "Claude Code can’t continue this conversation. Your current chat will be saved, but its messages won’t carry over.",
@@ -1894,14 +2175,22 @@ describe("Claude Code subscription picker", () => {
   it("keeps switching between Claude Code models in the same conversation", async () => {
     mocks.chat!.messages = [{ id: 1, executionBackend: "claude-code" }];
     render(<ModelPicker />);
-    fireEvent.click(screen.getByText("Claude Code — sonnet"));
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="claude-code"][data-model-name="sonnet"]',
+      )!,
+    );
     await waitFor(() => expect(mocks.setChatSelection).toHaveBeenCalled());
     expect(screen.queryByText(/Start a new chat with/)).toBeNull();
   });
   it("shows first-use disclosure separately before creating the new chat", async () => {
     mocks.claudeStatus.disclosed = false;
     render(<ModelPicker />);
-    fireEvent.click(screen.getByText("Claude Code — sonnet"));
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="claude-code"][data-model-name="sonnet"]',
+      )!,
+    );
     expect(
       screen.getByText("Start a new chat with Claude Code — sonnet?"),
     ).toBeTruthy();
@@ -1918,7 +2207,11 @@ describe("Claude Code subscription picker", () => {
   it("creates a new chat in the same app with the chosen backend model", async () => {
     mocks.settings.recentModels = [{ provider: "openai", name: "gpt-5" }];
     render(<ModelPicker />);
-    fireEvent.click(screen.getByText("Claude Code — sonnet"));
+    fireEvent.click(
+      document.querySelector(
+        '[data-model-provider="claude-code"][data-model-name="sonnet"]',
+      )!,
+    );
     fireEvent.click(screen.getByText("Start new chat"));
     await waitFor(() =>
       expect(mocks.createChat).toHaveBeenCalledWith(

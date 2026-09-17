@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { ClaudeCodeModelsSchema } from "../../shared/claude_code_models";
+import { ClaudeCodeUsageSchema } from "../../shared/claude_code_usage";
 import {
   defineContract,
   defineStream,
@@ -414,6 +416,16 @@ export const chatContracts = {
     }),
   }),
 
+  claudeCodeModels: defineContract({
+    channel: "claude-code:models",
+    input: z.void(),
+    output: ClaudeCodeModelsSchema,
+  }),
+  claudeCodeUsage: defineContract({
+    channel: "claude-code:usage",
+    input: z.void(),
+    output: ClaudeCodeUsageSchema,
+  }),
   claudeCodeStatus: defineContract({
     channel: "claude-code:status",
     input: z.void(),
