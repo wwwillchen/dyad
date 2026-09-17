@@ -14,6 +14,20 @@ export function executionBackendForModel(
 export const BACKEND_SWITCH_MESSAGE =
   "Switching backends requires a new chat. Your current chat will stay unchanged.";
 
+/** User messages and legacy messages may have no backend attribution. */
+export function requiresNewChatForModel(
+  messages: readonly { executionBackend?: ExecutionBackend | null }[],
+  model: { provider: string },
+): boolean {
+  if (messages.length === 0) return false;
+  const historyBackend = messages.some(
+    (message) => message.executionBackend === "claude-code",
+  )
+    ? "claude-code"
+    : "dyad";
+  return executionBackendForModel(model) !== historyBackend;
+}
+
 export function assistantAttribution(
   backend: ExecutionBackend | null | undefined,
   model: string | null | undefined,
