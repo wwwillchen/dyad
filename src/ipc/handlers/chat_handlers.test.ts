@@ -84,6 +84,107 @@ describe("registerChatHandlers", () => {
     harness.dispose();
   });
 
+  it.each(["dyad", "claude-code"] as const)(
+    "switches an empty %s chat backend and rejects switching once messages exist",
+    async (executionBackend) => {
+      const appId = Number(
+        harness.db.insert(apps).values({ name: "switch", path: "switch" }).run()
+          .lastInsertRowid,
+      );
+      const chatId = Number(
+        harness.db.insert(chats).values({ appId, executionBackend }).run()
+          .lastInsertRowid,
+      );
+      const modelSelection = {
+        provider: executionBackend === "dyad" ? "claude-code" : "auto",
+        name: executionBackend === "dyad" ? "sonnet" : "auto",
+        effortLevel: "medium",
+      };
+      await harness.invokeHandler("update-chat", { chatId, modelSelection });
+      const updated = harness.db
+        .select()
+        .from(chats)
+        .where(eq(chats.id, chatId))
+        .get();
+      expect(updated).toMatchObject({
+        executionBackend: executionBackend === "dyad" ? "claude-code" : "dyad",
+        modelSelection,
+      });
+      harness.db
+        .insert(messages)
+        .values({
+          chatId,
+          role: "assistant",
+          content: "Hello",
+          executionBackend:
+            executionBackend === "dyad" ? "claude-code" : "dyad",
+        })
+        .run();
+      await expect(
+        harness.invokeHandler("update-chat", {
+          chatId,
+          modelSelection: {
+            provider: executionBackend === "dyad" ? "auto" : "claude-code",
+            name: "sonnet",
+            effortLevel: "medium",
+          },
+        }),
+      ).rejects.toMatchObject({ kind: DyadErrorKind.Precondition });
+      expect(
+        harness.db.select().from(chats).where(eq(chats.id, chatId)).get(),
+      ).toEqual(updated);
+    },
+  );
+
+  it.each(["dyad", "claude-code"] as const)(
+    "uses %s message history when the stored backend disagrees",
+    async (historyBackend) => {
+      const otherBackend = historyBackend === "dyad" ? "claude-code" : "dyad";
+      const appId = Number(
+        harness.db
+          .insert(apps)
+          .values({ name: "history", path: "history" })
+          .run().lastInsertRowid,
+      );
+      const chatId = Number(
+        harness.db
+          .insert(chats)
+          .values({ appId, executionBackend: otherBackend })
+          .run().lastInsertRowid,
+      );
+      harness.db
+        .insert(messages)
+        .values({
+          chatId,
+          role: "assistant",
+          content: "Hello",
+          executionBackend: historyBackend,
+        })
+        .run();
+      const selection = (backend: "dyad" | "claude-code") => ({
+        provider: backend === "dyad" ? "openai" : "claude-code",
+        name: "model",
+        effortLevel: "medium",
+      });
+      await expect(
+        harness.invokeHandler("update-chat", {
+          chatId,
+          modelSelection: selection(otherBackend),
+        }),
+      ).rejects.toMatchObject({ kind: DyadErrorKind.Precondition });
+      await harness.invokeHandler("update-chat", {
+        chatId,
+        modelSelection: selection(historyBackend),
+      });
+      expect(
+        harness.db.select().from(chats).where(eq(chats.id, chatId)).get(),
+      ).toMatchObject({
+        executionBackend: historyBackend,
+        modelSelection: selection(historyBackend),
+      });
+    },
+  );
+
   it("does not expose main-process AI message history through get-chat", async () => {
     const appResult = harness.db
       .insert(apps)

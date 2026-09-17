@@ -1,7 +1,7 @@
 import { modelForChatBackend } from "@/shared/execution_backend";
 import {
   executionBackendForModel,
-  BACKEND_SWITCH_MESSAGE,
+  requiresNewChatForModel,
 } from "@/shared/execution_backend";
 import { useSelectChat } from "@/hooks/useSelectChat";
 import { isDyadProEnabled, type LargeLanguageModel } from "@/lib/schemas";
@@ -52,6 +52,7 @@ import {
   DialogContent,
   DialogDescription,
   DialogHeader,
+  DialogFooter,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { providerSettingsRoute } from "@/routes/settings/providers/$provider";
@@ -196,6 +197,7 @@ export function ModelPicker() {
   const [pendingBackend, setPendingBackend] = useState<
     (ModelSelectParams & { recentModels: LargeLanguageModel[] }) | null
   >(null);
+  const [showDisclosure, setShowDisclosure] = useState(false);
   const [open, setOpen] = useState(false);
   const claudeStatus = useQuery({
     enabled:
@@ -207,6 +209,10 @@ export function ModelPicker() {
     queryFn: () => ipc.chat.claudeCodeStatus(),
     staleTime: 10_000,
   });
+  const requiresNewChat = (model: LargeLanguageModel) =>
+    Boolean(
+      isChatRoute && chat && requiresNewChatForModel(chat.messages, model),
+    );
   const performModelSelect = async ({
     model,
     catalogModel,
@@ -224,17 +230,13 @@ export function ModelPicker() {
       !settings.enableClaudeCodeSubscription
     )
       return;
-    const backendChange =
-      isChatRoute &&
-      chat &&
-      executionBackendForModel(model) !==
-        (chat.executionBackend ??
-          executionBackendForModel(chat.modelSelection));
+    const backendChange = requiresNewChat(model);
     if (
       !confirmed &&
       (backendChange ||
         (model.provider === "claude-code" && !claudeStatus.data?.disclosed))
     ) {
+      setShowDisclosure(false);
       setPendingBackend({
         model,
         catalogModel,
@@ -292,7 +294,13 @@ export function ModelPicker() {
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.chats.all });
       selectChat({ chatId: newId, appId: chat.appId });
-    } else if (isChatRoute && hasEstablishedChat && chatId) {
+    } else if (
+      isChatRoute &&
+      chat &&
+      chatId &&
+      (hasEstablishedChat ||
+        executionBackendForModel(model) !== (chat.executionBackend ?? "dyad"))
+    ) {
       await setChatSelection({
         modelSelection,
         ...(fallbackChatMode ? { chatMode: fallbackChatMode } : {}),
@@ -328,7 +336,14 @@ export function ModelPicker() {
   const confirmBackend = useMutation({
     mutationFn: async () => {
       if (!pendingBackend) return;
-      if (pendingBackend.model.provider === "claude-code") {
+      if (
+        pendingBackend.model.provider === "claude-code" &&
+        !claudeStatus.data?.disclosed
+      ) {
+        if (requiresNewChat(pendingBackend.model) && !showDisclosure) {
+          setShowDisclosure(true);
+          return;
+        }
         await ipc.chat.acceptClaudeCodeDisclosure();
         await claudeStatus.refetch();
       }
@@ -416,38 +431,40 @@ export function ModelPicker() {
   // Get display name for the selected model
   const selectedModel: LargeLanguageModel = modelForChatBackend(chat, settings);
 
-  const getModelDisplayName = () => {
-    if (selectedModel.provider === "claude-code")
-      return `Claude Code — ${selectedModel.name}`;
-    if (isAutoSidekickModel(selectedModel)) {
+  const getModelDisplayName = (
+    displayModel: LargeLanguageModel = selectedModel,
+  ) => {
+    if (displayModel.provider === "claude-code")
+      return `Claude Code — ${displayModel.name}`;
+    if (isAutoSidekickModel(displayModel)) {
       return AUTO_SIDEKICK_DISPLAY_NAME;
     }
-    if (selectedModel.provider === "ollama") {
+    if (displayModel.provider === "ollama") {
       return (
         ollamaModels.find(
-          (model: LocalModel) => model.modelName === selectedModel.name,
-        )?.displayName || selectedModel.name
+          (model: LocalModel) => model.modelName === displayModel.name,
+        )?.displayName || displayModel.name
       );
     }
-    if (selectedModel.provider === "lmstudio") {
+    if (displayModel.provider === "lmstudio") {
       return (
         lmStudioModels.find(
-          (model: LocalModel) => model.modelName === selectedModel.name,
-        )?.displayName || selectedModel.name // Fallback to path if not found
+          (model: LocalModel) => model.modelName === displayModel.name,
+        )?.displayName || displayModel.name // Fallback to path if not found
       );
     }
 
     // For cloud models, look up in the modelsByProviders data
-    if (modelsByProviders && modelsByProviders[selectedModel.provider]) {
-      const customFoundModel = modelsByProviders[selectedModel.provider].find(
+    if (modelsByProviders && modelsByProviders[displayModel.provider]) {
+      const customFoundModel = modelsByProviders[displayModel.provider].find(
         (model) =>
-          model.type === "custom" && model.id === selectedModel.customModelId,
+          model.type === "custom" && model.id === displayModel.customModelId,
       );
       if (customFoundModel) {
         return customFoundModel.displayName;
       }
-      const foundModel = modelsByProviders[selectedModel.provider].find(
-        (model) => model.apiName === selectedModel.name,
+      const foundModel = modelsByProviders[displayModel.provider].find(
+        (model) => model.apiName === displayModel.name,
       );
       if (foundModel) {
         return foundModel.displayName;
@@ -455,7 +472,7 @@ export function ModelPicker() {
     }
 
     // Fallback if not found
-    return selectedModel.name;
+    return displayModel.name;
   };
 
   // Get auto provider models (if any)
@@ -1398,6 +1415,17 @@ export function ModelPicker() {
   const hasCloudCatalogEntries =
     cloudCatalogGroups.length > 0 || otherProviderEntries.length > 0;
   const cloudCatalogError = modelsByProvidersError ?? providersError;
+  const pendingNeedsNewChat = Boolean(
+    pendingBackend && requiresNewChat(pendingBackend.model),
+  );
+  const isNewChatDialog = pendingNeedsNewChat && !showDisclosure;
+  const pendingModelName = pendingBackend
+    ? getModelDisplayName(pendingBackend.model)
+    : "";
+  const newChatExplanation =
+    pendingBackend?.model.provider === "claude-code"
+      ? "Claude Code can’t continue this conversation."
+      : `This conversation uses Claude Code and can’t continue with ${pendingModelName}.`;
 
   return (
     <>
@@ -1410,58 +1438,56 @@ export function ModelPicker() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {chat &&
-              pendingBackend &&
-              executionBackendForModel(pendingBackend.model) !==
-                (chat.executionBackend ?? "dyad")
-                ? "Start a new chat?"
+              {isNewChatDialog
+                ? `Start a new chat with ${pendingModelName}?`
                 : "Use Claude Code subscription?"}
             </DialogTitle>
             <DialogDescription>
-              {chat &&
-              pendingBackend &&
-              executionBackendForModel(pendingBackend.model) !==
-                (chat.executionBackend ?? "dyad")
-                ? BACKEND_SWITCH_MESSAGE
+              {isNewChatDialog
+                ? `${newChatExplanation} Your current chat will be saved, but its messages won’t carry over.`
                 : "Claude subscription usage applies. Agent mode with Pro enabled also incurs a separate Dyad charge."}
             </DialogDescription>
           </DialogHeader>
-          {pendingBackend?.model.provider === "claude-code" && (
-            <p className="text-sm">
-              In Agent mode with Dyad Pro enabled, Claude subscription usage and
-              a separate Dyad charge apply: $0.02 per million total tokens for
-              model IDs containing -luna, -mini or -nano; $0.10 per million
-              otherwise. Cached tokens count once. With Pro off or in Build, Ask
-              or Plan, no Dyad credits are charged. Usage reporting is best
-              effort; your billing account shows actual spend.
+          {!isNewChatDialog &&
+            pendingBackend?.model.provider === "claude-code" && (
+              <p className="text-sm">
+                In Agent mode with Dyad Pro enabled, Claude subscription usage
+                and a separate Dyad charge apply: $0.02 per million total tokens
+                for model IDs containing -luna, -mini or -nano; $0.10 per
+                million otherwise. Cached tokens count once. With Pro off or in
+                Build, Ask or Plan, no Dyad credits are charged. Usage reporting
+                is best effort; your billing account shows actual spend.
+              </p>
+            )}
+          {!isNewChatDialog && (
+            <p className="text-sm text-muted-foreground">
+              Claude Code runs locally; shell tools are disabled, but approved
+              package, check and preview operations can execute project code.
             </p>
           )}
-          <p className="text-sm text-muted-foreground">
-            Previous conversation context does not transfer automatically.
-            Claude Code runs locally; shell tools are disabled, but approved
-            package, check and preview operations can execute project code.
-          </p>
           {confirmBackend.error && (
             <p role="alert">{confirmBackend.error.message}</p>
           )}
-          <Button
-            variant="outline"
-            disabled={confirmBackend.isPending}
-            onClick={() => setPendingBackend(null)}
-          >
-            Cancel
-          </Button>
-          <Button
-            disabled={confirmBackend.isPending}
-            onClick={() => confirmBackend.mutate()}
-          >
-            {chat &&
-            pendingBackend &&
-            executionBackendForModel(pendingBackend.model) !==
-              (chat.executionBackend ?? "dyad")
-              ? "Start new chat"
-              : "Accept and select"}
-          </Button>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="focus-visible:ring-2"
+              disabled={confirmBackend.isPending}
+              onClick={() => setPendingBackend(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={confirmBackend.isPending}
+              onClick={() => confirmBackend.mutate()}
+            >
+              {isNewChatDialog
+                ? "Start new chat"
+                : pendingNeedsNewChat
+                  ? "Accept and start new chat"
+                  : "Accept and select"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       <DropdownMenu open={open} onOpenChange={handleOpenChange}>

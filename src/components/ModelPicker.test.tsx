@@ -67,7 +67,7 @@ const mocks = vi.hoisted(() => ({
     id: number;
     appId?: number;
     executionBackend?: "dyad" | "claude-code";
-    messages: Array<{ id: number }>;
+    messages: Array<{ id: number; executionBackend?: "dyad" | "claude-code" }>;
     modelSelection?: {
       provider: string;
       name: string;
@@ -218,6 +218,9 @@ vi.mock("@/components/ui/dialog", () => ({
     <div>{children}</div>
   ),
   DialogHeader: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  DialogFooter: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
   DialogTitle: ({ children }: { children: React.ReactNode }) => (
@@ -1805,6 +1808,42 @@ describe("Claude Code subscription picker", () => {
     mocks.createChat.mockClear();
     mocks.setChatSelection.mockClear();
   });
+  it.each(["dyad", "claude-code"] as const)(
+    "switches an empty %s chat in place without asking for a new chat",
+    async (backend) => {
+      mocks.chat!.messages = [];
+      mocks.chat!.executionBackend = backend;
+      mocks.chat!.modelSelection = undefined;
+      render(<ModelPicker />);
+      fireEvent.click(
+        backend === "dyad"
+          ? screen.getByText("Claude Code — sonnet")
+          : document.querySelector(
+              '[data-model-provider="auto"][data-model-name="auto"]',
+            )!,
+      );
+      await waitFor(() =>
+        expect(mocks.setChatSelection).toHaveBeenCalledWith({
+          modelSelection: expect.objectContaining({
+            provider: backend === "dyad" ? "claude-code" : "auto",
+          }),
+        }),
+      );
+      expect(screen.queryByText("Start a new chat?")).toBeNull();
+      expect(mocks.createChat).not.toHaveBeenCalled();
+    },
+  );
+  it("keeps the first-use disclosure for an empty chat without requesting a new chat", async () => {
+    mocks.chat!.messages = [];
+    mocks.claudeStatus.disclosed = false;
+    render(<ModelPicker />);
+    fireEvent.click(screen.getByText("Claude Code — sonnet"));
+    expect(screen.getByText("Use Claude Code subscription?")).toBeTruthy();
+    expect(screen.queryByText("Start a new chat?")).toBeNull();
+    fireEvent.click(screen.getByText("Accept and select"));
+    await waitFor(() => expect(mocks.setChatSelection).toHaveBeenCalled());
+    expect(mocks.createChat).not.toHaveBeenCalled();
+  });
   it("hides Claude Code when the experiment is disabled, including recent choices", () => {
     Object.assign(mocks.settings, {
       enableClaudeCodeSubscription: false,
@@ -1819,12 +1858,62 @@ describe("Claude Code subscription picker", () => {
     fireEvent.click(screen.getByText("Claude Code — sonnet"));
     expect(
       screen.getByText(
-        "Switching backends requires a new chat. Your current chat will stay unchanged.",
+        "Claude Code can’t continue this conversation. Your current chat will be saved, but its messages won’t carry over.",
       ),
     ).toBeTruthy();
     fireEvent.click(screen.getByText("Cancel"));
     expect(mocks.createChat).not.toHaveBeenCalled();
     expect(mocks.setChatSelection).not.toHaveBeenCalled();
+  });
+  it("uses message history rather than the stored backend or global model", async () => {
+    mocks.chat!.executionBackend = "claude-code";
+    mocks.settings.selectedModel = { provider: "claude-code", name: "sonnet" };
+    mocks.renderSubContent = true;
+    render(<ModelPicker />);
+    fireEvent.click(screen.getByText("GPT 5").closest("button")!);
+    await waitFor(() => expect(mocks.setChatSelection).toHaveBeenCalled());
+    expect(screen.queryByText(/Start a new chat with/)).toBeNull();
+    expect(mocks.createChat).not.toHaveBeenCalled();
+  });
+  it("names the destination model when leaving Claude Code and omits the disclosure", () => {
+    mocks.chat!.messages = [
+      { id: 1 },
+      { id: 2, executionBackend: "claude-code" },
+    ];
+    mocks.renderSubContent = true;
+    render(<ModelPicker />);
+    fireEvent.click(screen.getByText("GPT 5").closest("button")!);
+    expect(screen.getByText("Start a new chat with GPT 5?")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "This conversation uses Claude Code and can’t continue with GPT 5. Your current chat will be saved, but its messages won’t carry over.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/shell tools are disabled/)).toBeNull();
+  });
+  it("keeps switching between Claude Code models in the same conversation", async () => {
+    mocks.chat!.messages = [{ id: 1, executionBackend: "claude-code" }];
+    render(<ModelPicker />);
+    fireEvent.click(screen.getByText("Claude Code — sonnet"));
+    await waitFor(() => expect(mocks.setChatSelection).toHaveBeenCalled());
+    expect(screen.queryByText(/Start a new chat with/)).toBeNull();
+  });
+  it("shows first-use disclosure separately before creating the new chat", async () => {
+    mocks.claudeStatus.disclosed = false;
+    render(<ModelPicker />);
+    fireEvent.click(screen.getByText("Claude Code — sonnet"));
+    expect(
+      screen.getByText("Start a new chat with Claude Code — sonnet?"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/shell tools are disabled/)).toBeNull();
+    fireEvent.click(screen.getByText("Start new chat"));
+    await waitFor(() =>
+      expect(screen.getByText("Use Claude Code subscription?")).toBeTruthy(),
+    );
+    expect(screen.getByText(/shell tools are disabled/)).toBeTruthy();
+    expect(mocks.createChat).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Accept and start new chat"));
+    await waitFor(() => expect(mocks.createChat).toHaveBeenCalled());
   });
   it("creates a new chat in the same app with the chosen backend model", async () => {
     mocks.settings.recentModels = [{ provider: "openai", name: "gpt-5" }];

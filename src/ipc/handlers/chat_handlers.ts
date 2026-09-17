@@ -25,6 +25,7 @@ import {
 } from "../utils/renderer_chat_message";
 import {
   executionBackendForModel,
+  requiresNewChatForModel,
   BACKEND_SWITCH_MESSAGE,
 } from "@/shared/execution_backend";
 import { createChatForApp } from "../utils/chat_creation_utils";
@@ -354,14 +355,23 @@ export function registerChatHandlers() {
         });
         if (!current)
           throw new DyadError("Chat not found", DyadErrorKind.NotFound);
-        if (
-          modelSelection &&
-          executionBackendForModel(modelSelection) !== current.executionBackend
-        )
-          throw new DyadError(
-            BACKEND_SWITCH_MESSAGE,
-            DyadErrorKind.Precondition,
-          );
+        if (modelSelection) {
+          const history = await db.query.messages.findMany({
+            where: eq(messages.chatId, chatId),
+            columns: { executionBackend: true },
+          });
+          if (requiresNewChatForModel(history, modelSelection)) {
+            throw new DyadError(
+              BACKEND_SWITCH_MESSAGE,
+              DyadErrorKind.Precondition,
+            );
+          }
+          updates.executionBackend = executionBackendForModel(modelSelection);
+          if (updates.executionBackend !== current.executionBackend) {
+            updates.claudeSessionId = null;
+            updates.claudeSessionState = null;
+          }
+        }
         await db.update(chats).set(updates).where(eq(chats.id, chatId));
       });
     } else {
