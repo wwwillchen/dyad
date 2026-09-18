@@ -1,5 +1,6 @@
 import { messages } from "@/db/schema";
 import type { Message } from "@/ipc/types/chat";
+import { extractCompactionBlocks } from "@/ipc/handlers/compaction/compaction_utils";
 
 /**
  * Columns that are safe and useful to expose to the renderer.
@@ -30,27 +31,36 @@ export type RendererMessageRow = Pick<
 
 /** Keep model-history summaries in the DB, but do not display them twice. */
 export function toRendererMessages(rows: RendererMessageRow[]): Message[] {
-  const inlineMessages = rows.filter(
-    (row) =>
-      row.role === "assistant" &&
-      !row.isCompactionSummary &&
-      row.content.includes("<dyad-compaction"),
-  );
+  const inlineMessages = rows
+    .filter((row) => row.role === "assistant" && !row.isCompactionSummary)
+    .map((row) => ({ row, blocks: extractCompactionBlocks(row.content) }))
+    .filter(({ blocks }) => blocks.length > 0);
   return rows
     .filter((row) => {
       if (!row.isCompactionSummary) return true;
-      const block = row.content.match(
-        /<dyad-compaction\b[^>]*>[\s\S]*?<\/dyad-compaction>/,
-      )?.[0];
+      const block = extractCompactionBlocks(row.content)[0];
+      // IDs preserve insertion order even when pre-turn summaries are backdated.
+      // Identical summaries in earlier turns must not hide this turn's indicator.
+      const triggeringUser = rows.reduce<RendererMessageRow | undefined>(
+        (latest, candidate) =>
+          candidate.role === "user" &&
+          candidate.id < row.id &&
+          (!latest || candidate.id > latest.id)
+            ? candidate
+            : latest,
+        undefined,
+      );
       // Check the actual inline block: timestamps alone could hide the only
       // indicator if compaction completed but the turn was never persisted.
       return (
         !block ||
+        !triggeringUser ||
         !inlineMessages.some(
-          (inline) =>
+          ({ row: inline, blocks }) =>
+            inline.id > triggeringUser.id &&
             inline.id < row.id &&
             inline.createdAt.getTime() <= row.createdAt.getTime() &&
-            inline.content.includes(block),
+            blocks.includes(block),
         )
       );
     })

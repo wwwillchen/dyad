@@ -1,3 +1,4 @@
+import { buildCompactionBlock } from "@/ipc/handlers/compaction/compaction_utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { apps, chats, messages } from "@/db/schema";
@@ -139,8 +140,7 @@ describe("registerChatHandlers", () => {
       .values({ appId: app.id })
       .returning()
       .get();
-    const block =
-      '<dyad-compaction title="Conversation compacted" state="finished">\nSummary\n</dyad-compaction>';
+    const block = buildCompactionBlock("Summary");
     const reply = `First reads\n${block}\nFinal read and answer`;
     harness.db
       .insert(messages)

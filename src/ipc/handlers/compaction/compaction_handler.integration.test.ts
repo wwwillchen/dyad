@@ -156,7 +156,9 @@ describe("performCompaction", () => {
       expect(result.success).toBe(true);
       const summaries = await loadSummaryMessages();
       expect(summaries).toHaveLength(1);
-      expect(summaries[0].content).toContain(buildCompactionBlock(summary));
+      expect(
+        summaries[0].content.split(buildCompactionBlock(summary)),
+      ).toHaveLength(2);
       if (!summary.trim())
         expect(summaries[0].content).toContain("Conversation compacted.");
       else expect(summaries[0].content).toContain("&lt;xml&gt; &amp; details");

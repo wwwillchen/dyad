@@ -265,6 +265,8 @@ Mid-turn compaction stores both an inline indicator and a separate model-history
 summary row. Use `toRendererMessages` for all full display projections, applying
 live placeholder content first, and `buildCompactionBlock` in both producers so
 empty-summary fallbacks and formatting cannot diverge between streaming and reload.
+Scope duplicate matching to the triggering user's turn by insertion ID; repeated
+summary text (especially empty-summary fallbacks) must not hide a later turn's indicator.
 
 The `chat:response:chunk` event supports two modes:
 
