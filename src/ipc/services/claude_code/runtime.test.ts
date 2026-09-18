@@ -13,7 +13,7 @@ describe("Claude Code execution policy", () => {
       model: "sonnet",
       sessionId: "session",
       resume: true,
-      readOnly: true,
+
       mcpConfigPath: "/private-config",
     });
     expect(args).toContain("--restricted");

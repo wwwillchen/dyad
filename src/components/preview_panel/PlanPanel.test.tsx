@@ -8,6 +8,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  showError: vi.fn(),
   document: {
     title: "Plan",
     content: "Implementation steps",
@@ -21,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   streamMessage: vi.fn(),
   setAcceptInNewChat: vi.fn(),
 }));
+
+vi.mock("@/lib/toast", () => ({ showError: mocks.showError }));
 
 vi.mock("@/atoms/planAtoms", () => ({
   clearPlanAnnotations: vi.fn(),
@@ -95,6 +98,7 @@ import { PlanPanel } from "./PlanPanel";
 describe("PlanPanel", () => {
   beforeEach(() => {
     mocks.acceptPlan.mockReset();
+    mocks.showError.mockReset();
     mocks.handoffState.phase = "idle";
     mocks.handoffState.failure = null;
     mocks.streamMessage.mockReset();
@@ -144,6 +148,9 @@ describe("PlanPanel", () => {
       await Promise.resolve();
     });
     expect(button.disabled).toBe(false);
+    expect(mocks.showError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "Dispatch failed" }),
+    );
 
     consoleError.mockRestore();
   });

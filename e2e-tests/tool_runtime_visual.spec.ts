@@ -4,6 +4,10 @@ import { test } from "./helpers/test_helper";
 test("regular Dyad tool cards, questionnaire and plan visual reference", async ({
   po,
 }) => {
+  test.skip(
+    process.env.DYAD_REAL_CLAUDE_SMOKE !== "1",
+    "Opt-in paired visual comparison with the Claude smoke suite",
+  );
   test.setTimeout(180_000);
   await po.setUpDyadPro({ localAgent: true });
   await po.importApp("minimal");

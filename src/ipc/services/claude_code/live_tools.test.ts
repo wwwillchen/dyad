@@ -38,7 +38,7 @@ it.skipIf(process.env.DYAD_REAL_CLAUDE_SMOKE !== "1")(
         model: "sonnet",
         sessionId: randomUUID(),
         resume: false,
-        readOnly: false,
+
         signal: abort.signal,
         mcpConfigPath: bridge.configPath,
         dyadTools: bridge.names,
@@ -109,7 +109,7 @@ it.skipIf(process.env.DYAD_REAL_CLAUDE_SMOKE !== "1")(
         model: "sonnet",
         sessionId: randomUUID(),
         resume: false,
-        readOnly: true,
+
         signal: abort.signal,
         mcpConfigPath: bridge.configPath,
         dyadTools: bridge.names,
@@ -162,7 +162,7 @@ it.skipIf(process.env.DYAD_REAL_CLAUDE_SMOKE !== "1")(
         model: "sonnet",
         sessionId: randomUUID(),
         resume: false,
-        readOnly: true,
+
         signal: abort.signal,
         mcpConfigPath: bridge.configPath,
         dyadTools: bridge.names,

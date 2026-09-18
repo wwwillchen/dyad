@@ -1,3 +1,6 @@
+// Read-only compatibility for persisted cards produced by prototype commit
+// 171069cc4 (native-tool backend), before 868819db7 migrated to shared Dyad cards.
+// No current execution path produces this tag.
 import { claudeToolCardSchema } from "@/shared/claude_tool_cards";
 import { DyadRead } from "./DyadRead";
 import { DyadListFiles } from "./DyadListFiles";

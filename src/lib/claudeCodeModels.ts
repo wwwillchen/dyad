@@ -44,16 +44,16 @@ export function withClaudeCodeModels(
     ([a], [b]) => Number(b === "anthropic") - Number(a === "anthropic"),
   );
   for (const [provider, models] of entries) {
-    result[provider] = models.filter((model) => {
+    result[provider] = models;
+    for (const model of models) {
       const id = claudeCodeModelId(provider, model);
-      if (!id) return true;
+      if (!id) continue;
       const identity = claudeCodeModelIdentity(id, suggestions);
       if (!seen.has(identity)) {
         seen.add(identity);
         claude.push({ ...model, apiName: id });
       }
-      return false;
-    });
+    }
   }
   // Prefer concrete entries over Default when they resolve to the same model.
   for (const model of [...suggestions].sort(

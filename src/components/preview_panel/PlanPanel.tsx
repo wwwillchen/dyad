@@ -20,6 +20,7 @@ import { useStreamChat } from "@/hooks/useStreamChat";
 import { usePlan } from "@/hooks/usePlan";
 import { useChatMode } from "@/hooks/useChatMode";
 import { usePlanDocument } from "@/hooks/usePlanDocument";
+import { showError } from "@/lib/toast";
 import { sha256Hex } from "@/lib/browser_hash";
 import { serializePlanDocument } from "@/plan_handoff/transport";
 import {
@@ -228,7 +229,7 @@ export const PlanPanel: React.FC = () => {
 
     void acceptPlan({ chatId, appId })
       .catch((error) => {
-        console.error("Failed to accept plan", error);
+        showError(error);
       })
       .finally(() => {
         setIsSubmitting(false);

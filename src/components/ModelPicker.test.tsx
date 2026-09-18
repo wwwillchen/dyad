@@ -2043,7 +2043,7 @@ describe("Claude Code subscription picker", () => {
     ).toBeNull();
     mocks.isTrial = false;
   });
-  it("deduplicates API and Claude Code versions of the same recent model", () => {
+  it("preserves distinct API and Claude Code routes in recent models", () => {
     mocks.anthropicModels = [
       { apiName: "claude-fable-5", displayName: "Claude Fable 5" },
     ];
@@ -2052,7 +2052,12 @@ describe("Claude Code subscription picker", () => {
       { provider: "claude-code", name: "claude-fable-5" },
     ];
     render(<ModelPicker />);
-    // One entry in All models, one entry in Recent.
+    expect(
+      document.querySelectorAll(
+        '[data-model-provider="anthropic"][data-model-name="claude-fable-5"]',
+      ),
+    ).toHaveLength(2);
+    // Each provider retains one entry in All models and one in Recent.
     expect(
       document.querySelectorAll(
         '[data-model-provider="claude-code"][data-model-name="claude-fable-5"]',
@@ -2204,6 +2209,32 @@ describe("Claude Code subscription picker", () => {
     fireEvent.click(screen.getByText("Accept and start new chat"));
     await waitFor(() => expect(mocks.createChat).toHaveBeenCalled());
   });
+  it.each(["free-pro", "auto-sidekick"])(
+    "applies compatible mode when switching from Claude to %s",
+    async (name) => {
+      mocks.selectedMode = "build";
+      mocks.chat!.executionBackend = "claude-code";
+      mocks.chat!.messages = [{ id: 1, executionBackend: "claude-code" }];
+      render(<ModelPicker />);
+      fireEvent.click(
+        document.querySelector(
+          `[data-model-provider="auto"][data-model-name="${name}"]`,
+        )!,
+      );
+      fireEvent.click(screen.getByText("Start new chat"));
+      await waitFor(() =>
+        expect(mocks.createChat).toHaveBeenCalledWith(
+          expect.objectContaining({
+            initialChatMode: "local-agent",
+            modelSelection: expect.objectContaining({ provider: "auto", name }),
+          }),
+        ),
+      );
+      expect(mocks.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ selectedChatMode: "local-agent" }),
+      );
+    },
+  );
   it("creates a new chat in the same app with the chosen backend model", async () => {
     mocks.settings.recentModels = [{ provider: "openai", name: "gpt-5" }];
     render(<ModelPicker />);

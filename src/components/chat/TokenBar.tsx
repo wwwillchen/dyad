@@ -18,12 +18,15 @@ import { useAtom, useAtomValue } from "jotai";
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { ipc } from "@/ipc/types";
+import { useChatStreamState } from "@/hooks/useChatStream";
+import { isStreamActive } from "@/chat_stream/transition";
 
 interface TokenBarProps {
   chatId?: number;
 }
 
 export function TokenBar({ chatId }: TokenBarProps) {
+  const streamState = useChatStreamState(chatId);
   const { data: chat } = useQuery({
     queryKey: queryKeys.chats.detail({ chatId: chatId ?? null }),
     queryFn: () => ipc.chat.getChat(chatId!),
@@ -37,12 +40,29 @@ export function TokenBar({ chatId }: TokenBarProps) {
     const latest = messages
       .filter((message) => message.role === "assistant")
       .at(-1);
-    return <SubscriptionUsage receipt={latest?.executionUsage} />;
+    return (
+      <SubscriptionUsage
+        receipt={latest?.executionUsage}
+        phase={
+          isStreamActive(streamState ?? { type: "idle" })
+            ? "pending"
+            : latest
+              ? "settled"
+              : "empty"
+        }
+      />
+    );
   }
   return <DyadTokenBar chatId={chatId} />;
 }
 
-export function SubscriptionUsage({ receipt }: { receipt?: string | null }) {
+export function SubscriptionUsage({
+  receipt,
+  phase = "settled",
+}: {
+  receipt?: string | null;
+  phase?: "empty" | "pending" | "settled";
+}) {
   let status: string | undefined;
   try {
     status = JSON.parse(receipt ?? "null")?.status;
@@ -55,11 +75,15 @@ export function SubscriptionUsage({ receipt }: { receipt?: string | null }) {
       data-testid="subscription-usage"
     >
       <div>
-        {status === "unbilled"
-          ? "This turn does not use Dyad credits (Pro off, or Build, Ask or Plan mode)."
-          : status === "attempted"
-            ? "Usage reporting attempted. See your billing account for actual spend."
-            : "Usage unavailable. No token count or charge has been inferred."}
+        {phase === "empty"
+          ? "Usage will appear after your first turn."
+          : phase === "pending"
+            ? "Usage will be reported after this turn completes."
+            : status === "unbilled"
+              ? "This turn does not use Dyad credits (Pro off, or Build, Ask or Plan mode)."
+              : status === "attempted"
+                ? "Usage reporting attempted. See your billing account for actual spend."
+                : "Usage unavailable. No token count or charge has been inferred."}
       </div>
       <div>
         Claude subscription usage applies. In Agent mode with Pro enabled, Dyad

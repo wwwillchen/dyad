@@ -15,6 +15,7 @@ import type { ChatSearchResult, ChatSummary } from "../../lib/schemas";
 import log from "electron-log";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { createTypedHandler } from "./base";
+import { getHandlerContext } from "./handler_context";
 import { entityDisposalBus } from "@/window_infrastructure/main/entity_disposal_bus";
 import { chatContracts } from "../types/chat";
 import { normalizeStoredChatMode } from "./chat_mode_resolution";
@@ -107,14 +108,27 @@ async function mutateChatAfterDrainingStreams({
 }
 
 export function registerChatHandlers() {
-  createTypedHandler(chatContracts.claudeCodeModels, () => listClaudeModels());
+  const assertClaudeExperiment = () => {
+    if (!getHandlerContext().readSettings().enableClaudeCodeSubscription)
+      throw new DyadError(
+        'Turn on "Enable Claude Code subscription" in Settings → Experiments.',
+        DyadErrorKind.Precondition,
+      );
+  };
+  createTypedHandler(chatContracts.claudeCodeModels, () => {
+    assertClaudeExperiment();
+    return listClaudeModels();
+  });
   createTypedHandler(chatContracts.claudeCodeUsage, async () =>
     getClaudeUsageLimits(),
   );
-  createTypedHandler(chatContracts.claudeCodeStatus, async () => ({
-    ...(await claudeStatus()),
-    disclosed: await hasClaudeDisclosure(),
-  }));
+  createTypedHandler(chatContracts.claudeCodeStatus, async () => {
+    assertClaudeExperiment();
+    return {
+      ...(await claudeStatus()),
+      disclosed: await hasClaudeDisclosure(),
+    };
+  });
   createTypedHandler(chatContracts.acceptClaudeCodeDisclosure, async () =>
     acceptClaudeDisclosure(),
   );

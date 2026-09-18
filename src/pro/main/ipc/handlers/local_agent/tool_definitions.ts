@@ -1,3 +1,4 @@
+import { withReferencedAppRead } from "./tools/referenced_app_read";
 /**
  * Tool definitions for Local Agent v2
  * Each tool includes a zod schema, description, and execute function
@@ -894,7 +895,12 @@ export function buildAgentToolSet(
             // Track file edit tool usage before execution to capture all attempts
             // (including failures) for retry/fallback telemetry
             trackFileEditTool(invocationCtx, tool.name, processedArgs);
-            const result = await tool.execute(processedArgs, invocationCtx);
+            const result = await withReferencedAppRead(
+              tool.name,
+              processedArgs,
+              invocationCtx,
+              (readCtx) => tool.execute(processedArgs, readCtx),
+            );
 
             // Only completed mutations unblock run_tests. Failed tool calls are
             // still present in fileEditTracker for retry/fallback telemetry, but

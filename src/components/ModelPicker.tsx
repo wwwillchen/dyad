@@ -312,11 +312,12 @@ export function ModelPicker() {
     if (backendChange && chat) {
       const newId = await ipc.chat.createChat({
         appId: chat.appId,
-        initialChatMode: selectedMode,
+        initialChatMode: fallbackChatMode ?? selectedMode,
         modelSelection,
       });
       await updateSettings({
         selectedModel: model,
+        ...(fallbackChatMode ? { selectedChatMode: fallbackChatMode } : {}),
         ...preferenceUpdate,
         ...recentModelsUpdate,
       });
@@ -654,7 +655,7 @@ export function ModelPicker() {
   );
   const recentModelCandidates = effectiveRecentModels.flatMap<RecentModelEntry>(
     (recentModel) => {
-      if (useClaudeCode && recentModel.customModelId === undefined) {
+      if (useClaudeCode && recentModel.provider === "claude-code") {
         const id = claudeCodeModelId(recentModel.provider, {
           apiName: recentModel.name,
           displayName: recentModel.name,

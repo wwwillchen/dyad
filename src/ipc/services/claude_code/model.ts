@@ -1,3 +1,4 @@
+import log from "electron-log";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, writeFile, readFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -147,6 +148,8 @@ export class ClaudeCodeModel implements LanguageModelV3 {
     let started = false;
     let latched = false;
     let completed = false;
+    let failed = false;
+    let cleanupFailure: PromiseRejectedResult | undefined;
     let stopAfterTool = false;
     const filter = claudeTextFilter(
       options.prompt.some(
@@ -301,7 +304,6 @@ export class ClaudeCodeModel implements LanguageModelV3 {
         model: this.modelId,
         sessionId,
         resume,
-        readOnly: true,
         signal: runSignal,
         mcpConfigPath: bridge.configPath,
         dyadTools: bridge.names,
@@ -322,7 +324,10 @@ export class ClaudeCodeModel implements LanguageModelV3 {
               event.mcp_servers[0].name !== "dyad" ||
               event.mcp_servers[0].status !== "connected"
             )
-              throw new Error("Unexpected Claude Code tool/server inventory");
+              throw new DyadError(
+                "Unexpected Claude Code tool/server inventory",
+                DyadErrorKind.Precondition,
+              );
             started = true;
           }
           if (event.type === "assistant" && event.message?.model) {
@@ -354,7 +359,10 @@ export class ClaudeCodeModel implements LanguageModelV3 {
           result.is_error &&
           result.subtype !== "error_max_turns")
       )
-        throw new Error("Claude Code did not complete the turn");
+        throw new DyadError(
+          "Claude Code did not complete the turn",
+          DyadErrorKind.External,
+        );
       signal.throwIfAborted();
       completed = true;
       text(filter("", true));
@@ -364,6 +372,9 @@ export class ClaudeCodeModel implements LanguageModelV3 {
         finishReason: { unified: "stop", raw: "end_turn" },
         usage: emptyUsage(),
       });
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
       stop.abort();
       // Cleanup failures must not strand the shared context or skip accounting.
@@ -372,30 +383,43 @@ export class ClaudeCodeModel implements LanguageModelV3 {
       const accountingId = usageId ?? this.usageId;
       this.prepared = false;
       this.usageId = undefined;
-      try {
-        const accounting = await reportClaudeUsage(accountingId, result);
-        await db
-          .update(messages)
-          .set({ executionUsage: JSON.stringify(accounting) })
-          .where(eq(messages.id, ctx.messageId));
-      } finally {
-        try {
-          if (latched)
+      // Settle independent finalizers even when one fails, without masking the
+      // primary inference failure with a secondary cleanup/storage error.
+      cleanup.push(
+        ...(await Promise.allSettled([
+          (async () => {
+            const accounting = await reportClaudeUsage(accountingId, result);
             await db
-              .update(chats)
-              .set({
-                claudeSessionState:
-                  completed && !stopAfterTool ? "ready" : "interrupted",
-              })
-              .where(eq(chats.id, ctx.chatId));
-        } finally {
-          await rm(directory, { recursive: true, force: true });
-        }
-      }
+              .update(messages)
+              .set({ executionUsage: JSON.stringify(accounting) })
+              .where(eq(messages.id, ctx.messageId));
+          })(),
+          (async () => {
+            if (latched)
+              await db
+                .update(chats)
+                .set({
+                  claudeSessionState:
+                    completed && !stopAfterTool ? "ready" : "interrupted",
+                })
+                .where(eq(chats.id, ctx.chatId));
+          })(),
+          rm(directory, { recursive: true, force: true }),
+        ])),
+      );
       const failedCleanup = cleanup.find(
         (entry) => entry.status === "rejected",
       );
-      if (failedCleanup?.status === "rejected") throw failedCleanup.reason;
+      if (failedCleanup?.status === "rejected") {
+        cleanupFailure = failedCleanup;
+        if (failed) {
+          // Do not log arbitrary CLI, tool, or database error payloads.
+          log.warn(
+            "Claude turn cleanup also failed after a primary turn error",
+          );
+        }
+      }
     }
+    if (cleanupFailure) throw cleanupFailure.reason;
   }
 }

@@ -483,6 +483,7 @@ function executionObserver(
 // PROTOCOL-GROUNDED REGION: tracking/completion abstraction. Keep in sync with
 // src/chat_stream/host_transition.ts and src/chat_stream/main_actor.test.ts.
 interface TrackedStream {
+  drainBeforeEnd?: boolean;
   abortController: AbortController;
   sender: SafeSender;
   invocationRef?: ChatStreamInvocationRef;
@@ -690,6 +691,10 @@ async function cancelTrackedStreams(
   // Resolve consent prompts before awaiting completion. A stream parked on a
   // consent prompt cannot unwind until that prompt is resolved.
   for (const { chatId, streams } of trackedStreams) {
+    for (const { invocationRef } of streams) {
+      if (invocationRef)
+        cancelledActorInvocations.add(invocationRef.operationId);
+    }
     streams.forEach(({ abortController }) => abortController.abort());
     clearPendingLocalAgentInputsForChat(chatId);
     logger.log(`Aborted ${streams.length} stream(s) for chat ${chatId}`);
@@ -706,44 +711,50 @@ async function cancelTrackedStreams(
   // notification moves earlier, matching the pre-cancellation-refactor timing.
   // A new stream the renderer starts for a chat under an active restore barrier
   // simply waits at admission, so notifying early stays safe.
-  for (const { chatId, streams } of trackedStreams) {
-    const correlations =
-      streams.length > 0
-        ? streams.map(({ invocationRef, streamId, sender: streamSender }) => ({
+  await Promise.all(
+    trackedStreams.map(async ({ chatId, streams, completions }) => {
+      // Claude owns an external tool loop. Do not publish cancellation while
+      // approved project operations are still draining. Other backends retain
+      // their existing early-terminal contract.
+      if (streams.some((stream) => stream.drainBeforeEnd))
+        await Promise.allSettled(completions);
+      const correlations =
+        streams.length > 0
+          ? streams.map(
+              ({ invocationRef, streamId, sender: streamSender }) => ({
+                invocationRef,
+                streamId,
+                sender: streamSender,
+              }),
+            )
+          : [{ invocationRef: undefined, streamId: undefined, sender }];
+      for (const {
+        invocationRef,
+        streamId,
+        sender: streamSender,
+      } of correlations) {
+        const targetSender = streamSender ?? sender;
+        if (targetSender) {
+          safeSend(targetSender, "chat:response:end", {
+            chatId,
             invocationRef,
             streamId,
-            sender: streamSender,
-          }))
-        : [{ invocationRef: undefined, streamId: undefined, sender }];
-    for (const {
-      invocationRef,
-      streamId,
-      sender: streamSender,
-    } of correlations) {
-      if (invocationRef) {
-        cancelledActorInvocations.add(invocationRef.operationId);
+            updatedFiles: false,
+            wasCancelled: true,
+          } satisfies ChatStreamEndPayload);
+        }
       }
-      const targetSender = streamSender ?? sender;
-      if (targetSender) {
-        safeSend(targetSender, "chat:response:end", {
+      const terminalSenders = new Set(
+        streams.map(({ sender: streamSender }) => streamSender),
+      );
+      if (terminalSenders.size === 0 && sender) terminalSenders.add(sender);
+      for (const terminalSender of terminalSenders) {
+        safeSend(terminalSender, "chat:stream:end", {
           chatId,
-          invocationRef,
-          streamId,
-          updatedFiles: false,
-          wasCancelled: true,
-        } satisfies ChatStreamEndPayload);
+        } satisfies ChatStreamTransportEndPayload);
       }
-    }
-    const terminalSenders = new Set(
-      streams.map(({ sender: streamSender }) => streamSender),
-    );
-    if (terminalSenders.size === 0 && sender) terminalSenders.add(sender);
-    for (const terminalSender of terminalSenders) {
-      safeSend(terminalSender, "chat:stream:end", {
-        chatId,
-      } satisfies ChatStreamTransportEndPayload);
-    }
-  }
+    }),
+  );
 
   await Promise.all(
     trackedStreams.flatMap(({ completions }) =>
@@ -1170,6 +1181,7 @@ export function registerChatStreamHandlers() {
       )
         throw new DyadError(BACKEND_SWITCH_MESSAGE, DyadErrorKind.Precondition);
       if (chat.executionBackend === "claude-code") {
+        if (trackedStream) trackedStream.drainBeforeEnd = true;
         if (!baseSettings.enableClaudeCodeSubscription)
           throw new DyadError(
             'Turn on "Enable Claude Code subscription" in Settings → Experiments before using this chat.',
@@ -2043,7 +2055,7 @@ ${componentSnippet}
               updatedChat.app.id, // Exclude current app
             );
           referencedAppsForAgent = mentionedAppsCodebases.map(
-            ({ appName, appPath }) => ({ appName, appPath }),
+            ({ appId, appName, appPath }) => ({ appId, appName, appPath }),
           );
         }
         const useReferencedAppManifest =
