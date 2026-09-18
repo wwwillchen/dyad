@@ -62,13 +62,22 @@ export async function savePlanToDisk(params: {
   summary?: string;
   content: string;
   status: PlanStatus;
+  /** A handoff reads this immutable accepted version, never a moving draft. */
+  immutableVersion?: string;
 }): Promise<string> {
   const { appPath, chatId, title, summary, content, status } = params;
   const planDir = planDirForAppPath(appPath);
   await fs.promises.mkdir(planDir, { recursive: true });
   await ensureDyadGitignored(appPath);
 
-  const slug = planSlugForChat(chatId);
+  if (
+    params.immutableVersion &&
+    !/^[a-f0-9]{64}$/.test(params.immutableVersion)
+  )
+    throw new Error("Invalid immutable plan version");
+  const slug = params.immutableVersion
+    ? `${planSlugForChat(chatId)}-${params.immutableVersion}`
+    : planSlugForChat(chatId);
   const filePath = path.join(planDir, `${slug}.md`);
   const now = new Date().toISOString();
 
@@ -91,7 +100,25 @@ export async function savePlanToDisk(params: {
     updatedAt: now,
   };
   const frontmatter = buildFrontmatter(meta);
-  await fs.promises.writeFile(filePath, frontmatter + content, "utf-8");
+  if (params.immutableVersion) {
+    try {
+      await fs.promises.writeFile(filePath, frontmatter + content, {
+        encoding: "utf8",
+        flag: "wx",
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const existing = parsePlanFile(
+        await fs.promises.readFile(filePath, "utf8"),
+      );
+      if (
+        existing.content !== content.trim() ||
+        existing.meta.title !== title ||
+        (existing.meta.summary ?? "") !== (summary ?? "")
+      )
+        throw new Error("Immutable plan version conflicts with stored content");
+    }
+  } else await fs.promises.writeFile(filePath, frontmatter + content, "utf-8");
 
   return slug;
 }

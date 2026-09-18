@@ -94,25 +94,27 @@ describe("PlanPanel", () => {
     mocks.setAcceptInNewChat.mockReset();
   });
 
-  it.each([
-    { success: false, label: "failed" },
-    { success: true, label: "completed without a handoff" },
-  ])("re-enables acceptance after a $label turn", ({ success }) => {
-    let settle: ((result: { success: boolean }) => void) | undefined;
-    mocks.streamMessage.mockImplementation(
-      ({ onSettled }: { onSettled?: typeof settle }) => {
-        settle = onSettled;
-      },
+  it("accepts once without asking a model to approve the plan", async () => {
+    let settle!: () => void;
+    mocks.acceptPlan.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
     );
     render(<PlanPanel />);
     const button = screen.getByTestId(
       "accept-plan-new-chat",
     ) as HTMLButtonElement;
-
+    fireEvent.click(button);
     fireEvent.click(button);
     expect(button.disabled).toBe(true);
-
-    act(() => settle?.({ success }));
+    expect(mocks.acceptPlan).toHaveBeenCalledExactlyOnceWith({
+      chatId: 7,
+      appId: 3,
+    });
+    expect(mocks.streamMessage).not.toHaveBeenCalled();
+    await act(async () => settle());
     expect(button.disabled).toBe(false);
   });
 

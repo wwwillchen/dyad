@@ -1,7 +1,6 @@
 import type { IpcMainInvokeEvent } from "electron";
 import type { ChatStreamParams } from "@/ipc/types/chat";
 import { handleLocalAgentStream } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
-import { handleClaudeCodeTurn } from "./claude_code/turn";
 
 /** Backend lifecycle boundary. Both adapters emit the existing correlated chat
  * stream, persist their own response/usage, and park approvals through the
@@ -26,8 +25,8 @@ export const dyadChatBackend: ChatExecutionBackend<
   runTurn: (...args) => handleLocalAgentStream(...args),
 };
 export const claudeChatBackend: ChatExecutionBackend<
-  Parameters<typeof handleClaudeCodeTurn>[3]
+  Parameters<typeof handleLocalAgentStream>[3]
 > = {
   id: "claude-code",
-  runTurn: (...args) => handleClaudeCodeTurn(...args),
+  runTurn: (...args) => handleLocalAgentStream(...args),
 };

@@ -1,5 +1,4 @@
 import { SubscriptionBillingError } from "@/shared/subscription_billing_error";
-import { subscriptionBillingKey } from "../services/subscription_billing";
 import { modelForChatBackend } from "@/shared/execution_backend";
 import { isDotenvFilePath } from "@/utils/dotenv_redaction";
 import type { ExternalModelAdmission } from "../services/external_model_admission";
@@ -12,10 +11,7 @@ import {
 } from "@/shared/execution_backend";
 import { claudeStatus } from "@/ipc/services/claude_code/runtime";
 import { hasClaudeDisclosure } from "@/ipc/services/claude_code/disclosure";
-import {
-  claudeChatBackend,
-  dyadChatBackend,
-} from "@/ipc/services/chat_execution_backend";
+import { dyadChatBackend } from "@/ipc/services/chat_execution_backend";
 import { v4 as uuidv4 } from "uuid";
 import { app, type IpcMainInvokeEvent, type WebContents } from "electron";
 import { createTypedHandler } from "./base";
@@ -1192,14 +1188,6 @@ export function registerChatStreamHandlers() {
             "Select Subscription in the model picker and accept the pricing disclosure first.",
             DyadErrorKind.Precondition,
           );
-        if (
-          chat.claudeSessionState === "running" ||
-          chat.claudeSessionState === "interrupted"
-        )
-          throw new DyadError(
-            "Claude Code was interrupted. Start a new chat; review or undo the existing changes first.",
-            DyadErrorKind.Precondition,
-          );
       }
 
       // Reserve quota before redo or attachment persistence. The reservation
@@ -1920,92 +1908,6 @@ ${componentSnippet}
         streamId: req.streamId,
         messages: toRendererMessages(updatedChat.messages),
       } satisfies ChatStreamChunkPayload);
-
-      if (chat.executionBackend === "claude-code") {
-        const securityReview = req.prompt.startsWith("/security-review");
-        const summarize = req.prompt.startsWith("Summarize from chat-id=");
-        let claudePrompt = userPrompt;
-        if (securityReview) {
-          let securityRules = "";
-          try {
-            securityRules = await fs.promises.readFile(
-              path.join(appPath, "SECURITY_RULES.md"),
-              "utf8",
-            );
-          } catch {
-            /* optional */
-          }
-          claudePrompt =
-            SECURITY_REVIEW_SYSTEM_PROMPT +
-            "\nProject security rules:\n" +
-            securityRules +
-            "\n" +
-            userPrompt;
-        }
-        if (summarize) {
-          const previousChat = await db.query.chats.findFirst({
-            where: eq(chats.id, Number(req.prompt.split("=")[1])),
-            with: {
-              messages: {
-                orderBy: (m, { asc }) => [asc(m.createdAt), asc(m.id)],
-              },
-            },
-          });
-          if (!previousChat)
-            throw new DyadError(
-              "Source chat not found",
-              DyadErrorKind.NotFound,
-            );
-          claudePrompt =
-            SUMMARIZE_CHAT_SYSTEM_PROMPT +
-            "\nSummarize the following chat:\n" +
-            formatMessagesForSummary(previousChat.messages);
-        }
-        const references = await resolveStickyReferencedApps({
-          prompt: req.prompt,
-          persistedAppIds: readStoredReferencedAppIds(
-            updatedChat.referencedAppIds,
-          ),
-          excludeCurrentAppId: updatedChat.app.id,
-        });
-        if (references.changed)
-          await persistReferencedAppIds(req.chatId, references.appIds);
-        const attachmentContext = storedAttachments.length
-          ? "\nAttachments available through the Read tool (including images). Read each relevant file; these are actual local paths, not virtual attachment URIs:\n" +
-            storedAttachments
-              .filter(
-                (attachment) => !isDotenvFilePath(attachment.originalName),
-              )
-              .map((attachment) =>
-                JSON.stringify({
-                  name: attachment.originalName,
-                  path: attachment.filePath,
-                  type: attachment.mimeType,
-                  purpose: attachment.attachmentType,
-                }),
-              )
-              .join("\n")
-          : "";
-        finishedNaturally = await claudeChatBackend.runTurn(
-          event,
-          req,
-          abortController,
-          {
-            messageId: placeholderAssistantMessage.id,
-            model: selectedModel.name,
-            prompt: claudePrompt + attachmentContext,
-            references: references.references,
-            readOnly:
-              selectedChatMode === "ask" ||
-              selectedChatMode === "plan" ||
-              securityReview ||
-              summarize,
-            apiKey: subscriptionBillingKey({ ...settings, selectedChatMode }),
-            admission: externalModelAdmission,
-          },
-        );
-        return;
-      }
 
       let fullResponse = "";
       let maxTokensUsed: number | undefined;

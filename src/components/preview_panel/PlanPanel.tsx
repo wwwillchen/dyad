@@ -198,35 +198,21 @@ export const PlanPanel: React.FC = () => {
     if (isSubmitting) return;
     setIsSubmitting(true);
 
-    // Record the choice so usePlanEvents can route the implementation to a new
-    // chat or continue in the current one once the exit_plan event fires.
+    // The host handoff consumes this destination alongside the displayed
+    // immutable plan version; no model-generated approval turn is needed.
     setPlanAcceptInNewChat((prev) => {
       const next = new Map(prev);
       next.set(chatId, useNewChat);
       return next;
     });
 
-    if (handoffFailure) {
-      void acceptPlan({ chatId, appId })
-        .catch((error) => {
-          console.error("Failed to retry plan handoff", error);
-        })
-        .finally(() => {
-          setIsSubmitting(false);
-        });
-      return;
-    }
-    streamMessage({
-      chatId,
-      prompt:
-        "I accept this plan. Call the exit_plan tool now with confirmation: true to begin implementation.",
-      planAcceptInNewChat: useNewChat,
-      onSettled: () => {
-        // A successful handoff replaces the buttons with its own lifecycle UI.
-        // If the turn fails or completes without exit_plan, restore the buttons.
+    void acceptPlan({ chatId, appId })
+      .catch((error) => {
+        console.error("Failed to accept plan", error);
+      })
+      .finally(() => {
         setIsSubmitting(false);
-      },
-    });
+      });
   };
 
   // Don't render anything if there's no plan - effect will switch to preview mode
