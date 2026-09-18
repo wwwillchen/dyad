@@ -21,10 +21,6 @@ import {
 } from "@/shared/claude_code_models";
 
 const execFileAsync = promisify(execFile);
-// Raw recursive Grep can expose dotenv values without passing a per-file guard.
-// Search filenames with Glob, then read permitted files individually.
-export const READ_TOOLS = ["Read", "Glob"];
-export const WRITE_TOOLS = ["Edit", "Write"];
 const running = new Set<ChildProcess>();
 
 // No provider keys, proxy overrides, credential helpers or inherited Claude
@@ -266,12 +262,17 @@ export type CliEvent = Record<string, any>;
 export interface BackendTurn {
   cwd: string;
   prompt: string;
+  content?: Array<Record<string, unknown>>;
   model: string;
   sessionId: string;
   resume: boolean;
   readOnly: boolean;
   signal: AbortSignal;
   mcpConfigPath: string;
+  /** Exact host-owned tool inventory. No native operational tools. */
+  dyadTools?: string[];
+  systemPromptPath?: string;
+  maxTurns?: number;
   onEvent(event: CliEvent): Promise<void>;
 }
 
@@ -293,27 +294,21 @@ export function claudeArguments(
       autoMemoryEnabled: false,
     }),
     "--tools",
-    [...READ_TOOLS, ...(turn.readOnly ? [] : WRITE_TOOLS)].join(","),
-    "--disallowedTools",
-    [
-      "Bash",
-      "Grep",
-      "PowerShell",
-      "Agent",
-      "Task",
-      "Skill",
-      "WebFetch",
-      "WebSearch",
-      ...(turn.readOnly ? WRITE_TOOLS : []),
-    ].join(","),
+    "",
     "--permission-mode",
     "manual",
-    "--permission-prompt-tool",
-    "mcp__dyad__permission",
+    ...(turn.dyadTools?.length
+      ? ["--allowedTools", turn.dyadTools.join(",")]
+      : []),
+    ...(turn.systemPromptPath
+      ? ["--system-prompt-file", turn.systemPromptPath]
+      : []),
+    ...(turn.maxTurns ? ["--max-turns", String(turn.maxTurns)] : []),
     "--model",
     turn.model,
     turn.resume ? "--resume" : "--session-id",
     turn.sessionId,
+    ...(turn.content ? ["--input-format", "stream-json"] : []),
     "--output-format",
     "stream-json",
     "--verbose",
@@ -321,8 +316,8 @@ export function claudeArguments(
   ];
 }
 
-/** Streaming backend boundary. The CLI owns the agent loop; Dyad never feeds
- * these events back through its AI-SDK model/tool loop. */
+/** CLI owns inference. Its adapter emits provider-executed events to Dyad;
+ * the SDK must never execute those tool calls again. */
 export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
   turn.signal.throwIfAborted();
   const usageGeneration = claudeUsageGeneration();
@@ -330,7 +325,7 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(executable, claudeArguments(turn), {
       cwd: turn.cwd,
-      env: claudeEnvironment(),
+      env: { ...claudeEnvironment(), MCP_TOOL_TIMEOUT: "2100000" },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       detached: process.platform !== "win32",
@@ -415,7 +410,17 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
     });
     turn.signal.addEventListener("abort", abort, { once: true });
     if (turn.signal.aborted) abort();
-    child.stdin.end(turn.prompt);
+    child.stdin.end(
+      turn.content
+        ? JSON.stringify({
+            type: "user",
+            message: {
+              role: "user",
+              content: [{ type: "text", text: turn.prompt }, ...turn.content],
+            },
+          }) + "\n"
+        : turn.prompt,
+    );
   });
 }
 

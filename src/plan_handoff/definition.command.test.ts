@@ -1,3 +1,12 @@
+vi.mock("./persistence", () => ({
+  persistPlanHandoff: vi.fn(),
+  hydratePlanHandoff: () => ({
+    intent: null,
+    targetChatId: null,
+    phase: "idle",
+    failure: null,
+  }),
+}));
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,14 +26,29 @@ vi.mock("@/db", () => ({
     select: () => ({
       from: () => ({
         where: () => ({
-          get: () => ({ path: "/tmp/app" }),
+          get: () => ({
+            path: "/tmp/app",
+            id: 7,
+            appId: 3,
+            modelSelection: JSON.stringify({
+              provider: "claude-code",
+              name: "sonnet",
+            }),
+          }),
         }),
       }),
     }),
     update: () => ({
       set: (values: unknown) => ({
         where: () => ({
-          run: () => mocks.setChatMode(values),
+          run: () => {
+            if (
+              typeof values === "object" &&
+              values !== null &&
+              "chatMode" in values
+            )
+              mocks.setChatMode(values);
+          },
         }),
       }),
     }),
@@ -35,6 +59,10 @@ vi.mock("@/ipc/utils/chat_creation_utils", () => ({
 }));
 vi.mock("@/ipc/handlers/planPersistence", () => ({
   savePlanToDisk: mocks.savePlanToDisk,
+  readPlanFromDisk: vi.fn(async () => ({
+    title: "Ship it",
+    content: "Implement it",
+  })),
 }));
 vi.mock("@/ipc/services/chat_actor_platform", () => ({
   publishChatInvalidations: mocks.publishChatInvalidations,
@@ -218,7 +246,9 @@ describe("plan handoff command ownership", () => {
 
     await runner({ type: "run-handoff", intent: currentChatIntent }, emit);
 
-    expect(mocks.setChatMode).not.toHaveBeenCalled();
+    expect(mocks.setChatMode).not.toHaveBeenCalledWith({
+      chatMode: "local-agent",
+    });
 
     mocks.dispatchPlanImplementationTurn.mockResolvedValueOnce(undefined);
     await runner({ type: "run-handoff", intent: currentChatIntent }, emit);

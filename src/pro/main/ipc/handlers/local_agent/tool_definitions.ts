@@ -822,6 +822,22 @@ export function buildAgentToolSet(
               }
             : ctx;
         try {
+          // The SDK is not the authority for validation: MCP and sandbox
+          // adapters must enter the same invocation boundary.
+          if (!shouldIncludeTool(tool, invocationCtx, options)) {
+            throw new DyadError(
+              "Tool is unavailable in this turn",
+              DyadErrorKind.Precondition,
+            );
+          }
+          const schema = asSchema(
+            tool.getInputSchema?.(invocationCtx) ?? tool.inputSchema,
+          );
+          if (schema.validate) {
+            const validated = await schema.validate(args);
+            if (!validated.success) throw validated.error;
+            args = validated.value;
+          }
           const mutationRequiresTracking =
             toolModifiesState(tool, ctx) &&
             (tool.mutationTracking ?? "automatic") === "automatic";
@@ -863,6 +879,12 @@ export function buildAgentToolSet(
           // consent enter a closed actor generation.
           await requireToolConsentOrThrow(tool, processedArgs, invocationCtx);
           const invoke = async () => {
+            if (!shouldIncludeTool(tool, invocationCtx, options)) {
+              throw new DyadError(
+                "Tool is no longer available",
+                DyadErrorKind.Precondition,
+              );
+            }
             if (invocationCtx.abortSignal?.aborted) {
               throw new DyadError(
                 "This agent run was cancelled.",

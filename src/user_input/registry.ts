@@ -89,6 +89,10 @@ export function createUserInputRegistry(deps: {
     descriptor: UserInputDescriptor,
     response: UserInputResponse,
   ) => void | Promise<void>;
+  persistOutcome?: (
+    descriptor: UserInputDescriptor,
+    value: UserInputParkValue | null,
+  ) => Promise<void>;
   commandRunner?: UserInputCommandRunner;
   observer?: TransitionObserver<
     UserInputState,
@@ -113,7 +117,8 @@ export function createUserInputRegistry(deps: {
     if (kind === "integration") return INTEGRATION_DEADLINE_MS;
     // Connecting a plugin can include a browser OAuth step.
     if (kind === "plugin-suggestion") return INTEGRATION_DEADLINE_MS;
-    if (kind === "test-assertions") return REVIEW_DEADLINE_MS;
+    if (kind === "test-assertions" || kind === "questionnaire")
+      return REVIEW_DEADLINE_MS;
     return CONSENT_DEADLINE_MS;
   }
 
@@ -226,6 +231,19 @@ export function createUserInputRegistry(deps: {
           ? ({ ...command, value: null } as UserInputCommand)
           : command;
       try {
+        if (
+          command.type === "resolve-park" &&
+          isLiveUserInputState(previous) &&
+          deps.persistOutcome
+        ) {
+          return deps.persistOutcome(previous.descriptor, command.value).then(
+            () => execute(effectiveCommand),
+            (error) => {
+              firstError ??= error;
+              execute({ ...command, value: null });
+            },
+          );
+        }
         const commandResult = execute(effectiveCommand);
         if (commandResult instanceof Promise) {
           return commandResult.catch((error) => {
