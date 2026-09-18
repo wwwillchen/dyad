@@ -168,7 +168,8 @@ export class ClaudeCodeModel implements LanguageModelV3 {
       const chat = await db.query.chats.findFirst({
         where: eq(chats.id, ctx.chatId),
       });
-      if (!chat) throw new Error("Chat no longer exists");
+      if (!chat)
+        throw new DyadError("Chat no longer exists", DyadErrorKind.NotFound);
       const system = options.prompt
         .filter((p) => p.role === "system")
         .map((p) => p.content)
@@ -340,7 +341,7 @@ export class ClaudeCodeModel implements LanguageModelV3 {
           )
             text(filter(event.event.delta.text));
           if (event.type === "result") result = event;
-          if (event.type === "user" && stopAfterTool) stop.abort();
+          if (event.type === "user" && stopAfterTool) return "interrupt";
         },
       });
       await queue;
@@ -348,9 +349,10 @@ export class ClaudeCodeModel implements LanguageModelV3 {
         typeof result?.num_turns === "number" ? result.num_turns : 1;
       if (
         !started ||
+        !result ||
         (!stopAfterTool &&
-          (!result ||
-            (result.is_error && result.subtype !== "error_max_turns")))
+          result.is_error &&
+          result.subtype !== "error_max_turns")
       )
         throw new Error("Claude Code did not complete the turn");
       signal.throwIfAborted();

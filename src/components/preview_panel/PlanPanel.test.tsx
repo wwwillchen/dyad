@@ -1,7 +1,18 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  document: {
+    title: "Plan",
+    content: "Implementation steps",
+    summary: undefined as string | undefined,
+  },
   acceptPlan: vi.fn(),
   handoffState: {
     phase: "idle",
@@ -54,11 +65,7 @@ vi.mock("@/hooks/useChatMode", () => ({
   useChatMode: () => ({ selectedMode: "plan" }),
 }));
 vi.mock("@/hooks/usePlanDocument", () => ({
-  usePlanDocument: () => ({
-    content: "Implementation steps",
-    title: "Plan",
-    summary: null,
-  }),
+  usePlanDocument: () => mocks.document,
 }));
 vi.mock("@/plan_handoff/usePlanHandoff", () => ({
   usePlanHandoff: () => ({ acceptPlan: mocks.acceptPlan }),
@@ -140,4 +147,40 @@ describe("PlanPanel", () => {
 
     consoleError.mockRestore();
   });
+});
+
+it("offers acceptance for a revised draft despite a recovered started handoff", async () => {
+  Object.assign(mocks.handoffState, {
+    phase: "started",
+    failure: null,
+    planVersion: "older-version",
+  });
+  render(<PlanPanel />);
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByTestId("accept-plan-continue-here")).toBeTruthy();
+  expect(screen.queryByText("Plan accepted")).toBeNull();
+});
+
+it("ties recovered acceptance to the displayed content, not just the chat", async () => {
+  const { sha256Hex } = await import("@/lib/browser_hash");
+  const { serializePlanDocument } = await import("@/plan_handoff/transport");
+  Object.assign(mocks.handoffState, {
+    phase: "started",
+    failure: null,
+    planVersion: await sha256Hex(serializePlanDocument(mocks.document)),
+  });
+  const view = render(<PlanPanel />);
+  await waitFor(() =>
+    expect(screen.queryByTestId("accept-plan-continue-here")).toBeNull(),
+  );
+  expect(screen.getByText("Plan accepted")).toBeTruthy();
+  mocks.document = {
+    ...mocks.document,
+    content: "Revised implementation steps",
+  };
+  view.rerender(<PlanPanel />);
+  expect(screen.getByTestId("accept-plan-continue-here")).toBeTruthy();
+  expect(screen.queryByText("Plan accepted")).toBeNull();
 });

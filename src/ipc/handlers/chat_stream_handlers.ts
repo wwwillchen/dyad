@@ -11,7 +11,7 @@ import {
 } from "@/shared/execution_backend";
 import { claudeStatus } from "@/ipc/services/claude_code/runtime";
 import { hasClaudeDisclosure } from "@/ipc/services/claude_code/disclosure";
-import { dyadChatBackend } from "@/ipc/services/chat_execution_backend";
+import { handleLocalAgentStream } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { v4 as uuidv4 } from "uuid";
 import { app, type IpcMainInvokeEvent, type WebContents } from "electron";
 import { createTypedHandler } from "./base";
@@ -2759,7 +2759,7 @@ This conversation includes one or more image attachments. When the user uploads 
           // Return value indicates success/failure for quota tracking.
           // Ask mode doesn't consume quota, but we still capture it for
           // consistent error handling.
-          const streamSuccess = await dyadChatBackend.runTurn(
+          const streamSuccess = await handleLocalAgentStream(
             event,
             req,
             abortController,
@@ -2815,7 +2815,7 @@ This conversation includes one or more image attachments. When the user uploads 
             planModeSystemPrompt += "\n\n" + NEON_DISCONNECTED_SYSTEM_PROMPT;
           }
 
-          finishedNaturally = await dyadChatBackend.runTurn(
+          finishedNaturally = await handleLocalAgentStream(
             event,
             req,
             abortController,
@@ -2845,7 +2845,7 @@ This conversation includes one or more image attachments. When the user uploads 
         // logs, verification commands, sandbox scripts, or MCP servers.
         if (isBuildMode) {
           const readOnlyBuildTurn = isSecurityReviewIntent || isSummarizeIntent;
-          finishedNaturally = await dyadChatBackend.runTurn(
+          finishedNaturally = await handleLocalAgentStream(
             event,
             req,
             abortController,
@@ -2879,7 +2879,7 @@ This conversation includes one or more image attachments. When the user uploads 
         // injects a `<system-reminder>` into the user's latest message telling
         // the agent which `app_name` values are valid.
         if (isLocalAgentMode) {
-          const streamSuccess = await dyadChatBackend.runTurn(
+          const streamSuccess = await handleLocalAgentStream(
             event,
             req,
             abortController,

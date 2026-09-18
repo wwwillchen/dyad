@@ -20,6 +20,8 @@ import { useStreamChat } from "@/hooks/useStreamChat";
 import { usePlan } from "@/hooks/usePlan";
 import { useChatMode } from "@/hooks/useChatMode";
 import { usePlanDocument } from "@/hooks/usePlanDocument";
+import { sha256Hex } from "@/lib/browser_hash";
+import { serializePlanDocument } from "@/plan_handoff/transport";
 import {
   usePlanHandoff,
   usePlanHandoffState,
@@ -37,11 +39,29 @@ export const PlanPanel: React.FC = () => {
   const appId = useAtomValue(selectedAppIdAtom);
   const planData = usePlanDocument(chatId);
   const handoff = usePlanHandoffState(chatId);
+  const document = planData ? serializePlanDocument(planData) : null;
+  const [version, setVersion] = useState<{
+    document: string;
+    hash: string;
+  } | null>(null);
+  useEffect(() => {
+    let active = true;
+    if (document)
+      void sha256Hex(document).then((hash) => {
+        if (active) setVersion({ document, hash });
+      });
+    return () => {
+      active = false;
+    };
+  }, [document]);
+  const sameVersion =
+    version?.document === document && version?.hash === handoff.planVersion;
   const handoffFailure =
-    handoff.phase === "failed"
+    handoff.phase === "failed" && (!handoff.planVersion || sameVersion)
       ? (handoff.failure ?? "Plan implementation could not be started.")
       : null;
   const isAccepted =
+    sameVersion &&
     handoff.phase !== "idle" &&
     handoff.phase !== "failed" &&
     handoff.phase !== "cancelled";

@@ -61,3 +61,34 @@ it("requires renewed human acceptance for a process-dead handoff that never admi
     }).kind,
   ).toBe("applied");
 });
+
+it.each([
+  "{broken",
+  JSON.stringify({ ...state, intent: { ...state.intent, sourceChatId: 99 } }),
+  JSON.stringify({ obsoleteSchema: true }),
+])(
+  "recovers a damaged checkpoint without replay and allows replacing it",
+  async (contents) => {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(path.join(config.directory, "plan-handoffs"));
+    await writeFile(
+      path.join(config.directory, "plan-handoffs", "1.json"),
+      contents,
+    );
+    const admitted = vi.fn(() => false);
+    const recovered = hydratePlanHandoff(1, admitted);
+    expect(recovered.phase).toBe("failed");
+    expect(admitted).not.toHaveBeenCalled();
+    expect(transitionPlanHandoffHost(recovered, { type: "RESUME" }).kind).toBe(
+      "ignored",
+    );
+    expect(
+      transitionPlanHandoffHost(recovered, {
+        type: "ACCEPT",
+        intent: state.intent!,
+      }).kind,
+    ).toBe("applied");
+    persistPlanHandoff(1, state);
+    expect(hydratePlanHandoff(1, () => true).phase).toBe("started");
+  },
+);

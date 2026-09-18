@@ -7,6 +7,7 @@ import {
   PlanHandoffRemoteSnapshotSchema,
 } from "./transport";
 import type { PlanHandoffHostState } from "./host_state";
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 const schema = z.object({
   intent: PlanHandoffIntentSchema.nullable(),
@@ -16,7 +17,7 @@ const schema = z.object({
 });
 const file = (chatId: number) => {
   if (!Number.isSafeInteger(chatId) || chatId <= 0)
-    throw new Error("Invalid handoff chat");
+    throw new DyadError("Invalid handoff chat", DyadErrorKind.Validation);
   return path.join(getUserDataPath(), "plan-handoffs", `${chatId}.json`);
 };
 
@@ -40,15 +41,28 @@ export function hydratePlanHandoff(
   let state: PlanHandoffHostState;
   try {
     state = schema.parse(JSON.parse(readFileSync(file(chatId), "utf8")));
+    if (!state.intent || state.intent.sourceChatId !== chatId)
+      throw new DyadError(
+        "Invalid saved handoff identity",
+        DyadErrorKind.Validation,
+      );
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return { intent: null, targetChatId: null, phase: "idle", failure: null };
+    const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
+    // A broken journal is never replayed and must not prevent actor creation.
+    // A renewed acceptance writes a replacement; durable turn intent admission
+    // still provides the exactly-once boundary for an existing handoff ID.
+    return {
+      intent: null,
+      targetChatId: null,
+      phase: missing ? "idle" : "failed",
+      failure: missing
+        ? null
+        : "Saved plan handoff could not be read. Review the plan and accept again.",
+    };
   }
-  if (!state.intent || state.intent.sourceChatId !== chatId)
-    throw new Error("Invalid saved handoff identity");
   if (
     state.phase === "started" ||
-    admitted(`${state.intent.handoffId}:implementation`)
+    admitted(`${state.intent!.handoffId}:implementation`)
   )
     return { ...state, phase: "started", failure: null };
   // Never blindly replay a process-dead user decision or operation. A new
