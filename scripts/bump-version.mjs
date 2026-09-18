@@ -5,6 +5,7 @@ import { execSync } from "child_process";
 import { createInterface } from "readline";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { promotePreviousBeta } from "./promote-previous-beta.mjs";
 
 // ANSI colors
 const bold = (s) => `\x1b[1m${s}\x1b[0m`;
@@ -106,6 +107,35 @@ rl.question(`  ${bold("Select option:")} `, (answer) => {
   }
 
   const selected = options[index];
+  if (index === 0) {
+    console.log(
+      "\n  1) Use previous beta and create release branch (recommended)",
+    );
+    console.log("  2) Promote current HEAD to stable\n");
+    rl.question(`  ${bold("Select option:")} `, async (choice) => {
+      try {
+        if (choice.trim() === "1") {
+          await promotePreviousBeta({
+            cwd: resolve(__dirname, ".."),
+            confirm: (message) =>
+              new Promise((resolveAnswer) =>
+                rl.question(message, resolveAnswer),
+              ),
+          });
+        } else if (choice.trim() === "2") {
+          bumpVersion(selected.version);
+        } else {
+          throw new Error("Invalid selection.");
+        }
+      } catch (error) {
+        console.error(red(`\n  ${error.message}\n`));
+        process.exitCode = 1;
+      } finally {
+        rl.close();
+      }
+    });
+    return;
+  }
   if (selected.custom) {
     rl.question(`  ${bold("Enter version:")} `, (customVersion) => {
       rl.close();
