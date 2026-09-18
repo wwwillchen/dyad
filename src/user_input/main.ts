@@ -60,7 +60,7 @@ export const userInputRegistry = createUserInputRegistry({
   broadcast,
   async persistOutcome(descriptor, value) {
     if (descriptor.kind === "questionnaire")
-      await settleQuestionnaire(descriptor.requestId, value);
+      await settleQuestionnaire(descriptor.requestId, value, descriptor.chatId);
   },
   async persistAlways(descriptor, response) {
     if (

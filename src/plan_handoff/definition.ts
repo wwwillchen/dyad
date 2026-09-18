@@ -44,6 +44,7 @@ import {
 } from "./host_transition";
 
 import { hydratePlanHandoff, persistPlanHandoff } from "./persistence";
+import { appOperationCoordinator } from "@/ipc/services/app_operation_coordinator";
 
 function initialState(key: PlanHandoffKey): PlanHandoffHostState {
   assertChatActorAdmissionOpen(key.sourceChatId);
@@ -111,13 +112,20 @@ function createCommandRunner(
     const emit = (event: PlanHandoffHostEvent) => {
       const next = transitionPlanHandoffHost(checkpoint, event);
       if (next.kind === "applied") checkpoint = next.state;
-      persistPlanHandoff(intent.sourceChatId, checkpoint);
+      try {
+        persistPlanHandoff(intent.sourceChatId, checkpoint);
+      } catch (error) {
+        // Failure and admitted success must still reach the UI when disk is
+        // unavailable. Never relabel an already-admitted turn as retryable.
+        if (event.type !== "FAILED" && checkpoint.phase !== "started")
+          throw error;
+      }
       publish(event);
     };
-    persistPlanHandoff(intent.sourceChatId, checkpoint);
     const taskKey = `handoff:${intent.handoffId}`;
     if (command.type === "begin-handoff") {
       try {
+        persistPlanHandoff(intent.sourceChatId, checkpoint);
         assertPlanHash(intent);
         context.timers.replace(
           taskKey,
@@ -127,7 +135,17 @@ function createCommandRunner(
             type: "DISPLAY_ELAPSED",
             handoffId: intent.handoffId,
           }),
-          emit,
+          (event) => {
+            try {
+              emit(event);
+            } catch (error) {
+              emit({
+                type: "FAILED",
+                handoffId: intent.handoffId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          },
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -147,15 +165,7 @@ function createCommandRunner(
         handoffId: intent.handoffId,
         phase: "persisting",
       });
-      const app = db
-        .select({ path: apps.path })
-        .from(apps)
-        .where(eq(apps.id, intent.appId))
-        .get();
-      if (!app) {
-        throw new DyadError("App not found", DyadErrorKind.NotFound);
-      }
-      // Both handoff destinations must settle the planning turn first.
+      // Never hold workspace claims while waiting for a parked planning turn.
       await waitForChatActorIdle(intent.sourceChatId, { signal });
       const source = db
         .select()
@@ -167,32 +177,55 @@ function createCommandRunner(
           "Source chat unavailable",
           DyadErrorKind.Precondition,
         );
-      const latest = await readPlanFromDisk({
-        appPath: getDyadAppPath(app.path),
-        chatId: intent.sourceChatId,
-      });
-      if (
-        createHash("sha256")
-          .update(serializePlanDocument(latest))
-          .digest("hex") !== intent.planHash
-      )
-        throw new DyadError(
-          "The plan changed. Review the current version before accepting.",
-          DyadErrorKind.Precondition,
-        );
-      db.update(apps)
-        .set({ needsAppBlueprint: false })
-        .where(eq(apps.id, intent.appId))
-        .run();
-      const planSlug = await savePlanToDisk({
-        appPath: getDyadAppPath(app.path),
-        chatId: intent.sourceChatId,
-        title: intent.plan.title,
-        summary: intent.plan.summary,
-        content: intent.plan.content,
-        status: "draft",
-        immutableVersion: intent.planHash,
-      });
+      const planSlug = await appOperationCoordinator.run(
+        {
+          appId: intent.appId,
+          operation: "persist-plan-handoff",
+          resources: [
+            { resource: "app-path", mode: "read" },
+            "repository",
+            "metadata",
+          ],
+          refuseWhenRecording: "accept a plan",
+        },
+        async () => {
+          signal.throwIfAborted();
+          const app = db
+            .select({ path: apps.path })
+            .from(apps)
+            .where(eq(apps.id, intent.appId))
+            .get();
+          if (!app) {
+            throw new DyadError("App not found", DyadErrorKind.NotFound);
+          }
+          const latest = await readPlanFromDisk({
+            appPath: getDyadAppPath(app.path),
+            chatId: intent.sourceChatId,
+          });
+          if (
+            createHash("sha256")
+              .update(serializePlanDocument(latest))
+              .digest("hex") !== intent.planHash
+          )
+            throw new DyadError(
+              "The plan changed. Review the current version before accepting.",
+              DyadErrorKind.Precondition,
+            );
+          db.update(apps)
+            .set({ needsAppBlueprint: false })
+            .where(eq(apps.id, intent.appId))
+            .run();
+          return savePlanToDisk({
+            appPath: getDyadAppPath(app.path),
+            chatId: intent.sourceChatId,
+            title: intent.plan.title,
+            summary: intent.plan.summary,
+            content: intent.plan.content,
+            status: "draft",
+            immutableVersion: intent.planHash,
+          });
+        },
+      );
       signal.throwIfAborted();
       emit({
         type: "CHECKPOINT",
@@ -258,14 +291,39 @@ function createCommandRunner(
         targetChatId,
       });
       await runPostAdmissionStep("Plan status update", () =>
-        savePlanToDisk({
-          appPath: getDyadAppPath(app.path),
-          chatId: intent.sourceChatId,
-          title: intent.plan.title,
-          summary: intent.plan.summary,
-          content: intent.plan.content,
-          status: "accepted",
-        }),
+        appOperationCoordinator.run(
+          {
+            appId: intent.appId,
+            operation: "promote-accepted-plan",
+            refuseWhenRecording: "update plan status",
+            resources: [{ resource: "app-path", mode: "read" }, "repository"],
+          },
+          async () => {
+            const app = db
+              .select({ path: apps.path })
+              .from(apps)
+              .where(eq(apps.id, intent.appId))
+              .get();
+            if (!app) return;
+            const latest = await readPlanFromDisk({
+              appPath: getDyadAppPath(app.path),
+              chatId: intent.sourceChatId,
+            });
+            if (
+              serializePlanDocument(latest) !==
+              serializePlanDocument(intent.plan)
+            )
+              return;
+            await savePlanToDisk({
+              appPath: getDyadAppPath(app.path),
+              chatId: intent.sourceChatId,
+              title: intent.plan.title,
+              summary: intent.plan.summary,
+              content: intent.plan.content,
+              status: "accepted",
+            });
+          },
+        ),
       );
       if (!intent.acceptInNewChat) {
         await runPostAdmissionStep("Chat mode update", () => {
@@ -365,6 +423,7 @@ export const planHandoffDefinition = {
       handoffId: state.intent?.handoffId ?? null,
       targetChatId: state.targetChatId,
       planId: state.intent?.planId ?? null,
+      planVersion: state.intent?.planVersion ?? null,
       phase: state.phase,
       failure: state.failure,
     }),

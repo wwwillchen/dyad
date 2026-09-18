@@ -71,7 +71,38 @@ export async function findClaudeExecutable(): Promise<string> {
   );
 }
 
-export async function claudeStatus() {
+export function isClaudeVersionSupported(version: string): boolean {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) return false;
+  const [major, minor, patch] = match.slice(1).map(Number);
+  return (
+    major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 259)))
+  );
+}
+let statusCache:
+  | { value: Awaited<ReturnType<typeof probeClaudeStatus>>; expires: number }
+  | undefined;
+let statusFlight:
+  | Promise<Awaited<ReturnType<typeof probeClaudeStatus>>>
+  | undefined;
+export function claudeStatus() {
+  if (statusFlight) return statusFlight;
+  if (statusCache && statusCache.expires > Date.now())
+    return Promise.resolve(statusCache.value);
+  statusFlight = probeClaudeStatus()
+    .then((value) => {
+      statusCache = {
+        value,
+        expires: Date.now() + (value.connected ? 30_000 : 5_000),
+      };
+      return value;
+    })
+    .finally(() => {
+      statusFlight = undefined;
+    });
+  return statusFlight;
+}
+async function probeClaudeStatus() {
   let installed = false;
   let version: string | null = null;
   let compatible = false;
@@ -90,8 +121,7 @@ export async function claudeStatus() {
       options,
     );
     version = versionText.match(/\d+\.\d+\.\d+/)?.[0] ?? "unknown";
-    const [major, minor, patch] = version.split(".").map(Number);
-    compatible = major === 2 && minor === 1 && patch >= 259;
+    compatible = isClaudeVersionSupported(version);
     const { stdout } = await execFileAsync(
       executable,
       ["auth", "status"],
@@ -116,7 +146,7 @@ export async function claudeStatus() {
       compatible,
       version,
       detail: !compatible
-        ? "Unsupported Claude Code version. This prototype supports 2.1.259 or later within 2.1 only. Update Dyad for support for newer CLI series; do not downgrade your CLI automatically."
+        ? "Claude Code 2.1.259 or later is required. Update the official CLI. Dyad validates the restricted tool inventory on every turn."
         : connected
           ? "Signed in through the official Claude Code CLI."
           : "Run claude auth login in your terminal to use your subscription.",
@@ -273,7 +303,7 @@ export interface BackendTurn {
   dyadTools?: string[];
   systemPromptPath?: string;
   maxTurns?: number;
-  onEvent(event: CliEvent): Promise<void>;
+  onEvent(event: CliEvent): Promise<void | "interrupt">;
 }
 
 export function claudeArguments(
@@ -308,7 +338,8 @@ export function claudeArguments(
     turn.model,
     turn.resume ? "--resume" : "--session-id",
     turn.sessionId,
-    ...(turn.content ? ["--input-format", "stream-json"] : []),
+    "--input-format",
+    "stream-json",
     "--output-format",
     "stream-json",
     "--verbose",
@@ -336,6 +367,8 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
     let failure: Error | undefined;
     let events = Promise.resolve();
     let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let interruptTimer: ReturnType<typeof setTimeout> | undefined;
+    let interruptedWithResult = false;
     const signalProcess = (signal: NodeJS.Signals) => {
       try {
         if (process.platform !== "win32" && child.pid)
@@ -356,7 +389,23 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
           if (failure) return;
           const parsed: CliEvent = JSON.parse(line);
           recordClaudeUsageLimits(parsed, usageGeneration);
-          await turn.onEvent(parsed);
+          const action = await turn.onEvent(parsed);
+          if (parsed.type === "result") {
+            interruptedWithResult = interruptTimer !== undefined;
+            if (interruptTimer) clearTimeout(interruptTimer);
+            child.stdin.end();
+          } else if (action === "interrupt" && !interruptTimer) {
+            // Protocol interruption lets the CLI flush authoritative modelUsage.
+            // Operational tool admission is already closed by the adapter.
+            child.stdin.write(
+              JSON.stringify({
+                type: "control_request",
+                request_id: randomUUID(),
+                request: { subtype: "interrupt" },
+              }) + "\n",
+            );
+            interruptTimer = setTimeout(abort, 10_000);
+          }
         })
         .catch((error) => {
           failure =
@@ -365,14 +414,17 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
         });
     };
     child.stdout.on("data", (data: Buffer) => {
+      if (failure) return; // keep draining discarded bytes after a protocol error
       child.stdout.pause();
       buffer += decoder.write(data);
-      if (buffer.length > 8 * 1024 * 1024) {
+      if (Buffer.byteLength(buffer, "utf8") > 8 * 1024 * 1024) {
         failure = new DyadError(
           "Claude Code stream frame exceeded limit",
           DyadErrorKind.External,
         );
         abort();
+        buffer = "";
+        child.stdout.resume();
         return;
       }
       let newline: number;
@@ -394,11 +446,12 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
       running.delete(child);
       turn.signal.removeEventListener("abort", abort);
       if (killTimer) clearTimeout(killTimer);
+      if (interruptTimer) clearTimeout(interruptTimer);
       consume(buffer + decoder.end());
       void events.then(() =>
         failure
           ? reject(failure)
-          : code !== 0 && !turn.signal.aborted
+          : code !== 0 && !turn.signal.aborted && !interruptedWithResult
             ? reject(
                 new DyadError(
                   `Claude Code exited (${code ?? "signal"}). Check official CLI authentication or usage limits.`,
@@ -410,16 +463,17 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
     });
     turn.signal.addEventListener("abort", abort, { once: true });
     if (turn.signal.aborted) abort();
-    child.stdin.end(
-      turn.content
-        ? JSON.stringify({
-            type: "user",
-            message: {
-              role: "user",
-              content: [{ type: "text", text: turn.prompt }, ...turn.content],
-            },
-          }) + "\n"
-        : turn.prompt,
+    child.stdin.write(
+      JSON.stringify({
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: turn.prompt },
+            ...(turn.content ?? []),
+          ],
+        },
+      }) + "\n",
     );
   });
 }

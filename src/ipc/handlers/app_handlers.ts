@@ -1,3 +1,4 @@
+import { deleteChatJournals } from "@/ipc/services/chat_journal_cleanup";
 import { initialChatExecution } from "@/ipc/utils/chat_execution_selection";
 import { app, dialog } from "electron";
 import { closeDatabase, db, getDatabaseFilePaths } from "../../db";
@@ -667,6 +668,12 @@ async function deleteAppByIdExclusive(
         waitForChatActorIdle(chatId, { cancelActive: true }),
       ),
     );
+    // Drain journal owners before removing their durable data; a late handoff
+    // checkpoint or questionnaire settlement must not recreate deleted files.
+    for (const { id: chatId } of appChats) {
+      await userInputRegistry.settleChat(chatId);
+      await settleChatActorsForDeletion(chatId);
+    }
 
     const { appPath, doomedRow } = await appOperationDeletion.runExclusive(
       async () => {
@@ -717,6 +724,8 @@ async function deleteAppByIdExclusive(
               DyadErrorKind.External,
             );
           }
+          for (const { id: chatId } of appChats)
+            await deleteChatJournals(chatId);
           await db.delete(apps).where(eq(apps.id, appId));
           appRunDeletion.commit();
           deletionCommitted = true;
@@ -746,8 +755,6 @@ async function deleteAppByIdExclusive(
       versionPreviewActorService.disposeApp(appId),
       githubOpsActorService.disposeApp(appId),
       appRunActorService.disposeApp(appId),
-      ...appChats.map(({ id: chatId }) => userInputRegistry.settleChat(chatId)),
-      ...appChats.map(({ id: chatId }) => settleChatActorsForDeletion(chatId)),
     ]);
     for (const result of actorCleanup) {
       if (result.status === "rejected") {

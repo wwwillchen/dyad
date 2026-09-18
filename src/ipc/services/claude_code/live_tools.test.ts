@@ -128,3 +128,59 @@ it.skipIf(process.env.DYAD_REAL_CLAUDE_SMOKE !== "1")(
   },
   180_000,
 );
+
+it.skipIf(process.env.DYAD_REAL_CLAUDE_SMOKE !== "1")(
+  "workflow interruption flushes authoritative usage without another tool invocation",
+  async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "dyad-cli-interrupt-"));
+    const abort = new AbortController();
+    const watchdog = setTimeout(() => abort.abort(), 90_000);
+    let calls = 0;
+    const bridge = await createDyadToolBridge({
+      tools: {
+        write_plan: {
+          description: "Save a plan and stop for human review",
+          inputSchema: z.object({}),
+        },
+      },
+      signal: abort.signal,
+      invoke: async () => {
+        calls++;
+        return {
+          content: [
+            { type: "text", text: "Plan saved; wait for user review." },
+          ],
+        };
+      },
+    });
+    let result: Record<string, any> | undefined;
+    try {
+      await runClaudeTurn({
+        cwd: directory,
+        prompt:
+          "Call write_plan once now to save the plan. Do not use any other tool.",
+        model: "sonnet",
+        sessionId: randomUUID(),
+        resume: false,
+        readOnly: true,
+        signal: abort.signal,
+        mcpConfigPath: bridge.configPath,
+        dyadTools: bridge.names,
+        onEvent: async (event) => {
+          if (event.type === "result") result = event;
+          if (event.type === "user" && calls) return "interrupt";
+        },
+      });
+      expect(calls).toBe(1);
+      expect(result?.modelUsage).toBeDefined();
+      expect(Object.keys(result!.modelUsage).length).toBeGreaterThan(0);
+      expect(result?.num_turns).toBeGreaterThan(0);
+    } finally {
+      clearTimeout(watchdog);
+      abort.abort();
+      await bridge.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  120_000,
+);

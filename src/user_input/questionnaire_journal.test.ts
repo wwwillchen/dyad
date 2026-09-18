@@ -32,7 +32,7 @@ it("persists answers before returning the parked result and refuses duplicate/la
     idSource: createSequentialIdSource(),
     broadcast: vi.fn(),
     persistOutcome: (descriptor, value) =>
-      settleQuestionnaire(descriptor.requestId, value),
+      settleQuestionnaire(descriptor.requestId, value, descriptor.chatId),
   });
   await persistQuestionnaire({
     requestId: "request",
@@ -70,11 +70,15 @@ it("records dismissal, cancellation and restart interruption without replaying a
       questions,
       outcome: "pending",
     });
-  await settleQuestionnaire("dismiss", {
-    kind: "questionnaire",
-    answers: null,
-  });
-  await settleQuestionnaire("cancel", null);
+  await settleQuestionnaire(
+    "dismiss",
+    {
+      kind: "questionnaire",
+      answers: null,
+    },
+    1,
+  );
+  await settleQuestionnaire("cancel", null, 1);
   const receipts = await recoverQuestionnaires(1);
   expect(
     Object.fromEntries(receipts.map((r) => [r.requestId, r.outcome])),
@@ -83,10 +87,78 @@ it("records dismissal, cancellation and restart interruption without replaying a
     cancel: "interrupted",
     restart: "interrupted",
   });
-  await settleQuestionnaire("restart", {
-    kind: "questionnaire",
-    answers: { q: "late" },
-  });
+  await settleQuestionnaire(
+    "restart",
+    {
+      kind: "questionnaire",
+      answers: { q: "late" },
+    },
+    1,
+  );
   expect(await recoverQuestionnaires(1)).toEqual(receipts);
   expect(await recoverQuestionnaires(2)).toEqual([]);
+});
+
+it("keeps failed human answers pending and retries without losing or duplicating them", async () => {
+  const broadcast = vi.fn();
+  const onCommandError = vi.fn();
+  const persistOutcome = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("disk full"))
+    .mockResolvedValue(undefined);
+  const registry = createUserInputRegistry({
+    clock: createFakeClock(0),
+    idSource: createSequentialIdSource(),
+    broadcast,
+    persistOutcome,
+    onCommandError,
+  });
+  registry.request(
+    { kind: "questionnaire", chatId: 1, questions, classifier: "none" },
+    "retry",
+  );
+  const parked = registry.park("retry");
+  let settled = false;
+  void parked.then(() => {
+    settled = true;
+  });
+  const answer = { kind: "questionnaire" as const, answers: { q: "blue" } };
+  await expect(registry.respond("retry", answer)).rejects.toThrow("disk full");
+  expect(settled).toBe(false);
+  expect(registry.getPending()).toHaveLength(1);
+  expect(onCommandError).toHaveBeenCalledOnce();
+  expect(
+    broadcast.mock.calls.filter(([name]) => name === "user-input:settled"),
+  ).toHaveLength(0);
+  const outcomes = await Promise.allSettled([
+    registry.respond("retry", answer),
+    registry.respond("retry", answer),
+  ]);
+  expect(outcomes.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
+  await expect(parked).resolves.toEqual(answer);
+  expect(registry.getPending()).toHaveLength(0);
+  registry.dispose();
+});
+
+it("drains cancellation even if its interruption receipt cannot be written", async () => {
+  const onCommandError = vi.fn();
+  const registry = createUserInputRegistry({
+    clock: createFakeClock(0),
+    idSource: createSequentialIdSource(),
+    broadcast: vi.fn(),
+    persistOutcome: async () => {
+      throw new Error("storage unavailable");
+    },
+    onCommandError,
+  });
+  registry.request(
+    { kind: "questionnaire", chatId: 1, questions, classifier: "none" },
+    "cancel-failed",
+  );
+  const parked = registry.park("cancel-failed");
+  await registry.settleChat(1);
+  await expect(parked).resolves.toBeNull();
+  expect(onCommandError).toHaveBeenCalledOnce();
+  expect(registry.getPending()).toHaveLength(0);
+  registry.dispose();
 });

@@ -9,6 +9,11 @@ import {
 import { registerChatHandlers } from "./chat_handlers";
 
 const deletionOrder = vi.hoisted(() => [] as string[]);
+vi.mock("@/ipc/services/chat_journal_cleanup", () => ({
+  deleteChatJournals: vi.fn(async () => {
+    deletionOrder.push("delete-journals");
+  }),
+}));
 // Lets a test observe database state at the moment streams are drained, which
 // is where the revoke-vs-stream-union ordering matters.
 const drainHooks = vi.hoisted(
@@ -332,6 +337,7 @@ describe("registerChatHandlers", () => {
       "settle-actors",
       "drain-actor",
       "drain",
+      "delete-journals",
       "release-subagents",
       "release",
       "actor-release",
@@ -358,12 +364,19 @@ describe("registerChatHandlers", () => {
     await harness.invokeHandler("delete-messages", chatId);
 
     expect(deletionOrder).toEqual([
+      "settle-input",
+      "subagent-barrier",
       "actor-barrier",
       "barrier",
+      "settle-subagents",
+      "settle-actors",
       "drain-actor",
       "drain",
+      "delete-journals",
+      "release-subagents",
       "release",
       "actor-release",
+      "subagent-admission-release",
     ]);
     await expect(
       harness.db.query.messages.findMany({

@@ -104,3 +104,23 @@ it.skipIf(process.platform === "win32")(
     expect(settled).toBe(true);
   },
 );
+
+it("drains stdout after an oversized frame so process close can settle the turn", async () => {
+  state.spawn.mockClear();
+  const spawned = child();
+  state.spawn.mockReturnValue(spawned);
+  vi.spyOn(process, "kill").mockReturnValue(true);
+  const turn = options(new AbortController().signal);
+  const running = runClaudeTurn(turn);
+  const rejection = expect(running).rejects.toThrow(
+    "stream frame exceeded limit",
+  );
+  await vi.waitFor(() => expect(state.spawn).toHaveBeenCalledOnce());
+  // Model ChildProcess's close-after-stdio-EOF contract, not a synthetic close
+  // that would hide the paused pipe bug.
+  spawned.stdout.once("end", () => spawned.emit("close", null));
+  spawned.stdout.write(Buffer.alloc(8 * 1024 * 1024 + 1, "x"));
+  spawned.stdout.end("ignored after failure");
+  await rejection;
+  expect(turn.onEvent).not.toHaveBeenCalled();
+});
