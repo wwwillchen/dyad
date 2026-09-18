@@ -1,3 +1,7 @@
+import {
+  createFakeIpcEvent,
+  type RendererEvent,
+} from "@/testing/electron_mock";
 import { fetch as undiciFetch } from "undici";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -19,6 +23,7 @@ const calls = vi.hoisted(() => ({
   beforeDispatch: vi.fn(),
   beforeAdmission: vi.fn(),
   beforeBridge: vi.fn(),
+  afterBridgeClose: vi.fn(),
   system: "",
 }));
 vi.mock("./runtime", async (original) => ({
@@ -64,7 +69,14 @@ vi.mock("./tool_bridge", async (original) => {
       ...args: Parameters<typeof module.createDyadToolBridge>
     ) => {
       await calls.beforeBridge();
-      return module.createDyadToolBridge(...args);
+      const bridge = await module.createDyadToolBridge(...args);
+      return {
+        ...bridge,
+        close: async () => {
+          await bridge.close();
+          await calls.afterBridgeClose();
+        },
+      };
     },
   };
 });
@@ -91,6 +103,7 @@ beforeEach(() => {
   calls.beforeDispatch.mockReset();
   calls.beforeAdmission.mockReset();
   calls.beforeBridge.mockReset();
+  calls.afterBridgeClose.mockReset();
   calls.run.mockImplementation(async (turn) => {
     await turn.onEvent({
       type: "system",
@@ -164,7 +177,6 @@ it("creates Claude chats from defaults, expands summaries, and persists attribut
   expect(calls.run).toHaveBeenCalledOnce();
   expect(calls.run.mock.calls[0][0]).toMatchObject({
     model: "sonnet",
-    readOnly: true,
     resume: false,
   });
   expect(calls.run.mock.calls[0][0].prompt).toContain(
@@ -195,7 +207,6 @@ it("keeps security reviews read-only in Build and supplies the finding contract 
   const chatId = await ipc.chat.createChat({ appId: harness.appId });
   await harness.streamChat("/security-review", { chatId });
   expect(calls.run).toHaveBeenCalledOnce();
-  expect(calls.run.mock.calls[0][0].readOnly).toBe(true);
   expect(calls.system).toContain("dyad-security-finding");
   expect(calls.system).toContain("Check violet access control");
 });
@@ -602,4 +613,60 @@ it("preserves Dyad whole-line edit, grep, rename/delete and Git semantics throug
     }
   });
   await harness.streamChat("Exercise guarded file operations", { chatId });
+});
+
+it("preserves the primary turn failure when bridge cleanup also fails", async () => {
+  const chatId = await ipc.chat.createChat({ appId: harness.appId });
+  calls.run.mockRejectedValueOnce(new Error("primary inference failure"));
+  calls.afterBridgeClose.mockRejectedValueOnce(
+    new Error("secondary cleanup failure"),
+  );
+  const result = await harness.streamChat("Read the app.", { chatId });
+  const rows = await harness.db.query.messages.findMany({
+    where: eq(messages.chatId, chatId),
+  });
+  const content = JSON.stringify(result.event("chat:response:error"));
+  expect(content).toContain("primary inference failure");
+  expect(content).not.toContain("secondary cleanup failure");
+  expect(
+    rows.find((row) => row.role === "assistant")?.executionUsage,
+  ).toBeTruthy();
+  expect(
+    await harness.db.query.chats.findFirst({ where: eq(chats.id, chatId) }),
+  ).toMatchObject({ claudeSessionState: "interrupted" });
+});
+
+it("does not publish a cancelled Claude turn before owned work drains", async () => {
+  let entered!: () => void;
+  let release!: () => void;
+  let aborted!: () => void;
+  const ready = new Promise<void>((r) => (entered = r));
+  const gate = new Promise<void>((r) => (release = r));
+  const sawAbort = new Promise<void>((r) => (aborted = r));
+  calls.operate.mockImplementationOnce(async (turn) => {
+    turn.signal.addEventListener("abort", () => aborted(), { once: true });
+    entered();
+    await gate;
+  });
+  const chatId = await ipc.chat.createChat({ appId: harness.appId });
+  const events: RendererEvent[] = [];
+  const handler = h.ipcHandlers.get("chat:stream")!;
+  const stream = handler(createFakeIpcEvent(events), {
+    prompt: "Inspect safely",
+    chatId,
+  });
+  await ready;
+  const cancel = ipc.chat.cancelStream(chatId);
+  try {
+    await sawAbort;
+    expect(
+      events.filter((e) => e.channel === "chat:response:end"),
+    ).toHaveLength(0);
+  } finally {
+    release();
+  }
+  await Promise.all([stream, cancel]);
+  expect(events.filter((e) => e.channel === "chat:response:end")).toHaveLength(
+    1,
+  );
 });

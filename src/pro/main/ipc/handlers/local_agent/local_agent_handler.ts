@@ -665,6 +665,7 @@ export async function handleLocalAgentStream(
      * Read-only tools can target these via an `app_name` parameter.
      */
     referencedApps?: {
+      appId?: number;
       appName: string;
       appPath: string;
     }[];
@@ -1042,6 +1043,13 @@ export async function handleLocalAgentStream(
       appId: chat.app.id,
       appPath,
       referencedApps: referencedAppsMap,
+      referencedAppIds: new Map(
+        referencedApps.flatMap((ref) =>
+          ref.appId === undefined
+            ? []
+            : [[ref.appName.toLowerCase(), ref.appId]],
+        ),
+      ),
       chatId: chat.id,
       planAcceptInNewChat: req.planAcceptInNewChat,
       supabaseProjectId: chat.app.supabaseProjectId,

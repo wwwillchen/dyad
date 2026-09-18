@@ -30,7 +30,7 @@ function options(signal: AbortSignal) {
     model: "sonnet",
     sessionId: "explicit-session",
     resume: false,
-    readOnly: true,
+
     mcpConfigPath: "/config",
     signal,
     onEvent: vi.fn().mockResolvedValue(undefined),

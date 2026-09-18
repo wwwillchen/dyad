@@ -183,3 +183,18 @@ it("times out a hung CLI and waits for process exit before removing its director
   await expect(result).rejects.toThrow("Could not load Claude Code models");
   expect(mocks.rm).toHaveBeenCalledOnce();
 });
+
+it("coalesces concurrent model probes and releases the flight for refresh", async () => {
+  const first = await start();
+  expect(listClaudeModels()).toBe(first.result);
+  expect(mocks.spawn).toHaveBeenCalledOnce();
+  first.spawned.stdout.write(first.reply() + "\n");
+  first.spawned.emit("close", 0);
+  await first.result;
+  mocks.spawn.mockClear();
+  const next = await start();
+  expect(next.result).not.toBe(first.result);
+  next.spawned.stdout.write(next.reply() + "\n");
+  next.spawned.emit("close", 0);
+  await next.result;
+});

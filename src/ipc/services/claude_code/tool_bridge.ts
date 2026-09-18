@@ -11,6 +11,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { asSchema, type ToolSet } from "ai";
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 /** Transport only. Tool callbacks are the same guarded callbacks used by Dyad. */
 export async function createDyadToolBridge(options: {
@@ -124,12 +125,12 @@ export async function createDyadToolBridge(options: {
     http.once("error", reject);
     http.listen(0, "127.0.0.1", resolve);
   });
-  const address = http.address();
-  if (!address || typeof address === "string")
-    throw new Error("Missing MCP listener");
   let directory: string | undefined;
   let configPath: string;
   try {
+    const address = http.address();
+    if (!address || typeof address === "string")
+      throw new DyadError("Missing MCP listener", DyadErrorKind.External);
     directory = await mkdtemp(path.join(tmpdir(), "dyad-tools-"));
     configPath = path.join(directory, "mcp.json");
     await writeFile(

@@ -167,7 +167,14 @@ async function probeClaudeStatus() {
 
 /** Read the same initialization catalog used by the SDK's supportedModels().
  * No user message is sent, so discovery never starts an inference turn. */
-export async function listClaudeModels(): Promise<ClaudeCodeModel[]> {
+let modelsFlight: Promise<ClaudeCodeModel[]> | undefined;
+export function listClaudeModels(): Promise<ClaudeCodeModel[]> {
+  modelsFlight ??= probeClaudeModels().finally(() => {
+    modelsFlight = undefined;
+  });
+  return modelsFlight;
+}
+async function probeClaudeModels(): Promise<ClaudeCodeModel[]> {
   const executable = await findClaudeExecutable();
   const cwd = await mkdtemp(path.join(tmpdir(), "dyad-claude-models-"));
   try {
@@ -296,7 +303,7 @@ export interface BackendTurn {
   model: string;
   sessionId: string;
   resume: boolean;
-  readOnly: boolean;
+
   signal: AbortSignal;
   mcpConfigPath: string;
   /** Exact host-owned tool inventory. No native operational tools. */
