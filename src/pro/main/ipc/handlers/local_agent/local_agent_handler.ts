@@ -70,6 +70,7 @@ import {
 import {
   AgentToolName,
   buildAgentToolSet,
+  getAgentToolConsent,
   shouldIncludeTool,
   requireAgentToolConsent,
 } from "./tool_definitions";
@@ -147,6 +148,7 @@ import {
   type McpToolDef,
 } from "./tools/mcp_type_defs";
 import { addIntegrationTool } from "./tools/add_integration";
+import { collectSuggestablePlugins } from "./tools/suggest_plugin";
 import { writePlanTool } from "./tools/write_plan";
 import { exitPlanTool } from "./tools/exit_plan";
 import { appendCancelledResponseNotice } from "@/shared/chatCancellation";
@@ -1167,6 +1169,22 @@ export async function handleLocalAgentStream(
       buildOptions,
     );
     ctx.enableAppBlueprint = buildOptions.enableAppBlueprint;
+    // suggest_plugin.isEnabled and its description read this during the
+    // build. Only writable root turns can offer plugins: Ask and Plan filter
+    // the tool out anyway, and Build mode has no MCP tools to gain. A user
+    // who turned the tool off skips the catalog read entirely. Suggestions
+    // are optional, so nothing in here may fail the turn.
+    if (!buildMode && !readOnly && !planModeOnly) {
+      try {
+        if (getAgentToolConsent("suggest_plugin") !== "never") {
+          ctx.suggestablePlugins = await collectSuggestablePlugins({
+            chatId: chat.id,
+          });
+        }
+      } catch (e) {
+        logger.warn("Failed to collect suggestable plugins", e);
+      }
+    }
     // search_mcp_tools.isEnabled reads this during the build, so set it up front
     // from the same predicate the builder uses. Off in read-only and plan mode.
     const mcpInSandboxEnabled =
