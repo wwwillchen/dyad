@@ -20,12 +20,42 @@ export const rendererMessageColumns = {
   maxTokensUsed: true,
   model: true,
   createdAt: true,
+  isCompactionSummary: true,
 } as const;
 
 export type RendererMessageRow = Pick<
   typeof messages.$inferSelect,
   keyof typeof rendererMessageColumns
 >;
+
+/** Keep model-history summaries in the DB, but do not display them twice. */
+export function toRendererMessages(rows: RendererMessageRow[]): Message[] {
+  const inlineMessages = rows.filter(
+    (row) =>
+      row.role === "assistant" &&
+      !row.isCompactionSummary &&
+      row.content.includes("<dyad-compaction"),
+  );
+  return rows
+    .filter((row) => {
+      if (!row.isCompactionSummary) return true;
+      const block = row.content.match(
+        /<dyad-compaction\b[^>]*>[\s\S]*?<\/dyad-compaction>/,
+      )?.[0];
+      // Check the actual inline block: timestamps alone could hide the only
+      // indicator if compaction completed but the turn was never persisted.
+      return (
+        !block ||
+        !inlineMessages.some(
+          (inline) =>
+            inline.id < row.id &&
+            inline.createdAt.getTime() <= row.createdAt.getTime() &&
+            inline.content.includes(block),
+        )
+      );
+    })
+    .map(toRendererMessage);
+}
 
 export function toRendererMessage(message: RendererMessageRow): Message {
   return {

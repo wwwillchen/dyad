@@ -128,6 +128,61 @@ describe("registerChatHandlers", () => {
     );
   });
 
+  it("omits an inline compaction's duplicate on reload without deleting model history", async () => {
+    const app = harness.db
+      .insert(apps)
+      .values({ name: "compaction", path: "compaction" })
+      .returning()
+      .get();
+    const chat = harness.db
+      .insert(chats)
+      .values({ appId: app.id })
+      .returning()
+      .get();
+    const block =
+      '<dyad-compaction title="Conversation compacted" state="finished">\nSummary\n</dyad-compaction>';
+    const reply = `First reads\n${block}\nFinal read and answer`;
+    harness.db
+      .insert(messages)
+      .values([
+        {
+          chatId: chat.id,
+          role: "user",
+          content: "Read the file repeatedly",
+          createdAt: new Date(1000),
+        },
+        {
+          chatId: chat.id,
+          role: "assistant",
+          content: reply,
+          createdAt: new Date(1000),
+        },
+        {
+          chatId: chat.id,
+          role: "assistant",
+          content: `${block}\n\nBackup instructions`,
+          isCompactionSummary: true,
+          createdAt: new Date(2000),
+        },
+      ])
+      .run();
+
+    const result = await harness.invokeHandler<{
+      messages: Array<{ content: string }>;
+    }>("get-chat", chat.id);
+    expect(result.messages.map((message) => message.content)).toEqual([
+      "Read the file repeatedly",
+      reply,
+    ]);
+    expect(
+      harness.db
+        .select()
+        .from(messages)
+        .where(eq(messages.chatId, chat.id))
+        .all(),
+    ).toHaveLength(3);
+  });
+
   it("sets a chat favorite explicitly and exposes it in chat summaries", async () => {
     const appResult = harness.db
       .insert(apps)
