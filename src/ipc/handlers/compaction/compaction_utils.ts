@@ -1,6 +1,13 @@
 /**
  * Shared utilities for context compaction.
  */
+import { escapeXmlContent } from "../../../../shared/xmlEscape";
+
+/** Both persisted summaries and inline indicators must use the same block. */
+export function buildCompactionBlock(summary?: string): string {
+  const text = summary?.trim() ? summary : "Conversation compacted.";
+  return `<dyad-compaction title="Conversation compacted" state="finished">\n${escapeXmlContent(text)}\n</dyad-compaction>`;
+}
 
 /**
  * Filter messages to only include those after the latest compaction boundary.

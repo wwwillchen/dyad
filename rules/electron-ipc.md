@@ -262,8 +262,9 @@ When an IPC event can fire at very high frequency (e.g., stdout/stderr from chil
 ## Streaming chunk optimizations
 
 Mid-turn compaction stores both an inline indicator and a separate model-history
-summary row. Use `toRendererMessages` for persisted chat display projections
-(reloads, window bootstrap, full refreshes) so the summary does not appear twice.
+summary row. Use `toRendererMessages` for all full display projections, applying
+live placeholder content first, and `buildCompactionBlock` in both producers so
+empty-summary fallbacks and formatting cannot diverge between streaming and reload.
 
 The `chat:response:chunk` event supports two modes:
 

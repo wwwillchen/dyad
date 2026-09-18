@@ -72,5 +72,8 @@ it.each<[string, Partial<RendererMessageRow>]>([
     isCompactionSummary: true,
     createdAt: new Date(2000),
   });
-  expect(toRendererMessages([reply, summary])).toHaveLength(2);
+  expect(toRendererMessages([reply, summary])).toEqual([
+    toRendererMessage(reply),
+    toRendererMessage(summary),
+  ]);
 });
