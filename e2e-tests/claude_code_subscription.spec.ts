@@ -48,19 +48,16 @@ async function selectSubscription(po: PageObject) {
   await configureBilling(po);
   await po.page.getByTestId("model-picker").click();
   await po.page
-    .getByRole("menuitem", { name: "Claude Code subscription. Open submenu." })
+    .getByRole("menuitem", {
+      name: "Claude Code subscription. Experimental. Open submenu.",
+    })
     .hover();
-  const useSubscription = po.page.getByRole("menuitem", {
-    name: "Use subscription models",
+  const useSubscription = po.page.getByRole("menuitemcheckbox", {
+    name: "Use Claude subscription",
     exact: true,
   });
-  await expect(
-    po.page.getByRole("menuitem", {
-      name: /^Use (subscription models|API \/ Pro models)$/,
-    }),
-  ).toBeVisible({ timeout: 30_000 });
-  if (await useSubscription.isVisible()) {
-    await expect(useSubscription).toBeEnabled({ timeout: 30_000 });
+  await expect(useSubscription).toBeVisible({ timeout: 30_000 });
+  if ((await useSubscription.getAttribute("aria-checked")) !== "true") {
     await useSubscription.click();
   }
   await po.page.keyboard.press("Escape");
@@ -77,18 +74,17 @@ async function selectSubscription(po: PageObject) {
     await model.click();
   };
   await chooseClaude();
-  await expect(po.page.getByRole("dialog")).toBeVisible();
-  await po.page.getByRole("button", { name: "Cancel", exact: true }).click();
-  await chooseClaude();
-  await po.page
-    .getByRole("button", {
-      name: /^(Start new chat|Accept and start new chat|Accept and select)$/,
-    })
-    .click();
-  const disclosure = po.page.getByRole("button", {
-    name: /^(Accept and start new chat|Accept and select)$/,
-  });
-  if (await disclosure.isVisible()) await disclosure.click();
+  const newChatDialog = po.page.getByRole("dialog");
+  await expect(
+    newChatDialog.or(
+      po.page.getByTestId("model-picker").filter({ hasText: /sonnet/i }),
+    ),
+  ).toBeVisible();
+  if (await newChatDialog.isVisible()) {
+    await po.page
+      .getByRole("button", { name: "Start new chat", exact: true })
+      .click();
+  }
   await expect(po.page.getByTestId("model-picker")).toContainText(/sonnet/i);
   return po.page.evaluate(async () => {
     const result = await (window as any).electron.ipcRenderer.invoke(

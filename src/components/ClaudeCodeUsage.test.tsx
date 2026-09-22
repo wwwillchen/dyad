@@ -58,7 +58,9 @@ it.each([
   async ({ windows }) => {
     mocks.usage.mockResolvedValue({ windows, updatedAt: null });
     setup();
-    expect(await screen.findByText(/Usage unavailable/)).toBeTruthy();
+    expect(
+      await screen.findByText("Send a message to see usage."),
+    ).toBeTruthy();
     expect(screen.queryByRole("progressbar")).toBeNull();
   },
 );

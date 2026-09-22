@@ -44,13 +44,14 @@ export function ClaudeCodeUsage({ open }: { open: boolean }) {
         <p className="text-xs text-muted-foreground">
           {usage.isLoading
             ? "Checking usage…"
-            : "Usage unavailable. Send a message with Claude Code to update."}
+            : usage.isError
+              ? "Usage unavailable. Try again later."
+              : "Send a message to see usage."}
         </p>
       )}
       {!!windows.length && usage.data?.updatedAt != null && (
         <p className="text-xs text-muted-foreground">
           Last reported {new Date(usage.data.updatedAt).toLocaleString()}.
-          Updates after Claude Code messages in Dyad.
         </p>
       )}
     </div>

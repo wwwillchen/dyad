@@ -51,9 +51,7 @@ const mocks = vi.hoisted(() => ({
     compatible: true,
     version: "2.1.260",
     detail: "Connected",
-    disclosed: true,
   },
-  acceptDisclosure: vi.fn(),
   createChat: vi.fn(async () => 55),
   selectChat: vi.fn(),
   setChatMode: vi.fn(),
@@ -177,11 +175,15 @@ vi.mock("@tanstack/react-query", () => ({
       ? mocks.refetchClaudeModels
       : mocks.refetchClaudeStatus,
   }),
-  useMutation: ({ mutationFn }: { mutationFn: () => Promise<unknown> }) => {
+  useMutation: ({
+    mutationFn,
+  }: {
+    mutationFn: (value?: unknown) => Promise<unknown>;
+  }) => {
     const [error, setError] = useState<Error | null>(null);
     return {
-      mutate: () => {
-        void mutationFn().catch(setError);
+      mutate: (value?: unknown) => {
+        void Promise.resolve(mutationFn(value)).catch(setError);
       },
       reset: () => setError(null),
       isPending: false,
@@ -229,7 +231,6 @@ vi.mock("@/ipc/types", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   ipc: {
     chat: {
-      acceptClaudeCodeDisclosure: mocks.acceptDisclosure,
       claudeCodeStatus: mocks.forceStatus,
       createChat: mocks.createChat,
       updateChat: mocks.updateChat,
@@ -487,11 +488,33 @@ vi.mock("@/components/PriceBadge", () => ({
 
 vi.mock("@/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  TooltipTrigger: ({ render }: { render: React.ReactElement }) => render,
+  TooltipTrigger: ({
+    render,
+    ...props
+  }: React.ComponentProps<"button"> & { render?: React.ReactElement }) =>
+    render ?? <button {...props} />,
   TooltipContent: () => null,
 }));
 
-vi.mock("@/components/ui/dropdown-menu", () => ({
+vi.mock("@/components/ui/dropdown-menu", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/ui/dropdown-menu")>()),
+  DropdownMenuCheckboxItem: ({
+    children,
+    checked,
+    onCheckedChange,
+  }: {
+    children: React.ReactNode;
+    checked: boolean;
+    onCheckedChange(checked: boolean): void;
+  }) => (
+    <button
+      role="menuitemcheckbox"
+      aria-checked={checked}
+      onClick={() => onCheckedChange(!checked)}
+    >
+      {children}
+    </button>
+  ),
   DropdownMenu: ({
     children,
     onOpenChange,
@@ -627,7 +650,6 @@ describe("ModelPicker", () => {
     mocks.chatLoading = false;
     mocks.chat = null;
     mocks.claudeStatus.connected = true;
-    mocks.claudeStatus.disclosed = true;
     mocks.claudeStatus.compatible = true;
     mocks.claudeModels = [
       { value: "sonnet", displayName: "sonnet", description: "" },
@@ -1859,7 +1881,6 @@ describe("Claude Code subscription picker", () => {
       modelSelection: { provider: "auto", name: "auto", effortLevel: "medium" },
     };
     mocks.claudeStatus.connected = true;
-    mocks.claudeStatus.disclosed = true;
     mocks.createChat.mockClear();
     mocks.setChatSelection.mockClear();
   });
@@ -1929,7 +1950,7 @@ describe("Claude Code subscription picker", () => {
   );
   it("refreshes both the connection and the model catalog", () => {
     render(<ModelPicker />);
-    fireEvent.click(screen.getByText("Refresh connection"));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh connection" }));
     expect(mocks.refetchClaudeModels).toHaveBeenCalledOnce();
     expect(mocks.forceStatus).toHaveBeenCalledWith({ force: true });
   });
@@ -1963,6 +1984,11 @@ describe("Claude Code subscription picker", () => {
       )!;
       expect(within(row as HTMLElement).getByText("Claude Code")).toBeTruthy();
       expect(row.querySelector("[data-effort-chevron]")).toBeNull();
+      expect(
+        document.querySelector(
+          `[data-model-provider="anthropic"][data-model-name="${name}"]`,
+        ),
+      ).toBeNull();
       expect(
         document.querySelector('[data-model-name="claude-fable-5-1[1m]"]'),
       ).toBeNull();
@@ -2029,7 +2055,7 @@ describe("Claude Code subscription picker", () => {
     mocks.renderSubContent = false;
     render(<ModelPicker />);
     const trigger = screen.getByRole("button", {
-      name: "Claude Code subscription. Open submenu.",
+      name: "Claude Code subscription. Experimental. Open submenu.",
     });
     expect(trigger.querySelector("svg")).not.toBeNull();
     expect(screen.queryByText("Connected")).toBeNull();
@@ -2051,7 +2077,7 @@ describe("Claude Code subscription picker", () => {
     ).toBeNull();
     mocks.isTrial = false;
   });
-  it("preserves distinct API and Claude Code routes in recent models", () => {
+  it("consolidates API and Claude Code recent models into the CLI route", () => {
     mocks.anthropicModels = [
       { apiName: "claude-fable-5", displayName: "Claude Fable 5" },
     ];
@@ -2064,8 +2090,8 @@ describe("Claude Code subscription picker", () => {
       document.querySelectorAll(
         '[data-model-provider="anthropic"][data-model-name="claude-fable-5"]',
       ),
-    ).toHaveLength(2);
-    // Each provider retains one entry in All models and one in Recent.
+    ).toHaveLength(0);
+    // One CLI entry in All models and one in Recent, regardless of API history.
     expect(
       document.querySelectorAll(
         '[data-model-provider="claude-code"][data-model-name="claude-fable-5"]',
@@ -2119,29 +2145,44 @@ describe("Claude Code subscription picker", () => {
       expect(mocks.createChat).not.toHaveBeenCalled();
     },
   );
-  it("keeps the first-use disclosure for an empty chat without requesting a new chat", async () => {
+  it("selects Claude Code in an empty chat without a consent dialog", async () => {
     mocks.chat!.messages = [];
-    mocks.claudeStatus.disclosed = false;
     render(<ModelPicker />);
     fireEvent.click(
       document.querySelector(
         '[data-model-provider="claude-code"][data-model-name="sonnet"]',
       )!,
     );
-    expect(screen.getByText("Use Claude Code subscription?")).toBeTruthy();
+    expect(screen.queryByText("Use Claude Code subscription?")).toBeNull();
     expect(screen.queryByText("Start a new chat?")).toBeNull();
-    fireEvent.click(screen.getByText("Accept and select"));
     await waitFor(() => expect(mocks.setChatSelection).toHaveBeenCalled());
     expect(mocks.createChat).not.toHaveBeenCalled();
   });
-  it("hides Claude Code when the experiment is disabled, including recent choices", () => {
+  it("shows the experiment toggle when disabled while hiding Claude Code model choices", async () => {
     Object.assign(mocks.settings, {
       enableClaudeCodeSubscription: false,
+      proModelUsage: "pro",
       recentModels: [{ provider: "claude-code", name: "sonnet" }],
     });
     render(<ModelPicker />);
+    expect(
+      screen.getByRole("button", {
+        name: "Claude Code subscription. Experimental. Open submenu.",
+      }),
+    ).toBeTruthy();
     expect(screen.queryByText("Claude Code — sonnet")).toBeNull();
     expect(screen.queryByText("Checking Claude Code connection…")).toBeNull();
+    fireEvent.click(
+      screen.getByRole("menuitemcheckbox", {
+        name: "Use Claude subscription",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        enableClaudeCodeSubscription: true,
+        proModelUsage: "subscription",
+      }),
+    );
   });
   it("preserves the existing chat when backend switching is cancelled", () => {
     render(<ModelPicker />);
@@ -2213,8 +2254,7 @@ describe("Claude Code subscription picker", () => {
     pick();
     expect(screen.queryByRole("alert")).toBeNull();
   });
-  it("shows first-use disclosure separately before creating the new chat", async () => {
-    mocks.claudeStatus.disclosed = false;
+  it("creates a Claude Code chat after only the new-chat confirmation", async () => {
     render(<ModelPicker />);
     fireEvent.click(
       document.querySelector(
@@ -2226,12 +2266,7 @@ describe("Claude Code subscription picker", () => {
     ).toBeTruthy();
     expect(screen.queryByText(/shell tools are disabled/)).toBeNull();
     fireEvent.click(screen.getByText("Start new chat"));
-    await waitFor(() =>
-      expect(screen.getByText("Use Claude Code subscription?")).toBeTruthy(),
-    );
-    expect(screen.getByText(/shell tools are disabled/)).toBeTruthy();
-    expect(mocks.createChat).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText("Accept and start new chat"));
+    expect(screen.queryByText("Use Claude Code subscription?")).toBeNull();
     await waitFor(() => expect(mocks.createChat).toHaveBeenCalled());
   });
   it.each(["free-pro", "auto-sidekick"])(

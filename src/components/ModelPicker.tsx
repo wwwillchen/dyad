@@ -205,7 +205,6 @@ export function ModelPicker() {
   const [pendingBackend, setPendingBackend] = useState<
     (ModelSelectParams & { recentModels: LargeLanguageModel[] }) | null
   >(null);
-  const [showDisclosure, setShowDisclosure] = useState(false);
   const [open, setOpen] = useState(false);
   const claudeStatus = useQuery({
     enabled:
@@ -258,13 +257,8 @@ export function ModelPicker() {
     )
       return;
     const backendChange = requiresNewChat(model);
-    if (
-      !confirmed &&
-      (backendChange ||
-        (model.provider === "claude-code" && !claudeStatus.data?.disclosed))
-    ) {
+    if (!confirmed && backendChange) {
       confirmBackend.reset();
-      setShowDisclosure(false);
       setPendingBackend({
         model,
         catalogModel,
@@ -365,17 +359,6 @@ export function ModelPicker() {
   const confirmBackend = useMutation({
     mutationFn: async () => {
       if (!pendingBackend) return;
-      if (
-        pendingBackend.model.provider === "claude-code" &&
-        !claudeStatus.data?.disclosed
-      ) {
-        if (requiresNewChat(pendingBackend.model) && !showDisclosure) {
-          setShowDisclosure(true);
-          return;
-        }
-        await ipc.chat.acceptClaudeCodeDisclosure();
-        await claudeStatus.refetch();
-      }
       await performModelSelect({
         ...pendingBackend,
         confirmed: true,
@@ -539,7 +522,7 @@ export function ModelPicker() {
                   "Uses Auto and delegates straightforward implementation tasks to a Sidekick",
                 tag: "Experimental",
                 tagColor:
-                  "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+                  "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200",
               },
             ]
           : [model],
@@ -655,8 +638,12 @@ export function ModelPicker() {
   );
   const recentModelCandidates = effectiveRecentModels.flatMap<RecentModelEntry>(
     (recentModel) => {
-      if (useClaudeCode && recentModel.provider === "claude-code") {
+      if (useClaudeCode && !recentModel.customModelId) {
+        const catalogModel = modelsByProviders?.[recentModel.provider]?.find(
+          (model) => model.apiName === recentModel.name,
+        );
         const id = claudeCodeModelId(recentModel.provider, {
+          ...catalogModel,
           apiName: recentModel.name,
           displayName: recentModel.name,
         });
@@ -1521,10 +1508,6 @@ export function ModelPicker() {
   const hasCloudCatalogEntries =
     cloudCatalogGroups.length > 0 || otherProviderEntries.length > 0;
   const cloudCatalogError = modelsByProvidersError ?? providersError;
-  const pendingNeedsNewChat = Boolean(
-    pendingBackend && requiresNewChat(pendingBackend.model),
-  );
-  const isNewChatDialog = pendingNeedsNewChat && !showDisclosure;
   const pendingModelName = pendingBackend
     ? getModelDisplayName(pendingBackend.model)
     : "";
@@ -1547,33 +1530,12 @@ export function ModelPicker() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {isNewChatDialog
-                ? `Start a new chat with ${pendingModelName}?`
-                : "Use Claude Code subscription?"}
+              {`Start a new chat with ${pendingModelName}?`}
             </DialogTitle>
             <DialogDescription>
-              {isNewChatDialog
-                ? `${newChatExplanation} Your current chat will be saved, but its messages won’t carry over.`
-                : "Claude subscription usage applies. Agent mode with Pro enabled also incurs a separate Dyad charge."}
+              {`${newChatExplanation} Your current chat will be saved, but its messages won’t carry over.`}
             </DialogDescription>
           </DialogHeader>
-          {!isNewChatDialog &&
-            pendingBackend?.model.provider === "claude-code" && (
-              <p className="text-sm">
-                In Agent mode with Dyad Pro enabled, Claude subscription usage
-                and a separate Dyad charge apply: $0.02 per million total tokens
-                for model IDs containing -luna, -mini or -nano; $0.10 per
-                million otherwise. Cached tokens count once. With Pro off or in
-                Build, Ask or Plan, no Dyad credits are charged. Usage reporting
-                is best effort; your billing account shows actual spend.
-              </p>
-            )}
-          {!isNewChatDialog && (
-            <p className="text-sm text-muted-foreground">
-              Claude Code runs locally; shell tools are disabled, but approved
-              package, check and preview operations can execute project code.
-            </p>
-          )}
           {confirmBackend.error && (
             <p role="alert">{confirmBackend.error.message}</p>
           )}
@@ -1593,11 +1555,7 @@ export function ModelPicker() {
               disabled={confirmBackend.isPending}
               onClick={() => confirmBackend.mutate()}
             >
-              {isNewChatDialog
-                ? "Start new chat"
-                : pendingNeedsNewChat
-                  ? "Accept and start new chat"
-                  : "Accept and select"}
+              Start new chat
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1621,36 +1579,39 @@ export function ModelPicker() {
           </span>
         </DropdownMenuTrigger>
         <DropdownMenuContent className={MODEL_MENU_WIDTH_CLASS} align="start">
-          {settings.enableClaudeCodeSubscription && (
-            <ClaudeCodeSubscriptionMenu
-              connected={
-                !!claudeStatus.data?.connected &&
-                !!claudeStatus.data?.compatible
-              }
-              detail={
-                claudeStatus.data?.detail ?? "Checking Claude Code connection…"
-              }
-              subscriptionSelected={settings.proModelUsage !== "pro"}
-              onUsageChange={(value) =>
-                updateSettings({ proModelUsage: value })
-              }
-              onRefresh={() => {
-                void queryClient
-                  .fetchQuery({
-                    queryKey: queryKeys.system.claudeCodeStatus,
-                    queryFn: () => ipc.chat.claudeCodeStatus({ force: true }),
-                    staleTime: 0,
-                  })
-                  .catch((error) => showError(error));
-                void claudeModels.refetch();
-              }}
-              catalogMessage={
-                claudeModels.isError
-                  ? "Could not load Claude Code suggestions. Catalog models remain available. Refresh connection to try again."
-                  : undefined
-              }
-            />
-          )}
+          <ClaudeCodeSubscriptionMenu
+            enabled={
+              !!settings.enableClaudeCodeSubscription &&
+              settings.proModelUsage !== "pro"
+            }
+            onEnabledChange={(enabled) =>
+              updateSettings({
+                enableClaudeCodeSubscription: enabled,
+                ...(enabled ? { proModelUsage: "subscription" as const } : {}),
+              })
+            }
+            connected={
+              !!claudeStatus.data?.connected && !!claudeStatus.data?.compatible
+            }
+            detail={
+              claudeStatus.data?.detail ?? "Checking Claude Code connection…"
+            }
+            onRefresh={() => {
+              void queryClient
+                .fetchQuery({
+                  queryKey: queryKeys.system.claudeCodeStatus,
+                  queryFn: () => ipc.chat.claudeCodeStatus({ force: true }),
+                  staleTime: 0,
+                })
+                .catch((error) => showError(error));
+              void claudeModels.refetch();
+            }}
+            catalogMessage={
+              claudeModels.isError
+                ? "Could not load Claude Code suggestions. Try refreshing."
+                : undefined
+            }
+          />
           <SubscriptionModelMenu>
             <DropdownMenuSeparator />
             {/* Trial user upgrade banner */}

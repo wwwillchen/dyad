@@ -15,13 +15,9 @@ vi.mock("./ClaudeCodeUsage", () => ({
     open ? <p>Claude usage details</p> : null,
 }));
 
-async function open(
-  subscriptionSelected = true,
-  connected = true,
-  fail = false,
-) {
-  const usage = fail
-    ? vi.fn().mockRejectedValue(new Error("Could not save usage preference"))
+async function open(connected = true, fail = false, enabled = true) {
+  const enablement = fail
+    ? vi.fn().mockRejectedValue(new Error("Could not enable subscription"))
     : vi.fn().mockResolvedValue(undefined);
   const refresh = vi.fn();
   const user = userEvent.setup();
@@ -31,10 +27,10 @@ async function open(
         <DropdownMenuTrigger>Models</DropdownMenuTrigger>
         <DropdownMenuContent>
           <ClaudeCodeSubscriptionMenu
+            enabled={enabled}
+            onEnabledChange={enablement}
             connected={connected}
             detail="CLI connection details"
-            subscriptionSelected={subscriptionSelected}
-            onUsageChange={usage}
             onRefresh={refresh}
           />
         </DropdownMenuContent>
@@ -44,54 +40,79 @@ async function open(
   await user.click(screen.getByRole("button", { name: "Models" }));
   expect(screen.queryByText("CLI connection details")).not.toBeInTheDocument();
   const trigger = screen.getByRole("menuitem", {
-    name: "Claude Code subscription. Open submenu.",
+    name: "Claude Code subscription. Experimental. Open submenu.",
   });
   expect(trigger.querySelector("svg")).not.toBeNull();
+  expect(trigger).toHaveTextContent("Experimental");
   await user.click(trigger);
-  await screen.findByText("CLI connection details");
-  return { user, usage, refresh };
+  await screen.findByRole("menuitemcheckbox", {
+    name: "Use Claude subscription",
+  });
+  expect(screen.getAllByText("Experimental")).toHaveLength(1);
+  return { user, refresh, enablement };
 }
+
+it.each([true, false])(
+  "toggles subscription enablement from %s without closing",
+  async (enabled) => {
+    const { user, enablement } = await open(true, false, enabled);
+    const toggle = screen.getByRole("menuitemcheckbox", {
+      name: "Use Claude subscription",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", String(enabled));
+    if (!enabled) {
+      expect(
+        screen.queryByText("CLI connection details"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Claude usage details"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText("Refresh connection")).not.toBeInTheDocument();
+    }
+    await user.click(toggle);
+    await waitFor(() => expect(enablement).toHaveBeenCalledWith(!enabled));
+    expect(screen.getByText("Experimental")).toBeInTheDocument();
+  },
+);
+
+it("shows a failed enablement update", async () => {
+  const { user } = await open(true, true, false);
+  await user.click(
+    screen.getByRole("menuitemcheckbox", {
+      name: "Use Claude subscription",
+    }),
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not enable subscription",
+  );
+});
 
 it("opens the branded submenu, displays usage, and refreshes without closing", async () => {
   const { user, refresh } = await open();
   expect(screen.getByText("Claude usage details")).toBeInTheDocument();
-  await user.click(
-    screen.getByRole("menuitem", { name: "Refresh connection" }),
-  );
+  await user.click(screen.getByRole("button", { name: "Refresh connection" }));
   expect(refresh).toHaveBeenCalledOnce();
-  expect(screen.getByText("CLI connection details")).toBeInTheDocument();
+  expect(screen.getByText("Connected")).toBeInTheDocument();
+  expect(screen.queryByText("CLI connection details")).not.toBeInTheDocument();
 });
 
-it.each([true, false])(
-  "changes the usage source when subscriptionSelected=%s",
-  async (selected) => {
-    const { user, usage } = await open(selected);
-    await user.click(
-      screen.getByRole("menuitem", {
-        name: selected ? "Use API / Pro models" : "Use subscription models",
-      }),
-    );
-    await waitFor(() =>
-      expect(usage).toHaveBeenCalledWith(selected ? "pro" : "subscription"),
-    );
-  },
-);
-
-it("allows returning to API usage after the CLI disconnects", async () => {
-  const { user, usage } = await open(true, false);
+it("keeps disconnect instructions and allows disabling subscription usage", async () => {
+  const { user, enablement } = await open(false);
+  expect(screen.getByText("CLI connection details")).toBeInTheDocument();
   expect(screen.queryByText("Claude usage details")).not.toBeInTheDocument();
   await user.click(
-    screen.getByRole("menuitem", { name: "Use API / Pro models" }),
+    screen.getByRole("menuitemcheckbox", { name: "Use Claude subscription" }),
   );
-  await waitFor(() => expect(usage).toHaveBeenCalled());
+  await waitFor(() => expect(enablement).toHaveBeenCalledWith(false));
 });
 
-it("shows a failed preference update", async () => {
-  const { user } = await open(true, true, true);
-  await user.click(
-    screen.getByRole("menuitem", { name: "Use API / Pro models" }),
-  );
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Could not save usage preference",
-  );
+it("keeps billing explanations out of the menu body", async () => {
+  await open();
+  expect(
+    screen.queryByText(/Claude subscription limits apply/),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Subscription billing details" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("Use API / Pro models")).not.toBeInTheDocument();
 });

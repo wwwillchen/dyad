@@ -49,7 +49,6 @@ vi.mock("./accounting", async (original) => {
     },
   };
 });
-vi.mock("./disclosure", () => ({ hasClaudeDisclosure: async () => true }));
 vi.mock("@/ipc/utils/mention_apps", async (original) => {
   const module = await original<typeof import("@/ipc/utils/mention_apps")>();
   return {

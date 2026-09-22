@@ -23,8 +23,8 @@ from the globally selected model or the chat's stored backend alone.
   destination chat's own history when the user subsequently selects a model.
 - When the prompt is required, cancelling preserves the current chat and model;
   confirming creates a new chat with the chosen model and preserves the old chat.
-- The first-use Claude Code subscription disclosure is separate from the
-  new-chat prompt and may still be required for an empty chat.
+- Enabling Claude Code subscription usage does not require a separate first-use
+  consent dialog. Keep the new-chat confirmation for existing conversations.
 - Keep the picker and main-process mutation rules consistent. Regression tests
   should cover the table above, including a globally selected model or stored
   backend that does not reflect the current chat's actual message history.

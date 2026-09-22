@@ -44,7 +44,11 @@ export function withClaudeCodeModels(
     ([a], [b]) => Number(b === "anthropic") - Number(a === "anthropic"),
   );
   for (const [provider, models] of entries) {
-    result[provider] = models;
+    // Public Claude models share one row, routed through the connected CLI.
+    // Keep custom deployments and provider-specific IDs on their API routes.
+    result[provider] = models.filter(
+      (model) => !claudeCodeModelId(provider, model),
+    );
     for (const model of models) {
       const id = claudeCodeModelId(provider, model);
       if (!id) continue;

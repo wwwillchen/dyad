@@ -3,10 +3,6 @@ import {
   listClaudeModels,
 } from "@/ipc/services/claude_code/runtime";
 import { getClaudeUsageLimits } from "@/ipc/services/claude_code/usage_limits";
-import {
-  hasClaudeDisclosure,
-  acceptClaudeDisclosure,
-} from "@/ipc/services/claude_code/disclosure";
 import { db } from "../../db";
 import { chats, messages } from "../../db/schema";
 import { desc, eq, and, like } from "drizzle-orm";
@@ -125,14 +121,7 @@ export function registerChatHandlers() {
   });
   createTypedHandler(chatContracts.claudeCodeStatus, async (_, options) => {
     assertClaudeExperiment();
-    return {
-      ...(await claudeStatus(options)),
-      disclosed: await hasClaudeDisclosure(),
-    };
-  });
-  createTypedHandler(chatContracts.acceptClaudeCodeDisclosure, async () => {
-    assertClaudeExperiment();
-    return acceptClaudeDisclosure();
+    return claudeStatus(options);
   });
   createTypedHandler(
     chatContracts.observeSubmissionStopPolicy,

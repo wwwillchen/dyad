@@ -433,13 +433,7 @@ export const chatContracts = {
       compatible: z.boolean(),
       version: z.string().nullable(),
       detail: z.string(),
-      disclosed: z.boolean(),
     }),
-  }),
-  acceptClaudeCodeDisclosure: defineContract({
-    channel: "claude-code:accept-disclosure",
-    input: z.void(),
-    output: z.void(),
   }),
   createChat: defineContract({
     channel: "create-chat",

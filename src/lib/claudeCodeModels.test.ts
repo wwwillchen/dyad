@@ -31,7 +31,7 @@ const catalog = {
 
 it("preserves both exact Fable versions even when the CLI only suggests 5.1", () => {
   expect(withClaudeCodeModels(catalog, suggestions)).toEqual({
-    anthropic: catalog.anthropic,
+    anthropic: [],
     "claude-code": catalog.anthropic,
   });
   expect(withClaudeCodeModels(catalog, [])["claude-code"]).toEqual(
@@ -64,9 +64,8 @@ it("deduplicates reseller IDs, aliases and Default without changing the selected
     ],
   );
   expect(result["claude-code"]).toEqual(catalog.anthropic);
-  expect(result.openrouter).toEqual([
-    { apiName: "anthropic/claude-fable-5.1", displayName: "Reseller Fable" },
-  ]);
+  expect(result.openrouter).toEqual([]);
+  expect(result.anthropic).toEqual([]);
 });
 
 it("adds CLI-only models and keeps their executable values", () => {

@@ -14,17 +14,13 @@ const cli = vi.hoisted(() => ({
   status: vi.fn().mockResolvedValue({ connected: true }),
   models: vi.fn().mockResolvedValue([]),
   usage: vi.fn().mockResolvedValue({}),
-  disclosure: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/ipc/services/claude_code/runtime", async (original) => ({
   ...(await original<typeof import("@/ipc/services/claude_code/runtime")>()),
   claudeStatus: cli.status,
   listClaudeModels: cli.models,
 }));
-vi.mock("@/ipc/services/claude_code/disclosure", () => ({
-  hasClaudeDisclosure: async () => true,
-  acceptClaudeDisclosure: cli.disclosure,
-}));
+
 vi.mock("@/ipc/services/claude_code/usage_limits", () => ({
   getClaudeUsageLimits: cli.usage,
 }));
@@ -109,35 +105,29 @@ describe("registerChatHandlers", () => {
     harness.dispose();
   });
 
-  it.each([
-    "claude-code:models",
-    "claude-code:status",
-    "claude-code:usage",
-    "claude-code:accept-disclosure",
-  ])("gates %s before spawning the CLI", async (channel) => {
-    cli.status.mockClear();
-    cli.models.mockClear();
-    cli.usage.mockClear();
-    cli.disclosure.mockClear();
-    await expect(harness.invokeHandler(channel)).rejects.toMatchObject({
-      kind: DyadErrorKind.Precondition,
-    });
-    expect(cli.status).not.toHaveBeenCalled();
-    expect(cli.models).not.toHaveBeenCalled();
-    expect(cli.usage).not.toHaveBeenCalled();
-    expect(cli.disclosure).not.toHaveBeenCalled();
-    harness.writeSettings({ enableClaudeCodeSubscription: true });
-    await harness.invokeHandler(channel);
-    expect(
-      channel.endsWith("models")
-        ? cli.models
-        : channel.endsWith("usage")
-          ? cli.usage
-          : channel.endsWith("accept-disclosure")
-            ? cli.disclosure
+  it.each(["claude-code:models", "claude-code:status", "claude-code:usage"])(
+    "gates %s before spawning the CLI",
+    async (channel) => {
+      cli.status.mockClear();
+      cli.models.mockClear();
+      cli.usage.mockClear();
+      await expect(harness.invokeHandler(channel)).rejects.toMatchObject({
+        kind: DyadErrorKind.Precondition,
+      });
+      expect(cli.status).not.toHaveBeenCalled();
+      expect(cli.models).not.toHaveBeenCalled();
+      expect(cli.usage).not.toHaveBeenCalled();
+      harness.writeSettings({ enableClaudeCodeSubscription: true });
+      await harness.invokeHandler(channel);
+      expect(
+        channel.endsWith("models")
+          ? cli.models
+          : channel.endsWith("usage")
+            ? cli.usage
             : cli.status,
-    ).toHaveBeenCalledOnce();
-  });
+      ).toHaveBeenCalledOnce();
+    },
+  );
 
   it("forwards an explicit status refresh past the main-process cache", async () => {
     harness.writeSettings({ enableClaudeCodeSubscription: true });

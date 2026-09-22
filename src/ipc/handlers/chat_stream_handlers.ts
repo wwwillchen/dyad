@@ -10,7 +10,6 @@ import {
   BACKEND_SWITCH_MESSAGE,
 } from "@/shared/execution_backend";
 import { claudeStatus } from "@/ipc/services/claude_code/runtime";
-import { hasClaudeDisclosure } from "@/ipc/services/claude_code/disclosure";
 import { handleLocalAgentStream } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { v4 as uuidv4 } from "uuid";
 import { app, type IpcMainInvokeEvent, type WebContents } from "electron";
@@ -1195,11 +1194,6 @@ export function registerChatStreamHandlers() {
         const status = await claudeStatus();
         if (!status.connected || !status.compatible)
           throw new DyadError(status.detail, DyadErrorKind.Precondition);
-        if (!(await hasClaudeDisclosure()))
-          throw new DyadError(
-            "Select Subscription in the model picker and accept the pricing disclosure first.",
-            DyadErrorKind.Precondition,
-          );
       }
 
       // Reserve quota before redo or attachment persistence. The reservation
