@@ -28,4 +28,4 @@ Referenced-app reads bind to app IDs and refresh paths under per-operation read 
 
 ## Billing
 
-Claude shares Codex’s external-model billing policy: Agent + Pro is eligible for Dyad charges; other modes or Pro off are unbilled by Dyad. Usage reporting is best-effort, with engine-owned settlement. Child agents use their configured provider and billing—not the Claude subscription. Production charging remains unverified.
+Claude shares Codex’s external-model billing policy: Agent + Pro is eligible for Dyad charges; other modes or Pro off are unbilled by Dyad. Usage reporting is best-effort, with engine-owned settlement; no per-message accounting receipt is stored. Backend identity belongs to the chat, while actual model attribution remains per-message. Child agents use their configured provider and billing—not the Claude subscription. Production charging remains unverified.

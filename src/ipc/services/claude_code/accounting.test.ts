@@ -8,7 +8,7 @@ vi.mock("../external_model_usage", () => ({
 import { reportClaudeUsage } from "./accounting";
 beforeEach(() => vi.clearAllMocks());
 it("reports disjoint main and auxiliary usage, counting cache tokens once", async () => {
-  const value = await reportClaudeUsage("turn", {
+  await reportClaudeUsage("turn", {
     modelUsage: {
       "claude-sonnet": {
         inputTokens: 2,
@@ -30,7 +30,6 @@ it("reports disjoint main and auxiliary usage, counting cache tokens once", asyn
       cache_creation_input_tokens: 999,
     },
   });
-  expect(value.status).toBe("attempted");
   expect(mocks.finish).toHaveBeenCalledWith("turn", [
     {
       model: "claude-sonnet",
@@ -49,14 +48,12 @@ it("reports disjoint main and auxiliary usage, counting cache tokens once", asyn
   ]);
 });
 it("missing or cancelled usage never invents counts or blocks subsequent turns", async () => {
-  expect((await reportClaudeUsage("turn", undefined)).status).toBe(
-    "unavailable",
-  );
+  await reportClaudeUsage("turn", undefined);
   expect(mocks.interrupt).toHaveBeenCalledWith("turn");
   expect(mocks.finish).not.toHaveBeenCalled();
 });
-it("identifies a Pro-off turn as unbilled", async () => {
-  expect((await reportClaudeUsage(undefined, undefined)).status).toBe(
-    "unbilled",
-  );
+it("does not invent billable usage for a Pro-off interrupted turn", async () => {
+  await reportClaudeUsage(undefined, undefined);
+  expect(mocks.interrupt).toHaveBeenCalledWith(undefined);
+  expect(mocks.finish).not.toHaveBeenCalled();
 });

@@ -81,7 +81,7 @@ const mocks = vi.hoisted(() => ({
     id: number;
     appId?: number;
     executionBackend?: "dyad" | "claude-code";
-    messages: Array<{ id: number; executionBackend?: "dyad" | "claude-code" }>;
+    messages: Array<{ id: number }>;
     modelSelection?: {
       provider: string;
       name: string;
@@ -2159,8 +2159,8 @@ describe("Claude Code subscription picker", () => {
     expect(mocks.createChat).not.toHaveBeenCalled();
     expect(mocks.setChatSelection).not.toHaveBeenCalled();
   });
-  it("uses message history rather than the stored backend or global model", async () => {
-    mocks.chat!.executionBackend = "claude-code";
+  it("uses the chat backend rather than the global model", async () => {
+    mocks.chat!.executionBackend = "dyad";
     mocks.settings.selectedModel = { provider: "claude-code", name: "sonnet" };
     mocks.renderSubContent = true;
     render(<ModelPicker />);
@@ -2170,10 +2170,8 @@ describe("Claude Code subscription picker", () => {
     expect(mocks.createChat).not.toHaveBeenCalled();
   });
   it("names the destination model when leaving Claude Code and omits the disclosure", () => {
-    mocks.chat!.messages = [
-      { id: 1 },
-      { id: 2, executionBackend: "claude-code" },
-    ];
+    mocks.chat!.executionBackend = "claude-code";
+    mocks.chat!.messages = [{ id: 1 }, { id: 2 }];
     mocks.renderSubContent = true;
     render(<ModelPicker />);
     fireEvent.click(screen.getByText("GPT 5").closest("button")!);
@@ -2186,7 +2184,8 @@ describe("Claude Code subscription picker", () => {
     expect(screen.queryByText(/shell tools are disabled/)).toBeNull();
   });
   it("keeps switching between Claude Code models in the same conversation", async () => {
-    mocks.chat!.messages = [{ id: 1, executionBackend: "claude-code" }];
+    mocks.chat!.executionBackend = "claude-code";
+    mocks.chat!.messages = [{ id: 1 }];
     render(<ModelPicker />);
     fireEvent.click(
       document.querySelector(
@@ -2240,7 +2239,7 @@ describe("Claude Code subscription picker", () => {
     async (name) => {
       mocks.selectedMode = "build";
       mocks.chat!.executionBackend = "claude-code";
-      mocks.chat!.messages = [{ id: 1, executionBackend: "claude-code" }];
+      mocks.chat!.messages = [{ id: 1 }];
       render(<ModelPicker />);
       fireEvent.click(
         document.querySelector(

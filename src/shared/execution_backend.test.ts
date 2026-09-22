@@ -4,37 +4,32 @@ import {
   requiresNewChatForModel,
 } from "./execution_backend";
 
-it.each([
-  { messages: [], provider: "claude-code", expected: false },
-  { messages: [], provider: "openai", expected: false },
-  { messages: [{}], provider: "claude-code", expected: true },
-  { messages: [{}], provider: "openai", expected: false },
-  {
-    messages: [{ executionBackend: "dyad" as const }],
-    provider: "claude-code",
-    expected: true,
-  },
-  {
-    messages: [{ executionBackend: "dyad" as const }],
-    provider: "openai",
-    expected: false,
-  },
-  {
-    messages: [{}, { executionBackend: "claude-code" as const }],
-    provider: "claude-code",
-    expected: false,
-  },
-  {
-    messages: [{}, { executionBackend: "claude-code" as const }],
-    provider: "openai",
-    expected: true,
-  },
-])(
-  "requires a new chat: $messages → $provider = $expected",
-  ({ messages, provider, expected }) => {
-    expect(requiresNewChatForModel(messages, { provider })).toBe(expected);
+it.each(["dyad", "claude-code"] as const)(
+  "uses the %s chat backend and allows empty-chat switches",
+  (executionBackend) => {
+    for (const provider of ["openai", "claude-code"]) {
+      expect(
+        requiresNewChatForModel(
+          { executionBackend, messages: [] },
+          { provider },
+        ),
+      ).toBe(false);
+      expect(
+        requiresNewChatForModel(
+          { executionBackend, messages: [{ role: "user" }] },
+          { provider },
+        ),
+      ).toBe(
+        (provider === "claude-code") !== (executionBackend === "claude-code"),
+      );
+    }
   },
 );
+it("treats legacy populated chats as Dyad", () => {
+  expect(
+    requiresNewChatForModel({ messages: [{}] }, { provider: "claude-code" }),
+  ).toBe(true);
+});
 it("keeps legacy Dyad chats on their backend when the global default is Claude", () => {
   const selectedModel = { provider: "claude-code", name: "sonnet" };
   const previous = { provider: "anthropic", name: "claude-sonnet" };

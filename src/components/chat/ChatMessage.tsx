@@ -104,6 +104,7 @@ function stripAttachmentInfo(content: string): string {
 interface ChatMessageProps {
   message: Message;
   isLastMessage: boolean;
+  executionBackend?: "dyad" | "claude-code";
   isCancelledPrompt?: boolean;
 }
 
@@ -111,6 +112,7 @@ const ChatMessage = ({
   message,
   isLastMessage,
   isCancelledPrompt,
+  executionBackend,
 }: ChatMessageProps) => {
   const { isStreaming } = useStreamChat();
   const appId = useAtomValue(selectedAppIdAtom);
@@ -422,13 +424,12 @@ const ChatMessage = ({
                     </div>
                   )}
                   {message.role === "assistant" &&
-                    (message.model ||
-                      message.executionBackend === "claude-code") && (
+                    (message.model || executionBackend === "claude-code") && (
                       <div className="flex items-center gap-1 text-gray-500 dark:text-gray-400 w-full sm:w-auto">
                         <Bot className="h-4 w-4 flex-shrink-0" />
                         <span>
                           {assistantAttribution(
-                            message.executionBackend,
+                            executionBackend,
                             message.model,
                           )}
                         </span>

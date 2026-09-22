@@ -45,8 +45,6 @@ export const MessageSchema = z.object({
   requestId: z.string().nullable().optional(),
   totalTokens: z.number().nullable().optional(),
   model: z.string().nullable().optional(),
-  executionBackend: z.enum(["dyad", "claude-code"]).nullable().optional(),
-  executionUsage: z.string().nullable().optional(),
 });
 
 export type Message = z.infer<typeof MessageSchema>;

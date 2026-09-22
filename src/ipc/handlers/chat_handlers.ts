@@ -384,9 +384,15 @@ export function registerChatHandlers() {
         if (modelSelection) {
           const history = await db.query.messages.findMany({
             where: eq(messages.chatId, chatId),
-            columns: { executionBackend: true },
+            columns: { id: true },
+            limit: 1,
           });
-          if (requiresNewChatForModel(history, modelSelection)) {
+          if (
+            requiresNewChatForModel(
+              { ...current, messages: history },
+              modelSelection,
+            )
+          ) {
             throw new DyadError(
               BACKEND_SWITCH_MESSAGE,
               DyadErrorKind.Precondition,

@@ -109,8 +109,6 @@ const row = (overrides: Partial<RendererMessageRow>): RendererMessageRow => ({
   requestId: null,
   maxTokensUsed: null,
   model: null,
-  executionBackend: null,
-  executionUsage: null,
   ...overrides,
 });
 

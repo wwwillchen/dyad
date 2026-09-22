@@ -330,7 +330,6 @@ export class ClaudeCodeModel implements LanguageModelV3 {
               .update(messages)
               .set({
                 model: event.message.model,
-                executionBackend: "claude-code",
               })
               .where(eq(messages.id, ctx.messageId));
             emit({ type: "response-metadata", modelId: event.message.model });
@@ -382,13 +381,7 @@ export class ClaudeCodeModel implements LanguageModelV3 {
       // primary inference failure with a secondary cleanup/storage error.
       cleanup.push(
         ...(await Promise.allSettled([
-          (async () => {
-            const accounting = await reportClaudeUsage(accountingId, result);
-            await db
-              .update(messages)
-              .set({ executionUsage: JSON.stringify(accounting) })
-              .where(eq(messages.id, ctx.messageId));
-          })(),
+          reportClaudeUsage(accountingId, result),
           (async () => {
             if (latched)
               await db

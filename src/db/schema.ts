@@ -198,8 +198,6 @@ export const messages = sqliteTable(
     // Model name used for this message (only for assistant messages)
     model: text("model"),
     inferenceSource: text("inference_source", { enum: INFERENCE_SOURCES }),
-    executionBackend: text("execution_backend").$type<"dyad" | "claude-code">(),
-    executionUsage: text("execution_usage"),
     // AI SDK messages (v5 envelope) for preserving tool calls/results in agent mode
     aiMessagesJson: text("ai_messages_json", {
       mode: "json",

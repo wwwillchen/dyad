@@ -239,9 +239,7 @@ export function ModelPicker() {
     !!claudeStatus.data?.connected &&
     !!claudeStatus.data?.compatible;
   const requiresNewChat = (model: LargeLanguageModel) =>
-    Boolean(
-      isChatRoute && chat && requiresNewChatForModel(chat.messages, model),
-    );
+    Boolean(isChatRoute && chat && requiresNewChatForModel(chat, model));
   const performModelSelect = async ({
     model,
     catalogModel,

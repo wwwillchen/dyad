@@ -25,6 +25,7 @@ const calls = vi.hoisted(() => ({
   beforeBridge: vi.fn(),
   afterBridgeClose: vi.fn(),
   system: "",
+  reportUsage: vi.fn(),
 }));
 vi.mock("./runtime", async (original) => ({
   ...(await original<typeof import("./runtime")>()),
@@ -36,6 +37,18 @@ vi.mock("./runtime", async (original) => ({
   }),
   runClaudeTurn: calls.run,
 }));
+vi.mock("./accounting", async (original) => {
+  const module = await original<typeof import("./accounting")>();
+  return {
+    ...module,
+    reportClaudeUsage: async (
+      ...args: Parameters<typeof module.reportClaudeUsage>
+    ) => {
+      calls.reportUsage(...args);
+      return module.reportClaudeUsage(...args);
+    },
+  };
+});
 vi.mock("./disclosure", () => ({ hasClaudeDisclosure: async () => true }));
 vi.mock("@/ipc/utils/mention_apps", async (original) => {
   const module = await original<typeof import("@/ipc/utils/mention_apps")>();
@@ -195,7 +208,6 @@ it("creates Claude chats from defaults, expands summaries, and persists attribut
     chat?.messages.find((message) => message.role === "assistant"),
   ).toMatchObject({
     model: "claude-resolved",
-    executionBackend: "claude-code",
     content: "Answer",
   });
 });
@@ -260,7 +272,6 @@ it("starts a fresh session with copied visible history rather than replaying an 
       chatId,
       role: "assistant",
       content: "Earlier visible answer",
-      executionBackend: "claude-code",
       model: "claude-prior",
     },
   ]);
@@ -628,9 +639,8 @@ it("preserves the primary turn failure when bridge cleanup also fails", async ()
   const content = JSON.stringify(result.event("chat:response:error"));
   expect(content).toContain("primary inference failure");
   expect(content).not.toContain("secondary cleanup failure");
-  expect(
-    rows.find((row) => row.role === "assistant")?.executionUsage,
-  ).toBeTruthy();
+  expect(rows.find((row) => row.role === "assistant")).toBeDefined();
+  expect(calls.reportUsage).toHaveBeenCalled();
   expect(
     await harness.db.query.chats.findFirst({ where: eq(chats.id, chatId) }),
   ).toMatchObject({ claudeSessionState: "interrupted" });
@@ -685,7 +695,9 @@ it("admits non-Pro Claude Agent turns without charging Dyad credits", async () =
     where: eq(messages.chatId, chatId),
   });
   const assistant = rows.find((row) => row.role === "assistant");
-  expect(JSON.parse(assistant!.executionUsage!)).toMatchObject({
-    status: "unbilled",
-  });
+  expect(assistant).toBeDefined();
+  expect(calls.reportUsage).toHaveBeenLastCalledWith(
+    undefined,
+    expect.any(Object),
+  );
 });

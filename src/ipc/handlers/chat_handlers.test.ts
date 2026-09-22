@@ -177,8 +177,6 @@ describe("registerChatHandlers", () => {
           chatId,
           role: "assistant",
           content: "Hello",
-          executionBackend:
-            executionBackend === "dyad" ? "claude-code" : "dyad",
         })
         .run();
       await expect(
@@ -194,55 +192,6 @@ describe("registerChatHandlers", () => {
       expect(
         harness.db.select().from(chats).where(eq(chats.id, chatId)).get(),
       ).toEqual(updated);
-    },
-  );
-
-  it.each(["dyad", "claude-code"] as const)(
-    "uses %s message history when the stored backend disagrees",
-    async (historyBackend) => {
-      const otherBackend = historyBackend === "dyad" ? "claude-code" : "dyad";
-      const appId = Number(
-        harness.db
-          .insert(apps)
-          .values({ name: "history", path: "history" })
-          .run().lastInsertRowid,
-      );
-      const chatId = Number(
-        harness.db
-          .insert(chats)
-          .values({ appId, executionBackend: otherBackend })
-          .run().lastInsertRowid,
-      );
-      harness.db
-        .insert(messages)
-        .values({
-          chatId,
-          role: "assistant",
-          content: "Hello",
-          executionBackend: historyBackend,
-        })
-        .run();
-      const selection = (backend: "dyad" | "claude-code") => ({
-        provider: backend === "dyad" ? "openai" : "claude-code",
-        name: "model",
-        effortLevel: "medium",
-      });
-      await expect(
-        harness.invokeHandler("update-chat", {
-          chatId,
-          modelSelection: selection(otherBackend),
-        }),
-      ).rejects.toMatchObject({ kind: DyadErrorKind.Precondition });
-      await harness.invokeHandler("update-chat", {
-        chatId,
-        modelSelection: selection(historyBackend),
-      });
-      expect(
-        harness.db.select().from(chats).where(eq(chats.id, chatId)).get(),
-      ).toMatchObject({
-        executionBackend: historyBackend,
-        modelSelection: selection(historyBackend),
-      });
     },
   );
 

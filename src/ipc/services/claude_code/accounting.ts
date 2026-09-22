@@ -15,7 +15,7 @@ export async function reportClaudeUsage(
     models = normalizeClaudeUsage(result);
   } catch {
     interruptExternalModelUsage(id);
-    return { status: id ? "unavailable" : "unbilled", models: [] };
+    return;
   }
   await finishExternalModelUsageBatch(
     id,
@@ -41,6 +41,4 @@ export async function reportClaudeUsage(
       return { model: model.actualModelId, usage };
     }),
   );
-  // This is an attempt, not a settlement receipt. The engine owns actual spend.
-  return { status: id ? "attempted" : "unbilled", models };
 }

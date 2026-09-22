@@ -1889,7 +1889,6 @@ ${componentSnippet}
               : selectedModel.connection === "subscription"
                 ? `ChatGPT subscription (${selectedModel.name})`
                 : selectedModel.name,
-          executionBackend: chat.executionBackend,
           sourceCommitHash: await getCurrentCommitHash({
             path: getDyadAppPath(chat.app.path),
           }),
