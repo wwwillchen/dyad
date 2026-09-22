@@ -7,6 +7,7 @@ import {
   type HandlerTestHarness,
   setupHandlerTestHarness,
 } from "@/testing/handler_test_harness";
+import { deleteChatJournals } from "@/ipc/services/chat_journal_cleanup";
 import { registerChatHandlers } from "./chat_handlers";
 
 const cli = vi.hoisted(() => ({
@@ -492,6 +493,48 @@ describe("registerChatHandlers", () => {
         where: (row, { eq }) => eq(row.chatId, chatId),
       }),
     ).resolves.toEqual([]);
+  });
+
+  it("releases admission fences and preserves history when cleanup fails, allowing retry", async () => {
+    const appId = Number(
+      harness.db
+        .insert(apps)
+        .values({ name: "cleanup-retry", path: "cleanup-retry" })
+        .run().lastInsertRowid,
+    );
+    const chatId = Number(
+      harness.db.insert(chats).values({ appId }).run().lastInsertRowid,
+    );
+    harness.db
+      .insert(messages)
+      .values({ chatId, role: "user", content: "keep me" })
+      .run();
+    vi.mocked(deleteChatJournals).mockRejectedValueOnce(
+      new Error("receipt cleanup failed"),
+    );
+    await expect(
+      harness.invokeHandler("delete-messages", chatId),
+    ).rejects.toThrow("receipt cleanup failed");
+    expect(deletionOrder.slice(-4)).toEqual([
+      "release-subagents",
+      "release",
+      "actor-release",
+      "subagent-admission-release",
+    ]);
+    expect(
+      await harness.db.query.messages.findMany({
+        where: eq(messages.chatId, chatId),
+      }),
+    ).toHaveLength(1);
+    await harness.invokeHandler("delete-messages", chatId);
+    expect(
+      await harness.db.query.messages.findMany({
+        where: eq(messages.chatId, chatId),
+      }),
+    ).toHaveLength(0);
+    expect(
+      await harness.db.query.chats.findFirst({ where: eq(chats.id, chatId) }),
+    ).toBeDefined();
   });
 
   it("clears sticky referenced apps in the same transaction as the messages", async () => {

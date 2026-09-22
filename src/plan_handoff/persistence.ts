@@ -65,6 +65,7 @@ export function hydratePlanHandoff(
     admitted(`${state.intent!.handoffId}:implementation`)
   )
     return { ...state, phase: "started", failure: null };
+  if (state.phase === "failed" || state.phase === "cancelled") return state;
   // Never blindly replay a process-dead user decision or operation. A new
   // explicit acceptance is safe only when no durable implementation exists.
   return {

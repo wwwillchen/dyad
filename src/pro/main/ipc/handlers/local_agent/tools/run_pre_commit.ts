@@ -315,7 +315,7 @@ export const runPreCommitTool: ToolDefinition<
   inputSchema: runPreCommitSchema,
   defaultConsent: "always",
   modifiesState: true,
-  isEnabled: (ctx) => ctx.preCommitHookAvailable === true,
+  isDiscoverable: (ctx) => ctx.preCommitHookAvailable === true,
   getConsentPreview: () => "Stage all changes and run the pre-commit hook",
 
   execute: async (_args, ctx) => {

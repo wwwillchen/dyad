@@ -24,7 +24,7 @@ Referenced-app reads bind to app IDs and refresh paths under per-operation read 
 
 - **Sessions:** fingerprints bind sessions to app path, instructions, and tool schemas. Capability changes or interruption start a fresh session from bounded Dyad history, never replaying historical tool calls.
 - **Questionnaires:** requests persist before parking and answers before returning; failed answer saves remain retryable. Renderer reload reconnects to the main-process invocation. Full restart marks pending requests interrupted and carries recorded answers into fresh-session context. Receipts are indexed by chat, retain the latest 50 completed outcomes, and are removed with chat history.
-- **Plans:** drafts publish only after persistence. Human acceptance identifies the exact displayed version; model confirmation alone is insufficient. Handoff settles the planning turn, verifies the version, and submits an immutable snapshot. Same/new-chat handoffs preserve backend identity. Durable admission prevents duplicate implementation; interrupted, unadmitted handoffs require renewed acceptance.
+- **Plans:** drafts publish only after persistence. Human acceptance identifies the exact displayed version; model confirmation alone is insufficient. Handoff settles the planning turn, verifies the version, and submits an immutable snapshot as the accepted baseline. The implementation updates a separate, panel-visible working plan in its target chat; displayed messages use the plan title rather than the snapshot hash. Same/new-chat handoffs preserve backend identity. Durable admission prevents duplicate implementation; interrupted, unadmitted handoffs require renewed acceptance.
 
 ## Billing
 

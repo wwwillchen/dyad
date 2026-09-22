@@ -707,6 +707,7 @@ export function shouldIncludeTool(
   tool: (typeof TOOL_DEFINITIONS)[number],
   ctx: AgentContext,
   options: BuildAgentToolSetOptions = {},
+  phase: "discovery" | "invocation" = "discovery",
 ): boolean {
   if (getAgentToolConsent(tool.name) === "never") {
     return false;
@@ -746,6 +747,7 @@ export function shouldIncludeTool(
   // out (non-Pro, free-model mode), direct search remains available so chat
   // history stays reachable.
   if (
+    phase === "discovery" &&
     tool.name === "search_chats" &&
     shouldIncludeTool(exploreChatHistoryTool, ctx, options)
   ) {
@@ -766,6 +768,8 @@ export function shouldIncludeTool(
   ) {
     return false;
   }
+  if (phase === "discovery" && tool.isDiscoverable && !tool.isDiscoverable(ctx))
+    return false;
   if (tool.isEnabled) {
     const enabled = tool.isEnabled(ctx);
     if (!enabled) {
@@ -825,7 +829,7 @@ export function buildAgentToolSet(
         try {
           // The SDK is not the authority for validation: MCP and sandbox
           // adapters must enter the same invocation boundary.
-          if (!shouldIncludeTool(tool, invocationCtx, options)) {
+          if (!shouldIncludeTool(tool, invocationCtx, options, "invocation")) {
             throw new DyadError(
               "Tool is unavailable in this turn",
               DyadErrorKind.Precondition,
@@ -880,7 +884,9 @@ export function buildAgentToolSet(
           // consent enter a closed actor generation.
           await requireToolConsentOrThrow(tool, processedArgs, invocationCtx);
           const invoke = async () => {
-            if (!shouldIncludeTool(tool, invocationCtx, options)) {
+            if (
+              !shouldIncludeTool(tool, invocationCtx, options, "invocation")
+            ) {
               throw new DyadError(
                 "Tool is no longer available",
                 DyadErrorKind.Precondition,

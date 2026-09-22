@@ -197,14 +197,14 @@ describe("runPreCommitTool", () => {
 
   it("is registered only when hook detection enabled it for the turn", () => {
     expect(
-      runPreCommitTool.isEnabled?.(
+      runPreCommitTool.isDiscoverable?.(
         context(repo, {
           preCommitHookAvailable: true,
         }),
       ),
     ).toBe(true);
     expect(
-      runPreCommitTool.isEnabled?.(
+      runPreCommitTool.isDiscoverable?.(
         context(repo, {
           preCommitHookAvailable: false,
         }),

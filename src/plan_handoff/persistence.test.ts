@@ -92,3 +92,18 @@ it.each([
     expect(hydratePlanHandoff(1, () => true).phase).toBe("started");
   },
 );
+
+it.each(["failed", "cancelled"] as const)(
+  "preserves a terminal %s diagnostic across restart",
+  (phase) => {
+    persistPlanHandoff(1, {
+      ...state,
+      phase,
+      failure: "Permission denied while saving plan",
+    });
+    expect(hydratePlanHandoff(1, () => false)).toMatchObject({
+      phase,
+      failure: "Permission denied while saving plan",
+    });
+  },
+);

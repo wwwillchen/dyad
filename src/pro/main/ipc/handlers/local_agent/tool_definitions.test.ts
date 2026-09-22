@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   BUILD_MODE_TOOL_NAMES,
+  shouldIncludeTool,
+  buildAgentToolSet,
   estimateAgentToolTokens,
   estimateBuildModeToolTokens,
   TOOL_DEFINITIONS,
@@ -144,5 +146,55 @@ describe("Build mode tool profile", () => {
     });
 
     expect(linkedNeonAvailable).toBeGreaterThan(linkedNeonUnavailable);
+  });
+});
+
+describe("discovery versus invocation availability", () => {
+  it("keeps operationally unavailable pre-commit calls invocable but enforces read-only boundaries", () => {
+    const tool = TOOL_DEFINITIONS.find(
+      (tool) => tool.name === "run_pre_commit",
+    )!;
+    const ctx = {
+      preCommitHookAvailable: false,
+      isDyadPro: true,
+    } as import("./tools/types").AgentContext;
+    expect(shouldIncludeTool(tool, ctx)).toBe(false);
+    expect(shouldIncludeTool(tool, ctx, {}, "invocation")).toBe(true);
+    expect(shouldIncludeTool(tool, ctx, { readOnly: true }, "invocation")).toBe(
+      false,
+    );
+  });
+  it("runs an already-offered pre-commit tool through the shared guard after discovery changes", async () => {
+    const ctx = {
+      appId: 987656,
+      appPath: "/tmp/unused-pre-commit",
+      chatId: 1,
+      isDyadPro: false,
+      preCommitHookAvailable: true,
+      preCommitRunCount: 100,
+      onXmlComplete: vi.fn(),
+      onXmlStream: vi.fn(),
+      requireConsent: vi.fn(async () => true),
+      referencedApps: new Map(),
+      abortSignal: new AbortController().signal,
+    } as unknown as import("./tools/types").AgentContext;
+    const tools = buildAgentToolSet(ctx, { enableAppBlueprint: false });
+    expect(tools.run_pre_commit).toBeDefined();
+    ctx.preCommitHookAvailable = false;
+    const result = await tools.run_pre_commit.execute({});
+    expect(JSON.stringify(result)).toContain("already run");
+    expect(ctx.onXmlComplete).toHaveBeenCalled();
+  });
+  it("does not turn search routing preferences into authorization while retaining Pro checks", () => {
+    const tool = TOOL_DEFINITIONS.find((tool) => tool.name === "code_search")!;
+    const ctx = {
+      canUseExplorerSubagent: true,
+      isDyadPro: true,
+    } as import("./tools/types").AgentContext;
+    expect(shouldIncludeTool(tool, ctx)).toBe(false);
+    expect(shouldIncludeTool(tool, ctx, {}, "invocation")).toBe(true);
+    expect(
+      shouldIncludeTool(tool, { ...ctx, isDyadPro: false }, {}, "invocation"),
+    ).toBe(false);
   });
 });

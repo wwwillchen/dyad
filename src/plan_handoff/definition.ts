@@ -247,6 +247,34 @@ function createCommandRunner(
           targetChatId = intent.sourceChatId;
         }
       }
+      // The accepted snapshot is evidence, not the working progress document.
+      // A new implementation chat needs its own panel-visible editable plan.
+      if (intent.acceptInNewChat) {
+        await appOperationCoordinator.run(
+          {
+            appId: intent.appId,
+            operation: "prepare-implementation-plan",
+            resources: [{ resource: "app-path", mode: "read" }, "repository"],
+            refuseWhenRecording: "prepare implementation plan",
+          },
+          async () => {
+            signal.throwIfAborted();
+            const app = db
+              .select({ path: apps.path })
+              .from(apps)
+              .where(eq(apps.id, intent.appId))
+              .get();
+            if (!app)
+              throw new DyadError("App not found", DyadErrorKind.NotFound);
+            await savePlanToDisk({
+              appPath: getDyadAppPath(app.path),
+              chatId: targetChatId!,
+              ...intent.plan,
+              status: "accepted",
+            });
+          },
+        );
+      }
       emit({
         type: "CHECKPOINT",
         handoffId: intent.handoffId,

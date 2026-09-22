@@ -210,6 +210,41 @@ describe("plan mode (integration)", () => {
       { timeout: 30_000 },
     );
     await waitForPlanFile(app.appDir);
+    const targetId = Number(harness.currentLocation().search.id);
+    const workingPath = path.join(
+      app.appDir,
+      ".dyad/plans",
+      `chat-${targetId}-plan.md`,
+    );
+    expect(fs.readFileSync(workingPath, "utf8")).toContain(EXPECTED_PLAN.plan);
+    const snapshots = fs
+      .readdirSync(path.dirname(workingPath))
+      .filter((name) => /-[a-f0-9]{64}\.md$/.test(name));
+    expect(snapshots).toHaveLength(1);
+    const snapshotPath = path.join(path.dirname(workingPath), snapshots[0]);
+    const accepted = fs.readFileSync(snapshotPath, "utf8");
+    fs.appendFileSync(workingPath, "\nProgress: step one complete\n");
+    const { loadPlanForChat } = await import("@/ipc/handlers/planPersistence");
+    expect((await loadPlanForChat(app.appDir, targetId))?.content).toContain(
+      "Progress: step one complete",
+    );
+    expect(fs.readFileSync(snapshotPath, "utf8")).toBe(accepted);
+    await waitFor(async () => {
+      const rows = await harness.db.query.messages.findMany({
+        where: eq(messages.chatId, targetId),
+      });
+      expect(
+        rows.some(
+          (row) =>
+            row.role === "user" && row.content === "Implement plan: Test Plan",
+        ),
+      ).toBe(true);
+      expect(
+        rows
+          .filter((row) => row.role === "user")
+          .some((row) => /[a-f0-9]{64}/.test(row.content)),
+      ).toBe(false);
+    });
     expect(errorEvents()).toHaveLength(0);
   }, 60_000);
 

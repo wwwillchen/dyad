@@ -151,7 +151,7 @@ describe("plan handoff command ownership", () => {
 
     await runner({ type: "run-handoff", intent: intent() }, emit);
 
-    expect(mocks.savePlanToDisk).toHaveBeenCalledOnce();
+    expect(mocks.savePlanToDisk).toHaveBeenCalledTimes(2);
     expect(mocks.savePlanToDisk).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ status: "draft" }),
@@ -178,11 +178,18 @@ describe("plan handoff command ownership", () => {
     );
     expect(mocks.savePlanToDisk).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ status: "accepted" }),
+      expect.objectContaining({ status: "accepted", chatId: 99 }),
     );
     expect(
       mocks.dispatchPlanImplementationTurn.mock.invocationCallOrder[0],
-    ).toBeLessThan(mocks.savePlanToDisk.mock.invocationCallOrder[1]);
+    ).toBeLessThan(mocks.savePlanToDisk.mock.invocationCallOrder[2]);
+    expect(mocks.savePlanToDisk).toHaveBeenNthCalledWith(
+      2,
+      expect.not.objectContaining({ immutableVersion: expect.anything() }),
+    );
+    expect(mocks.savePlanToDisk.mock.invocationCallOrder[1]).toBeLessThan(
+      mocks.dispatchPlanImplementationTurn.mock.invocationCallOrder[0],
+    );
     expect(mocks.deleteOwnedChatAfterSettlingActors).not.toHaveBeenCalled();
     expect(mocks.routePlanHandoffPresentation).toHaveBeenCalledWith({
       handoffId: "handoff-1",
@@ -208,6 +215,7 @@ describe("plan handoff command ownership", () => {
     const metadataFailure = new Error("accepted plan write failed");
     mocks.savePlanToDisk
       .mockResolvedValueOnce("draft-plan")
+      .mockResolvedValueOnce("working-plan")
       .mockRejectedValueOnce(metadataFailure);
     const consoleError = vi
       .spyOn(console, "error")

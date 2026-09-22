@@ -1496,7 +1496,7 @@ export function registerChatStreamHandlers() {
       }));
 
       // Expand /implement-plan= into full implementation prompt
-      // Keep the original short form for display in the UI; the expanded
+      // Keep a human-readable title for display in the UI; the expanded
       // content is only injected into the AI message history.
       let implementPlanDisplayPrompt: string | undefined;
       const implementPlanMatch = userPrompt.match(/^\/implement-plan=(.+)$/);
@@ -1515,7 +1515,11 @@ export function registerChatStreamHandlers() {
           const raw = await fs.promises.readFile(planFilePath, "utf-8");
           const { meta, content } = parsePlanFile(raw);
 
-          const planPath = `.dyad/plans/${planSlug}.md`;
+          const acceptedSnapshot = /^chat-\d+-plan-[a-f0-9]{64}$/.test(
+            planSlug,
+          );
+          const planPath = `.dyad/plans/${acceptedSnapshot ? `chat-${req.chatId}-plan` : planSlug}.md`;
+          implementPlanDisplayPrompt = `Implement plan: ${meta.title || "Implementation Plan"}`;
 
           userPrompt = `Please implement the following plan:
 
@@ -1524,7 +1528,7 @@ export function registerChatStreamHandlers() {
 ${content}
 
 Start implementing this plan now. Follow the steps outlined and create/modify the necessary files.
-You may update the plan at \`${planPath}\` to mark your progress.`;
+Update the working plan at \`${planPath}\` to mark your progress. Do not modify any hash-versioned accepted plan snapshot.`;
         } catch (e) {
           implementPlanDisplayPrompt = undefined;
           logger.error("Failed to expand /implement-plan= prompt:", e);
