@@ -478,3 +478,22 @@ describe("user-input registry", () => {
     await expect(registry.park(requestId)).resolves.toBeNull();
   });
 });
+
+it("keeps explicit plan review consent pending past five minutes, then expires at thirty", async () => {
+  const { registry, clock } = setup();
+  const requestId = registry.request(
+    {
+      kind: "agent-consent",
+      chatId: 1,
+      toolName: "Implement plan",
+      classifier: "none",
+    },
+    undefined,
+    { deadline: "review" },
+  );
+  const park = registry.park(requestId);
+  clock.advanceBy(5 * 60 * 1000);
+  expect(registry.getPending()).toHaveLength(1);
+  clock.advanceBy(25 * 60 * 1000);
+  await expect(park).resolves.toBeNull();
+});

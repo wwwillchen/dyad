@@ -12,6 +12,8 @@ import { registerChatHandlers } from "./chat_handlers";
 const cli = vi.hoisted(() => ({
   status: vi.fn().mockResolvedValue({ connected: true }),
   models: vi.fn().mockResolvedValue([]),
+  usage: vi.fn().mockResolvedValue({}),
+  disclosure: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/ipc/services/claude_code/runtime", async (original) => ({
   ...(await original<typeof import("@/ipc/services/claude_code/runtime")>()),
@@ -20,7 +22,10 @@ vi.mock("@/ipc/services/claude_code/runtime", async (original) => ({
 }));
 vi.mock("@/ipc/services/claude_code/disclosure", () => ({
   hasClaudeDisclosure: async () => true,
-  acceptClaudeDisclosure: vi.fn(),
+  acceptClaudeDisclosure: cli.disclosure,
+}));
+vi.mock("@/ipc/services/claude_code/usage_limits", () => ({
+  getClaudeUsageLimits: cli.usage,
 }));
 const deletionOrder = vi.hoisted(() => [] as string[]);
 vi.mock("@/ipc/services/chat_journal_cleanup", () => ({
@@ -103,23 +108,35 @@ describe("registerChatHandlers", () => {
     harness.dispose();
   });
 
-  it.each(["claude-code:models", "claude-code:status"])(
-    "gates %s before spawning the CLI",
-    async (channel) => {
-      cli.status.mockClear();
-      cli.models.mockClear();
-      await expect(harness.invokeHandler(channel)).rejects.toMatchObject({
-        kind: DyadErrorKind.Precondition,
-      });
-      expect(cli.status).not.toHaveBeenCalled();
-      expect(cli.models).not.toHaveBeenCalled();
-      harness.writeSettings({ enableClaudeCodeSubscription: true });
-      await expect(harness.invokeHandler(channel)).resolves.toBeDefined();
-      expect(
-        channel.endsWith("models") ? cli.models : cli.status,
-      ).toHaveBeenCalledOnce();
-    },
-  );
+  it.each([
+    "claude-code:models",
+    "claude-code:status",
+    "claude-code:usage",
+    "claude-code:accept-disclosure",
+  ])("gates %s before spawning the CLI", async (channel) => {
+    cli.status.mockClear();
+    cli.models.mockClear();
+    cli.usage.mockClear();
+    cli.disclosure.mockClear();
+    await expect(harness.invokeHandler(channel)).rejects.toMatchObject({
+      kind: DyadErrorKind.Precondition,
+    });
+    expect(cli.status).not.toHaveBeenCalled();
+    expect(cli.models).not.toHaveBeenCalled();
+    expect(cli.usage).not.toHaveBeenCalled();
+    expect(cli.disclosure).not.toHaveBeenCalled();
+    harness.writeSettings({ enableClaudeCodeSubscription: true });
+    await harness.invokeHandler(channel);
+    expect(
+      channel.endsWith("models")
+        ? cli.models
+        : channel.endsWith("usage")
+          ? cli.usage
+          : channel.endsWith("accept-disclosure")
+            ? cli.disclosure
+            : cli.status,
+    ).toHaveBeenCalledOnce();
+  });
 
   it.each(["dyad", "claude-code"] as const)(
     "switches an empty %s chat backend and rejects switching once messages exist",

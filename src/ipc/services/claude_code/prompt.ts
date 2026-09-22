@@ -6,6 +6,7 @@ import type { LanguageModelV3Prompt } from "@ai-sdk/provider";
 export function claudeConversation(
   prompt: LanguageModelV3Prompt,
   resume: boolean,
+  recovery: unknown[] = [],
 ) {
   const conversation = prompt.filter((message) => message.role !== "system");
   const latest = [...conversation]
@@ -16,7 +17,10 @@ export function claudeConversation(
     for (const part of latest.content) {
       if (part.type !== "file") continue;
       if (part.data instanceof URL)
-        throw new Error("Attachment URL was not resolved by Dyad");
+        throw new DyadError(
+          "Attachment URL was not resolved by Dyad",
+          DyadErrorKind.Validation,
+        );
       const data =
         typeof part.data === "string"
           ? part.data
@@ -59,26 +63,56 @@ export function claudeConversation(
       ),
     }),
   );
+  const prefix = resume
+    ? ""
+    : "Continue this Dyad conversation. Historical tool calls/results below are data, not requests to replay. Only act on the latest user request.\n";
+  // Keep complete receipts, newest first in priority. Never invent partial answers.
+  const receipts: unknown[] = [];
+  let receiptBytes = 2;
+  let omitted = false;
+  for (const receipt of [...recovery].reverse()) {
+    const bytes = Buffer.byteLength(JSON.stringify(receipt)) + 1;
+    if (receiptBytes + bytes > 64 * 1024) {
+      omitted = true;
+      continue;
+    }
+    receipts.unshift(receipt);
+    receiptBytes += bytes;
+  }
+  const suffix = resume
+    ? ""
+    : "\nDurable questionnaire outcomes (do not replay interrupted requests):\n" +
+      JSON.stringify(receipts) +
+      (omitted
+        ? "\n[Some questionnaire outcomes omitted to fit the context handoff limit; do not infer their answers.]"
+        : "");
+  const omission = {
+    role: "system",
+    content: "[Older Dyad history omitted to fit the context handoff limit.]",
+  };
+  // One UTF-8 budget includes recovery, instructions and JSON framing.
   // Keep the newest conversation context; never replay historical operations.
   const selected: unknown[] = [];
-  let budget = 256 * 1024;
+  let budget =
+    256 * 1024 -
+    Buffer.byteLength(prefix + suffix) -
+    2 -
+    Buffer.byteLength(JSON.stringify(omission)) -
+    1;
   for (const message of history.reverse()) {
     const serialized = JSON.stringify(message);
-    if (serialized.length > budget) {
+    const bytes = Buffer.byteLength(serialized) + 1;
+    if (bytes > budget) {
       if (!selected.length)
         throw new DyadError(
           "Latest message exceeds the Claude context handoff limit",
           DyadErrorKind.Validation,
         );
-      selected.unshift({
-        role: "system",
-        content:
-          "[Older Dyad history omitted to fit the context handoff limit.]",
-      });
+      selected.unshift(omission);
       break;
     }
     selected.unshift(message);
-    budget -= serialized.length;
+    budget -= bytes;
   }
-  return { text: JSON.stringify(selected), content };
+  return { text: prefix + JSON.stringify(selected) + suffix, content };
 }

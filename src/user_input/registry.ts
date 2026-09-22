@@ -60,7 +60,11 @@ interface ParkEntry {
 }
 
 export interface UserInputRegistry {
-  request(descriptor: NewUserInputDescriptor, requestId?: string): string;
+  request(
+    descriptor: NewUserInputDescriptor,
+    requestId?: string,
+    options?: { deadline: "review" },
+  ): string;
   park(
     requestId: string,
     abortSignal?: AbortSignal,
@@ -309,14 +313,17 @@ export function createUserInputRegistry(deps: {
   }
 
   return {
-    request(input, explicitRequestId) {
+    request(input, explicitRequestId, options) {
       const requestId = explicitRequestId ?? deps.idSource.next(input.kind);
       if (pendingOutcomes.has(requestId))
         throw new DyadError(
           "User input is being saved",
           DyadErrorKind.Conflict,
         );
-      const ms = deadlineMs(input.kind);
+      const ms =
+        options?.deadline === "review"
+          ? REVIEW_DEADLINE_MS
+          : deadlineMs(input.kind);
       const descriptor = {
         ...input,
         requestId,

@@ -119,9 +119,10 @@ export function registerChatHandlers() {
     assertClaudeExperiment();
     return listClaudeModels();
   });
-  createTypedHandler(chatContracts.claudeCodeUsage, async () =>
-    getClaudeUsageLimits(),
-  );
+  createTypedHandler(chatContracts.claudeCodeUsage, async () => {
+    assertClaudeExperiment();
+    return getClaudeUsageLimits();
+  });
   createTypedHandler(chatContracts.claudeCodeStatus, async () => {
     assertClaudeExperiment();
     return {
@@ -129,9 +130,10 @@ export function registerChatHandlers() {
       disclosed: await hasClaudeDisclosure(),
     };
   });
-  createTypedHandler(chatContracts.acceptClaudeCodeDisclosure, async () =>
-    acceptClaudeDisclosure(),
-  );
+  createTypedHandler(chatContracts.acceptClaudeCodeDisclosure, async () => {
+    assertClaudeExperiment();
+    return acceptClaudeDisclosure();
+  });
   createTypedHandler(
     chatContracts.observeSubmissionStopPolicy,
     async (_, chatId) => observeChatSubmissionStopPolicy(chatId),

@@ -670,3 +670,22 @@ it("does not publish a cancelled Claude turn before owned work drains", async ()
     1,
   );
 });
+
+it("admits non-Pro Claude Agent turns without charging Dyad credits", async () => {
+  const chatId = await ipc.chat.createChat({
+    appId: harness.appId,
+    initialChatMode: "local-agent",
+  });
+  const result = await harness.streamChat("Reply briefly without tools", {
+    chatId,
+  });
+  expect(result.event("chat:response:error")).toBeUndefined();
+  expect(calls.run).toHaveBeenCalledOnce();
+  const rows = await harness.db.query.messages.findMany({
+    where: eq(messages.chatId, chatId),
+  });
+  const assistant = rows.find((row) => row.role === "assistant");
+  expect(JSON.parse(assistant!.executionUsage!)).toMatchObject({
+    status: "unbilled",
+  });
+});

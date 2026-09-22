@@ -1564,6 +1564,9 @@ describe("handleLocalAgentStream", () => {
   });
 
   describe("Pro status validation", () => {
+    beforeEach(() => {
+      mockChatData = buildTestChat();
+    });
     it("should send error when Dyad Pro is not enabled", async () => {
       // Arrange
       const { event, getMessagesByChannel } = createFakeEvent();

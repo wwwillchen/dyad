@@ -754,29 +754,6 @@ export async function handleLocalAgentStream(
     await updateResponseInDb(placeholderMessageId, fullResponse);
   };
 
-  // Check Pro status or Basic Agent mode
-  // Basic Agent mode allows non-Pro users with quota (quota check is done in chat_stream_handlers)
-  // Read-only mode (ask mode) is allowed for all users without Pro
-  if (
-    !buildMode &&
-    !readOnly &&
-    !planModeOnly &&
-    !isDyadProEnabled(settings) &&
-    !isBasicAgentMode(settings)
-  ) {
-    const errorMessage =
-      referencedApps.length > 0
-        ? "Referencing other apps (@app:Name) in local-agent mode requires Dyad Pro. Please enable Dyad Pro in Settings → Pro."
-        : "Agent v2 requires Dyad Pro. Please enable Dyad Pro in Settings → Pro.";
-    safeSend(event.sender, "chat:response:error", {
-      chatId: req.chatId,
-      invocationRef: req.invocationRef,
-      streamId: req.streamId,
-      error: errorMessage,
-    });
-    return false;
-  }
-
   const loadChat = async () =>
     db.query.chats.findFirst({
       where: eq(chats.id, req.chatId),
@@ -808,6 +785,30 @@ export async function handleLocalAgentStream(
       ? await normalizeModelSelection(chat.modelSelection)
       : await resolveDefaultModelSelection(storedSettings);
   settings = { ...storedSettings, selectedModel };
+
+  // Check Pro status or Basic Agent mode
+  // Basic Agent mode allows non-Pro users with quota (quota check is done in chat_stream_handlers)
+  // Read-only mode (ask mode) is allowed for all users without Pro
+  if (
+    !buildMode &&
+    !readOnly &&
+    !planModeOnly &&
+    !isDyadProEnabled(settings) &&
+    selectedModel.provider !== "claude-code" &&
+    !isBasicAgentMode(settings)
+  ) {
+    const errorMessage =
+      referencedApps.length > 0
+        ? "Referencing other apps (@app:Name) in local-agent mode requires Dyad Pro. Please enable Dyad Pro in Settings → Pro."
+        : "Agent v2 requires Dyad Pro. Please enable Dyad Pro in Settings → Pro.";
+    safeSend(event.sender, "chat:response:error", {
+      chatId: req.chatId,
+      invocationRef: req.invocationRef,
+      streamId: req.streamId,
+      error: errorMessage,
+    });
+    return false;
+  }
 
   let appPath = getDyadAppPath(chat.app.path);
 
