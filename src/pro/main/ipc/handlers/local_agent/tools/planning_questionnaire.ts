@@ -138,18 +138,20 @@ export const planningQuestionnaireTool: ToolDefinition<
     }));
 
     const requestId = crypto.randomUUID();
-    await persistQuestionnaire({
-      requestId,
-      chatId: ctx.chatId,
-      questions,
-      outcome: "pending",
-    });
+    if (ctx.persistQuestionnaireRecovery)
+      await persistQuestionnaire({
+        requestId,
+        chatId: ctx.chatId,
+        questions,
+        outcome: "pending",
+      });
     ctx.onXmlComplete(
       `<dyad-status title="Questionnaire requested" state="finished">${escapeXmlContent(questions.map((q) => q.question).join("\n"))}</dyad-status>`,
     );
     userInputRegistry.request(
       {
         kind: "questionnaire",
+        requiresRecovery: ctx.persistQuestionnaireRecovery === true,
         chatId: ctx.chatId,
         questions,
         classifier: "none",

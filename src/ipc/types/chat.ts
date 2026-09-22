@@ -428,7 +428,7 @@ export const chatContracts = {
   }),
   claudeCodeStatus: defineContract({
     channel: "claude-code:status",
-    input: z.void(),
+    input: z.object({ force: z.boolean().optional() }).optional(),
     output: z.object({
       installed: z.boolean(),
       connected: z.boolean(),

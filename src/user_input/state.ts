@@ -52,6 +52,7 @@ export type UserInputDescriptor =
     })
   | (DescriptorBase & {
       kind: "questionnaire";
+      requiresRecovery?: boolean;
       questions: UserInputQuestion[];
       classifier: "none";
     })

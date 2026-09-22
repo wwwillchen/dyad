@@ -85,7 +85,8 @@ let statusCache:
 let statusFlight:
   | Promise<Awaited<ReturnType<typeof probeClaudeStatus>>>
   | undefined;
-export function claudeStatus() {
+export function claudeStatus(options?: { force?: boolean }) {
+  if (options?.force) statusCache = undefined;
   if (statusFlight) return statusFlight;
   if (statusCache && statusCache.expires > Date.now())
     return Promise.resolve(statusCache.value);

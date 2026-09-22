@@ -1,3 +1,4 @@
+import { showError } from "@/lib/toast";
 import { modelForChatBackend } from "@/shared/execution_backend";
 import { ClaudeCodeSubscriptionMenu } from "./ClaudeCodeSubscriptionMenu";
 import {
@@ -213,7 +214,7 @@ export function ModelPicker() {
         chat?.executionBackend === "claude-code" ||
         settings?.selectedModel.provider === "claude-code"),
     queryKey: queryKeys.system.claudeCodeStatus,
-    queryFn: () => ipc.chat.claudeCodeStatus(),
+    queryFn: () => ipc.chat.claudeCodeStatus({}),
     staleTime: 10_000,
   });
   const claudeModels = useQuery({
@@ -264,6 +265,7 @@ export function ModelPicker() {
       (backendChange ||
         (model.provider === "claude-code" && !claudeStatus.data?.disclosed))
     ) {
+      confirmBackend.reset();
       setShowDisclosure(false);
       setPendingBackend({
         model,
@@ -1538,7 +1540,10 @@ export function ModelPicker() {
       <Dialog
         open={pendingBackend !== null}
         onOpenChange={(value) => {
-          if (!value && !confirmBackend.isPending) setPendingBackend(null);
+          if (!value && !confirmBackend.isPending) {
+            confirmBackend.reset();
+            setPendingBackend(null);
+          }
         }}
       >
         <DialogContent>
@@ -1579,7 +1584,10 @@ export function ModelPicker() {
               variant="outline"
               className="focus-visible:ring-2"
               disabled={confirmBackend.isPending}
-              onClick={() => setPendingBackend(null)}
+              onClick={() => {
+                confirmBackend.reset();
+                setPendingBackend(null);
+              }}
             >
               Cancel
             </Button>
@@ -1629,7 +1637,13 @@ export function ModelPicker() {
                 updateSettings({ proModelUsage: value })
               }
               onRefresh={() => {
-                void claudeStatus.refetch();
+                void queryClient
+                  .fetchQuery({
+                    queryKey: queryKeys.system.claudeCodeStatus,
+                    queryFn: () => ipc.chat.claudeCodeStatus({ force: true }),
+                    staleTime: 0,
+                  })
+                  .catch((error) => showError(error));
                 void claudeModels.refetch();
               }}
               catalogMessage={

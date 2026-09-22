@@ -123,10 +123,10 @@ export function registerChatHandlers() {
     assertClaudeExperiment();
     return getClaudeUsageLimits();
   });
-  createTypedHandler(chatContracts.claudeCodeStatus, async () => {
+  createTypedHandler(chatContracts.claudeCodeStatus, async (_, options) => {
     assertClaudeExperiment();
     return {
-      ...(await claudeStatus()),
+      ...(await claudeStatus(options)),
       disclosed: await hasClaudeDisclosure(),
     };
   });

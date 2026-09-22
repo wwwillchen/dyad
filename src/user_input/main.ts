@@ -59,7 +59,7 @@ export const userInputRegistry = createUserInputRegistry({
   idSource: uuidIdSource,
   broadcast,
   async persistOutcome(descriptor, value) {
-    if (descriptor.kind === "questionnaire")
+    if (descriptor.kind === "questionnaire" && descriptor.requiresRecovery)
       await settleQuestionnaire(descriptor.requestId, value, descriptor.chatId);
   },
   async persistAlways(descriptor, response) {

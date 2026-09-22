@@ -41,7 +41,9 @@ it("coalesces concurrent probes and shares a bounded main-process cache", async 
   expect(statuses[0]).toMatchObject({ connected: true, compatible: true });
   await claudeStatus();
   expect(mocks.exec).toHaveBeenCalledTimes(2);
+  await claudeStatus({ force: true });
+  expect(mocks.exec).toHaveBeenCalledTimes(4);
   vi.advanceTimersByTime(30_001);
   await claudeStatus();
-  expect(mocks.exec).toHaveBeenCalledTimes(4);
+  expect(mocks.exec).toHaveBeenCalledTimes(6);
 });

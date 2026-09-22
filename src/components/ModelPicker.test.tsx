@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   act,
   fireEvent,
@@ -43,6 +44,7 @@ const mocks = vi.hoisted(() => ({
   claudeModelsError: false,
   refetchClaudeModels: vi.fn(),
   refetchClaudeStatus: vi.fn(),
+  forceStatus: vi.fn().mockResolvedValue({ connected: true }),
   claudeStatus: {
     installed: true,
     connected: true,
@@ -175,15 +177,20 @@ vi.mock("@tanstack/react-query", () => ({
       ? mocks.refetchClaudeModels
       : mocks.refetchClaudeStatus,
   }),
-  useMutation: ({ mutationFn }: { mutationFn: () => Promise<unknown> }) => ({
-    mutate: () => {
-      void mutationFn();
-    },
-    isPending: false,
-    error: null,
-  }),
+  useMutation: ({ mutationFn }: { mutationFn: () => Promise<unknown> }) => {
+    const [error, setError] = useState<Error | null>(null);
+    return {
+      mutate: () => {
+        void mutationFn().catch(setError);
+      },
+      reset: () => setError(null),
+      isPending: false,
+      error,
+    };
+  },
   useQueryClient: () => ({
     invalidateQueries: mocks.invalidateQueries,
+    fetchQuery: ({ queryFn }: { queryFn: () => Promise<unknown> }) => queryFn(),
   }),
 }));
 
@@ -223,6 +230,7 @@ vi.mock("@/ipc/types", async (importOriginal) => ({
   ipc: {
     chat: {
       acceptClaudeCodeDisclosure: mocks.acceptDisclosure,
+      claudeCodeStatus: mocks.forceStatus,
       createChat: mocks.createChat,
       updateChat: mocks.updateChat,
     },
@@ -1923,7 +1931,7 @@ describe("Claude Code subscription picker", () => {
     render(<ModelPicker />);
     fireEvent.click(screen.getByText("Refresh connection"));
     expect(mocks.refetchClaudeModels).toHaveBeenCalledOnce();
-    expect(mocks.refetchClaudeStatus).toHaveBeenCalledOnce();
+    expect(mocks.forceStatus).toHaveBeenCalledWith({ force: true });
   });
   it.each(["claude-fable-5", "claude-fable-5-1"])(
     "routes %s through Claude Code without substituting versions",
@@ -2187,6 +2195,24 @@ describe("Claude Code subscription picker", () => {
     );
     await waitFor(() => expect(mocks.setChatSelection).toHaveBeenCalled());
     expect(screen.queryByText(/Start a new chat with/)).toBeNull();
+  });
+  it("clears a failed backend switch when cancelled and reopened", async () => {
+    mocks.createChat.mockRejectedValueOnce(new Error("Switch failed"));
+    render(<ModelPicker />);
+    const pick = () =>
+      fireEvent.click(
+        document.querySelector(
+          '[data-model-provider="claude-code"][data-model-name="sonnet"]',
+        )!,
+      );
+    pick();
+    fireEvent.click(screen.getByText("Start new chat"));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("Switch failed"),
+    );
+    fireEvent.click(screen.getByText("Cancel"));
+    pick();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
   it("shows first-use disclosure separately before creating the new chat", async () => {
     mocks.claudeStatus.disclosed = false;

@@ -68,6 +68,8 @@ export const APP_MUTATING_TOOL_NAMES = [
 export type AppMutatingToolName = (typeof APP_MUTATING_TOOL_NAMES)[number];
 
 export interface AgentContext {
+  /** Recovery journal is needed only for Claude-owned conversations. */
+  persistQuestionnaireRecovery?: boolean;
   /** Accepted root settings, including resolved mode and billing account. */
   inferenceSettings?: UserSettings;
   /** Owner-scoped identity used to join only this root turn's mutations. */

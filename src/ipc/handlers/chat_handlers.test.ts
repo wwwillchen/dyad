@@ -138,6 +138,12 @@ describe("registerChatHandlers", () => {
     ).toHaveBeenCalledOnce();
   });
 
+  it("forwards an explicit status refresh past the main-process cache", async () => {
+    harness.writeSettings({ enableClaudeCodeSubscription: true });
+    await harness.invokeHandler("claude-code:status", { force: true });
+    expect(cli.status).toHaveBeenLastCalledWith({ force: true });
+  });
+
   it.each(["dyad", "claude-code"] as const)(
     "switches an empty %s chat backend and rejects switching once messages exist",
     async (executionBackend) => {

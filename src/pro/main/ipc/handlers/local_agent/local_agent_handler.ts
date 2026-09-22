@@ -982,6 +982,7 @@ export async function handleLocalAgentStream(
     const effectiveFreeModelMode =
       freeModelMode ?? isFreeProModel(settings.selectedModel);
     const ctx: AgentContext = {
+      persistQuestionnaireRecovery: selectedModel.provider === "claude-code",
       inferenceSettings: settings,
       mutationActivityOwner: (rootMutationOwner = createMutationActivityOwner({
         appId: chat.app.id,

@@ -24,7 +24,7 @@ export function ProModeSelector() {
   const subscription = useSubscriptionAccount();
   const claudeStatus = useQuery({
     queryKey: queryKeys.system.claudeCodeStatus,
-    queryFn: () => ipc.chat.claudeCodeStatus(),
+    queryFn: () => ipc.chat.claudeCodeStatus({}),
     enabled: !!settings?.enableClaudeCodeSubscription,
     staleTime: 10_000,
   });
