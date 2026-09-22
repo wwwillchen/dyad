@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "dee00200-7357-477d-8aba-efa32f8b1312",
+  "id": "1563e631-ec24-439f-bc86-240bfd8e968c",
   "prevId": "d14c5611-c21f-4eba-bf67-7ede7d5ffa5f",
   "tables": {
     "agent_activities": {
@@ -1771,20 +1771,6 @@
         },
         "inference_source": {
           "name": "inference_source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "execution_backend": {
-          "name": "execution_backend",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "execution_usage": {
-          "name": "execution_usage",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
