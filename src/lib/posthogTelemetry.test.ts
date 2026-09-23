@@ -677,7 +677,9 @@ describe("getInitialLoadTelemetryProperties", () => {
           },
           enableAppBlueprint: false,
           enableTestingForNewApps: true,
+          enableClaudeCodeSubscription: true,
         }),
+        codexSubscriptionEnabled: true,
         appVersion: "1.1.0",
         platform: "darwin",
         isFirstSession: false,
@@ -690,6 +692,8 @@ describe("getInitialLoadTelemetryProperties", () => {
       isFirstSession: false,
       enableAppBlueprint: false,
       enableTestingForNewApps: true,
+      codexSubscriptionEnabled: true,
+      claudeSubscriptionEnabled: true,
       modelProvider: "auto",
       defaultChatMode: "ask",
       runtimeMode2: "docker",
@@ -702,6 +706,7 @@ describe("getInitialLoadTelemetryProperties", () => {
         settings: makeSettings({
           selectedChatMode: "plan",
         }),
+        codexSubscriptionEnabled: false,
         appVersion: "1.1.0",
         platform: null,
         isFirstSession: true,
@@ -714,6 +719,8 @@ describe("getInitialLoadTelemetryProperties", () => {
       isFirstSession: true,
       enableAppBlueprint: true,
       enableTestingForNewApps: false,
+      codexSubscriptionEnabled: false,
+      claudeSubscriptionEnabled: false,
       modelProvider: "auto",
       defaultChatMode: null,
       runtimeMode2: "host",
@@ -723,6 +730,7 @@ describe("getInitialLoadTelemetryProperties", () => {
   it("carries the previous session's app size as the crash-rate denominator", () => {
     const properties = getInitialLoadTelemetryProperties({
       settings: makeSettings({}),
+      codexSubscriptionEnabled: null,
       appVersion: "1.1.0",
       platform: null,
       isFirstSession: false,
@@ -736,6 +744,7 @@ describe("getInitialLoadTelemetryProperties", () => {
     });
 
     expect(properties).toMatchObject({
+      codexSubscriptionEnabled: null,
       prev_session_app_file_count: 310,
       prev_session_app_bytes: 2_000_000,
       prev_session_max_app_file_count: 310,
