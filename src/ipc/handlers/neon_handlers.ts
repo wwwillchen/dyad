@@ -995,13 +995,19 @@ export function registerNeonHandlers() {
     // Call handleNeonOAuthReturn with fake data, running it through the
     // connection flow machine so an active flow (started by the connector's
     // Connect click) advances just like a real dyad://neon-oauth-return.
-    const outcome = await runOAuthReturnExchange("neon", () => {
-      handleNeonOAuthReturn({
-        token: "fake-neon-access-token",
-        refreshToken: "fake-neon-refresh-token",
-        expiresIn: 3600, // 1 hour
-      });
-    });
+    // Tests may call this without starting a flow, so this trusted test-only
+    // producer may still write when nothing is awaiting a return.
+    const outcome = await runOAuthReturnExchange(
+      "neon",
+      () => {
+        handleNeonOAuthReturn({
+          token: "fake-neon-access-token",
+          refreshToken: "fake-neon-refresh-token",
+          expiresIn: 3600, // 1 hour
+        });
+      },
+      { allowUnclaimedExchange: true },
+    );
     if (!outcome.ok && !outcome.claimed) {
       throw outcome.error;
     }

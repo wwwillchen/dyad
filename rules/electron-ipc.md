@@ -174,6 +174,10 @@ must present a provider-bound, expiring, single-use correlation value minted at
 the authoritative flow-start boundary; an unmatched or unsolicited callback
 must not perform the credential write. Browser protocol-launch prompts are UX,
 not an authentication boundary.
+Test-only producers (`neon:fake-connect`, `supabase:fake-connect-and-set-project`)
+that call `runOAuthReturnExchange` without a ref must pass
+`allowUnclaimedExchange: true`: integration tests invoke them without starting a
+connection flow and otherwise fail with "OAuth return did not match an active connection flow".
 
 ## Handler expectations
 

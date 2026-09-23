@@ -33,8 +33,8 @@ export const DEFAULT_FLOW_TIMEOUTS_MS: Record<
   ConnectionFlowProvider,
   number | null
 > = {
-  neon: 5 * 60_000,
-  supabase: 5 * 60_000,
+  neon: 10 * 60_000,
+  supabase: 10 * 60_000,
   github: null,
 };
 
