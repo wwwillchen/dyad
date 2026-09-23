@@ -71,10 +71,7 @@ export function parseSubscriptionLimits(raw: unknown) {
   };
 }
 // Catalog eligibility and usage display have independent freshness and waiters.
-async function refreshAccountPart(
-  part: "models" | "limits",
-  retryChangedVersion = true,
-) {
+async function refreshAccountPart(part: "models" | "limits") {
   const activeRevision = revision;
   const clientVersion = part === "models" ? getCodexClientVersion() : undefined;
   // Retry failed catalog lookups sooner; an outage must not poison eligibility for an hour.
@@ -162,15 +159,14 @@ async function refreshAccountPart(
     })();
   }
   await inflight[part];
-  // A remote catalog can finish loading while a fallback-version lookup is in
-  // flight. Refresh once more before returning that older result.
+  // A catalog update can land during the account request. Refresh the picker
+  // in the background without delaying a successful subscription turn.
   if (
     part === "models" &&
-    retryChangedVersion &&
     activeRevision === revision &&
     requestedModelsClientVersion !== getCodexClientVersion()
   ) {
-    await refreshAccountPart("models", false);
+    void refreshAccountPart("models");
   }
 }
 

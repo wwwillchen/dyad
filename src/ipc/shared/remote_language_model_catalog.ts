@@ -148,6 +148,7 @@ type ResolvedBuiltinModel = {
 let builtinCatalogCache: BuiltinLanguageModelCatalog | null = null;
 let builtinCatalogFetchPromise: Promise<BuiltinLanguageModelCatalog> | null =
   null;
+let lastKnownCodexClientVersion: string | undefined;
 // Tracks whether the current cache has already been extended through one
 // stale-while-revalidate grace cycle. Bounds stale-remote service so a
 // transient outage does not serve server-expired data indefinitely.
@@ -402,6 +403,9 @@ async function fetchRemoteCatalog(): Promise<BuiltinLanguageModelCatalog | null>
     const rawCatalog = await response.json();
     const remoteCatalog = LanguageModelCatalogResponseSchema.parse(rawCatalog);
     const convertedCatalog = convertRemoteCatalog(remoteCatalog);
+    if (convertedCatalog.codexClientVersion) {
+      lastKnownCodexClientVersion = convertedCatalog.codexClientVersion;
+    }
 
     logger.info("Loaded remote language model catalog", {
       catalogUrl,
@@ -542,7 +546,9 @@ export function getCodexClientVersion(): string {
     triggerBackgroundRefresh();
   }
   return (
-    builtinCatalogCache?.codexClientVersion ?? FALLBACK_CODEX_CLIENT_VERSION
+    builtinCatalogCache?.codexClientVersion ??
+    lastKnownCodexClientVersion ??
+    FALLBACK_CODEX_CLIENT_VERSION
   );
 }
 

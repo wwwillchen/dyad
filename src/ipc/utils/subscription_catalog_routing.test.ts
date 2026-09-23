@@ -27,6 +27,7 @@ vi.mock("electron-log", () => ({
   },
 }));
 vi.mock("../shared/remote_language_model_catalog", () => ({
+  getCodexClientVersion: () => "0.155.1",
   getBuiltinLanguageModelCatalog: async () => ({
     modelsByProvider: { openai: [{ apiName: "gpt-fallback" }] },
   }),

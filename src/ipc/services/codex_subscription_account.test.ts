@@ -151,7 +151,7 @@ it("refreshes cached models when the remote Codex client version changes", async
   });
   expect(fetcher).toHaveBeenCalledTimes(2);
 });
-it("retries when the remote version changes during a model lookup", async () => {
+it("refreshes a changed version without delaying the first model lookup", async () => {
   let finishOld!: (response: Response) => void;
   const fetcher = vi.fn((url: string) =>
     url.includes("client_version=0.155.1")
@@ -166,8 +166,11 @@ it("retries when the remote version changes during a model lookup", async () => 
   await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
   mocks.codexClientVersion.mockReturnValue("0.156.0");
   finishOld(accountResponse(["old-model"]));
-  expect(await pending).toMatchObject({ models: ["new-model"] });
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(await pending).toMatchObject({ models: ["old-model"] });
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+  expect(await getSubscriptionAccount({ includeUsage: false })).toMatchObject({
+    models: ["new-model"],
+  });
 });
 it("reports unavailable instead of showing zero usage or guessing models", async () => {
   vi.stubGlobal(

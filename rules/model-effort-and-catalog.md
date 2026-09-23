@@ -35,3 +35,10 @@ requested about 1055390 tokens`. Keep catalog output limits well under the
   it (HTTP 400). For the same account, `0.154.0` omitted GPT-6 Sol while
   `0.155.1` included it; compare versions with one account before changing the
   remote catalog's `codexClientVersion`.
+- **Keep a last known good Codex client version across Dyad catalog outages.**
+  Falling back to a pinned version after a failed catalog refresh can invalidate
+  a healthy ChatGPT model list and hide subscription models until recovery.
+- **Do not serialize two ChatGPT model requests on a subscription send.** If
+  the remote version changes during an in-flight lookup, return its successful
+  result and refresh in the background; check other suites' catalog mocks when
+  adding new imports to `codex_subscription_account.ts`.
