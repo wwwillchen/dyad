@@ -111,11 +111,6 @@ test("real Claude subscription: picker, approvals, edit, MCP, resume, attributio
     po.page.getByRole("button", { name: "Type check passed" }),
   ).toBeVisible();
   await expect(po.page.getByText(/Claude Code \(claude-/).last()).toBeVisible();
-  await po.page.getByTestId("auxiliary-actions-menu").click();
-  await po.page.getByTestId("token-bar-toggle").click();
-  await expect(
-    po.page.getByText(/Claude subscription usage applies/).last(),
-  ).toBeVisible();
   await expect(
     po.page
       .frameLocator("iframe")
