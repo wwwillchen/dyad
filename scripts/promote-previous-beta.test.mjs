@@ -40,7 +40,7 @@ function fixture(t, overrides = {}) {
           {
             ...release,
             tag_name: "v1.16.0-beta.1",
-            draft: true,
+            draft: false,
             published_at: "2026-09-02",
           },
           {
@@ -65,7 +65,7 @@ function fixture(t, overrides = {}) {
       return "https://github.com/dyad-sh/dyad/pull/123";
     if (key === "remote") return "origin\nupstream\n";
     if (key.startsWith("remote get-url"))
-      return "git@github.com:dyad-sh/dyad.git";
+      return "git@github.com:person/dyad.git";
     if (args[0] === "show")
       return JSON.stringify({
         version: "1.15.0-beta.1",
@@ -74,9 +74,10 @@ function fixture(t, overrides = {}) {
       });
     return "";
   };
-  const run = (answer = "yes") =>
+  const run = (answer = "yes", stableVersion = "1.15.0") =>
     promotePreviousBeta({
       cwd,
+      stableVersion,
       execute,
       log: (value) => logs.push(value),
       confirm: async (prompt) => {
@@ -101,7 +102,7 @@ test("promotes the published beta from its successful workflow using beta manife
   );
   assert.ok(
     f.calls.some(
-      (call) => call.join(" ") === "git push -u upstream release-1.15.x",
+      (call) => call.join(" ") === "git push -u origin release-1.15.x",
     ),
   );
   for (const name of ["package.json", "package-lock.json"]) {
@@ -112,29 +113,37 @@ test("promotes the published beta from its successful workflow using beta manife
   }
   const pr = f.calls.find((call) => call[1] === "pr");
   assert.equal(pr[pr.indexOf("--base") + 1], "main");
-  assert.equal(pr[pr.indexOf("--head") + 1], "release-1.15.x");
+  assert.equal(pr[pr.indexOf("--head") + 1], "person:release-1.15.x");
+  assert.ok(pr.includes("--no-maintainer-edit"));
 });
 
-test("origin fallback creates an explicit fork PR against upstream main", async (t) => {
+test("upstream fallback creates a same-repo PR when origin is unavailable", async (t) => {
   const f = fixture(t, {
-    remote: "origin\n",
-    "remote get-url --push origin": "https://github.com/person/dyad.git",
+    remote: "upstream\n",
+    "remote get-url --push upstream": "https://github.com/dyad-sh/dyad.git",
   });
   await f.run();
   assert.ok(
     f.calls.some(
-      (call) => call.join(" ") === "git push -u origin release-1.15.x",
+      (call) => call.join(" ") === "git push -u upstream release-1.15.x",
     ),
   );
   const pr = f.calls.find((call) => call[1] === "pr");
-  assert.equal(pr[pr.indexOf("--head") + 1], "person:release-1.15.x");
+  assert.equal(pr[pr.indexOf("--head") + 1], "release-1.15.x");
   assert.equal(pr[pr.indexOf("--repo") + 1], "dyad-sh/dyad");
+  assert.ok(!pr.includes("--no-maintainer-edit"));
 });
 
 test("declining confirmation performs no mutations", async (t) => {
   const f = fixture(t);
   await f.run("no");
-  assert.equal(f.calls.length, 2);
+  assert.ok(
+    !f.calls.some(
+      (call) =>
+        ["fetch", "checkout", "add", "commit", "push"].includes(call[1]) ||
+        (call[0] === "gh" && call[1] === "pr"),
+    ),
+  );
 });
 
 test("command runner supports manifests larger than Node's default buffer", () => {
@@ -182,7 +191,17 @@ for (const [name, overrides, error] of [
   [
     "missing beta",
     { "api repos/dyad-sh/dyad/releases?per_page=100&page=1": "[]" },
-    /No published/,
+    /No published beta/,
+  ],
+  [
+    "stable release already exists",
+    {
+      "api repos/dyad-sh/dyad/releases?per_page=100&page=1": JSON.stringify([
+        release,
+        { tag_name: "v1.15.0", prerelease: false, draft: false },
+      ]),
+    },
+    /already exists/,
   ],
   [
     "missing successful workflow",

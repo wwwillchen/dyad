@@ -49,6 +49,7 @@ const options = [];
 // Current version stable: drop beta prerelease tag
 options.push({
   label: "Current version stable",
+  promotable: true,
   version: formatVersion({
     major: parsed.major,
     minor: parsed.minor,
@@ -107,7 +108,7 @@ rl.question(`  ${bold("Select option:")} `, (answer) => {
   }
 
   const selected = options[index];
-  if (index === 0) {
+  if (selected.promotable) {
     console.log(
       "\n  1) Use previous beta and create release branch (recommended)",
     );
@@ -117,6 +118,7 @@ rl.question(`  ${bold("Select option:")} `, (answer) => {
         if (choice.trim() === "1") {
           await promotePreviousBeta({
             cwd: resolve(__dirname, ".."),
+            stableVersion: selected.version,
             confirm: (message) =>
               new Promise((resolveAnswer) =>
                 rl.question(message, resolveAnswer),

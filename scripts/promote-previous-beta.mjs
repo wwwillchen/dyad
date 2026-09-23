@@ -16,6 +16,7 @@ export function runPromotionCommand(command, args, cwd) {
 
 export async function promotePreviousBeta({
   cwd,
+  stableVersion,
   confirm,
   log = console.log,
   execute = (command, args) => runPromotionCommand(command, args, cwd),
@@ -29,6 +30,9 @@ export async function promotePreviousBeta({
   if (git("status", "--porcelain")) {
     throw new Error("Commit or stash local changes before promoting a beta.");
   }
+  if (!/^\d+\.\d+\.\d+$/.test(stableVersion)) {
+    throw new Error("Provide the stable version selected for promotion.");
+  }
 
   // GitHub's releases endpoint is ordered by creation, not publication date.
   const releases = [];
@@ -40,14 +44,29 @@ export async function promotePreviousBeta({
     releases.push(...batch);
     if (batch.length < 100) break;
   }
-  const release = releases
-    .filter((candidate) => candidate.prerelease && !candidate.draft)
-    .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0];
-  if (!release) throw new Error("No published pre-release found.");
-  const match = /^v(\d+)\.(\d+)\.(\d+)-beta\.\d+$/.exec(release.tag_name);
-  if (!match) {
-    throw new Error(`Latest pre-release is not a beta: ${release.tag_name}`);
+  if (
+    releases.some(
+      (candidate) =>
+        !candidate.prerelease &&
+        !candidate.draft &&
+        candidate.tag_name === `v${stableVersion}`,
+    )
+  ) {
+    throw new Error(`Stable release v${stableVersion} already exists.`);
   }
+  const release = releases
+    .filter(
+      (candidate) =>
+        candidate.prerelease &&
+        !candidate.draft &&
+        candidate.tag_name.startsWith(`v${stableVersion}-beta.`) &&
+        /^v\d+\.\d+\.\d+-beta\.\d+$/.test(candidate.tag_name),
+    )
+    .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0];
+  if (!release)
+    throw new Error(`No published beta found for v${stableVersion}.`);
+  const match = /^v(\d+)\.(\d+)\.(\d+)-beta\.\d+$/.exec(release.tag_name);
+  if (!match) throw new Error(`Invalid beta tag: ${release.tag_name}`);
   const version = `${match[1]}.${match[2]}.${match[3]}`;
   const branch = `release-${match[1]}.${match[2]}.x`;
   const answer = await confirm(
@@ -86,7 +105,12 @@ export async function promotePreviousBeta({
   log(`  Release commit: ${workflow.head_sha}`);
 
   const remotes = git("remote").split(/\s+/);
-  const remote = remotes.includes("upstream") ? "upstream" : "origin";
+  const remote = remotes.includes("origin")
+    ? "origin"
+    : remotes.includes("upstream")
+      ? "upstream"
+      : null;
+  if (!remote) throw new Error("No origin or upstream Git remote found.");
   const pushUrl = git("remote", "get-url", "--push", remote);
   const remoteRepo = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(
     pushUrl,
@@ -141,6 +165,7 @@ export async function promotePreviousBeta({
     "main",
     "--head",
     head,
+    ...(remoteRepo === repository ? [] : ["--no-maintainer-edit"]),
     "--title",
     `Promote ${release.tag_name} to v${version}`,
     "--body",
