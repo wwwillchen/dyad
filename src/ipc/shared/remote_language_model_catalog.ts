@@ -97,7 +97,12 @@ const LanguageModelCatalogResponseSchema = z.object({
     .string()
     .regex(/^\d+\.\d+\.\d+$/)
     .optional()
-    .catch(undefined),
+    .catch(() => {
+      logger.warn(
+        "Ignoring invalid codexClientVersion in remote language model catalog",
+      );
+      return undefined;
+    }),
   providers: z.array(CatalogProviderSchema),
   modelsByProvider: z.record(z.string(), z.array(CatalogModelSchema)),
   aliases: z.array(

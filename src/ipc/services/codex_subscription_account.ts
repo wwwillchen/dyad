@@ -37,12 +37,14 @@ let cached: {
   limitsError?: string;
 } = { models: [], windows: [], limitReached: false };
 const updatedAt = { models: -Infinity, limits: -Infinity };
+let requestedModelsClientVersion: string | undefined;
 let revision = 0;
 const inflight: Partial<Record<"models" | "limits", Promise<void>>> = {};
 export function resetSubscriptionAccount() {
   revision++;
   cached = { models: [], windows: [], limitReached: false };
   updatedAt.models = updatedAt.limits = -Infinity;
+  requestedModelsClientVersion = undefined;
   delete inflight.models;
   delete inflight.limits;
 }
@@ -69,11 +71,21 @@ export function parseSubscriptionLimits(raw: unknown) {
   };
 }
 // Catalog eligibility and usage display have independent freshness and waiters.
-async function refreshAccountPart(part: "models" | "limits") {
+async function refreshAccountPart(
+  part: "models" | "limits",
+  retryChangedVersion = true,
+) {
+  const activeRevision = revision;
+  const clientVersion = part === "models" ? getCodexClientVersion() : undefined;
   // Retry failed catalog lookups sooner; an outage must not poison eligibility for an hour.
   const ttl = part === "models" && !cached.modelsError ? 60 * 60_000 : 60_000;
-  if (!inflight[part] && Date.now() - updatedAt[part] >= ttl) {
+  if (
+    !inflight[part] &&
+    (Date.now() - updatedAt[part] >= ttl ||
+      (part === "models" && clientVersion !== requestedModelsClientVersion))
+  ) {
     const current = revision;
+    if (part === "models") requestedModelsClientVersion = clientVersion;
     inflight[part] = (async () => {
       try {
         const credentials = await getCodexSubscriptionCredentials().catch(
@@ -87,7 +99,7 @@ async function refreshAccountPart(part: "models" | "limits") {
         if (part === "models") cached.error = undefined;
         const response = await fetch(
           part === "models"
-            ? `https://chatgpt.com/backend-api/codex/models?client_version=${getCodexClientVersion()}`
+            ? `https://chatgpt.com/backend-api/codex/models?client_version=${clientVersion}`
             : "https://chatgpt.com/backend-api/wham/usage",
           {
             headers: {
@@ -150,6 +162,16 @@ async function refreshAccountPart(part: "models" | "limits") {
     })();
   }
   await inflight[part];
+  // A remote catalog can finish loading while a fallback-version lookup is in
+  // flight. Refresh once more before returning that older result.
+  if (
+    part === "models" &&
+    retryChangedVersion &&
+    activeRevision === revision &&
+    requestedModelsClientVersion !== getCodexClientVersion()
+  ) {
+    await refreshAccountPart("models", false);
+  }
 }
 
 export async function getSubscriptionAccount({
