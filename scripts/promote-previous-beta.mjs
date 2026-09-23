@@ -104,22 +104,33 @@ export async function promotePreviousBeta({
   log(`  Release workflow: ${workflow.html_url}`);
   log(`  Release commit: ${workflow.head_sha}`);
 
-  const remotes = git("remote").split(/\s+/);
-  const remote = remotes.includes("origin")
-    ? "origin"
-    : remotes.includes("upstream")
-      ? "upstream"
-      : null;
-  if (!remote) throw new Error("No origin or upstream Git remote found.");
-  const pushUrl = git("remote", "get-url", "--push", remote);
-  const remoteRepo = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(
-    pushUrl,
-  )?.[1];
-  if (!remoteRepo)
-    throw new Error(`Cannot determine GitHub repository for ${remote}.`);
+  const remotes = git("remote")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((name) => ({
+      name,
+      repo: /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(
+        git("remote", "get-url", "--push", name),
+      )?.[1],
+    }));
+  const releaseRemote = remotes.find(
+    ({ repo }) => repo?.toLowerCase() === repository,
+  );
+  const isForkRemote = ({ repo }) => repo && repo.toLowerCase() !== repository;
+  const forkRemote =
+    remotes.find(
+      (candidate) => candidate.name === "origin" && isForkRemote(candidate),
+    ) ?? remotes.find(isForkRemote);
+  if (!releaseRemote)
+    throw new Error(
+      `No Git remote points to ${repository} for the release branch.`,
+    );
+  if (!forkRemote)
+    throw new Error("No contributor fork remote found for the release PR.");
   if (
     git("branch", "--list", branch) ||
-    git("ls-remote", "--heads", remote, `refs/heads/${branch}`)
+    git("ls-remote", "--heads", releaseRemote.name, `refs/heads/${branch}`) ||
+    git("ls-remote", "--heads", forkRemote.name, `refs/heads/${branch}`)
   ) {
     throw new Error(
       `Branch ${branch} already exists; refusing to overwrite it.`,
@@ -150,26 +161,25 @@ export async function promotePreviousBeta({
   }
   git("add", "package.json", "package-lock.json");
   git("commit", "-m", `Bump to v${version}`);
-  git("push", "-u", remote, branch);
-  log(`  Pushed ${branch} to ${remote}.`);
-  const head =
-    remoteRepo === repository
-      ? branch
-      : `${remoteRepo.split("/")[0]}:${branch}`;
+  git("push", releaseRemote.name, `${sha}:refs/heads/${branch}`);
+  git("push", "-u", forkRemote.name, branch);
+  log(`  Created ${repository}:${branch} at ${sha}.`);
+  log(`  Pushed the stable version bump to ${forkRemote.repo}:${branch}.`);
+  const head = `${forkRemote.repo.split("/")[0]}:${branch}`;
   const prUrl = execute("gh", [
     "pr",
     "create",
     "--repo",
     repository,
     "--base",
-    "main",
+    branch,
     "--head",
     head,
-    ...(remoteRepo === repository ? [] : ["--no-maintainer-edit"]),
+    "--no-maintainer-edit",
     "--title",
     `Promote ${release.tag_name} to v${version}`,
     "--body",
-    `Promote ${release.tag_name} to stable from release workflow ${workflow.html_url} (commit ${workflow.head_sha}).\n\nUpdates package.json and package-lock.json to ${version} on ${branch}.`,
+    `Promote ${release.tag_name} to stable from release workflow ${workflow.html_url} (commit ${workflow.head_sha}).\n\nMerge this version bump into ${repository}:${branch}, then run release.yml on that branch.`,
   ]).trim();
   log(`  PR created: ${prUrl}`);
   return prUrl;

@@ -65,7 +65,9 @@ function fixture(t, overrides = {}) {
       return "https://github.com/dyad-sh/dyad/pull/123";
     if (key === "remote") return "origin\nupstream\n";
     if (key.startsWith("remote get-url"))
-      return "git@github.com:person/dyad.git";
+      return args.at(-1) === "upstream"
+        ? "https://github.com/dyad-sh/dyad.git"
+        : "git@github.com:person/dyad.git";
     if (args[0] === "show")
       return JSON.stringify({
         version: "1.15.0-beta.1",
@@ -100,27 +102,32 @@ test("promotes the published beta from its successful workflow using beta manife
         JSON.stringify(["git", "checkout", "-b", "release-1.15.x", sha]),
     ),
   );
-  assert.ok(
-    f.calls.some(
-      (call) => call.join(" ") === "git push -u origin release-1.15.x",
-    ),
+  const forkPush = f.calls.findIndex(
+    (call) => call.join(" ") === "git push -u origin release-1.15.x",
   );
+  const releasePush = f.calls.findIndex(
+    (call) =>
+      call.join(" ") === `git push upstream ${sha}:refs/heads/release-1.15.x`,
+  );
+  assert.ok(releasePush >= 0 && forkPush > releasePush);
   for (const name of ["package.json", "package-lock.json"]) {
     const pkg = JSON.parse(readFileSync(join(f.cwd, name)));
     assert.equal(pkg.version, "1.15.0");
     assert.equal(pkg.betaOnly, true);
     if (name.includes("lock")) assert.equal(pkg.packages[""].version, "1.15.0");
   }
-  const pr = f.calls.find((call) => call[1] === "pr");
-  assert.equal(pr[pr.indexOf("--base") + 1], "main");
+  const prIndex = f.calls.findIndex((call) => call[1] === "pr");
+  assert.ok(prIndex > forkPush);
+  const pr = f.calls[prIndex];
+  assert.equal(pr[pr.indexOf("--base") + 1], "release-1.15.x");
   assert.equal(pr[pr.indexOf("--head") + 1], "person:release-1.15.x");
   assert.ok(pr.includes("--no-maintainer-edit"));
 });
 
-test("upstream fallback creates a same-repo PR when origin is unavailable", async (t) => {
+test("selects release and fork remotes by repository even when their names differ", async (t) => {
   const f = fixture(t, {
-    remote: "upstream\n",
-    "remote get-url --push upstream": "https://github.com/dyad-sh/dyad.git",
+    "remote get-url --push origin": "https://github.com/dyad-sh/dyad.git",
+    "remote get-url --push upstream": "git@github.com:person/dyad.git",
   });
   await f.run();
   assert.ok(
@@ -128,10 +135,16 @@ test("upstream fallback creates a same-repo PR when origin is unavailable", asyn
       (call) => call.join(" ") === "git push -u upstream release-1.15.x",
     ),
   );
+  assert.ok(
+    f.calls.some(
+      (call) =>
+        call.join(" ") === `git push origin ${sha}:refs/heads/release-1.15.x`,
+    ),
+  );
   const pr = f.calls.find((call) => call[1] === "pr");
-  assert.equal(pr[pr.indexOf("--head") + 1], "release-1.15.x");
+  assert.equal(pr[pr.indexOf("--head") + 1], "person:release-1.15.x");
   assert.equal(pr[pr.indexOf("--repo") + 1], "dyad-sh/dyad");
-  assert.ok(!pr.includes("--no-maintainer-edit"));
+  assert.ok(pr.includes("--no-maintainer-edit"));
 });
 
 test("declining confirmation performs no mutations", async (t) => {
@@ -215,6 +228,26 @@ for (const [name, overrides, error] of [
     "existing branch",
     { "branch --list release-1.15.x": "release-1.15.x" },
     /already exists/,
+  ],
+  [
+    "existing upstream release branch",
+    { "ls-remote --heads upstream refs/heads/release-1.15.x": sha },
+    /already exists/,
+  ],
+  [
+    "existing fork release branch",
+    { "ls-remote --heads origin refs/heads/release-1.15.x": sha },
+    /already exists/,
+  ],
+  [
+    "missing upstream remote",
+    { remote: "origin\n" },
+    /No Git remote points to dyad-sh\/dyad/,
+  ],
+  [
+    "missing fork remote",
+    { remote: "upstream\n" },
+    /No contributor fork remote/,
   ],
   [
     "wrong package version",
