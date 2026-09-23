@@ -106,6 +106,8 @@ export type TestCaseResult = z.infer<typeof TestCaseResultSchema>;
 export const TestResultSchema = z.object({
   file: z.string(),
   status: TestRunStatusSchema,
+  /** Some selected cases in this file never finished; these results are partial. */
+  incomplete: z.boolean().optional(),
   durationMs: z.number().optional(),
   /** Error text on failure (assertion or infra). */
   error: z.string().optional(),
@@ -126,8 +128,10 @@ export const ListAppTestsResultSchema = z.object({
 
 export const RunAppTestsParamsSchema = z.object({
   appId: z.number(),
-  /** When set, runs a single spec file (relative path); otherwise runs all. */
+  /** Panel single-file target. Omit both selectors to run the whole suite. */
   testFile: z.string().optional(),
+  /** Selected specs. Mutually exclusive with the panel's single-file target. */
+  testFiles: z.array(z.string().min(1)).min(1).optional(),
   /**
    * When set (with testFile), runs only the test whose `test(` call is at this
    * 1-based line, via Playwright's `file:line` selector.
@@ -183,10 +187,11 @@ export const RunAppTestsResultSchema = z.object({
   appId: z.number(),
   results: z.array(TestResultSchema),
   /**
-   * Set when the entire run failed before producing per-test results (e.g.
+   * Set when the run encountered an infrastructure or cleanup error (e.g.
    * Playwright/browser missing and bootstrap declined, dev server down, spawn
    * error, or an isolated test database could not be set up). Renders as an
-   * amber, panel-level "inconclusive" banner.
+   * amber, panel-level "inconclusive" banner. Completed results may accompany
+   * this warning; incomplete file results are marked separately.
    */
   infraError: z
     .object({
@@ -462,11 +467,13 @@ export const TestsRunStatePayloadSchema = z.object({
   ]),
   /** Authoritative abort state, carried by progress events. */
   wasStopped: z.boolean().optional(),
-  /** Single spec targeted, when set; absent = whole suite. */
+  /** Single spec targeted by the panel. */
   testFile: z.string().optional(),
+  /** Selected specs; omitting both testFiles and testFile means the whole suite. */
+  testFiles: z.array(z.string()).optional(),
   /** With testFile: only the test at this 1-based line was run. */
   testLine: z.number().optional(),
-  /** With testFile: regex passed to Playwright's --grep for a partial run. */
+  /** Regex passed to Playwright's --grep across the selection for a partial run. */
   grep: z.string().optional(),
   /** Whether this run drives the native preview view. Present on "started". */
   preview: z.boolean().optional(),
