@@ -4,9 +4,11 @@ const mocks = vi.hoisted(() => ({
   credentialError: false,
   credentials: vi.fn(),
   catalog: vi.fn(),
+  codexClientVersion: vi.fn(),
 }));
 vi.mock("../shared/remote_language_model_catalog", () => ({
   getBuiltinLanguageModelCatalog: mocks.catalog,
+  getCodexClientVersion: mocks.codexClientVersion,
 }));
 vi.mock("../shared/language_model_helpers", () => ({
   getLanguageModelProviders: async () => [],
@@ -39,6 +41,7 @@ beforeEach(() => {
   mocks.catalog
     .mockReset()
     .mockResolvedValue({ modelsByProvider: { openai: [] } });
+  mocks.codexClientVersion.mockReset().mockReturnValue("0.155.1");
   mocks.credentials
     .mockReset()
     .mockResolvedValue({ access: "test-access", accountId: "test-account" });
@@ -94,6 +97,7 @@ it("deduplicates account lookups and never returns credentials to the renderer",
             ? {
                 models: [
                   { slug: "gpt-eligible" },
+                  { slug: "gpt-6-sol", visibility: "list" },
                   { slug: "hidden", visibility: "hide" },
                 ],
               }
@@ -107,10 +111,28 @@ it("deduplicates account lookups and never returns credentials to the renderer",
     getSubscriptionAccount(),
   ]);
   expect(a).toEqual(b);
-  expect(a).toMatchObject({ models: ["gpt-eligible"], limitReached: true });
+  expect(a).toMatchObject({
+    models: ["gpt-eligible", "gpt-6-sol"],
+    limitReached: true,
+  });
   expect(JSON.stringify(a)).not.toContain("test-access");
   await getSubscriptionAccount();
   expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(
+    fetcher.mock.calls.some(([url]) =>
+      url.includes("/codex/models?client_version=0.155.1"),
+    ),
+  ).toBe(true);
+});
+it("uses the Codex client version from the remote model catalog", async () => {
+  mocks.codexClientVersion.mockReturnValue("0.156.0");
+  const fetcher = vi.fn().mockResolvedValue(accountResponse(["gpt-6-sol"]));
+  vi.stubGlobal("fetch", fetcher);
+
+  expect(await getSubscriptionAccount({ includeUsage: false })).toMatchObject({
+    models: ["gpt-6-sol"],
+  });
+  expect(fetcher.mock.calls[0][0]).toContain("client_version=0.156.0");
 });
 it("reports unavailable instead of showing zero usage or guessing models", async () => {
   vi.stubGlobal(

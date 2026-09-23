@@ -32,6 +32,12 @@ Dyad still owns prompts, tool execution, permissions, file edits, preview and un
 No extra shell tool is introduced. Existing Dyad tool permissions still apply.
 Model availability is ultimately decided by the subscription service, not the API
 catalog; unavailable models fail without switching to a paid API automatically.
+The ChatGPT model-list request uses `codexClientVersion` from the loaded remote
+`/v1/language-model-catalog` response when present, falling back to `0.155.1`
+when the catalog or field is unavailable. Dyad refreshes the catalog in the
+background so subscription lookup does not wait for it. The server should
+publish a version that ChatGPT recognizes so newly available models appear
+without a desktop release.
 
 The picker keeps a single model catalog. Its hover-open Subscription submenu
 connects/disconnects ChatGPT and displays account-reported usage windows.

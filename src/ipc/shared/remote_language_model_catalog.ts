@@ -29,6 +29,7 @@ const logger = log.scope("remote_language_model_catalog");
 const REMOTE_LANGUAGE_MODEL_CATALOG_TIMEOUT_MS = 5_000;
 const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000;
 const FALLBACK_CACHE_TTL_MS = 30 * 1000;
+const FALLBACK_CODEX_CLIENT_VERSION = "0.155.1";
 
 function getRemoteLanguageModelCatalogUrl() {
   if (process.env.DYAD_LANGUAGE_MODEL_CATALOG_URL) {
@@ -92,6 +93,11 @@ export type BuiltinModelAlias = (typeof KNOWN_BUILTIN_MODEL_ALIASES)[number];
 const LanguageModelCatalogResponseSchema = z.object({
   version: z.string(),
   expiresAt: z.string().datetime().optional(),
+  codexClientVersion: z
+    .string()
+    .regex(/^\d+\.\d+\.\d+$/)
+    .optional()
+    .catch(undefined),
   providers: z.array(CatalogProviderSchema),
   modelsByProvider: z.record(z.string(), z.array(CatalogModelSchema)),
   aliases: z.array(
@@ -120,6 +126,7 @@ type LanguageModelCatalogResponse = z.infer<
 type BuiltinLanguageModelCatalog = {
   providers: LanguageModelProvider[];
   modelsByProvider: Record<string, LanguageModel[]>;
+  codexClientVersion?: string;
   aliases: LanguageModelCatalogResponse["aliases"];
   themeGenerationOptions: ThemeGenerationModelOption[];
   expiresAt: number;
@@ -347,6 +354,7 @@ function convertRemoteCatalog(
   return {
     providers,
     modelsByProvider,
+    codexClientVersion: remoteCatalog.codexClientVersion,
     aliases: mergedAliases,
     themeGenerationOptions: remoteCatalog.curatedSelections
       ?.themeGenerationOptions?.length
@@ -521,6 +529,16 @@ export async function getBuiltinLanguageModelCatalog(): Promise<BuiltinLanguageM
   }
 
   return builtinCatalogFetchPromise;
+}
+
+/** The subscription catalog request must not wait for Dyad's remote catalog. */
+export function getCodexClientVersion(): string {
+  if (!builtinCatalogCache || builtinCatalogCache.expiresAt <= Date.now()) {
+    triggerBackgroundRefresh();
+  }
+  return (
+    builtinCatalogCache?.codexClientVersion ?? FALLBACK_CODEX_CLIENT_VERSION
+  );
 }
 
 export async function getThemeGenerationModelOptions(): Promise<

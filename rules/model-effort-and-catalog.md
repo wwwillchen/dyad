@@ -30,3 +30,8 @@ requested about 1055390 tokens`. Keep catalog output limits well under the
   and `gpt-6-astra` rejects `max_tokens` entirely (`Use
 'max_completion_tokens' instead`). Use ≥16 tokens and try both parameter
   names before concluding a model name is invalid.
+- **ChatGPT subscription model visibility depends on Codex `client_version`.**
+  The signed-in `/backend-api/codex/models` endpoint rejects a request without
+  it (HTTP 400). For the same account, `0.154.0` omitted GPT-6 Sol while
+  `0.155.1` included it; compare versions with one account before changing the
+  remote catalog's `codexClientVersion`.

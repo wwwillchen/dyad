@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { getBuiltinLanguageModelCatalog } from "../shared/remote_language_model_catalog";
+import {
+  getBuiltinLanguageModelCatalog,
+  getCodexClientVersion,
+} from "../shared/remote_language_model_catalog";
 import {
   getCodexSubscriptionCredentials,
   getCodexSubscriptionStatus,
@@ -84,7 +87,7 @@ async function refreshAccountPart(part: "models" | "limits") {
         if (part === "models") cached.error = undefined;
         const response = await fetch(
           part === "models"
-            ? "https://chatgpt.com/backend-api/codex/models?client_version=0.154.0"
+            ? `https://chatgpt.com/backend-api/codex/models?client_version=${getCodexClientVersion()}`
             : "https://chatgpt.com/backend-api/wham/usage",
           {
             headers: {
