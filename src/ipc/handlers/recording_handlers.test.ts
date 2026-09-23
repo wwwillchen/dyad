@@ -114,9 +114,12 @@ function makePrepared(overrides: Record<string, unknown> = {}) {
   return {
     isolation: { mode: "neon-branch" },
     // Must be the real `TeardownResult` shape: the handler reads `.envRestored`
-    // off it, so a mock resolving to `undefined` throws into the teardown catch
-    // and every assertion below would be checking the failure path by accident.
-    teardown: vi.fn().mockResolvedValue({ envRestored: true }),
+    // AND `.remoteCleanupCompleted` off it, and both fail closed — a partial
+    // mock resolves the missing field to `undefined` and every assertion below
+    // would be checking a failure path by accident.
+    teardown: vi
+      .fn()
+      .mockResolvedValue({ envRestored: true, remoteCleanupCompleted: true }),
     ...overrides,
   };
 }
@@ -621,6 +624,52 @@ describe("recording:start / recording:stop", () => {
     );
     expect(activeRecordings.has(1)).toBe(false);
   });
+
+  it.each([
+    {
+      cleanupProvider: "neon",
+      resource: "temporary database",
+      failedSetup: false,
+    },
+    {
+      cleanupProvider: "supabase-test-user",
+      resource: "temporary Supabase test user",
+      failedSetup: false,
+    },
+    {
+      cleanupProvider: "supabase-test-user",
+      resource: "temporary Supabase test user",
+      failedSetup: true,
+    },
+  ])(
+    "reports pending $cleanupProvider cleanup (failed setup: $failedSetup)",
+    async ({ cleanupProvider, resource, failedSetup }) => {
+      mocks.prepareIsolatedTestDatabase.mockResolvedValue(
+        makePrepared({
+          cleanupProvider,
+          ...(failedSetup ? { infraError: { message: "Setup failed" } } : {}),
+          teardown: vi.fn().mockResolvedValue({
+            envRestored: true,
+            remoteCleanupCompleted: false,
+          }),
+        }),
+      );
+      const { event } = makeEvent();
+      await startHandler(event, { appId: 1 });
+      if (!failedSetup) await stopHandler(event, { appId: 1 });
+      await vi.waitFor(() =>
+        expect(mocks.safeSend).toHaveBeenCalledWith(
+          event.sender,
+          "recording:ended",
+          expect.objectContaining({
+            reason: "error",
+            message: expect.stringContaining(resource),
+          }),
+        ),
+      );
+      expect(activeRecordings.has(1)).toBe(false);
+    },
+  );
 
   it("refuses when the preview stopped while isolation was being set up", async () => {
     const prepared = makePrepared();
