@@ -44,6 +44,7 @@ type PendingSuppressionDelta = {
 
 export type InitialLoadTelemetryInput = {
   settings: UserSettings;
+  codexSubscriptionEnabled: boolean | null;
   appVersion: string;
   platform: string | null;
   isFirstSession: boolean;
@@ -61,6 +62,7 @@ export function getSettingsPersonTelemetryProperties(settings: UserSettings) {
 
 export function getInitialLoadTelemetryProperties({
   settings,
+  codexSubscriptionEnabled,
   appVersion,
   platform,
   isFirstSession,
@@ -68,6 +70,8 @@ export function getInitialLoadTelemetryProperties({
 }: InitialLoadTelemetryInput) {
   return {
     ...getSettingsPersonTelemetryProperties(settings),
+    codexSubscriptionEnabled,
+    claudeSubscriptionEnabled: settings.enableClaudeCodeSubscription ?? false,
     appVersion,
     platform,
     releaseChannel: settings.releaseChannel,
