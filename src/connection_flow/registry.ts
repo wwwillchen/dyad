@@ -38,6 +38,14 @@ export const DEFAULT_FLOW_TIMEOUTS_MS: Record<
   github: null,
 };
 
+/**
+ * How long a connected flow's ref keeps recognizing repeat deliveries of its
+ * own callback. The OAuth proxy's success page keeps an "Open Dyad" link that
+ * replays the same `dyad://` URL, so a user can re-fire it after the flow has
+ * connected and even after they acknowledged the success.
+ */
+export const DUPLICATE_RETURN_WINDOW_MS = 10 * 60_000;
+
 export interface ConnectionFlowRegistryOptions {
   onStateChange?: (
     provider: ConnectionFlowProvider,
@@ -111,6 +119,10 @@ export function createConnectionFlowRegistry(
     ConnectionFlowProvider,
     ReturnType<Clock["schedule"]>
   >();
+  const lastConnected = new Map<
+    ConnectionFlowProvider,
+    { invocationRef: ConnectionFlowInvocationRef; at: number }
+  >();
   let disposed = false;
 
   function notifyIgnored(
@@ -156,6 +168,12 @@ export function createConnectionFlowRegistry(
 
     states.set(provider, result.state);
     clearPendingTimeout(provider);
+    if (result.state.status === "connected") {
+      lastConnected.set(provider, {
+        invocationRef: result.state.invocationRef,
+        at: clock.now(),
+      });
+    }
     if (result.state.status === "awaiting-return") {
       const timeoutMs = timeoutsMs[provider];
       if (timeoutMs !== null && timeoutMs !== undefined) {
@@ -271,6 +289,33 @@ export function createConnectionFlowRegistry(
     return claimed ? { claimed: true, invocationRef } : { claimed: false };
   }
 
+  /**
+   * True when `invocationRef` names a flow whose callback was already accepted:
+   * it is exchanging tokens, connected, or connected recently. Such a return is
+   * a repeat delivery of a valid callback, not a forged or expired one. It is
+   * never claimed again and must not write credentials; callers use this only
+   * to decide whether rejecting it deserves a user-facing error.
+   */
+  function isDuplicateOfAcceptedReturn(
+    provider: ConnectionFlowProvider,
+    invocationRef: ConnectionFlowInvocationRef,
+  ): boolean {
+    const current = getState(provider);
+    if (
+      (current.status === "exchanging-token" ||
+        current.status === "connected") &&
+      sameInvocationRef(current.invocationRef, invocationRef)
+    ) {
+      return true;
+    }
+    const recent = lastConnected.get(provider);
+    return (
+      recent !== undefined &&
+      clock.now() - recent.at <= DUPLICATE_RETURN_WINDOW_MS &&
+      sameInvocationRef(recent.invocationRef, invocationRef)
+    );
+  }
+
   function completeTokenExchange(
     provider: ConnectionFlowProvider,
     invocationRef: ConnectionFlowInvocationRef,
@@ -354,6 +399,7 @@ export function createConnectionFlowRegistry(
     start,
     markPrepared,
     claimReturn,
+    isDuplicateOfAcceptedReturn,
     completeTokenExchange,
     notifyUnsolicitedReturn,
     fail,

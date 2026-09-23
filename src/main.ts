@@ -53,9 +53,11 @@ import { UserSettings } from "./lib/schemas";
 import { handleNeonOAuthReturn } from "./neon_admin/neon_return_handler";
 import {
   disposeConnectionFlowsForShutdown,
+  connectionFlowRegistry,
   runOAuthReturnExchange,
 } from "./ipc/handlers/connection_flow_handlers";
 import { parseOAuthCallbackInvocationRef } from "./connection_flow/oauth_deep_link";
+import type { ConnectionFlowInvocationRef } from "./connection_flow/state";
 import {
   AddMcpServerConfigSchema,
   AddMcpServerPayload,
@@ -1421,6 +1423,34 @@ function showDeepLinkSettingsError(action: string, error: unknown): void {
   );
 }
 
+/**
+ * Surfaces a Neon/Supabase deep-link callback that did not claim an active
+ * flow. The proxy's success page keeps an "Open Dyad" link that replays the
+ * same callback, so a repeat of one Dyad already accepted is logged and
+ * dropped quietly; only unknown, stale, or expired callbacks get the dialog.
+ * Neither path writes credentials.
+ */
+function reportUnclaimedOAuthReturn(
+  provider: "neon" | "supabase",
+  label: string,
+  invocationRef: ConnectionFlowInvocationRef,
+  error: unknown,
+) {
+  if (
+    connectionFlowRegistry.isDuplicateOfAcceptedReturn(provider, invocationRef)
+  ) {
+    logger.info(
+      `Ignoring repeat ${provider} OAuth callback for an already accepted connection flow.`,
+    );
+    return;
+  }
+  logger.warn(`Rejected unmatched ${provider} OAuth callback:`, error);
+  dialog.showErrorBox(
+    "Sign-in Could Not Be Verified",
+    `This ${label} sign-in expired or no longer matches the connection started by Dyad. Please connect again.`,
+  );
+}
+
 async function handleDeepLinkReturn(url: string) {
   // example url: "dyad://supabase-oauth-return?token=a&refreshToken=b"
   let parsed: URL;
@@ -1479,9 +1509,11 @@ async function handleDeepLinkReturn(url: string) {
       );
       if (!outcome.ok) {
         if (!outcome.claimed) {
-          dialog.showErrorBox(
-            "Sign-in Could Not Be Verified",
-            "This Neon sign-in expired or no longer matches the connection started by Dyad. Please connect again.",
+          reportUnclaimedOAuthReturn(
+            "neon",
+            "Neon",
+            expectedInvocationRef,
+            outcome.error,
           );
         }
         return;
@@ -1523,9 +1555,11 @@ async function handleDeepLinkReturn(url: string) {
       );
       if (!outcome.ok) {
         if (!outcome.claimed) {
-          dialog.showErrorBox(
-            "Sign-in Could Not Be Verified",
-            "This Supabase sign-in expired or no longer matches the connection started by Dyad. Please connect again.",
+          reportUnclaimedOAuthReturn(
+            "supabase",
+            "Supabase",
+            expectedInvocationRef,
+            outcome.error,
           );
         }
         return;
