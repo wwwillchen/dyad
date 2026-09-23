@@ -44,6 +44,7 @@ const MemoizedChatMessage = React.memo(ChatMessage);
 
 // Context type for Virtuoso
 interface FooterContext {
+  executionBackend?: "dyad" | "claude-code";
   messages: Message[];
   isStreaming: boolean;
   isUndoLoading: boolean;
@@ -135,6 +136,7 @@ function FooterComponent({ context }: { context?: FooterContext }) {
     selectedChatId,
     appId,
     renderSetupBanner,
+    executionBackend,
   } = context;
 
   let questionnaireSettledAt: number | undefined;
@@ -327,6 +329,12 @@ function FooterComponent({ context }: { context?: FooterContext }) {
   // work that already existed when it started. If newer commits exist, let the
   // user choose whether to keep them or restore through them.
   const handleRetry = async () => {
+    if (executionBackend === "claude-code") {
+      showError(
+        "Start a new chat to retry Claude Code. Retrying here would retain hidden context from the replaced turn.",
+      );
+      return;
+    }
     if (!selectedChatId || !appId) {
       console.error("No chat selected or app ID not available");
       return;
@@ -420,6 +428,11 @@ function FooterComponent({ context }: { context?: FooterContext }) {
     }
   };
 
+  const retryUnavailableReason =
+    executionBackend === "claude-code"
+      ? "Start a new chat to retry Claude Code; the existing CLI context cannot be replaced."
+      : undefined;
+
   // When the last assistant turn produced a commit, show the modified-files card
   // (which owns its own Undo/Retry buttons). Otherwise fall back to the standalone
   // buttons so text-only replies keep those affordances.
@@ -444,6 +457,7 @@ function FooterComponent({ context }: { context?: FooterContext }) {
           onUndo={handleUndo}
           isUndoLoading={isUndoLoading}
           onRetry={handleRetry}
+          retryUnavailableReason={retryUnavailableReason}
           isRetryLoading={isRetryLoading}
           isAnyVersionMutationPending={isAnyVersionMutationPending}
         />
@@ -472,8 +486,12 @@ function FooterComponent({ context }: { context?: FooterContext }) {
               variant="outline"
               size="sm"
               disabled={
-                isRetryLoading || isUndoLoading || isAnyVersionMutationPending
+                isRetryLoading ||
+                isUndoLoading ||
+                isAnyVersionMutationPending ||
+                !!retryUnavailableReason
               }
+              title={retryUnavailableReason}
               onClick={handleRetry}
             >
               {isRetryLoading ? (
@@ -679,18 +697,20 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
           <div className="px-4" key={messageKey}>
             <MemoizedChatMessage
               message={message}
+              executionBackend={selectedChat?.executionBackend}
               isLastMessage={isLastMessage}
               isCancelledPrompt={cancelledPromptIndices.has(index)}
             />
           </div>
         );
       },
-      [messages.length, cancelledPromptIndices],
+      [messages.length, cancelledPromptIndices, selectedChat?.executionBackend],
     );
 
     // Create context object for Footer component with stable references
     const footerContext = useMemo<FooterContext>(
       () => ({
+        executionBackend: selectedChat?.executionBackend,
         messages: persistedMessages,
         isStreaming,
         isUndoLoading,
@@ -708,6 +728,7 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
       }),
       [
         persistedMessages,
+        selectedChat?.executionBackend,
         isStreaming,
         isUndoLoading,
         isRetryLoading,
@@ -772,6 +793,7 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
                 <div className="px-4" key={message.id}>
                   <ChatMessage
                     message={message}
+                    executionBackend={selectedChat?.executionBackend}
                     isLastMessage={isLastMessage}
                     isCancelledPrompt={cancelledPromptIndices.has(index)}
                   />

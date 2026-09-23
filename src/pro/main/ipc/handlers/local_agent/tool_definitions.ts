@@ -1,3 +1,4 @@
+import { withReferencedAppRead } from "./tools/referenced_app_read";
 /**
  * Tool definitions for Local Agent v2
  * Each tool includes a zod schema, description, and execute function
@@ -706,6 +707,7 @@ export function shouldIncludeTool(
   tool: (typeof TOOL_DEFINITIONS)[number],
   ctx: AgentContext,
   options: BuildAgentToolSetOptions = {},
+  phase: "discovery" | "invocation" = "discovery",
 ): boolean {
   if (getAgentToolConsent(tool.name) === "never") {
     return false;
@@ -745,6 +747,7 @@ export function shouldIncludeTool(
   // out (non-Pro, free-model mode), direct search remains available so chat
   // history stays reachable.
   if (
+    phase === "discovery" &&
     tool.name === "search_chats" &&
     shouldIncludeTool(exploreChatHistoryTool, ctx, options)
   ) {
@@ -765,6 +768,8 @@ export function shouldIncludeTool(
   ) {
     return false;
   }
+  if (phase === "discovery" && tool.isDiscoverable && !tool.isDiscoverable(ctx))
+    return false;
   if (tool.isEnabled) {
     const enabled = tool.isEnabled(ctx);
     if (!enabled) {
@@ -822,6 +827,22 @@ export function buildAgentToolSet(
               }
             : ctx;
         try {
+          // The SDK is not the authority for validation: MCP and sandbox
+          // adapters must enter the same invocation boundary.
+          if (!shouldIncludeTool(tool, invocationCtx, options, "invocation")) {
+            throw new DyadError(
+              "Tool is unavailable in this turn",
+              DyadErrorKind.Precondition,
+            );
+          }
+          const schema = asSchema(
+            tool.getInputSchema?.(invocationCtx) ?? tool.inputSchema,
+          );
+          if (schema.validate) {
+            const validated = await schema.validate(args);
+            if (!validated.success) throw validated.error;
+            args = validated.value;
+          }
           const mutationRequiresTracking =
             toolModifiesState(tool, ctx) &&
             (tool.mutationTracking ?? "automatic") === "automatic";
@@ -863,6 +884,14 @@ export function buildAgentToolSet(
           // consent enter a closed actor generation.
           await requireToolConsentOrThrow(tool, processedArgs, invocationCtx);
           const invoke = async () => {
+            if (
+              !shouldIncludeTool(tool, invocationCtx, options, "invocation")
+            ) {
+              throw new DyadError(
+                "Tool is no longer available",
+                DyadErrorKind.Precondition,
+              );
+            }
             if (invocationCtx.abortSignal?.aborted) {
               throw new DyadError(
                 "This agent run was cancelled.",
@@ -872,7 +901,12 @@ export function buildAgentToolSet(
             // Track file edit tool usage before execution to capture all attempts
             // (including failures) for retry/fallback telemetry
             trackFileEditTool(invocationCtx, tool.name, processedArgs);
-            const result = await tool.execute(processedArgs, invocationCtx);
+            const result = await withReferencedAppRead(
+              tool.name,
+              processedArgs,
+              invocationCtx,
+              (readCtx) => tool.execute(processedArgs, readCtx),
+            );
 
             // Only completed mutations unblock run_tests. Failed tool calls are
             // still present in fileEditTracker for retry/fallback telemetry, but

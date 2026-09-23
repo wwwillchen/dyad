@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { appOperationCoordinator } from "@/ipc/services/app_operation_coordinator";
 import { runExploreCodeSubagent } from "./explore_code_subagent";
 import {
   candidatesFromReadFileResult,
@@ -40,7 +41,13 @@ const mocks = vi.hoisted(() => ({
   getProviderOptions: vi.fn(),
   cancelOrphanedBaseStream: vi.fn(),
   runRawExploreCode: vi.fn(),
+  findApp: vi.fn(),
 }));
+
+vi.mock("@/db", () => ({
+  db: { query: { apps: { findFirst: mocks.findApp } } },
+}));
+vi.mock("@/paths/paths", () => ({ getDyadAppPath: (value: string) => value }));
 
 vi.mock("ai", async () => {
   const actual = await vi.importActual<typeof import("ai")>("ai");
@@ -122,6 +129,44 @@ describe("runExploreCodeSubagent", () => {
       fullStream: createTextStream([]),
       textStream: createTextStream([]),
     }));
+  });
+
+  it("finishes referenced-app exploration before a queued rename without nested read claims", async () => {
+    const ctx = createMockContext();
+    ctx.referencedApps = new Map([["other", "/tmp/other"]]);
+    ctx.referencedAppIds = new Map([["other", 987655]]);
+    mocks.findApp.mockResolvedValue({ id: 987655, path: "/tmp/other" });
+    let rename: Promise<unknown> | undefined;
+    let renamed = false;
+    mocks.runRawExploreCode.mockImplementationOnce(async () => {
+      rename = appOperationCoordinator.run(
+        { appId: 987655, operation: "rename", resources: ["app-path"] },
+        async () => {
+          renamed = true;
+        },
+      );
+      await Promise.resolve();
+      expect(renamed).toBe(false);
+      return buildRawExploreResult();
+    });
+    mocks.streamText.mockImplementationOnce((options: any) => ({
+      fullStream: createToolStream(async () => {
+        await options.tools.explore_code.execute({
+          query: "find save",
+          intent: "locate",
+          app_name: "other",
+        });
+      }),
+      textStream: createTextStream([]),
+    }));
+    await runExploreCodeSubagent({
+      args: { query: "find save", intent: "locate", app_name: "other" },
+      ctx,
+    });
+    expect(mocks.runRawExploreCode).toHaveBeenCalled();
+    await rename;
+    expect(renamed).toBe(true);
+    expect(appOperationCoordinator.isBusy(987655, ["app-path"])).toBe(false);
   });
 
   it.each(["build", "ask", "plan", "local-agent"] as const)(

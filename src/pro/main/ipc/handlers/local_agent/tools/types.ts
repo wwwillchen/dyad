@@ -68,6 +68,8 @@ export const APP_MUTATING_TOOL_NAMES = [
 export type AppMutatingToolName = (typeof APP_MUTATING_TOOL_NAMES)[number];
 
 export interface AgentContext {
+  /** Recovery journal is needed only for Claude-owned conversations. */
+  persistQuestionnaireRecovery?: boolean;
   /** Accepted root settings, including resolved mode and billing account. */
   inferenceSettings?: UserSettings;
   /** Owner-scoped identity used to join only this root turn's mutations. */
@@ -83,6 +85,7 @@ export interface AgentContext {
    * absolute app path.
    */
   referencedApps: Map<string, string>;
+  referencedAppIds?: Map<string, number>;
   chatId: number;
   planAcceptInNewChat?: boolean;
   supabaseProjectId: string | null;
@@ -527,10 +530,12 @@ export interface ToolDefinition<T = any> {
   execute: (args: T, ctx: AgentContext) => Promise<ToolResult>;
 
   /**
-   * If defined, returns whether the tool should be available in the current context.
-   * If it returns false, the tool will be filtered out.
+   * Authorization/feature eligibility, enforced at discovery and invocation.
+   * Use isDiscoverable for operational readiness and routing preferences.
    */
   isEnabled?: (ctx: AgentContext) => boolean;
+  /** Discovery preference only, not authorization. Existing calls remain valid. */
+  isDiscoverable?: (ctx: AgentContext) => boolean;
 
   /**
    * Returns a preview string describing what the tool will do with the given args.

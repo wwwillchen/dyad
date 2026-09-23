@@ -140,6 +140,14 @@ export const chats = sqliteTable("chats", {
     .notNull()
     .references(() => apps.id, { onDelete: "cascade" }),
   title: text("title"),
+  executionBackend: text("execution_backend")
+    .$type<"dyad" | "claude-code">()
+    .notNull()
+    .default("dyad"),
+  claudeSessionId: text("claude_session_id"),
+  claudeSessionState: text("claude_session_state").$type<
+    "ready" | "running" | "interrupted"
+  >(),
   initialCommitHash: text("initial_commit_hash"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()

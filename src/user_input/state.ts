@@ -38,6 +38,7 @@ export type UserInputDescriptor =
     })
   | (DescriptorBase & {
       kind: "agent-consent";
+      allowAlways?: boolean;
       toolName: string;
       toolDescription?: string | null;
       inputPreview?: string | null;
@@ -51,6 +52,7 @@ export type UserInputDescriptor =
     })
   | (DescriptorBase & {
       kind: "questionnaire";
+      requiresRecovery?: boolean;
       questions: UserInputQuestion[];
       classifier: "none";
     })
