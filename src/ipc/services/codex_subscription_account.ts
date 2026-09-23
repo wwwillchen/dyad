@@ -1,12 +1,17 @@
+import log from "electron-log";
 import { z } from "zod";
 import {
+  FALLBACK_CODEX_CLIENT_VERSION,
   getBuiltinLanguageModelCatalog,
   getCodexClientVersion,
 } from "../shared/remote_language_model_catalog";
+import { queryInvalidationBus } from "@/window_infrastructure/main/query_invalidation_bus";
 import {
   getCodexSubscriptionCredentials,
   getCodexSubscriptionStatus,
 } from "./codex_subscription_auth";
+
+const logger = log.scope("codex_subscription_account");
 
 const Window = z.object({
   used_percent: z.number().finite().nonnegative(),
@@ -94,19 +99,37 @@ async function refreshAccountPart(part: "models" | "limits") {
         );
         if (current !== revision) return;
         if (part === "models") cached.error = undefined;
-        const response = await fetch(
-          part === "models"
-            ? `https://chatgpt.com/backend-api/codex/models?client_version=${clientVersion}`
-            : "https://chatgpt.com/backend-api/wham/usage",
-          {
-            headers: {
-              Authorization: `Bearer ${credentials.access}`,
-              "ChatGPT-Account-Id": credentials.accountId,
+        const request = (version: string | undefined) =>
+          fetch(
+            part === "models"
+              ? `https://chatgpt.com/backend-api/codex/models?client_version=${version}`
+              : "https://chatgpt.com/backend-api/wham/usage",
+            {
+              headers: {
+                Authorization: `Bearer ${credentials.access}`,
+                "ChatGPT-Account-Id": credentials.accountId,
+              },
+              signal: AbortSignal.timeout(10_000),
+              redirect: "error",
             },
-            signal: AbortSignal.timeout(10_000),
-            redirect: "error",
-          },
-        );
+          );
+        let response = await request(clientVersion);
+        let effectiveClientVersion = clientVersion;
+        if (
+          part === "models" &&
+          current === revision &&
+          clientVersion !== FALLBACK_CODEX_CLIENT_VERSION &&
+          response.status === 400
+        ) {
+          await response.body?.cancel();
+          logger.warn("Codex model catalog rejected client version", {
+            clientVersion,
+            fallbackVersion: FALLBACK_CODEX_CLIENT_VERSION,
+            status: response.status,
+          });
+          effectiveClientVersion = FALLBACK_CODEX_CLIENT_VERSION;
+          response = await request(effectiveClientVersion);
+        }
         if (!response.ok) {
           if (
             current === revision &&
@@ -136,8 +159,19 @@ async function refreshAccountPart(part: "models" | "limits") {
           // Empty responses must not erase the last successful account catalog.
           if (!models.length)
             throw new Error("Empty subscription model catalog");
+          const modelsChanged =
+            models.length !== cached.models.length ||
+            models.some((model, index) => model !== cached.models[index]);
+          const hadModelsError = cached.modelsError !== undefined;
           cached.models = models;
           cached.modelsError = undefined;
+          logger.info("Loaded subscription model catalog", {
+            clientVersion: effectiveClientVersion,
+            modelCount: models.length,
+          });
+          if (modelsChanged || hadModelsError) {
+            queryInvalidationBus.publish([{ family: "codex-subscription" }]);
+          }
         } else {
           Object.assign(cached, parseSubscriptionLimits(raw));
           cached.limitsError = undefined;
@@ -145,8 +179,12 @@ async function refreshAccountPart(part: "models" | "limits") {
       } catch {
         if (current !== revision) return;
         if (part === "models") {
+          const hadModelsError = cached.modelsError !== undefined;
           cached.modelsError =
             "Subscription model availability is temporarily unavailable.";
+          if (!hadModelsError) {
+            queryInvalidationBus.publish([{ family: "codex-subscription" }]);
+          }
         } else {
           cached.limitsError = "Usage limits are temporarily unavailable.";
         }

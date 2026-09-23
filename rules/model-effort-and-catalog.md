@@ -42,3 +42,7 @@ requested about 1055390 tokens`. Keep catalog output limits well under the
   the remote version changes during an in-flight lookup, return its successful
   result and refresh in the background; check other suites' catalog mocks when
   adding new imports to `codex_subscription_account.ts`.
+- **A background account-model refresh must invalidate the subscription picker
+  query when the list changes.** Its normal idle polling interval is 30 minutes.
+  If ChatGPT rejects a published client version with HTTP 400, retry the pinned
+  version once; do not double-request on auth or transient network failures.

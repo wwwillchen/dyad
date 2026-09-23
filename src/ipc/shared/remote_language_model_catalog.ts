@@ -29,7 +29,7 @@ const logger = log.scope("remote_language_model_catalog");
 const REMOTE_LANGUAGE_MODEL_CATALOG_TIMEOUT_MS = 5_000;
 const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000;
 const FALLBACK_CACHE_TTL_MS = 30 * 1000;
-const FALLBACK_CODEX_CLIENT_VERSION = "0.155.1";
+export const FALLBACK_CODEX_CLIENT_VERSION = "0.155.1";
 
 function getRemoteLanguageModelCatalogUrl() {
   if (process.env.DYAD_LANGUAGE_MODEL_CATALOG_URL) {

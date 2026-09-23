@@ -172,6 +172,7 @@ export const QueryInvalidationScopeSchema = z.discriminatedUnion("family", [
   z.object({ family: z.literal("user-budget") }),
   z.object({ family: z.literal("free-agent-quota") }),
   z.object({ family: z.literal("free-model-quota") }),
+  z.object({ family: z.literal("codex-subscription") }),
   z.object({
     family: z.literal("app"),
     appId: z.number().int().positive(),
