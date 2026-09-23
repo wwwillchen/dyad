@@ -2,7 +2,14 @@ import { deleteChatJournals } from "@/ipc/services/chat_journal_cleanup";
 import { initialChatExecution } from "@/ipc/utils/chat_execution_selection";
 import { app, dialog } from "electron";
 import { closeDatabase, db, getDatabaseFilePaths } from "../../db";
-import { apps, chats, messages, versions } from "../../db/schema";
+import {
+  apps,
+  chats,
+  cloudflareAppConnections,
+  coolifyAppConnections,
+  messages,
+  versions,
+} from "../../db/schema";
 import { desc, eq, inArray, like } from "drizzle-orm";
 import { createTypedHandler } from "./base";
 import { appContracts } from "../types/app";
@@ -1197,6 +1204,19 @@ export function registerAppHandlers() {
       vercelTeamSlug = await getVercelTeamSlug(app.vercelTeamId);
     }
 
+    // Which Publish tab to open on; carried here so the panel has the answer
+    // in the same load it already waits for.
+    const [cloudflareConnection, coolifyConnection] = await Promise.all([
+      db.query.cloudflareAppConnections.findFirst({
+        where: eq(cloudflareAppConnections.appId, appId),
+        columns: { id: true },
+      }),
+      db.query.coolifyAppConnections.findFirst({
+        where: eq(coolifyAppConnections.appId, appId),
+        columns: { id: true },
+      }),
+    ]);
+
     return {
       ...app,
       files,
@@ -1204,6 +1224,11 @@ export function registerAppHandlers() {
       resolvedPath: appPath,
       supabaseProjectName,
       vercelTeamSlug,
+      deploymentProvidersInUse: {
+        vercel: Boolean(app.vercelProjectId),
+        cloudflare: cloudflareConnection !== undefined,
+        coolify: coolifyConnection !== undefined,
+      },
     };
   });
 
