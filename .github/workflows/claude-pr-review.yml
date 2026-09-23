@@ -72,7 +72,8 @@ jobs:
         run: node scripts/issue-agent/render-template.mjs
 
       - name: PR Review
-        uses: anthropics/claude-code-action@80c86e6b3cc02993f6c493655003f711315c83d7 # v1.0.182
+        # This commit bundles Claude Code 2.1.280, required by claude-opus-5-5.
+        uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # post-v1.0.231
         env:
           # Default is 32,000 which Claude willl sometimes hit.
           # https://code.claude.com/docs/en/settings
