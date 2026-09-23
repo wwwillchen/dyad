@@ -21,6 +21,23 @@ describe("queryInvalidationScopeKey", () => {
 });
 
 describe("RendererQueryInvalidationConsumer", () => {
+  it("refreshes the subscription picker for account catalog updates", () => {
+    const invalidateQueries = vi.fn(() => Promise.resolve());
+    const consumer = new RendererQueryInvalidationConsumer(
+      { invalidateQueries, removeQueries: vi.fn() },
+      randomUUID() as WindowSessionId,
+    );
+
+    consumer.consume({
+      invalidations: [{ epoch: 1, scopes: [{ family: "codex-subscription" }] }],
+      recoveryScopes: [],
+    });
+
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.settings.codexSubscription,
+    });
+  });
+
   it("dedupes epochs, defaults origin handling to empty, and recovers on gaps", () => {
     const invalidateQueries = vi.fn(() => Promise.resolve());
     const removeQueries = vi.fn();

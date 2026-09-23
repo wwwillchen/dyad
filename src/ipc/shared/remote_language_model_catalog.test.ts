@@ -39,15 +39,18 @@ function remoteCatalogBody(opts?: {
   version?: string;
   expiresInMs?: number;
   aliases?: RemoteAlias[];
+  codexClientVersion?: string;
 }) {
   const {
     version = "remote-v1",
     expiresInMs = 500,
     aliases = DEFAULT_REMOTE_ALIASES,
+    codexClientVersion,
   } = opts ?? {};
   return {
     version,
     expiresAt: new Date(Date.now() + expiresInMs).toISOString(),
+    ...(codexClientVersion ? { codexClientVersion } : {}),
     providers: [],
     modelsByProvider: {},
     aliases: aliases.map((a) => ({
@@ -114,9 +117,114 @@ describe("remote language model catalog", () => {
     const catalog = await mod.getBuiltinLanguageModelCatalog();
     expect(catalog.source).toBe("fallback");
     expect(catalog.version).toBeUndefined();
+    expect(catalog.codexClientVersion).toBeUndefined();
     expect(
       (await mod.resolveBuiltinModelAlias("dyad/auto/openai"))?.apiName,
     ).toBe(GPT_5_5_MODEL_NAME);
+  });
+
+  it("reads the Codex client version from the remote catalog", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(remoteCatalogBody({ codexClientVersion: "0.156.0" })),
+        ),
+    );
+
+    const { getBuiltinLanguageModelCatalog, getCodexClientVersion } =
+      await import("./remote_language_model_catalog");
+    const catalog = await getBuiltinLanguageModelCatalog();
+    expect(catalog.codexClientVersion).toBe("0.156.0");
+    expect(getCodexClientVersion()).toBe("0.156.0");
+  });
+
+  it("ignores an invalid Codex client version without rejecting the catalog", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(remoteCatalogBody({ codexClientVersion: "invalid" })),
+        ),
+    );
+
+    const { getBuiltinLanguageModelCatalog } =
+      await import("./remote_language_model_catalog");
+    const catalog = await getBuiltinLanguageModelCatalog();
+    expect(catalog.source).toBe("remote");
+    expect(catalog.codexClientVersion).toBeUndefined();
+  });
+
+  it("uses the pinned version while a remote catalog lookup is pending", async () => {
+    let finish!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    );
+
+    const { getCodexClientVersion } =
+      await import("./remote_language_model_catalog");
+    expect(getCodexClientVersion()).toBe("0.155.1");
+    finish(jsonResponse(remoteCatalogBody({ codexClientVersion: "0.156.0" })));
+    await vi.waitFor(() => expect(getCodexClientVersion()).toBe("0.156.0"));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the last remote Codex version through catalog outages", async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        fetchCalls++;
+        if (fetchCalls === 1) {
+          return Promise.resolve(
+            jsonResponse(
+              remoteCatalogBody({
+                codexClientVersion: "0.156.0",
+                expiresInMs: 1000,
+              }),
+            ),
+          );
+        }
+        if (fetchCalls === 4) {
+          return Promise.resolve(
+            jsonResponse(remoteCatalogBody({ codexClientVersion: "0.157.0" })),
+          );
+        }
+        return Promise.reject(new Error("catalog outage"));
+      }),
+    );
+    vi.useFakeTimers();
+
+    const mod = await import("./remote_language_model_catalog");
+    const initial = mod.getBuiltinLanguageModelCatalog();
+    await vi.advanceTimersByTimeAsync(0);
+    await initial;
+    expect(mod.getCodexClientVersion()).toBe("0.156.0");
+
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(mod.getCodexClientVersion()).toBe("0.156.0");
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(mod.getCodexClientVersion()).toBe("0.156.0");
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await mod.getBuiltinLanguageModelCatalog()).source).toBe(
+      "fallback",
+    );
+    expect(mod.getCodexClientVersion()).toBe("0.156.0");
+
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(mod.getCodexClientVersion()).toBe("0.156.0");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mod.getCodexClientVersion()).toBe("0.157.0");
+    expect(fetchCalls).toBe(4);
   });
 
   it("preserves the resolved alias apiName across a failed background refresh", async () => {
