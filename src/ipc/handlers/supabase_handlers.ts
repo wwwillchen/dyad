@@ -643,29 +643,35 @@ export function registerSupabaseHandlers() {
       // which fails with fake tokens, causing credentials to be stored in legacy format
       // Run the write through the connection flow machine so an active flow
       // (started by the connector's Connect click) advances just like a real
-      // dyad://supabase-oauth-return deep link would.
-      const outcome = await runOAuthReturnExchange("supabase", () => {
-        const settings = readSettings();
-        const existingOrgs = settings.supabase?.organizations ?? {};
-        writeSettings({
-          supabase: {
-            ...settings.supabase,
-            organizations: {
-              ...existingOrgs,
-              [fakeOrgId]: {
-                accessToken: {
-                  value: "fake-access-token",
+      // dyad://supabase-oauth-return deep link would. Integration tests call
+      // this without starting a flow, so this trusted test-only producer may
+      // still write when nothing is awaiting a return.
+      const outcome = await runOAuthReturnExchange(
+        "supabase",
+        () => {
+          const settings = readSettings();
+          const existingOrgs = settings.supabase?.organizations ?? {};
+          writeSettings({
+            supabase: {
+              ...settings.supabase,
+              organizations: {
+                ...existingOrgs,
+                [fakeOrgId]: {
+                  accessToken: {
+                    value: "fake-access-token",
+                  },
+                  refreshToken: {
+                    value: "fake-refresh-token",
+                  },
+                  expiresIn: 3600,
+                  tokenTimestamp: Math.floor(Date.now() / 1000),
                 },
-                refreshToken: {
-                  value: "fake-refresh-token",
-                },
-                expiresIn: 3600,
-                tokenTimestamp: Math.floor(Date.now() / 1000),
               },
             },
-          },
-        });
-      });
+          });
+        },
+        { allowUnclaimedExchange: true },
+      );
       if (!outcome.ok && !outcome.claimed) {
         throw outcome.error;
       }
