@@ -13,6 +13,7 @@ vi.mock("node:fs/promises", async (original) => ({
 }));
 import { runClaudeTurn } from "./runtime";
 import { getClaudeUsageLimits, setClaudeUsageAccount } from "./usage_limits";
+import { DyadErrorKind } from "@/errors/dyad_error";
 
 function child() {
   return Object.assign(new EventEmitter(), {
@@ -80,6 +81,60 @@ it("decodes split UTF-8 and drains ordered events before completion", async () =
   process.emit("close", 0);
   await running;
   expect(turn.onEvent).toHaveBeenCalledWith({ text: "🌊" });
+});
+
+it("shows a Claude Code OAuth refresh error from the CLI stream", async () => {
+  const spawned = child();
+  state.spawn.mockReturnValue(spawned);
+  const running = runClaudeTurn(options(new AbortController().signal));
+  await vi.waitFor(() => expect(state.spawn).toHaveBeenCalled());
+  spawned.stdout.write(
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        model: "<synthetic>",
+        content: [
+          {
+            type: "text",
+            text: "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. Retry in a minute.",
+          },
+        ],
+      },
+    }) + "\n",
+  );
+  spawned.emit("close", 1);
+  await expect(running).rejects.toMatchObject({
+    message: expect.stringContaining("Failed to refresh OAuth token"),
+    kind: DyadErrorKind.Precondition,
+  });
+});
+
+it("redacts and bounds stderr when the CLI has no structured error", async () => {
+  const spawned = child();
+  state.spawn.mockReturnValue(spawned);
+  const running = runClaudeTurn(options(new AbortController().signal));
+  await vi.waitFor(() => expect(state.spawn).toHaveBeenCalled());
+  spawned.stderr.write(
+    `Request failed for /Users/alice/private project with Authorization: Bearer secret-token-value\n${"x".repeat(10_000)}`,
+  );
+  spawned.emit("close", 1);
+  const error = (await running.catch((caught: Error) => caught)) as Error;
+  expect(error.message).toContain("Claude Code:");
+  expect(error.message).not.toContain("/Users/alice");
+  expect(error.message).not.toContain("secret-token-value");
+  expect(error.message.length).toBeLessThan(4_000);
+});
+
+it("keeps the generic exit message when the CLI reports no detail", async () => {
+  const spawned = child();
+  state.spawn.mockReturnValue(spawned);
+  const running = runClaudeTurn(options(new AbortController().signal));
+  await vi.waitFor(() => expect(state.spawn).toHaveBeenCalled());
+  spawned.emit("close", 1);
+  await expect(running).rejects.toMatchObject({
+    message: expect.stringContaining("Claude Code exited (1)"),
+    kind: DyadErrorKind.External,
+  });
 });
 
 it.skipIf(process.platform === "win32")(

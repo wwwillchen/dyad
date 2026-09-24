@@ -14,6 +14,7 @@ import {
 } from "./usage_limits";
 import treeKill from "tree-kill";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import { safeGithubOpsErrorMessage } from "@/ipc/services/github_ops_safe_error";
 import { killProcessTreeSync } from "@/ipc/utils/kill_process_tree_sync";
 import {
   ClaudeCodeModelsSchema,
@@ -22,6 +23,15 @@ import {
 
 const execFileAsync = promisify(execFile);
 const running = new Set<ChildProcess>();
+const MAX_CLI_DIAGNOSTIC_LENGTH = 4_000;
+
+export function safeClaudeDiagnostic(raw: string): string | undefined {
+  const message = safeGithubOpsErrorMessage(
+    new Error(raw.slice(0, MAX_CLI_DIAGNOSTIC_LENGTH)),
+    "",
+  );
+  return message || undefined;
+}
 
 // No provider keys, proxy overrides, credential helpers or inherited Claude
 // switches. Authentication stays inside the official CLI and OS keychain.
@@ -377,6 +387,8 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let interruptTimer: ReturnType<typeof setTimeout> | undefined;
     let interruptedWithResult = false;
+    let cliError: string | undefined;
+    let stderr = "";
     const signalProcess = (signal: NodeJS.Signals) => {
       try {
         if (process.platform !== "win32" && child.pid)
@@ -397,6 +409,27 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
           if (failure) return;
           const parsed: CliEvent = JSON.parse(line);
           recordClaudeUsageLimits(parsed, usageGeneration);
+          if (
+            parsed.type === "assistant" &&
+            parsed.message?.model === "<synthetic>" &&
+            Array.isArray(parsed.message.content)
+          ) {
+            const text = parsed.message.content
+              ?.filter(
+                (part: { type?: string; text?: unknown }) =>
+                  part.type === "text" && typeof part.text === "string",
+              )
+              .map((part: { text: string }) => part.text)
+              .join("\n");
+            if (text) cliError = text.slice(0, MAX_CLI_DIAGNOSTIC_LENGTH);
+          }
+          if (
+            parsed.type === "result" &&
+            parsed.is_error &&
+            typeof parsed.result === "string" &&
+            !cliError
+          )
+            cliError = parsed.result.slice(0, MAX_CLI_DIAGNOSTIC_LENGTH);
           const action = await turn.onEvent(parsed);
           if (parsed.type === "result") {
             interruptedWithResult = interruptTimer !== undefined;
@@ -442,8 +475,13 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
       }
       void events.finally(() => child.stdout.resume());
     });
-    // Drain stderr without copying arbitrary CLI diagnostics/credentials into logs.
-    child.stderr.resume();
+    // Keep only a bounded diagnostic for the user; never log raw CLI output.
+    child.stderr.on("data", (data: Buffer) => {
+      if (stderr.length < MAX_CLI_DIAGNOSTIC_LENGTH)
+        stderr += data
+          .toString("utf8")
+          .slice(0, MAX_CLI_DIAGNOSTIC_LENGTH - stderr.length);
+    });
     child.stdin.on("error", () => {
       /* process-close path reports failure */
     });
@@ -456,18 +494,22 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
       if (killTimer) clearTimeout(killTimer);
       if (interruptTimer) clearTimeout(interruptTimer);
       consume(buffer + decoder.end());
-      void events.then(() =>
-        failure
-          ? reject(failure)
-          : code !== 0 && !turn.signal.aborted && !interruptedWithResult
-            ? reject(
-                new DyadError(
-                  `Claude Code exited (${code ?? "signal"}). Check official CLI authentication or usage limits.`,
-                  DyadErrorKind.External,
-                ),
-              )
-            : resolve(),
-      );
+      void events.then(() => {
+        if (failure) return reject(failure);
+        if (code === 0 || turn.signal.aborted || interruptedWithResult)
+          return resolve();
+        const diagnostic = safeClaudeDiagnostic(cliError ?? stderr);
+        return reject(
+          new DyadError(
+            diagnostic
+              ? `Claude Code: ${diagnostic}`
+              : `Claude Code exited (${code ?? "signal"}). Check official CLI authentication or usage limits.`,
+            // CLI diagnostics may contain private account or prompt data even
+            // after redaction, so never forward them to exception telemetry.
+            diagnostic ? DyadErrorKind.Precondition : DyadErrorKind.External,
+          ),
+        );
+      });
     });
     turn.signal.addEventListener("abort", abort, { once: true });
     if (turn.signal.aborted) abort();

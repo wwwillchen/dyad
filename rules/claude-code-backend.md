@@ -28,3 +28,8 @@ from the globally selected model or the chat's stored backend alone.
 - Keep the picker and main-process mutation rules consistent. Regression tests
   should cover the table above, including a globally selected model or stored
   backend that does not reflect the current chat's actual message history.
+
+## Diagnosing CLI failures
+
+- On macOS, sandboxed `claude auth status` can report `loggedIn: false` when the same account is signed in outside the sandbox. Verify outside the sandbox before diagnosing an authentication failure.
+- For a failed turn, `userData/claude-sessions/<chatId>.json` identifies the CLI session; its `~/.claude/projects/<app-path>/<sessionId>.jsonl` record can contain a synthetic assistant entry with the actual API error. Inspect only its error fields, since the file also contains private conversation content.
