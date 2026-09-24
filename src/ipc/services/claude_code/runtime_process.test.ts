@@ -11,7 +11,7 @@ vi.mock("node:fs/promises", async (original) => ({
   ...(await original<typeof import("node:fs/promises")>()),
   access: vi.fn().mockResolvedValue(undefined),
 }));
-import { runClaudeTurn } from "./runtime";
+import { runClaudeTurn, safeClaudeDiagnostic } from "./runtime";
 import { getClaudeUsageLimits, setClaudeUsageAccount } from "./usage_limits";
 import { DyadErrorKind } from "@/errors/dyad_error";
 
@@ -96,7 +96,7 @@ it("shows a Claude Code OAuth refresh error from the CLI stream", async () => {
         content: [
           {
             type: "text",
-            text: "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. Retry in a minute.",
+            text: "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again",
           },
         ],
       },
@@ -104,9 +104,28 @@ it("shows a Claude Code OAuth refresh error from the CLI stream", async () => {
   );
   spawned.emit("close", 1);
   await expect(running).rejects.toMatchObject({
-    message: expect.stringContaining("Failed to refresh OAuth token"),
+    message:
+      "Claude Code: Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again",
     kind: DyadErrorKind.Precondition,
   });
+});
+
+it("preserves Claude login guidance without exposing paths or credentials", () => {
+  expect(safeClaudeDiagnostic("Please run /login to reconnect.")).toBe(
+    "Please run /login to reconnect.",
+  );
+  const secret = safeClaudeDiagnostic(
+    "Please run /login. Diagnostic path: /Users/alice/private project. Authorization: Bearer secret-token-value",
+  );
+  expect(secret).toContain("/login");
+  expect(secret).not.toContain("/Users/alice");
+  expect(secret).not.toContain("secret-token-value");
+  expect(
+    safeClaudeDiagnostic("OAuth token: sk-ant-abcdefghijklmnop"),
+  ).not.toContain("sk-ant-abcdefghijklmnop");
+  expect(safeClaudeDiagnostic("Read /login/private/secret.txt")).not.toContain(
+    "/login/private/secret.txt",
+  );
 });
 
 it("redacts and bounds stderr when the CLI has no structured error", async () => {

@@ -26,11 +26,32 @@ const running = new Set<ChildProcess>();
 const MAX_CLI_DIAGNOSTIC_LENGTH = 4_000;
 
 export function safeClaudeDiagnostic(raw: string): string | undefined {
-  const message = safeGithubOpsErrorMessage(
-    new Error(raw.slice(0, MAX_CLI_DIAGNOSTIC_LENGTH)),
-    "",
-  );
-  return message || undefined;
+  // The shared redactor treats "OAuth token: another..." as a secret assignment
+  // and /login as a private path. Sanitize around only these fixed CLI phrases
+  // so a later path on the same line cannot consume the guidance before it.
+  const bounded = raw.slice(0, MAX_CLI_DIAGNOSTIC_LENGTH);
+  const fixedGuidance =
+    /OAuth token: another Claude Code process is refreshing it or exited mid-refresh\.|(?<![\w/\\.-])\/login(?![\w/\\-]|\.[\w])/g;
+  const sanitizePart = (part: string) => {
+    const leading = part.match(/^\s*/)?.[0] ?? "";
+    const trailing = part.match(/\s*$/)?.[0] ?? "";
+    const core = part.trim();
+    if (!core) return part;
+    return leading + safeGithubOpsErrorMessage(new Error(core), "") + trailing;
+  };
+  let restored = "";
+  let offset = 0;
+  for (const match of bounded.matchAll(fixedGuidance)) {
+    restored += sanitizePart(bounded.slice(offset, match.index)) + match[0];
+    offset = match.index + match[0].length;
+  }
+  restored += sanitizePart(bounded.slice(offset));
+  restored = restored.trim();
+  if (!restored) return undefined;
+  const maxLength = MAX_CLI_DIAGNOSTIC_LENGTH - "Claude Code: ".length;
+  return restored.length <= maxLength
+    ? restored
+    : `${restored.slice(0, maxLength - 14)}… [truncated]`;
 }
 
 // No provider keys, proxy overrides, credential helpers or inherited Claude

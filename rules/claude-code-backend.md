@@ -33,3 +33,4 @@ from the globally selected model or the chat's stored backend alone.
 
 - On macOS, sandboxed `claude auth status` can report `loggedIn: false` when the same account is signed in outside the sandbox. Verify outside the sandbox before diagnosing an authentication failure.
 - For a failed turn, `userData/claude-sessions/<chatId>.json` identifies the CLI session; its `~/.claude/projects/<app-path>/<sessionId>.jsonl` record can contain a synthetic assistant entry with the actual API error. Inspect only its error fields, since the file also contains private conversation content.
+- When projecting CLI errors through the Git output redactor, assert the exact displayed OAuth refresh guidance and `/login` command: `token:` prose can be mistaken for a secret, and a slash command for an absolute path. Keep credential and real-path redaction tests alongside those assertions.
