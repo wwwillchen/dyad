@@ -23,15 +23,10 @@ import {
 import log from "electron-log";
 
 import { db } from "@/db";
-import {
-  chats,
-  messages,
-  mcpServers,
-  type AiMessagesJsonV6,
-} from "@/db/schema";
+import { chats, messages, type AiMessagesJsonV6 } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { mcpManager } from "@/ipc/utils/mcp_manager";
 import { ClaudeCodeModel } from "@/ipc/services/claude_code/model";
+import { startTurnStallWatchdog } from "./turn_stall_watchdog";
 import { requireMcpToolConsent } from "@/ipc/utils/mcp_consent";
 import { buildMcpAutoApprove } from "./mcp_auto_consent";
 import { scheduleChatSearchIndexing } from "./chat_search_indexer";
@@ -145,6 +140,7 @@ import {
 import { writeFileTool } from "./tools/write_file";
 import {
   collectMcpToolDefs,
+  loadEnabledMcpServerTools,
   estimateMcpInlineTokens,
   getMcpInlineTokenThreshold,
   type McpToolDef,
@@ -924,8 +920,10 @@ export async function handleLocalAgentStream(
   const mutationTurnId = `local-agent-turn:${placeholderMessageId}`;
   let rootMutationOwner: MutationActivityOwner | undefined;
   let claudeRuntime: ClaudeCodeModel | undefined;
+  const stallWatchdog = startTurnStallWatchdog(req.chatId);
 
   try {
+    stallWatchdog.setPhase("creating model client");
     // Get model client
     const { modelClient, runtimeModel, isEngineEnabled } = await getModelClient(
       settings.selectedModel,
@@ -935,6 +933,7 @@ export async function handleLocalAgentStream(
     );
     if (modelClient.model instanceof ClaudeCodeModel) {
       claudeRuntime = modelClient.model;
+      stallWatchdog.setPhase("starting Claude Code");
       await claudeRuntime.prepare(abortController.signal);
       const refreshed = await loadChat();
       if (!refreshed?.app)
@@ -1172,7 +1171,11 @@ export async function handleLocalAgentStream(
     let mcpDefs: McpToolDef[] = [];
     if (mcpInSandboxEnabled) {
       try {
-        mcpDefs = await collectMcpToolDefs();
+        stallWatchdog.setPhase("loading MCP tools");
+        mcpDefs = await collectMcpToolDefs({
+          abortSignal: ctx.abortSignal,
+          onWarningMessage: ctx.onWarningMessage,
+        });
         ctx.mcpToolDefs = mcpDefs;
       } catch (e) {
         logger.warn("Failed to collect MCP tool defs", e);
@@ -1204,10 +1207,12 @@ export async function handleLocalAgentStream(
     // get_mcp_tool_schema can also be removed by tool permissions on its own, so
     // only advertise it in the description when it actually registered.
     const hasGetSchemaTool = agentTools.get_mcp_tool_schema != undefined;
+    stallWatchdog.setPhase("loading MCP tools");
     const mcpToolsForRegistration: ToolSet =
       !buildMode && !readOnly && !planModeOnly && !mcpInSandboxEnabled
         ? await getMcpTools(event, ctx)
         : {};
+    stallWatchdog.setPhase("preparing tools and prompt");
     if (agentTools.execute_sandbox_script != undefined) {
       // Start with the file-inspection-only preamble so a failure in the MCP
       // build below still leaves usable docs.
@@ -1391,6 +1396,7 @@ export async function handleLocalAgentStream(
         const responseBeforeAttempt = fullResponse;
 
         try {
+          stallWatchdog.setPhase("waiting for model response");
           const streamResult = streamText({
             output: fastTextOutput(),
             model: modelClient.model,
@@ -1713,6 +1719,7 @@ export async function handleLocalAgentStream(
 
           try {
             for await (const part of fullStream) {
+              stallWatchdog.stop();
               if (abortController.signal.aborted) {
                 logger.log(`Stream aborted for chat ${req.chatId}`);
                 // Clean up pending consent/questionnaire/integration requests to prevent stale UI banners
@@ -2461,6 +2468,7 @@ export async function handleLocalAgentStream(
     });
     return false; // Error - don't consume quota
   } finally {
+    stallWatchdog.stop();
     await claudeRuntime
       ?.close()
       .catch((error) => logger.error("Claude admission cleanup failed", error));
@@ -2859,28 +2867,14 @@ async function getMcpTools(
   const mcpToolSet: ToolSet = {};
 
   try {
-    const servers = await db
-      .select()
-      .from(mcpServers)
-      .where(eq(mcpServers.enabled, true as any));
+    // One bad server (e.g. unconnected OAuth, or one that never answers)
+    // is skipped rather than stripping or blocking every other server's tools.
+    const loadedServers = await loadEnabledMcpServerTools({
+      abortSignal: ctx.abortSignal,
+      onWarningMessage: ctx.onWarningMessage,
+    });
 
-    for (const s of servers) {
-      // One bad server (e.g. unconnected OAuth) must not strip tools
-      // from every later enabled server in the same agent run.
-      const toolSet = await (async () => {
-        try {
-          const client = await mcpManager.getClient(s.id);
-          return await client.tools();
-        } catch (e) {
-          logger.warn(
-            `Failed to load tools for MCP server ${s.id} (${s.name})`,
-            e,
-          );
-          return null;
-        }
-      })();
-      if (!toolSet) continue;
-
+    for (const { server: s, tools: toolSet } of loadedServers) {
       for (const [name, mcpTool] of Object.entries(toolSet)) {
         const key = `${sanitizeMcpName(s.name || "")}__${sanitizeMcpName(name)}`;
 

@@ -174,6 +174,10 @@ vi.mock("@/ipc/utils/mcp_manager", () => ({
   mcpManager: {
     getClient: getClientMock,
     dispose: disposeMock,
+    // The timeout itself is covered in mcp_manager.test.ts; here it just
+    // forwards to the getClient mock so each test controls the failure.
+    listToolsWithin: async (serverId: number) =>
+      (await getClientMock(serverId)).tools(),
   },
 }));
 

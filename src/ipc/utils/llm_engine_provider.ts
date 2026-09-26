@@ -12,6 +12,10 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { getExtraProviderOptionsForEngine } from "./thinking_utils";
 import { getTestFetchOption } from "./test_fetch_override";
 import { DYAD_INTERNAL_REQUEST_ID_HEADER } from "./provider_options";
+import {
+  describeRequestUrl,
+  fetchWithRequestLogging,
+} from "./model_request_logging";
 import type { ModelSelection, UserSettings } from "../../lib/schemas";
 import type { LanguageModel } from "ai";
 import {
@@ -258,7 +262,11 @@ export function createDyadEngine(
         };
 
         // Use the provided fetch or default fetch
-        return (options.fetch || fetch)(requestInput, modifiedInit);
+        return fetchWithRequestLogging(
+          modifiedRequestId ?? "engine",
+          describeRequestUrl(requestInput),
+          () => (options.fetch || fetch)(requestInput, modifiedInit),
+        );
       } catch (e) {
         logger.error("Error parsing request body", e);
         // If parsing fails, use original request
