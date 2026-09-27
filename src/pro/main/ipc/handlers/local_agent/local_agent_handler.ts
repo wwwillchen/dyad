@@ -1719,7 +1719,11 @@ export async function handleLocalAgentStream(
 
           try {
             for await (const part of fullStream) {
-              stallWatchdog.stop();
+              // `start`/`start-step` are lifecycle markers the SDK can emit
+              // before the provider has answered, so they don't count.
+              if (part.type !== "start" && part.type !== "start-step") {
+                stallWatchdog.stop();
+              }
               if (abortController.signal.aborted) {
                 logger.log(`Stream aborted for chat ${req.chatId}`);
                 // Clean up pending consent/questionnaire/integration requests to prevent stale UI banners

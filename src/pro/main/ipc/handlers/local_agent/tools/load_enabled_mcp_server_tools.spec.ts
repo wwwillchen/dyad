@@ -36,7 +36,7 @@ vi.mock("@/main/settings", () => ({
 }));
 
 const { McpListToolsTimeoutError } = await import("@/ipc/utils/mcp_manager");
-const { collectMcpToolDefs, loadEnabledMcpServerTools } =
+const { collectMcpToolDefs, getCachedMcpToolDefs, loadEnabledMcpServerTools } =
   await import("./mcp_type_defs");
 
 const figma = { id: 1, name: "Figma", transport: "http" };
@@ -105,6 +105,14 @@ describe("loadEnabledMcpServerTools", () => {
       abortSignal: controller.signal,
       onWarningMessage,
     });
+    // Abort only once both servers are waiting on the forwarded signal, so
+    // this fails if the signal is dropped on the way to listToolsWithin.
+    await vi.waitFor(() => {
+      expect(mocks.listToolsWithin).toHaveBeenCalledTimes(2);
+    });
+    for (const [, options] of mocks.listToolsWithin.mock.calls) {
+      expect(options.signal).toBe(controller.signal);
+    }
     controller.abort(new Error("stopped by user"));
 
     await expect(loading).resolves.toEqual([]);
@@ -141,5 +149,29 @@ describe("collectMcpToolDefs", () => {
     const defs = await collectMcpToolDefs();
 
     expect(defs.map((d) => d.toolKey)).toEqual(["Stripe__list_customers"]);
+  });
+
+  it("keeps the last complete cache when the turn is stopped mid-load", async () => {
+    mocks.listToolsWithin.mockResolvedValue(stripeTools);
+    await collectMcpToolDefs();
+    const complete = getCachedMcpToolDefs();
+    expect(complete).toHaveLength(2);
+
+    const controller = new AbortController();
+    mocks.listToolsWithin.mockImplementation(
+      (_serverId: number, { signal }: { signal: AbortSignal }) =>
+        new Promise((_, reject) => {
+          if (signal.aborted) return reject(signal.reason);
+          signal.addEventListener("abort", () => reject(signal.reason));
+        }),
+    );
+    const loading = collectMcpToolDefs({ abortSignal: controller.signal });
+    await vi.waitFor(() => {
+      expect(mocks.listToolsWithin).toHaveBeenCalledTimes(4);
+    });
+    controller.abort(new Error("stopped by user"));
+
+    await expect(loading).resolves.toEqual([]);
+    expect(getCachedMcpToolDefs()).toEqual(complete);
   });
 });

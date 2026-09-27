@@ -192,7 +192,11 @@ export async function collectMcpToolDefs(
       });
     }
   }
-  cachedMcpToolDefs = defs;
+  // A stopped turn returns only the servers that finished loading; keep the
+  // last complete set for the renderer's token estimate instead.
+  if (!options.abortSignal?.aborted) {
+    cachedMcpToolDefs = defs;
+  }
   return defs;
 }
 

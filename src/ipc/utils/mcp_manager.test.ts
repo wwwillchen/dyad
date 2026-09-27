@@ -317,15 +317,14 @@ describe("McpManager.listToolsWithin", () => {
     await expect(manager.listToolsWithin(20)).resolves.toBe(toolSet);
   });
 
-  it("times out a server that never answers and reconnects on the next call", async () => {
+  it("times out a slow start without killing it, so a later call reuses the finished client", async () => {
     vi.useFakeTimers();
     try {
       seedStdioServer(21);
-      const hungTools = deferred<never>();
+      const slowStart = deferred<MCPClient>();
+      const close = vi.fn(async () => {});
       const toolSet = { search: { description: "Search" } };
-      mocks.createMCPClient
-        .mockResolvedValueOnce(clientWithTools(() => hungTools.promise))
-        .mockResolvedValueOnce(clientWithTools(async () => toolSet));
+      mocks.createMCPClient.mockReturnValueOnce(slowStart.promise);
       const manager = new McpManager();
 
       const first = manager.listToolsWithin(21, { timeoutMs: 5_000 });
@@ -335,11 +334,42 @@ describe("McpManager.listToolsWithin", () => {
       await vi.advanceTimersByTimeAsync(5_000);
       await firstResult;
 
-      // The hung client was torn down, so the next turn gets a fresh one
-      // instead of awaiting the same wedged transport.
-      await vi.advanceTimersByTimeAsync(1_500);
+      // The launch keeps running after the caller gave up (e.g. `npx` on a
+      // cold cache), and the next turn joins it instead of relaunching.
+      slowStart.resolve({ close, tools: async () => toolSet } as never);
       await expect(manager.listToolsWithin(21)).resolves.toBe(toolSet);
-      expect(mocks.createMCPClient).toHaveBeenCalledTimes(2);
+      expect(mocks.createMCPClient).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not close a connected client whose tools() call times out", async () => {
+    vi.useFakeTimers();
+    try {
+      seedStdioServer(25);
+      const close = vi.fn(async () => {});
+      const toolSet = { search: { description: "Search" } };
+      const tools = vi
+        .fn()
+        .mockReturnValueOnce(new Promise(() => {}))
+        .mockResolvedValueOnce(toolSet);
+      mocks.createMCPClient.mockResolvedValueOnce({ close, tools } as never);
+      const manager = new McpManager();
+
+      const first = manager.listToolsWithin(25, { timeoutMs: 5_000 });
+      const firstResult = expect(first).rejects.toBeInstanceOf(
+        McpListToolsTimeoutError,
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      await firstResult;
+
+      // Another chat may be mid tool call on this client, so it stays open
+      // and the next call simply asks again.
+      expect(close).not.toHaveBeenCalled();
+      await expect(manager.listToolsWithin(25)).resolves.toBe(toolSet);
+      expect(mocks.createMCPClient).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

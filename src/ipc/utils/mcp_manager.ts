@@ -117,8 +117,15 @@ export class McpManager {
    * Connect (or reuse the cached client) and list the server's tools, giving
    * up after `timeoutMs` or when `signal` aborts. A server that accepts the
    * connection but never answers (e.g. a wedged local desktop-app server)
-   * would otherwise block its caller forever. On timeout the client is torn
-   * down so the next call reconnects instead of awaiting the same transport.
+   * would otherwise block its caller forever.
+   *
+   * Giving up only stops waiting; it deliberately does not dispose the client.
+   * Disposing would kill a slow-starting stdio server (e.g. `npx` on a cold
+   * cache) mid-launch on every turn, and could close a client another chat is
+   * using for an in-flight tool call. A still-pending initialization stays
+   * coalesced, so a later call picks up the client once it finishes; each
+   * call still waits at most `timeoutMs`. Callers that own the server's
+   * lifecycle (settings edits) dispose explicitly.
    */
   async listToolsWithin(
     serverId: number,
@@ -136,11 +143,10 @@ export class McpManager {
     let onAbort: (() => void) | undefined;
     try {
       return await new Promise<McpToolSet>((resolve, reject) => {
-        timeoutId = setTimeout(() => {
-          // Fire-and-forget: awaiting a hung transport's close would hang too.
-          void this.dispose(serverId).catch(() => {});
-          reject(new McpListToolsTimeoutError(serverId, timeoutMs));
-        }, timeoutMs);
+        timeoutId = setTimeout(
+          () => reject(new McpListToolsTimeoutError(serverId, timeoutMs)),
+          timeoutMs,
+        );
         if (signal) {
           onAbort = () => reject(signal.reason);
           signal.addEventListener("abort", onAbort, { once: true });

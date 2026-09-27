@@ -61,18 +61,47 @@ describe("fetchWithRequestLogging", () => {
   });
 
   it("logs a request that fails before any response and rethrows", async () => {
-    const failure = new TypeError("fetch failed");
+    const failure = new TypeError(
+      "fetch failed for https://engine.dyad.sh/v1?key=secret",
+      { cause: Object.assign(new Error("reset"), { code: "ECONNRESET" }) },
+    );
 
     await expect(
       fetchWithRequestLogging("req-2", "https://engine.dyad.sh/v1", () =>
         Promise.reject(failure),
       ),
     ).rejects.toBe(failure);
+    // The error class and network code only: messages can echo the URL.
     expect(logs.warn).toEqual([
       expect.stringMatching(
-        /^\[req-2\] model request failed after \d+ms with no response: TypeError: fetch failed$/,
+        /^\[req-2\] model request failed after \d+ms with no response: TypeError \(ECONNRESET\)$/,
       ),
     ]);
+  });
+
+  it("cancels the underlying stream immediately when the body is cancelled", async () => {
+    const sourceCancel = vi.fn();
+    // Sends one chunk, then stalls forever, like a server hung mid-stream.
+    const stalled = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: a\n\n"));
+      },
+      cancel: sourceCancel,
+    });
+    const response = await fetchWithRequestLogging(
+      "req-4",
+      "https://engine.dyad.sh/v1",
+      async () => new Response(stalled, { status: 200 }),
+    );
+    const reader = response.body!.getReader();
+    await reader.read();
+
+    await reader.cancel("turn stopped");
+
+    expect(sourceCancel).toHaveBeenCalledWith("turn stopped");
+    expect(logs.info.at(-1)).toMatch(
+      /^\[req-4\] response stream cancelled after \d+ms \(9 bytes\)$/,
+    );
   });
 
   it("returns bodiless responses untouched", async () => {

@@ -145,9 +145,12 @@ export async function createCodexSubscriptionModel(
       const requestLabel = `chatgpt-subscription:${
         readRequestHeader(init, DYAD_INTERNAL_REQUEST_ID_HEADER) ?? "no-id"
       }`;
+      let sendCount = 0;
       const sendOnce = () => {
         init?.signal?.throwIfAborted();
-        return fetchWithRequestLogging(requestLabel, ENDPOINT, () =>
+        sendCount += 1;
+        const label = `${requestLabel}:send-${sendCount}`;
+        return fetchWithRequestLogging(label, ENDPOINT, () =>
           fetch(ENDPOINT, {
             method: "POST",
             redirect: "error",
