@@ -597,15 +597,28 @@ describe("deleteTempTestUser", () => {
     }
   });
 
-  it("still deletes the user when the batched row sweep fails", async () => {
+  it("falls back to per-table deletes when the batch is rolled back", async () => {
+    // A statement timeout cancels the whole DO block (`WHEN others` doesn't
+    // catch QUERY_CANCELED), undoing deletes that had already succeeded.
+    const queries: string[] = [];
     mocks.executeSupabaseSql.mockImplementation(
       async ({ query }: { query: string }) => {
+        queries.push(query);
         if (query.includes("FROM pg_class")) {
           return JSON.stringify([
             { table_name: "todos", column_name: "user_id" },
+            { table_name: "quotes", column_name: "owner_id" },
           ]);
         }
-        throw new Error("Bad Request (400)");
+        if (query.includes("EXCEPTION WHEN others")) {
+          throw new Error(
+            "Bad Request (400): canceling statement due to statement timeout",
+          );
+        }
+        if (query.includes("'quotes'")) {
+          throw new Error("Bad Request (400): violates foreign key");
+        }
+        return "{}";
       },
     );
     const fetchSpy = mockFetch(() => new Response(null, { status: 200 }));
@@ -613,10 +626,51 @@ describe("deleteTempTestUser", () => {
     await expect(
       deleteTempTestUser(makeApp({ supabaseTestUserId: UUID })),
     ).resolves.toBe(true);
+
+    const perTable = queries.filter(
+      (query) =>
+        query.includes("DELETE FROM") &&
+        !query.includes("EXCEPTION WHEN others"),
+    );
+    expect(perTable).toHaveLength(2);
+    expect(perTable[0]).toContain("'todos', 'user_id'");
+    expect(perTable[1]).toContain("'quotes', 'owner_id'");
+    // Per-table cleanup is still best-effort: one failing table doesn't stop
+    // the user delete.
     expect(fetchSpy).toHaveBeenCalledWith(
       `https://proj-1.supabase.co/auth/v1/admin/users/${UUID}`,
       expect.objectContaining({ method: "DELETE" }),
     );
+    expect(mocks.set).toHaveBeenCalledWith({ supabaseTestUserId: null });
+  });
+
+  it("keeps the recovery marker when the fallback outruns the lifecycle budget", async () => {
+    const controller = new AbortController();
+    const reason = new Error("Isolated test data operation timed out.");
+    mocks.executeSupabaseSql.mockImplementation(
+      async ({ query }: { query: string }) => {
+        if (query.includes("FROM pg_class")) {
+          return JSON.stringify([
+            { table_name: "todos", column_name: "user_id" },
+            { table_name: "quotes", column_name: "owner_id" },
+          ]);
+        }
+        if (query.includes("EXCEPTION WHEN others")) {
+          throw new Error("canceling statement due to statement timeout");
+        }
+        controller.abort(reason);
+        throw new Error("canceling statement due to statement timeout");
+      },
+    );
+    const fetchSpy = mockFetch(() => new Response(null, { status: 200 }));
+
+    await expect(
+      deleteTempTestUser(makeApp({ supabaseTestUserId: UUID }), {
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mocks.set).not.toHaveBeenCalled();
   });
 
   it("does not run SQL cleanup for a non-UUID user id", async () => {

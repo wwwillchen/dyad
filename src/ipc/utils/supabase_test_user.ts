@@ -509,8 +509,7 @@ WHERE n.nspname = 'public'
     if (!Array.isArray(rows) || rows.length === 0) {
       return;
     }
-    const targets: string[] = [];
-    const deletes: string[] = [];
+    const targets: { label: string; statement: string }[] = [];
     for (const row of rows) {
       const table = String(row?.table_name ?? "");
       const column = String(row?.column_name ?? "");
@@ -534,37 +533,64 @@ WHERE n.nspname = 'public'
       // relaxed to allow quotes, dollar signs, or backslashes. format(%I, %L)
       // is a second layer that quotes identifiers/values that already passed
       // regex validation.
-      //
-      // Each DELETE gets its own exception block (a subtransaction), so one
-      // failing table — an FK restrict, a non-uuid owner column — doesn't roll
-      // back the others, matching the old one-request-per-table behavior.
-      deletes.push(
-        `BEGIN EXECUTE format('DELETE FROM public.%I WHERE %I = %L', '${table}', '${column}', '${userId}'); EXCEPTION WHEN others THEN RAISE WARNING 'Dyad test cleanup of public.%.% failed: %', '${table}', '${column}', SQLERRM; END;`,
-      );
-      targets.push(`${table}.${column}`);
+      targets.push({
+        label: `public.${table}.${column}`,
+        statement: `EXECUTE format('DELETE FROM public.%I WHERE %I = %L', '${table}', '${column}', '${userId}');`,
+      });
     }
-    if (deletes.length === 0) {
+    if (targets.length === 0) {
       return;
     }
-    // One round trip for every table: per-test isolation runs this before each
-    // case, and serial per-table requests could exhaust the hook's timeout.
-    try {
-      await retryTestDatabaseCleanup(
+    const runCleanup = (query: string, context: string) =>
+      retryTestDatabaseCleanup(
         () =>
           executeSupabaseSql({
             supabaseProjectId: projectId,
-            query: `DO $dyad_cleanup$ BEGIN ${deletes.join(" ")} END $dyad_cleanup$;`,
+            query,
             organizationSlug,
             signal,
           }),
-        `Clean up ${deletes.length} owner column(s) for test user ${userId}`,
+        context,
         signal,
       );
+    // Fast path: one round trip for every table, since per-test isolation runs
+    // this before each case. Each DELETE gets its own exception block (a
+    // subtransaction) so one failing table — an FK restrict, a non-uuid owner
+    // column — doesn't roll back the others.
+    try {
+      await runCleanup(
+        `DO $dyad_cleanup$ BEGIN ${targets
+          .map(
+            ({ label, statement }) =>
+              `BEGIN ${statement} EXCEPTION WHEN others THEN RAISE WARNING 'Dyad test cleanup of ${label} failed: %', SQLERRM; END;`,
+          )
+          .join(" ")} END $dyad_cleanup$;`,
+        `Clean up ${targets.length} owner column(s) for test user ${userId}`,
+      );
+      return;
     } catch (error) {
       signal?.throwIfAborted();
+      // `WHEN others` can't catch QUERY_CANCELED, so a statement timeout rolls
+      // back the whole batch, including deletes that had succeeded. Fall back
+      // to one committed request per table. If that outruns the lifecycle
+      // budget, the abort propagates before the user is deleted, keeping the
+      // recovery marker so startup reconciliation retries the sweep.
       logger.warn(
-        `Best-effort cleanup of ${targets.join(", ")} for test user failed: ${error}`,
+        `Batched cleanup for test user failed; retrying per table: ${error}`,
       );
+    }
+    for (const { label, statement } of targets) {
+      try {
+        await runCleanup(
+          `DO $dyad_cleanup$ BEGIN ${statement} END $dyad_cleanup$;`,
+          `Clean up ${label} for test user ${userId}`,
+        );
+      } catch (error) {
+        signal?.throwIfAborted();
+        logger.warn(
+          `Best-effort cleanup of ${label} for test user failed: ${error}`,
+        );
+      }
     }
   } catch (error) {
     signal?.throwIfAborted();
