@@ -556,18 +556,23 @@ WHERE n.nspname = 'public'
     // Fast path: one round trip for every table, since per-test isolation runs
     // this before each case. Each DELETE gets its own exception block (a
     // subtransaction) so one failing table — an FK restrict, a non-uuid owner
-    // column — doesn't roll back the others.
+    // column — doesn't roll back the others. A DO block can't return rows, so
+    // the batch is a session-temporary function whose result carries each
+    // table's error back for the same per-table log line as the fallback.
+    let batchResult: string | undefined;
     try {
-      await runCleanup(
-        `DO $dyad_cleanup$ BEGIN ${targets
+      batchResult = await runCleanup(
+        `CREATE OR REPLACE FUNCTION pg_temp.dyad_cleanup() RETURNS text[] LANGUAGE plpgsql AS $dyad_cleanup$
+DECLARE failures text[] := '{}';
+BEGIN ${targets
           .map(
             ({ label, statement }) =>
-              `BEGIN ${statement} EXCEPTION WHEN others THEN RAISE WARNING 'Dyad test cleanup of ${label} failed: %', SQLERRM; END;`,
+              `BEGIN ${statement} EXCEPTION WHEN others THEN failures := failures || ('${label}: ' || SQLERRM); END;`,
           )
-          .join(" ")} END $dyad_cleanup$;`,
+          .join(" ")} RETURN failures; END $dyad_cleanup$;
+SELECT pg_temp.dyad_cleanup() AS failures;`,
         `Clean up ${targets.length} owner column(s) for test user ${userId}`,
       );
-      return;
     } catch (error) {
       signal?.throwIfAborted();
       // `WHEN others` can't catch QUERY_CANCELED, so a statement timeout rolls
@@ -578,6 +583,14 @@ WHERE n.nspname = 'public'
       logger.warn(
         `Batched cleanup for test user failed; retrying per table: ${error}`,
       );
+    }
+    if (batchResult !== undefined) {
+      // The deletes committed; reporting is best-effort. An unexpected response
+      // shape just means no per-table detail, never a rerun of the sweep.
+      for (const failure of parseCleanupFailures(batchResult)) {
+        logger.warn(`Best-effort cleanup for test user failed: ${failure}`);
+      }
+      return;
     }
     for (const { label, statement } of targets) {
       try {
@@ -595,6 +608,20 @@ WHERE n.nspname = 'public'
   } catch (error) {
     signal?.throwIfAborted();
     logger.warn(`Could not discover owner columns for cleanup: ${error}`);
+  }
+}
+
+/**
+ * Reads the per-table errors the batched cleanup returns as
+ * `[{ failures: ["public.t.c: <error>", ...] }]`. Anything else yields none.
+ */
+function parseCleanupFailures(raw: string): string[] {
+  try {
+    const rows = JSON.parse(raw);
+    const failures = Array.isArray(rows) ? rows[0]?.failures : undefined;
+    return Array.isArray(failures) ? failures.map(String) : [];
+  } catch {
+    return [];
   }
 }
 

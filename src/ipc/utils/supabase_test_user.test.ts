@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     selectWhere,
     getProjectApiKeys: vi.fn(),
     executeSupabaseSql: vi.fn().mockResolvedValue("[]"),
+    warn: vi.fn(),
   };
 });
 
@@ -49,7 +50,7 @@ vi.mock("electron-log", () => ({
   default: {
     scope: () => ({
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: mocks.warn,
       debug: vi.fn(),
       error: vi.fn(),
     }),
@@ -499,8 +500,8 @@ describe("deleteTempTestUser", () => {
     ).resolves.toBe(true);
 
     // Scoped DELETE ran against the discovered table/column. The cleanup SQL is
-    // a `DO $dyad_cleanup$ ... EXECUTE format('DELETE FROM ...') ...` block, so match on
-    // the DELETE substring rather than the statement prefix.
+    // a `pg_temp.dyad_cleanup()` function wrapping `EXECUTE format('DELETE
+    // FROM ...')`, so match on the DELETE substring rather than the prefix.
     const deleteCall = mocks.executeSupabaseSql.mock.calls.find(([arg]) =>
       arg.query.includes("DELETE FROM"),
     );
@@ -508,7 +509,7 @@ describe("deleteTempTestUser", () => {
     expect(deleteCall?.[0].query).toContain(`'todos'`);
     expect(deleteCall?.[0].query).toContain(`'user_id'`);
     expect(deleteCall?.[0].query).toContain(`'${UUID}'`);
-    expect(deleteCall?.[0].query).toContain("DO $dyad_cleanup$");
+    expect(deleteCall?.[0].query).toContain("AS $dyad_cleanup$");
 
     // User deleted via the admin API, then column cleared.
     expect(fetchSpy).toHaveBeenCalledWith(
@@ -595,6 +596,73 @@ describe("deleteTempTestUser", () => {
     ]) {
       expect(batch).toContain(`'${table}', '${column}', '${UUID}'`);
     }
+  });
+
+  it("logs each per-table failure the batched sweep reports", async () => {
+    mocks.executeSupabaseSql.mockImplementation(
+      async ({ query }: { query: string }) => {
+        if (query.includes("FROM pg_class")) {
+          return JSON.stringify([
+            { table_name: "todos", column_name: "user_id" },
+            { table_name: "quotes", column_name: "owner_id" },
+          ]);
+        }
+        return JSON.stringify([
+          {
+            failures: [
+              "public.quotes.owner_id: update or delete on table violates foreign key constraint",
+            ],
+          },
+        ]);
+      },
+    );
+    mockFetch(() => new Response(null, { status: 200 }));
+
+    await expect(
+      deleteTempTestUser(makeApp({ supabaseTestUserId: UUID })),
+    ).resolves.toBe(true);
+
+    const batch = mocks.executeSupabaseSql.mock.calls.find(([arg]) =>
+      arg.query.includes("DELETE FROM"),
+    )?.[0].query;
+    expect(batch).toContain(
+      "CREATE OR REPLACE FUNCTION pg_temp.dyad_cleanup()",
+    );
+    expect(batch).toContain(
+      "failures := failures || ('public.quotes.owner_id: '",
+    );
+    expect(batch).toContain("SELECT pg_temp.dyad_cleanup() AS failures;");
+    expect(mocks.warn).toHaveBeenCalledWith(
+      "Best-effort cleanup for test user failed: public.quotes.owner_id: update or delete on table violates foreign key constraint",
+    );
+    // A committed batch is never rerun per table.
+    expect(
+      mocks.executeSupabaseSql.mock.calls.filter(([arg]) =>
+        arg.query.includes("DELETE FROM"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("treats an unexpected batch response as success without per-table detail", async () => {
+    mocks.executeSupabaseSql.mockImplementation(
+      async ({ query }: { query: string }) =>
+        query.includes("FROM pg_class")
+          ? JSON.stringify([{ table_name: "todos", column_name: "user_id" }])
+          : "not-json",
+    );
+    mockFetch(() => new Response(null, { status: 200 }));
+
+    await expect(
+      deleteTempTestUser(makeApp({ supabaseTestUserId: UUID })),
+    ).resolves.toBe(true);
+    expect(
+      mocks.executeSupabaseSql.mock.calls.filter(([arg]) =>
+        arg.query.includes("DELETE FROM"),
+      ),
+    ).toHaveLength(1);
+    expect(mocks.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("Best-effort cleanup"),
+    );
   });
 
   it("falls back to per-table deletes when the batch is rolled back", async () => {
