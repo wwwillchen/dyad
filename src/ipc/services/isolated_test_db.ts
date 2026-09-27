@@ -12,6 +12,7 @@ import {
 import { createNeonTestAccount } from "../utils/neon_test_account";
 import { createNeonTestDataCleaner } from "../utils/neon_test_data";
 import { retryOnLocked } from "../utils/retryOnLocked";
+import { TEST_CASE_HOOK_TIMEOUT_MS } from "./test_case_lifecycle_server";
 import {
   checkRls,
   createTempTestUser,
@@ -601,7 +602,7 @@ async function prepareSupabaseTestUserIsolation({
     const deleted = perTestCase
       ? await deleteTempTestUser(userApp, {
           adminKey,
-          signal: caseSignal ?? AbortSignal.timeout(120_000),
+          signal: caseSignal ?? AbortSignal.timeout(TEST_CASE_HOOK_TIMEOUT_MS),
         })
       : await deleteTempTestUser(userApp);
     if (!deleted)

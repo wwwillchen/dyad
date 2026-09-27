@@ -484,7 +484,7 @@ describe("deleteTempTestUser", () => {
     // Discover query returns one owner column; subsequent DELETEs return ok.
     mocks.executeSupabaseSql.mockImplementation(
       async ({ query }: { query: string }) => {
-        if (query.includes("information_schema.columns")) {
+        if (query.includes("FROM pg_class")) {
           return JSON.stringify([
             { table_name: "todos", column_name: "user_id" },
           ]);
@@ -529,7 +529,7 @@ describe("deleteTempTestUser", () => {
   it("skips owner cleanup rows with unsafe table or column names", async () => {
     mocks.executeSupabaseSql.mockImplementation(
       async ({ query }: { query: string }) => {
-        if (query.includes("information_schema.columns")) {
+        if (query.includes("FROM pg_class")) {
           return JSON.stringify([
             { table_name: "todos;drop", column_name: "user_id" },
             { table_name: "todos", column_name: "user$id" },
@@ -549,6 +549,74 @@ describe("deleteTempTestUser", () => {
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0][0].query).toContain("'safe_table'");
     expect(deleteCalls[0][0].query).toContain("'owner_id'");
+  });
+
+  it("discovers owner columns on real tables only, never views", async () => {
+    mockFetch(() => new Response(null, { status: 200 }));
+
+    await deleteTempTestUser(makeApp({ supabaseTestUserId: UUID }));
+
+    const discoverQuery = mocks.executeSupabaseSql.mock.calls[0][0].query;
+    expect(discoverQuery).toContain("c.relkind IN ('r', 'p')");
+    expect(discoverQuery).toContain("NOT c.relispartition");
+    expect(discoverQuery).not.toContain("information_schema");
+  });
+
+  it("sweeps every discovered owner column in one isolated-failure batch", async () => {
+    mocks.executeSupabaseSql.mockImplementation(
+      async ({ query }: { query: string }) => {
+        if (query.includes("FROM pg_class")) {
+          return JSON.stringify([
+            { table_name: "todos", column_name: "user_id" },
+            { table_name: "quotes", column_name: "owner_id" },
+            { table_name: "notes", column_name: "created_by" },
+          ]);
+        }
+        return "{}";
+      },
+    );
+    mockFetch(() => new Response(null, { status: 200 }));
+
+    await deleteTempTestUser(makeApp({ supabaseTestUserId: UUID }));
+
+    const deleteCalls = mocks.executeSupabaseSql.mock.calls.filter(([arg]) =>
+      arg.query.includes("DELETE FROM"),
+    );
+    expect(deleteCalls).toHaveLength(1);
+    const batch: string = deleteCalls[0][0].query;
+    expect(batch.match(/DELETE FROM/g)).toHaveLength(3);
+    // Each DELETE sits in its own exception block so one failing table
+    // doesn't roll back the rest.
+    expect(batch.match(/EXCEPTION WHEN others/g)).toHaveLength(3);
+    for (const [table, column] of [
+      ["todos", "user_id"],
+      ["quotes", "owner_id"],
+      ["notes", "created_by"],
+    ]) {
+      expect(batch).toContain(`'${table}', '${column}', '${UUID}'`);
+    }
+  });
+
+  it("still deletes the user when the batched row sweep fails", async () => {
+    mocks.executeSupabaseSql.mockImplementation(
+      async ({ query }: { query: string }) => {
+        if (query.includes("FROM pg_class")) {
+          return JSON.stringify([
+            { table_name: "todos", column_name: "user_id" },
+          ]);
+        }
+        throw new Error("Bad Request (400)");
+      },
+    );
+    const fetchSpy = mockFetch(() => new Response(null, { status: 200 }));
+
+    await expect(
+      deleteTempTestUser(makeApp({ supabaseTestUserId: UUID })),
+    ).resolves.toBe(true);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `https://proj-1.supabase.co/auth/v1/admin/users/${UUID}`,
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 
   it("does not run SQL cleanup for a non-UUID user id", async () => {

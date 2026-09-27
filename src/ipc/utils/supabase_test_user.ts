@@ -482,10 +482,18 @@ async function cleanUpRowsOwnedBy({
     return;
   }
   try {
-    const discoverQuery = `SELECT table_name, column_name
-FROM information_schema.columns
-WHERE table_schema = 'public'
-  AND column_name IN (${OWNER_COLUMNS.map((c) => `'${c}'`).join(", ")});`;
+    // pg_class rather than information_schema.columns: the latter also lists
+    // views, which can't be deleted from (55000) and cost a wasted round trip
+    // each. Ordinary and partitioned tables only; partitions are swept via
+    // their parent.
+    const discoverQuery = `SELECT c.relname AS table_name, a.attname AS column_name
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+WHERE n.nspname = 'public'
+  AND c.relkind IN ('r', 'p')
+  AND NOT c.relispartition
+  AND a.attname IN (${OWNER_COLUMNS.map((c) => `'${c}'`).join(", ")});`;
     const raw = await retryTestDatabaseCleanup(
       () =>
         executeSupabaseSql({
@@ -501,6 +509,8 @@ WHERE table_schema = 'public'
     if (!Array.isArray(rows) || rows.length === 0) {
       return;
     }
+    const targets: string[] = [];
+    const deletes: string[] = [];
     for (const row of rows) {
       const table = String(row?.table_name ?? "");
       const column = String(row?.column_name ?? "");
@@ -514,34 +524,47 @@ WHERE table_schema = 'public'
       if (table.includes("$") || column.includes("$")) {
         continue;
       }
-      try {
-        // SECURITY: the regex guards above (SAFE_IDENT_RE for table/column,
-        // UUID_RE for userId) are the LOAD-BEARING injection defense here, not
-        // format(). The values are interpolated into the JS template string
-        // *before* Postgres ever sees the query, so if a value contained a
-        // single quote it would break out of the SQL string literal that wraps
-        // format()'s arguments — format() only escapes what reaches it intact.
-        // The regexes guarantee that: SAFE_IDENT_RE/UUID_RE must NEVER be
-        // relaxed to allow quotes, dollar signs, or backslashes. format(%I, %L)
-        // is a second layer that quotes identifiers/values that already passed
-        // regex validation.
-        await retryTestDatabaseCleanup(
-          () =>
-            executeSupabaseSql({
-              supabaseProjectId: projectId,
-              query: `DO $dyad_cleanup$ BEGIN EXECUTE format('DELETE FROM public.%I WHERE %I = %L', '${table}', '${column}', '${userId}'); END $dyad_cleanup$;`,
-              organizationSlug,
-              signal,
-            }),
-          `Clean up public.${table}.${column} for test user ${userId}`,
-          signal,
-        );
-      } catch (error) {
-        signal?.throwIfAborted();
-        logger.warn(
-          `Best-effort cleanup of public.${table}.${column} for test user failed: ${error}`,
-        );
-      }
+      // SECURITY: the regex guards above (SAFE_IDENT_RE for table/column,
+      // UUID_RE for userId) are the LOAD-BEARING injection defense here, not
+      // format(). The values are interpolated into the JS template string
+      // *before* Postgres ever sees the query, so if a value contained a
+      // single quote it would break out of the SQL string literal that wraps
+      // format()'s arguments — format() only escapes what reaches it intact.
+      // The regexes guarantee that: SAFE_IDENT_RE/UUID_RE must NEVER be
+      // relaxed to allow quotes, dollar signs, or backslashes. format(%I, %L)
+      // is a second layer that quotes identifiers/values that already passed
+      // regex validation.
+      //
+      // Each DELETE gets its own exception block (a subtransaction), so one
+      // failing table — an FK restrict, a non-uuid owner column — doesn't roll
+      // back the others, matching the old one-request-per-table behavior.
+      deletes.push(
+        `BEGIN EXECUTE format('DELETE FROM public.%I WHERE %I = %L', '${table}', '${column}', '${userId}'); EXCEPTION WHEN others THEN RAISE WARNING 'Dyad test cleanup of public.%.% failed: %', '${table}', '${column}', SQLERRM; END;`,
+      );
+      targets.push(`${table}.${column}`);
+    }
+    if (deletes.length === 0) {
+      return;
+    }
+    // One round trip for every table: per-test isolation runs this before each
+    // case, and serial per-table requests could exhaust the hook's timeout.
+    try {
+      await retryTestDatabaseCleanup(
+        () =>
+          executeSupabaseSql({
+            supabaseProjectId: projectId,
+            query: `DO $dyad_cleanup$ BEGIN ${deletes.join(" ")} END $dyad_cleanup$;`,
+            organizationSlug,
+            signal,
+          }),
+        `Clean up ${deletes.length} owner column(s) for test user ${userId}`,
+        signal,
+      );
+    } catch (error) {
+      signal?.throwIfAborted();
+      logger.warn(
+        `Best-effort cleanup of ${targets.join(", ")} for test user failed: ${error}`,
+      );
     }
   } catch (error) {
     signal?.throwIfAborted();

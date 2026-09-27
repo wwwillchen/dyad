@@ -6,6 +6,21 @@ export const TEST_CASE_ENDPOINT_ENV = "DYAD_TEST_CASE_ENDPOINT";
 export const TEST_CASE_TOKEN_ENV = "DYAD_TEST_CASE_TOKEN";
 
 /**
+ * Budget for one before/after hook: tearing down the previous case's isolated
+ * data (row sweep + user delete) and creating the next case's. Each step is a
+ * provider round trip, which slows down sharply when the provider is degraded.
+ */
+export const TEST_CASE_HOOK_TIMEOUT_MS = 180_000;
+/**
+ * The generated fixture's request timeout. Kept above the hook budget so the
+ * server's own timeout error, not a bare client abort, reaches the user.
+ */
+export const TEST_CASE_REQUEST_TIMEOUT_MS = TEST_CASE_HOOK_TIMEOUT_MS + 10_000;
+/** Playwright's fixture timeout, above the request timeout it wraps. */
+export const TEST_CASE_FIXTURE_TIMEOUT_MS =
+  TEST_CASE_REQUEST_TIMEOUT_MS + 30_000;
+
+/**
  * Run-scoped bridge from Playwright's auto fixture to main-owned provider hooks.
  * Privileged database/admin credentials never enter the Playwright process.
  * The caller holds the app's provider/runtime claims until close() has drained.
@@ -33,7 +48,7 @@ export async function startTestCaseLifecycleServer(
     const timer = setTimeout(
       () =>
         controller.abort(new Error("Isolated test data operation timed out.")),
-      110_000,
+      TEST_CASE_HOOK_TIMEOUT_MS,
     );
     try {
       const result = await hook(controller.signal);
