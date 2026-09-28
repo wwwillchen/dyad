@@ -43,6 +43,7 @@ Detailed rules and learnings are in the `rules/` directory. Read the relevant fi
 | [rules/model-effort-and-catalog.md](rules/model-effort-and-catalog.md)     | Sending reasoning effort or output-token limits to models via the engine, editing the remote model catalog, or debugging 400s / truncation from a provider (Gemini thought signatures, OpenRouter context limits, Anthropic 4096 default) |
 
 | [rules/claude-code-backend.md](rules/claude-code-backend.md) | Claude Code backend, model picker, subscription usage, and tool presentation |
+| [rules/user-app-test-isolation.md](rules/user-app-test-isolation.md) | Changing Tests-panel database isolation: Supabase test users, Neon test data cleanup, per-test lifecycle timeouts, or the generated fixture shim |
 
 ## Project setup and lints
 

@@ -21,6 +21,8 @@ import {
 import { E2E_TEST_DIR, TEST_SPEC_GLOB } from "../types/tests";
 import {
   TEST_CASE_ENDPOINT_ENV,
+  TEST_CASE_FIXTURE_TIMEOUT_MS,
+  TEST_CASE_REQUEST_TIMEOUT_MS,
   TEST_CASE_TOKEN_ENV,
 } from "../services/test_case_lifecycle_server";
 
@@ -569,7 +571,7 @@ async function caseRequest(phase: "before" | "after", id: string) {
   const response = await fetch(\`\${caseEndpoint}/\${phase}/\${id}\`, {
     method: "POST",
     headers: { Authorization: \`Bearer \${caseToken}\` },
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(${TEST_CASE_REQUEST_TIMEOUT_MS}),
   });
   if (!response.ok) throw new Error("Dyad couldn't prepare or clean up isolated test data.");
   return await response.json() as Record<string, string>;
@@ -589,7 +591,7 @@ const isolatedTest = !caseEndpoint ? pw.test : pw.test.extend<{ _dyadTestCase: v
       for (const key of credentialKeys) delete process.env[key];
       await caseRequest("after", id);
     }
-  }, { auto: true, timeout: 150_000 }],
+  }, { auto: true, timeout: ${TEST_CASE_FIXTURE_TIMEOUT_MS} }],
 });
 // No browser is launched here, so the config's \`launchOptions.slowMo\` never
 // applies — the connection carries it instead.

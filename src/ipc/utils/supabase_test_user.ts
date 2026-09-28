@@ -482,10 +482,18 @@ async function cleanUpRowsOwnedBy({
     return;
   }
   try {
-    const discoverQuery = `SELECT table_name, column_name
-FROM information_schema.columns
-WHERE table_schema = 'public'
-  AND column_name IN (${OWNER_COLUMNS.map((c) => `'${c}'`).join(", ")});`;
+    // pg_class rather than information_schema.columns: the latter also lists
+    // views, which can't be deleted from (55000) and cost a wasted round trip
+    // each. Ordinary and partitioned tables only; partitions are swept via
+    // their parent.
+    const discoverQuery = `SELECT c.relname AS table_name, a.attname AS column_name
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+WHERE n.nspname = 'public'
+  AND c.relkind IN ('r', 'p')
+  AND NOT c.relispartition
+  AND a.attname IN (${OWNER_COLUMNS.map((c) => `'${c}'`).join(", ")});`;
     const raw = await retryTestDatabaseCleanup(
       () =>
         executeSupabaseSql({
@@ -501,6 +509,7 @@ WHERE table_schema = 'public'
     if (!Array.isArray(rows) || rows.length === 0) {
       return;
     }
+    const targets: { label: string; statement: string }[] = [];
     for (const row of rows) {
       const table = String(row?.table_name ?? "");
       const column = String(row?.column_name ?? "");
@@ -514,38 +523,105 @@ WHERE table_schema = 'public'
       if (table.includes("$") || column.includes("$")) {
         continue;
       }
+      // SECURITY: the regex guards above (SAFE_IDENT_RE for table/column,
+      // UUID_RE for userId) are the LOAD-BEARING injection defense here, not
+      // format(). The values are interpolated into the JS template string
+      // *before* Postgres ever sees the query, so if a value contained a
+      // single quote it would break out of the SQL string literal that wraps
+      // format()'s arguments — format() only escapes what reaches it intact.
+      // The regexes guarantee that: SAFE_IDENT_RE/UUID_RE must NEVER be
+      // relaxed to allow quotes, dollar signs, or backslashes. format(%I, %L)
+      // is a second layer that quotes identifiers/values that already passed
+      // regex validation.
+      targets.push({
+        label: `public.${table}.${column}`,
+        statement: `EXECUTE format('DELETE FROM public.%I WHERE %I = %L', '${table}', '${column}', '${userId}');`,
+      });
+    }
+    if (targets.length === 0) {
+      return;
+    }
+    const runCleanup = (query: string, context: string) =>
+      retryTestDatabaseCleanup(
+        () =>
+          executeSupabaseSql({
+            supabaseProjectId: projectId,
+            query,
+            organizationSlug,
+            signal,
+          }),
+        context,
+        signal,
+      );
+    // Fast path: one round trip for every table, since per-test isolation runs
+    // this before each case. Each DELETE gets its own exception block (a
+    // subtransaction) so one failing table — an FK restrict, a non-uuid owner
+    // column — doesn't roll back the others. A DO block can't return rows, so
+    // the batch is a session-temporary function whose result carries each
+    // table's error back for the same per-table log line as the fallback.
+    let batchResult: string | undefined;
+    try {
+      batchResult = await runCleanup(
+        `CREATE OR REPLACE FUNCTION pg_temp.dyad_cleanup() RETURNS text[] LANGUAGE plpgsql AS $dyad_cleanup$
+DECLARE failures text[] := '{}';
+BEGIN ${targets
+          .map(
+            ({ label, statement }) =>
+              `BEGIN ${statement} EXCEPTION WHEN others THEN failures := failures || ('${label}: ' || SQLERRM); END;`,
+          )
+          .join(" ")} RETURN failures; END $dyad_cleanup$;
+SELECT pg_temp.dyad_cleanup() AS failures;`,
+        `Clean up ${targets.length} owner column(s) for test user ${userId}`,
+      );
+    } catch (error) {
+      signal?.throwIfAborted();
+      // `WHEN others` can't catch QUERY_CANCELED, so a statement timeout rolls
+      // back the whole batch, including deletes that had succeeded. Fall back
+      // to one committed request per table. If that outruns the lifecycle
+      // budget, the abort propagates before the user is deleted, keeping the
+      // recovery marker so startup reconciliation retries the sweep.
+      logger.warn(
+        `Batched cleanup for test user failed; retrying per table: ${error}`,
+      );
+    }
+    if (batchResult !== undefined) {
+      // The deletes committed; reporting is best-effort. An unexpected response
+      // shape just means no per-table detail, never a rerun of the sweep.
+      for (const failure of parseCleanupFailures(batchResult)) {
+        logger.warn(`Best-effort cleanup for test user failed: ${failure}`);
+      }
+      return;
+    }
+    for (const { label, statement } of targets) {
       try {
-        // SECURITY: the regex guards above (SAFE_IDENT_RE for table/column,
-        // UUID_RE for userId) are the LOAD-BEARING injection defense here, not
-        // format(). The values are interpolated into the JS template string
-        // *before* Postgres ever sees the query, so if a value contained a
-        // single quote it would break out of the SQL string literal that wraps
-        // format()'s arguments — format() only escapes what reaches it intact.
-        // The regexes guarantee that: SAFE_IDENT_RE/UUID_RE must NEVER be
-        // relaxed to allow quotes, dollar signs, or backslashes. format(%I, %L)
-        // is a second layer that quotes identifiers/values that already passed
-        // regex validation.
-        await retryTestDatabaseCleanup(
-          () =>
-            executeSupabaseSql({
-              supabaseProjectId: projectId,
-              query: `DO $dyad_cleanup$ BEGIN EXECUTE format('DELETE FROM public.%I WHERE %I = %L', '${table}', '${column}', '${userId}'); END $dyad_cleanup$;`,
-              organizationSlug,
-              signal,
-            }),
-          `Clean up public.${table}.${column} for test user ${userId}`,
-          signal,
+        await runCleanup(
+          `DO $dyad_cleanup$ BEGIN ${statement} END $dyad_cleanup$;`,
+          `Clean up ${label} for test user ${userId}`,
         );
       } catch (error) {
         signal?.throwIfAborted();
         logger.warn(
-          `Best-effort cleanup of public.${table}.${column} for test user failed: ${error}`,
+          `Best-effort cleanup of ${label} for test user failed: ${error}`,
         );
       }
     }
   } catch (error) {
     signal?.throwIfAborted();
     logger.warn(`Could not discover owner columns for cleanup: ${error}`);
+  }
+}
+
+/**
+ * Reads the per-table errors the batched cleanup returns as
+ * `[{ failures: ["public.t.c: <error>", ...] }]`. Anything else yields none.
+ */
+function parseCleanupFailures(raw: string): string[] {
+  try {
+    const rows = JSON.parse(raw);
+    const failures = Array.isArray(rows) ? rows[0]?.failures : undefined;
+    return Array.isArray(failures) ? failures.map(String) : [];
+  } catch {
+    return [];
   }
 }
 
