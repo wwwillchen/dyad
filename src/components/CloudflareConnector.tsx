@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ExternalLink, Loader2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ipc } from "@/ipc/types";
+import { showError } from "@/lib/toast";
 import type {
   CloudflareConnection,
   CloudflareTargetSummary,
@@ -45,6 +46,9 @@ function deployTriggerText(target: { rootDirectory: string; label: string }) {
     ? "Deploys whenever a sync pushes new commits to GitHub."
     : `Deploys whenever a sync pushes changes inside ${target.label} to GitHub.`;
 }
+
+/** How long a requested check shows its spinner at the least. */
+const RECHECK_MIN_SPIN_MS = 400;
 
 const noticeClass =
   "bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-3 text-sm text-blue-800 dark:text-blue-200";
@@ -162,6 +166,68 @@ function TokenForm() {
 // Account, target and readiness
 // ---------------------------------------------------------------------------
 
+/**
+ * The failure a Refresh reports. A query with no data already shows its error
+ * in the view, so only a query that kept earlier data is reported.
+ */
+function hiddenRefetchError(
+  results: { data?: unknown; error: Error | null }[],
+): Error | null {
+  return (
+    results.find((result) => result.error && result.data !== undefined)
+      ?.error ?? null
+  );
+}
+
+/**
+ * Re-runs a check the tab otherwise repeats on its own schedule. Only a check
+ * asked for here shows progress or reports a failure, so background refetches
+ * leave what is on screen alone.
+ */
+function RecheckButton({
+  onCheck,
+  className,
+}: {
+  onCheck: () => Promise<{ error: Error | null }>;
+  className?: string;
+}) {
+  const [checking, setChecking] = useState(false);
+  const check = async () => {
+    setChecking(true);
+    try {
+      // A check that returns instantly barely shows, so the spinner stays
+      // long enough to confirm the click landed.
+      const [result] = await Promise.all([
+        onCheck(),
+        new Promise((resolve) => setTimeout(resolve, RECHECK_MIN_SPIN_MS)),
+      ]);
+      // A toast, because this button can move or unmount when the refresh
+      // changes the view, and a toast does not linger beside newer data.
+      if (result.error) showError(errorMessage(result.error));
+    } finally {
+      setChecking(false);
+    }
+  };
+  return (
+    <div className={className}>
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        onClick={check}
+        disabled={checking}
+      >
+        {checking ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <RefreshCw className="h-3 w-3" />
+        )}
+        Refresh
+      </Button>
+    </div>
+  );
+}
+
 function ConnectedAccount({ appId }: { appId: number }) {
   const accounts = useCloudflareAccounts();
   const status = useCloudflareAppStatus({ appId });
@@ -219,8 +285,9 @@ function ConnectedAccount({ appId }: { appId: number }) {
         <p>
           Dyad deploys folders that contain a Wrangler config (wrangler.jsonc,
           wrangler.json or wrangler.toml). Add a Worker to this app, then sync
-          it to GitHub.
+          it to GitHub and click Refresh.
         </p>
+        <RecheckButton className="mt-3" onCheck={() => status.refetch()} />
       </div>
     );
   }
@@ -233,9 +300,33 @@ function ConnectedAccount({ appId }: { appId: number }) {
   const connection = connections.find(
     (candidate) => candidate.rootDirectory === folder.rootDirectory,
   );
+  // Looks for Wrangler configs added since the tab opened, and re-reads the
+  // accounts when they are part of the view. While a folder is being set up,
+  // TargetSetup shows the button instead and adds its own queries.
+  const refreshStatus = () => status.refetch();
+  const refresh = async () => {
+    const results = await Promise.all([
+      refreshStatus(),
+      ...(connection ? [] : [accounts.refetch()]),
+    ]);
+    return { error: hiddenRefetchError(results) };
+  };
+  const settingUp =
+    !connection &&
+    target !== null &&
+    accountList !== undefined &&
+    accountList.length > 0 &&
+    status.data.synced &&
+    accountId !== null;
 
   return (
     <div className="space-y-4" data-testid="cloudflare-connector">
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        {folders.length > 1 &&
+          "Each folder here deploys to its own Worker, and each connected one deploys when a sync pushes changes to it. "}
+        Dyad finds deployable Cloudflare apps on its own, but you can click
+        Refresh to pick up recent changes.
+      </p>
       {folders.length > 1 && (
         <TargetList
           folders={folders}
@@ -243,6 +334,19 @@ function ConnectedAccount({ appId }: { appId: number }) {
           selected={folder.rootDirectory}
           onSelect={setChosenTarget}
         />
+      )}
+      {!settingUp && (
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 -mt-2"
+          data-testid="cloudflare-target-rescan"
+        >
+          {folders.length === 1 && (
+            <span className="text-sm text-gray-600 dark:text-gray-400 truncate">
+              {folder.label}
+            </span>
+          )}
+          <RecheckButton className="ml-auto" onCheck={refresh} />
+        </div>
       )}
 
       {connection ? (
@@ -336,6 +440,7 @@ function ConnectedAccount({ appId }: { appId: number }) {
               accountId={accountId}
               target={target}
               connections={status.data.connections}
+              onRefresh={refreshStatus}
             />
           ) : null}
         </>
@@ -369,10 +474,6 @@ function TargetList({
 }) {
   return (
     <div className="space-y-2" data-testid="cloudflare-target-list">
-      <p className="text-sm text-gray-600 dark:text-gray-400">
-        Each folder here deploys to its own Worker, and each connected one
-        deploys when a sync pushes changes to it.
-      </p>
       <ul className="border rounded-md divide-y">
         {folders.map((target) => {
           const connection = connections.find(
@@ -419,31 +520,65 @@ function TargetSetup({
   accountId,
   target,
   connections,
+  onRefresh,
 }: {
   appId: number;
   accountId: string;
   target: CloudflareTargetSummary;
   connections: CloudflareConnection[];
+  /** Re-reads the app's folders; the setup adds its own queries to it. */
+  onRefresh: () => Promise<{ data?: unknown; error: Error | null }>;
 }) {
   const access = useCloudflareRepoAccess({ appId, accountId });
   const workers = useCloudflareWorkers({ accountId });
 
+  // Refresh sits beside whatever this view shows, including an error from
+  // one of these queries, so it has to retry them as well.
+  const refresh = async () => {
+    const results = await Promise.all([
+      onRefresh(),
+      access.refetch(),
+      workers.refetch(),
+    ]);
+    return { error: hiddenRefetchError(results) };
+  };
+  const toolbar = <RecheckButton className="ml-auto" onCheck={refresh} />;
+  // Until the form is up, the toolbar gets a row of its own here.
+  const toolbarRow = (
+    <div
+      className="flex flex-wrap justify-end gap-2 -mt-2"
+      data-testid="cloudflare-target-rescan"
+    >
+      {toolbar}
+    </div>
+  );
   if (access.isLoading || workers.isLoading) {
     return (
-      <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        Checking Cloudflare...
-      </div>
+      <>
+        {toolbarRow}
+        <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Checking Cloudflare...
+        </div>
+      </>
     );
   }
   if (!access.data || !workers.data) {
     const error = access.error ?? workers.error;
-    return error ? (
-      <div className={errorClass}>{errorMessage(error)}</div>
-    ) : null;
+    return (
+      <>
+        {toolbarRow}
+        {error && <div className={errorClass}>{errorMessage(error)}</div>}
+      </>
+    );
   }
   if (!access.data.hasAccess) {
-    return <RepoAccessPrompt />;
+    return (
+      <>
+        {toolbarRow}
+        <RepoAccessPrompt />
+      </>
+    );
   }
   return (
     <WorkerForm
@@ -454,6 +589,7 @@ function TargetSetup({
       inUseWorkerNames={connections
         .filter((connection) => connection.accountId === accountId)
         .map((connection) => connection.workerName)}
+      toolbar={toolbar}
     />
   );
 }
@@ -506,6 +642,7 @@ function WorkerForm({
   target,
   workers,
   inUseWorkerNames,
+  toolbar,
 }: {
   appId: number;
   accountId: string;
@@ -513,6 +650,7 @@ function WorkerForm({
   workers: CloudflareWorkerSummary[];
   /** Workers another folder of this app already deploys to. */
   inUseWorkerNames: string[];
+  toolbar: ReactNode;
 }) {
   // A Worker holds one script, so one already deployed from another folder is
   // not a choice here. It still counts as a taken name.
@@ -609,7 +747,7 @@ function WorkerForm({
         if (canSubmit) submit(false);
       }}
     >
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           type="button"
           size="sm"
@@ -627,6 +765,7 @@ function WorkerForm({
         >
           Use existing Worker
         </Button>
+        {toolbar}
       </div>
 
       {mode === "create" ? (
