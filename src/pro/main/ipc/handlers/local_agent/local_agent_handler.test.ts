@@ -313,10 +313,13 @@ vi.mock("@/ipc/utils/provider_options", () => ({
 }));
 
 vi.mock("@/ipc/utils/mcp_manager", () => ({
+  MCP_LIST_TOOLS_TIMEOUT_MS: 10_000,
+  McpListToolsTimeoutError: class extends Error {},
   mcpManager: {
     getClient: vi.fn(async () => ({
       tools: vi.fn(async () => mockMcpToolSet),
     })),
+    listToolsWithin: vi.fn(async () => mockMcpToolSet),
   },
 }));
 

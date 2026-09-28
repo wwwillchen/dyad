@@ -460,12 +460,10 @@ export function registerMcpHandlers() {
     // Caps a hung server (often unconnected OAuth) so it doesn't
     // freeze the whole tools list.
     const LIST_TOOLS_TIMEOUT_MS = 8_000;
-    // Cleared after the race so a late reject stays unobserved.
-    let timeoutId: NodeJS.Timeout | undefined;
-    // Swallow a late `mainOp` reject after the timeout wins.
-    const mainOp = (async () => {
-      const client = await mcpManager.getClient(serverId);
-      const remoteTools = await client.tools();
+    try {
+      const remoteTools = await mcpManager.listToolsWithin(serverId, {
+        timeoutMs: LIST_TOOLS_TIMEOUT_MS,
+      });
       const tools = await Promise.all(
         Object.entries(remoteTools).map(async ([name, mcpTool]) => ({
           name,
@@ -476,27 +474,7 @@ export function registerMcpHandlers() {
         })),
       );
       return { tools, status: "ok" as const };
-    })();
-    mainOp.catch(() => undefined);
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(
-        () =>
-          reject(
-            new Error(
-              `Timed out after ${LIST_TOOLS_TIMEOUT_MS / 1000}s waiting for tools from server ${serverId}.`,
-            ),
-          ),
-        LIST_TOOLS_TIMEOUT_MS,
-      );
-    });
-    // Same guard for a late timeout reject after the race resolves.
-    timeoutPromise.catch(() => undefined);
-    try {
-      const result = await Promise.race([mainOp, timeoutPromise]);
-      clearTimeout(timeoutId);
-      return result;
     } catch (e) {
-      clearTimeout(timeoutId);
       // Tear down the cached client so a hung transport doesn't leak
       // an FD on every subsequent poll. Fire-and-forget: awaiting a hung
       // transport's close would hang this handler.

@@ -291,6 +291,7 @@ export const nonRemoteDispatchOrEnqueueInventory = [
   owned("ipc/utils/codex_subscription_provider.ts", 1),
   owned("ipc/utils/external_model_billing.ts", 1),
   owned("ipc/utils/fallback_ai_model.ts", 1),
+  owned("ipc/utils/model_request_logging.ts", 1),
   // A Web ReadableStream controller: enqueue pushes response body chunks and
   // is unrelated to distributed-machine transport.
   owned("pro/main/ipc/handlers/local_agent/tools/engine_fetch.ts", 1),
