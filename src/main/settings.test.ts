@@ -106,6 +106,7 @@ describe("readSettings", () => {
       expect(scrubSettings(result)).toMatchInlineSnapshot(`
         {
           "autoApproveNonSchemaSql": true,
+          "autoApproveSafeMcpTools": true,
           "autoExpandPreviewPanel": true,
           "autoFixReviewIssues": false,
           "chatgptFastMode": false,
@@ -181,6 +182,16 @@ describe("readSettings", () => {
       expect(result.blockUnsafeNpmPackages).toBeUndefined();
       expect(result.enableAutoUpdate).toBe(true);
       expect(result.releaseChannel).toBe("stable");
+      expect(result.autoApproveSafeMcpTools).toBe(true);
+    });
+
+    it("preserves an explicit opt-out of safe MCP auto-approval", () => {
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(
+        JSON.stringify({ autoApproveSafeMcpTools: false }),
+      );
+
+      expect(readSettings().autoApproveSafeMcpTools).toBe(false);
     });
 
     it("should treat existing settings files without hasRunBefore as already run", () => {
@@ -550,6 +561,7 @@ describe("readSettings", () => {
       expect(scrubSettings(result)).toMatchInlineSnapshot(`
         {
           "autoApproveNonSchemaSql": true,
+          "autoApproveSafeMcpTools": true,
           "autoExpandPreviewPanel": true,
           "autoFixReviewIssues": false,
           "chatgptFastMode": false,

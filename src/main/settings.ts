@@ -79,6 +79,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   enableAdvancedSubagents: false,
   autoFixReviewIssues: false,
   autoApproveNonSchemaSql: true,
+  autoApproveSafeMcpTools: true,
   autoExpandPreviewPanel: true,
   disableSandboxedE2eTests: false,
   enableContextCompaction: true,
