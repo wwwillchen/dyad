@@ -23,6 +23,7 @@ import {
   ModelMessage,
   TextPart,
   ImagePart,
+  FilePart,
   streamText,
   ToolSet,
   TextStreamPart,
@@ -194,7 +195,11 @@ import { readSettings, setSentinelActiveChat } from "@/main/settings";
 import { recordAppSizeForSession } from "@/main/last_session_store";
 import {
   buildLocalAgentAttachmentInfo,
+  assertInlineAttachmentsFit,
+  buildInlinePdfFileParts,
   getInlineImageMimeType,
+  hasInlineMediaParts,
+  INLINE_ATTACHMENTS_TOO_LARGE_MESSAGE,
   hasScriptReadableAttachment,
   isTextFile,
   resolveAttachmentDeliveryConfig,
@@ -1478,6 +1483,15 @@ export function registerChatStreamHandlers() {
         }
       }
 
+      // Before registering the attachments, so a rejected turn leaves no
+      // manifest entries behind.
+      assertInlineAttachmentsFit(
+        pendingStoredAttachments.map((attachment, index) => ({
+          ...attachment,
+          sizeBytes: manifestEntries[index].sizeBytes,
+        })),
+        userPrompt.length,
+      );
       const finalizedManifestEntries =
         await appendAttachmentManifestEntriesWithLogicalNames(
           appPath,
@@ -2519,6 +2533,8 @@ This conversation includes one or more image attachments. When the user uploads 
                     attachmentDeliveryConfig.includeImageParts,
                   inlineTextAttachments:
                     attachmentDeliveryConfig.inlineTextAttachments,
+                  pdfFileParts:
+                    await buildInlinePdfFileParts(storedAttachments),
                 },
               );
             }
@@ -2535,6 +2551,13 @@ This conversation includes one or more image attachments. When the user uploads 
                   .update(messages)
                   .set({ aiMessagesJson: userAiMessagesJson })
                   .where(eq(messages.id, userMessageId));
+              } else if (hasInlineMediaParts(chatMessages[lastUserIndex])) {
+                // Without the structured message the model would only see
+                // the plain-text prompt, silently missing the attachments.
+                throw new DyadError(
+                  INLINE_ATTACHMENTS_TOO_LARGE_MESSAGE,
+                  DyadErrorKind.Validation,
+                );
               }
             }
           }
@@ -3415,9 +3438,11 @@ async function prepareMessageWithAttachments(
   {
     includeImageAttachments = true,
     inlineTextAttachments = true,
+    pdfFileParts = [],
   }: {
     includeImageAttachments?: boolean;
     inlineTextAttachments?: boolean;
+    pdfFileParts?: FilePart[];
   } = {},
 ): Promise<ModelMessage> {
   let textContent = message.content;
@@ -3442,7 +3467,7 @@ async function prepareMessageWithAttachments(
   }
 
   // For user messages with attachments, create a content array
-  const contentParts: (TextPart | ImagePart)[] = [];
+  const contentParts: (TextPart | ImagePart | FilePart)[] = [];
 
   // Add the text part first with possibly modified content
   contentParts.push({
@@ -3476,6 +3501,8 @@ async function prepareMessageWithAttachments(
       }
     }
   }
+
+  contentParts.push(...pdfFileParts);
 
   // Return the message with the content array
   return {

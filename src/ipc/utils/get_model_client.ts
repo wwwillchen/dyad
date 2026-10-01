@@ -34,6 +34,7 @@ import { resolveBuiltinModelAlias } from "../shared/remote_language_model_catalo
 import { LanguageModelProvider } from "@/ipc/types";
 import {
   createDyadEngine,
+  isDyadEngineFreeModel,
   type DyadEngineProvider,
 } from "./llm_engine_provider";
 
@@ -83,6 +84,20 @@ export interface ModelClient {
   reasoningEffortProviderId?: string;
   /** Actual source, including the active candidate of an Auto fallback chain. */
   getRuntimeModel?: () => ModelSelection;
+}
+
+// Providers whose APIs reject or silently drop inline PDF file parts.
+const PDF_UNSUPPORTED_PROVIDERS = new Set(["xai", "ollama", "lmstudio"]);
+
+/**
+ * Whether this client can send inline PDF file parts. Unknown providers are
+ * assumed to support them; their API errors surface like any other.
+ */
+export function modelClientSupportsPdfInput(modelClient: ModelClient) {
+  if (isDyadEngineFreeModel(modelClient.model)) {
+    return false;
+  }
+  return !PDF_UNSUPPORTED_PROVIDERS.has(modelClient.builtinProviderId ?? "");
 }
 
 async function createResolvedAliasClient({

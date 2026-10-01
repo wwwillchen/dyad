@@ -27,6 +27,7 @@ vi.mock("./codex_subscription_provider", () => ({
 import type { UserSettings } from "../../lib/schemas";
 import {
   getModelClient,
+  modelClientSupportsPdfInput,
   setModelClientFetchForTesting,
 } from "./get_model_client";
 import {
@@ -987,4 +988,41 @@ describe("getModelClient", () => {
       OPENROUTER_APP_CATEGORIES,
     );
   });
+});
+
+describe("modelClientSupportsPdfInput", () => {
+  const proSettings = {
+    enableDyadPro: true,
+    providerSettings: { auto: { apiKey: { value: "test-pro" } } },
+  } as unknown as UserSettings;
+  const apiKeySettings = {
+    enableDyadPro: false,
+    providerSettings: {
+      openai: { apiKey: { value: "test-openai" } },
+      google: { apiKey: { value: "test-google" } },
+    },
+  } as unknown as UserSettings;
+
+  test.each([
+    ["openai", "gpt-5.5", "api key", true, apiKeySettings],
+    ["google", "gemini-3.5-flash", "api key", true, apiKeySettings],
+    // Every paid Engine route passes PDF file parts through.
+    ["openai", "gpt-5.5", "pro", true, proSettings],
+    ["anthropic", "claude-sonnet-4-20250514", "pro", true, proSettings],
+    ["google", "gemini-3.5-flash", "pro", true, proSettings],
+    ["openrouter", "qwen/qwen3-coder", "pro", true, proSettings],
+    // The Engine's free route rejects file parts.
+    ["auto", "free-pro", "pro", false, proSettings],
+    ["lmstudio", "local-model", "api key", false, apiKeySettings],
+    ["ollama", "local-model", "pro", false, proSettings],
+  ] as const)(
+    "%s/%s via %s -> %s",
+    async (provider, name, _connection, expected, settings) => {
+      const { modelClient } = await getModelClient(
+        { provider, name },
+        settings,
+      );
+      expect(modelClientSupportsPdfInput(modelClient)).toBe(expected);
+    },
+  );
 });

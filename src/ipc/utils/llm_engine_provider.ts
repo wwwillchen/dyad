@@ -88,6 +88,14 @@ Creates a chat model for text generation.
   anthropic(modelId: ExampleChatModelId, chatParams: ChatParams): LanguageModel;
 }
 
+// The Engine's free route only accepts text and image parts, so callers need
+// to know when a model uses it before sending files.
+const engineFreeModels = new WeakSet<object>();
+
+export function isDyadEngineFreeModel(model: LanguageModel) {
+  return typeof model === "object" && engineFreeModels.has(model);
+}
+
 export function createDyadEngine(
   options: ExampleProviderSettings,
 ): DyadEngineProvider {
@@ -301,7 +309,11 @@ export function createDyadEngine(
   const createFreeChatModel = (
     modelId: ExampleChatModelId,
     chatParams: ChatParams,
-  ) => createChatModel(modelId, chatParams, "/free");
+  ) => {
+    const model = createChatModel(modelId, chatParams, "/free");
+    engineFreeModels.add(model);
+    return model;
+  };
 
   const createResponsesModel = (
     modelId: ExampleChatModelId,
