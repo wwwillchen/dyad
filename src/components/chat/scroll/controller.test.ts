@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createChatScrollController } from "./controller";
 import { transition } from "./transition";
 import type { ChatScrollEvent, ChatScrollState } from "./state";
-import { restoreChatScrollPosition } from "./restore";
+import { isChatScrollFollowing, restoreChatScrollPosition } from "./restore";
 
 const disposals: (() => void)[] = [];
 afterEach(() => {
@@ -68,6 +68,21 @@ function setup() {
 }
 
 describe("chat follow controller", () => {
+  it("mirrors follow intent onto the scroller even when growth has not been applied yet", () => {
+    const h = setup();
+    h.flush();
+    h.grow(4000); // Streamed growth lands before the follow frame runs.
+    expect(
+      h.scroller.scrollHeight - h.scroller.clientHeight - h.scroller.scrollTop,
+    ).toBeGreaterThan(4);
+    expect(isChatScrollFollowing(h.scroller)).toBe(true);
+    h.scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -200 }));
+    h.position(600);
+    expect(isChatScrollFollowing(h.scroller)).toBe(false);
+    h.controller.dispose();
+    expect(isChatScrollFollowing(h.scroller)).toBeUndefined();
+  });
+
   it("coalesces growth and follows the latest measurement, not a captured height", () => {
     const h = setup();
     h.grow(4000);
@@ -204,6 +219,16 @@ describe("chat follow controller", () => {
     h.grow(4000);
     h.flush();
     expect(h.scroller.scrollTop).toBe(2400);
+  });
+
+  it("restores bottom intent even when remeasurement changes the old pixel offset", () => {
+    const h = setup();
+    restoreChatScrollPosition(h.scroller, 300, true);
+    h.flush();
+    h.grow(4000);
+    h.flush();
+    expect(h.scroller.scrollTop).toBe(3800);
+    expect(h.onFollowing).toHaveBeenLastCalledWith(true);
   });
 
   it("preserves an explicitly restored tab position across queued frames and later growth", () => {
