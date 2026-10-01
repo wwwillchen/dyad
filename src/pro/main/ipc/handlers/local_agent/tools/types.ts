@@ -68,8 +68,19 @@ export const APP_MUTATING_TOOL_NAMES = [
 export type AppMutatingToolName = (typeof APP_MUTATING_TOOL_NAMES)[number];
 
 export interface AgentContext {
+  /** Refresh the final callable inventory immediately before safety review. */
+  refreshShellReviewTools?: () => void;
   /** Recovery journal is needed only for Claude-owned conversations. */
   persistQuestionnaireRecovery?: boolean;
+  /** Host-recorded evidence for mandatory shell review, shared across tool calls. */
+  shellReviewContext?: {
+    tools: { name: string; description: string; available: boolean }[];
+    history: {
+      tool: string;
+      args: string;
+      outcome: "returned" | "execution_failed" | "not_executed_or_denied";
+    }[];
+  };
   /** Accepted root settings, including resolved mode and billing account. */
   inferenceSettings?: UserSettings;
   /** Owner-scoped identity used to join only this root turn's mutations. */
@@ -236,6 +247,7 @@ export interface AgentContext {
   resyncResponseFromDb?: () => Promise<void>;
   requireConsent: (params: {
     toolName: string;
+    confirmation?: "shell-approval" | "shell-review-retry";
     toolDescription?: string | null;
     inputPreview?: string | null;
     metadata?: SqlConsentMetadata | null;
@@ -490,7 +502,7 @@ export type ToolResult = string;
 export type ToolDescriptionContext = Pick<
   AgentContext,
   "runTypeScriptForWholeProject" | "suggestablePlugins"
->;
+> & { appPath?: string };
 
 export interface ToolDefinition<T = any> {
   readonly name: string;

@@ -1,4 +1,7 @@
 import { withReferencedAppRead } from "./tools/referenced_app_read";
+import { recordShellReviewOutcome } from "./shell_review_history";
+import { runShellTool } from "./tools/run_shell";
+import { isShellExperimentAvailable } from "@/shared/shell_capability";
 /**
  * Tool definitions for Local Agent v2
  * Each tool includes a zod schema, description, and execute function
@@ -184,6 +187,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   updateTodosTool,
   runTypeChecksTool,
   runPreCommitTool,
+  runShellTool,
   runBuildTool,
   runTestsTool,
   generateTestAssertionsTool,
@@ -290,6 +294,7 @@ export async function requireAgentToolConsent(
   params: {
     chatId: number;
     toolName: AgentToolName;
+    confirmation?: "shell-approval" | "shell-review-retry";
     toolDescription?: string | null;
     inputPreview?: string | null;
     metadata?: SqlConsentMetadata | null;
@@ -303,7 +308,13 @@ export async function requireAgentToolConsent(
 ): Promise<boolean> {
   const current = getAgentToolConsent(params.toolName);
 
-  if (current === "always") return true;
+  if (params.confirmation && params.toolName !== "run_shell")
+    throw new DyadError(
+      "Shell confirmation requires run_shell",
+      DyadErrorKind.Validation,
+    );
+  if (current === "never" && params.confirmation) return false;
+  if (current === "always" && !params.confirmation) return true;
   if (current === "never")
     throw new DyadError(
       "Should not ask for consent for a tool marked as 'never'",
@@ -311,6 +322,7 @@ export async function requireAgentToolConsent(
     );
 
   if (
+    !params.confirmation &&
     shouldAutoApproveAgentTool({
       toolName: params.toolName,
       metadata: params.metadata,
@@ -323,6 +335,8 @@ export async function requireAgentToolConsent(
   rememberUserInputSubscriber(event.sender);
   const requestId = userInputRegistry.request({
     kind: "agent-consent",
+    confirmation: params.confirmation,
+    allowAlways: params.confirmation ? false : undefined,
     chatId: params.chatId,
     toolName: params.toolName,
     toolDescription: params.toolDescription,
@@ -483,6 +497,7 @@ export const BUILD_MODE_TOOL_NAMES = [
 const BUILD_MODE_TOOL_NAME_SET = new Set<AgentToolName>(BUILD_MODE_TOOL_NAMES);
 
 export async function estimateAgentToolTokens({
+  appPath,
   toolProfile = "agent",
   readOnly = false,
   planModeOnly = false,
@@ -528,8 +543,11 @@ export async function estimateAgentToolTokens({
   reinstallAndRestartAppToolAvailable?: boolean;
   mcpToolDefs?: McpToolDef[];
   suggestablePlugins?: SuggestablePlugin[];
+  appPath?: string;
 }): Promise<number> {
   const estimateContext = {
+    appPath,
+    freeModelMode,
     isDyadPro,
     frameworkType,
     supabaseProjectId,
@@ -709,6 +727,17 @@ export function shouldIncludeTool(
   options: BuildAgentToolSetOptions = {},
   phase: "discovery" | "invocation" = "discovery",
 ): boolean {
+  if (
+    tool.name === "run_shell" &&
+    !isShellExperimentAvailable({
+      settings: ctx.inferenceSettings ?? readSettings(),
+      isDyadPro: ctx.isDyadPro,
+      ...options,
+      freeModelMode: options.freeModelMode ?? ctx.freeModelMode,
+      isChild: !!ctx.mutationActivityOwner?.persona,
+    })
+  )
+    return false;
   if (getAgentToolConsent(tool.name) === "never") {
     return false;
   }
@@ -779,14 +808,60 @@ export function shouldIncludeTool(
   return true;
 }
 
-/**
- * Build ToolSet for AI SDK from tool definitions
- */
+/** Refresh reviewer context from tools the agent can actually invoke. */
+export function refreshShellReviewToolInventory(
+  ctx: AgentContext,
+  registeredTools: Record<string, { description?: string }>,
+  options: BuildAgentToolSetOptions = {},
+): void {
+  if (!ctx.shellReviewContext) return;
+  const definitions = new Map<string, (typeof TOOL_DEFINITIONS)[number]>(
+    TOOL_DEFINITIONS.map((tool) => [tool.name, tool]),
+  );
+  for (const entry of ctx.shellReviewContext.tools) {
+    const definition = definitions.get(entry.name);
+    const registered = registeredTools[entry.name];
+    entry.available =
+      !!registered &&
+      (!definition ||
+        shouldIncludeTool(definition, ctx, options, "invocation"));
+    if (registered?.description) entry.description = registered.description;
+  }
+  for (const [name, tool] of Object.entries(registeredTools)) {
+    if (
+      name !== "run_shell" &&
+      !ctx.shellReviewContext.tools.some((entry) => entry.name === name)
+    ) {
+      const definition = definitions.get(name);
+      ctx.shellReviewContext.tools.push({
+        name,
+        description: tool.description ?? "",
+        available:
+          !definition ||
+          shouldIncludeTool(definition, ctx, options, "invocation"),
+      });
+    }
+  }
+}
+
+/** Build ToolSet for AI SDK from tool definitions. */
 export function buildAgentToolSet(
   ctx: AgentContext,
   options: BuildAgentToolSetOptions = {},
 ) {
   const toolSet: Record<string, any> = {};
+  if (shouldIncludeTool(runShellTool, ctx, options)) {
+    ctx.shellReviewContext = {
+      tools: TOOL_DEFINITIONS.filter((tool) => tool.name !== "run_shell").map(
+        (tool) => ({
+          name: tool.name,
+          description: resolveToolDescription(tool, ctx),
+          available: false, // Resolved from the callable tool set after registration.
+        }),
+      ),
+      history: [],
+    };
+  }
 
   for (const tool of TOOL_DEFINITIONS) {
     if (!shouldIncludeTool(tool, ctx, options)) {
@@ -802,6 +877,7 @@ export function buildAgentToolSet(
       ) => {
         const toolCallId = executionOptions?.toolCallId;
         let presentationXml = "";
+        let executionStarted = false;
         const invocationCtx =
           toolCallId && ctx.onToolActivity
             ? {
@@ -882,7 +958,9 @@ export function buildAgentToolSet(
           // Consent can wait indefinitely for the user. Resolve it before
           // registering mutation activity so cancellation cannot let delayed
           // consent enter a closed actor generation.
-          await requireToolConsentOrThrow(tool, processedArgs, invocationCtx);
+          // Shell resolves consent after classification, including mandatory one-time approval.
+          if (tool.name !== "run_shell")
+            await requireToolConsentOrThrow(tool, processedArgs, invocationCtx);
           const invoke = async () => {
             if (
               !shouldIncludeTool(tool, invocationCtx, options, "invocation")
@@ -901,12 +979,14 @@ export function buildAgentToolSet(
             // Track file edit tool usage before execution to capture all attempts
             // (including failures) for retry/fallback telemetry
             trackFileEditTool(invocationCtx, tool.name, processedArgs);
+            executionStarted = true;
             const result = await withReferencedAppRead(
               tool.name,
               processedArgs,
               invocationCtx,
               (readCtx) => tool.execute(processedArgs, readCtx),
             );
+            recordShellReviewOutcome(ctx, tool.name, processedArgs, { result });
 
             // Only completed mutations unblock run_tests. Failed tool calls are
             // still present in fileEditTracker for retry/fallback telemetry, but
@@ -948,6 +1028,10 @@ export function buildAgentToolSet(
             ? await withTrackedMutation(invocationCtx, invoke)
             : await invoke();
         } catch (error) {
+          recordShellReviewOutcome(ctx, tool.name, args, {
+            error,
+            executed: executionStarted,
+          });
           const errorMessage = getToolErrorSummary(error);
           const errorDetails = getToolErrorDisplayDetails(error);
 
@@ -970,5 +1054,10 @@ export function buildAgentToolSet(
     };
   }
 
+  if (ctx.shellReviewContext) {
+    ctx.refreshShellReviewTools = () =>
+      refreshShellReviewToolInventory(ctx, toolSet, options);
+    ctx.refreshShellReviewTools();
+  }
   return toolSet;
 }

@@ -1,3 +1,5 @@
+import { recordShellReviewOutcome } from "./shell_review_history";
+import { shellExecutionGuidance } from "@/shared/shell_capability";
 import { SubscriptionBillingError } from "@/shared/subscription_billing_error";
 import {
   getInferenceSource,
@@ -77,6 +79,7 @@ import {
   getAgentToolConsent,
   shouldIncludeTool,
   requireAgentToolConsent,
+  refreshShellReviewToolInventory,
 } from "./tool_definitions";
 import {
   deployAllFunctionsIfNeeded,
@@ -1085,6 +1088,7 @@ export async function handleLocalAgentStream(
       },
       requireConsent: async (params: {
         toolName: string;
+        confirmation?: "shell-approval" | "shell-review-retry";
         toolDescription?: string | null;
         inputPreview?: string | null;
         metadata?: SqlConsentMetadata | null;
@@ -1098,6 +1102,7 @@ export async function handleLocalAgentStream(
         return requireAgentToolConsent(event, {
           chatId: chat.id,
           toolName: params.toolName as AgentToolName,
+          confirmation: params.confirmation,
           toolDescription: params.toolDescription,
           inputPreview: params.inputPreview,
           metadata: params.metadata,
@@ -1201,6 +1206,9 @@ export async function handleLocalAgentStream(
       estimateMcpInlineTokens(mcpDefs) > getMcpInlineTokenThreshold();
 
     const agentTools = buildAgentToolSet(ctx, buildOptions);
+    if (agentTools.run_shell) {
+      systemPrompt += `\n\n<shell_execution>\n${shellExecutionGuidance(process.platform, ctx.appPath)}\n</shell_execution>`;
+    }
     ctx.planningQuestionnaireAvailable =
       agentTools.planning_questionnaire != undefined;
     // search_mcp_tools returns full tool declarations, so it alone is enough for
@@ -1252,6 +1260,11 @@ export async function handleLocalAgentStream(
       );
     }
     const registeredToolNames = new Set(Object.keys(allTools));
+    if (ctx.shellReviewContext) {
+      ctx.refreshShellReviewTools = () =>
+        refreshShellReviewToolInventory(ctx, allTools, buildOptions);
+      ctx.refreshShellReviewTools();
+    }
 
     // Prepare message history with graceful fallback
     // Use messageOverride if provided (e.g., for summarization)
@@ -2905,6 +2918,7 @@ async function getMcpTools(
             const { serverName, toolName } = parseMcpToolKey(key);
             const callId = execCtx.toolCallId;
             let callEmitted = false;
+            let executionStarted = false;
             try {
               const schema = asSchema(mcpTool.inputSchema);
               if (schema.validate) {
@@ -2920,6 +2934,7 @@ async function getMcpTools(
                     : JSON.stringify(args).slice(0, 500);
 
               const autoApprove = buildMcpAutoApprove({
+                signal: ctx.abortSignal,
                 settings: ctx.inferenceSettings ?? readSettings(),
                 isDyadPro: ctx.isDyadPro,
                 freeModelMode: ctx.freeModelMode,
@@ -2960,10 +2975,14 @@ async function getMcpTools(
               callEmitted = true;
 
               const res = await withTrackedMutation(ctx, async () => {
+                executionStarted = true;
                 return mcpTool.execute(args, execCtx);
               });
               ctx.mcpToolRan = true;
               const safeResult = sanitizeMcpToolResult(res);
+              recordShellReviewOutcome(ctx, key, args, {
+                result: safeResult.value,
+              });
 
               ctx.onXmlComplete(
                 `<dyad-mcp-tool-result server="${escapeXmlAttr(serverName)}" tool="${escapeXmlAttr(toolName)}" call-id="${escapeXmlAttr(callId)}">\n${escapeXmlContent(safeResult.serialized)}\n</dyad-mcp-tool-result>`,
@@ -2971,6 +2990,10 @@ async function getMcpTools(
 
               return safeResult.serialized;
             } catch (error) {
+              recordShellReviewOutcome(ctx, key, args, {
+                error,
+                executed: executionStarted,
+              });
               const errorMessage =
                 error instanceof Error ? error.message : String(error);
               const errorStack =
