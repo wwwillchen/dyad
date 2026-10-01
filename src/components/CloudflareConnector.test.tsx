@@ -7,7 +7,9 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { Provider, createStore } from "jotai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { selectedChatIdAtom } from "@/atoms/chatAtoms";
 
 /**
  * Which step of the setup the tab puts in front of the user, and what it
@@ -43,7 +45,26 @@ vi.mock("@/ipc/types", () => ({
 
 const showWarning = vi.hoisted(() => vi.fn());
 const showError = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/toast", () => ({ showWarning, showError }));
+const showInfo = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/toast", () => ({ showWarning, showError, showInfo }));
+
+// The deployment card's "Fix with AI" sends into the selected chat, which is
+// outside this tab: the send and the chat's mode are stood in for here.
+const streamMessage = vi.hoisted(() => vi.fn());
+const chatStream = vi.hoisted(() => ({ isStreaming: false }));
+vi.mock("@/hooks/useStreamChat", () => ({
+  useStreamChat: () => ({ streamMessage, isStreaming: chatStream.isStreaming }),
+}));
+const chatMode = vi.hoisted(() => ({
+  value: "local-agent" as string,
+  isLoading: false,
+}));
+vi.mock("@/hooks/useChatMode", () => ({
+  useChatMode: () => ({
+    selectedMode: chatMode.value,
+    isLoading: chatMode.isLoading,
+  }),
+}));
 
 const { CloudflareConnector } = await import("./CloudflareConnector");
 
@@ -71,21 +92,33 @@ function appStatus(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function renderConnector() {
+const CHAT_ID = 42;
+
+function renderConnector({
+  chatId = CHAT_ID,
+}: { chatId?: number | null } = {}) {
   const queryClient = new QueryClient({
     // The app's own defaults: a result stays "fresh" for a minute unless a
     // query says otherwise.
     defaultOptions: { queries: { retry: false, staleTime: 60_000 } },
   });
+  const store = createStore();
+  store.set(selectedChatIdAtom, chatId);
   return render(
     <QueryClientProvider client={queryClient}>
-      <CloudflareConnector appId={7} />
+      <Provider store={store}>
+        <CloudflareConnector appId={7} />
+      </Provider>
     </QueryClientProvider>,
   );
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  chatMode.value = "local-agent";
+  chatMode.isLoading = false;
+  chatStream.isStreaming = false;
+  streamMessage.mockResolvedValue(true);
   settings.value = { cloudflareAccessToken: { value: "cf-token" } };
   cloudflare.listAccounts.mockResolvedValue([{ id: "acct-1", name: "Acme" }]);
   cloudflare.listWorkers.mockResolvedValue([]);
@@ -703,6 +736,143 @@ describe("a connected Worker", () => {
 
     expect(await screen.findByText("Deployment failed")).toBeTruthy();
     expect(screen.getByText(/missing script: build/)).toBeTruthy();
+  });
+
+  describe("Fix with AI for a failed deployment", () => {
+    beforeEach(() => {
+      cloudflare.getDeploymentStatus.mockResolvedValue({
+        state: "failed",
+        commitHash: "abc1234def",
+        logTail: ["npm error missing script: build"],
+        tokenRevoked: false,
+        ruleMissing: false,
+        ruleDeploys: null,
+        workerUrl: CONNECTION.workerUrl,
+      });
+    });
+
+    it("sends the log to the selected chat in the chat's own mode", async () => {
+      renderConnector();
+
+      fireEvent.click(await screen.findByTestId("cloudflare-fix-with-ai"));
+
+      expect(streamMessage).toHaveBeenCalledTimes(1);
+      const request = streamMessage.mock.calls[0][0];
+      expect(request.chatId).toBe(CHAT_ID);
+      // Agent mode can edit files, so the chat is left in its own mode.
+      expect(request.requestedChatMode).toBeUndefined();
+      expect(request.prompt).toContain("npm error missing script: build");
+      expect(request.prompt).toContain("`worker/wrangler.jsonc`");
+      expect(request.prompt).toContain('Worker "shop-api"');
+      await waitFor(() =>
+        expect(showInfo).toHaveBeenCalledWith(
+          expect.stringMatching(/Sent to chat/),
+        ),
+      );
+      expect(screen.queryByTestId("agent-mode-required-dialog")).toBeNull();
+    });
+
+    it("does not claim a send that the chat refused", async () => {
+      // The chat reports its own refusal, such as an over-long prompt.
+      streamMessage.mockResolvedValue(false);
+      renderConnector();
+
+      fireEvent.click(await screen.findByTestId("cloudflare-fix-with-ai"));
+
+      await waitFor(() => expect(streamMessage).toHaveBeenCalledTimes(1));
+      expect(showInfo).not.toHaveBeenCalled();
+    });
+
+    it("waits for the chat's mode before it can be clicked", async () => {
+      chatMode.isLoading = true;
+      renderConnector();
+
+      const button = await screen.findByTestId("cloudflare-fix-with-ai");
+      expect(button).toHaveProperty("disabled", true);
+    });
+
+    it("cannot be clicked again while the chat is already streaming", async () => {
+      chatStream.isStreaming = true;
+      renderConnector();
+
+      const button = await screen.findByTestId("cloudflare-fix-with-ai");
+      expect(button).toHaveProperty("disabled", true);
+    });
+
+    it("keeps a Build mode chat in Build mode, with no confirmation", async () => {
+      chatMode.value = "build";
+      renderConnector();
+
+      fireEvent.click(await screen.findByTestId("cloudflare-fix-with-ai"));
+
+      expect(streamMessage).toHaveBeenCalledTimes(1);
+      expect(streamMessage.mock.calls[0][0].requestedChatMode).toBeUndefined();
+      expect(screen.queryByTestId("agent-mode-required-dialog")).toBeNull();
+    });
+
+    it("asks before sending from a chat whose mode cannot edit files", async () => {
+      chatMode.value = "ask";
+      renderConnector();
+
+      fireEvent.click(await screen.findByTestId("cloudflare-fix-with-ai"));
+
+      expect(streamMessage).not.toHaveBeenCalled();
+      const dialog = await screen.findByTestId("agent-mode-required-dialog");
+      expect(dialog.textContent).toMatch(/failed deployment/);
+      fireEvent.click(within(dialog).getByTestId("agent-mode-continue"));
+
+      await waitFor(() => expect(streamMessage).toHaveBeenCalledTimes(1));
+      expect(streamMessage.mock.calls[0][0].requestedChatMode).toBe(
+        "local-agent",
+      );
+    });
+
+    it("says to open a chat when none is selected, instead of sending nowhere", async () => {
+      // With no chat the mode falls back to the default, which may be one that
+      // would otherwise ask first. There is nothing to confirm a send into.
+      chatMode.value = "ask";
+      renderConnector({ chatId: null });
+
+      fireEvent.click(await screen.findByTestId("cloudflare-fix-with-ai"));
+
+      expect(streamMessage).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("agent-mode-required-dialog")).toBeNull();
+      expect(showInfo).toHaveBeenCalledWith(
+        expect.stringMatching(/Open a chat/),
+      );
+    });
+
+    it("is not offered for a revoked token, which no code change fixes", async () => {
+      cloudflare.getDeploymentStatus.mockResolvedValue({
+        state: "failed",
+        commitHash: null,
+        logTail: ["Failed: The build token ... has been deleted or rolled"],
+        tokenRevoked: true,
+        ruleMissing: false,
+        ruleDeploys: null,
+        workerUrl: CONNECTION.workerUrl,
+      });
+      renderConnector();
+
+      await screen.findByTestId("cloudflare-token-revoked");
+      expect(screen.queryByTestId("cloudflare-fix-with-ai")).toBeNull();
+    });
+
+    it("is not offered while the deployment is live", async () => {
+      cloudflare.getDeploymentStatus.mockResolvedValue({
+        state: "live",
+        commitHash: "abc1234def",
+        logTail: [],
+        tokenRevoked: false,
+        ruleMissing: false,
+        ruleDeploys: null,
+        workerUrl: CONNECTION.workerUrl,
+      });
+      renderConnector();
+
+      await screen.findByText("Live");
+      expect(screen.queryByTestId("cloudflare-fix-with-ai")).toBeNull();
+    });
   });
 
   it("warns that syncing no longer deploys when the rule is gone", async () => {
