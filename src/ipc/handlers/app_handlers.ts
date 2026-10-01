@@ -147,6 +147,7 @@ import {
   deployAllSupabaseFunctions,
   extractFunctionNameFromPath,
 } from "@/supabase_admin/supabase_utils";
+import { isSupabaseFunctionSyncDeferred } from "@/supabase_admin/supabase_recording_deferred_sync";
 import { getVercelTeamSlug } from "../utils/vercel_utils";
 import { storeDbTimestampAtCurrentVersion } from "../utils/neon_timestamp_utils";
 import {
@@ -1514,6 +1515,7 @@ export function registerAppHandlers() {
           );
           const settings = readSettings();
           const deployErrors = await deployAllSupabaseFunctions({
+            appId,
             appPath,
             supabaseProjectId: app.supabaseProjectId,
             supabaseOrganizationSlug: app.supabaseOrganizationSlug ?? null,
@@ -1525,6 +1527,9 @@ export function registerAppHandlers() {
             };
           }
         } catch (error) {
+          if (isSupabaseFunctionSyncDeferred(error)) {
+            return { warning: `File saved. ${error.message}` };
+          }
           logger.error(
             `Error redeploying Supabase functions after shared module change:`,
             error,
@@ -1538,12 +1543,16 @@ export function registerAppHandlers() {
         try {
           const functionName = extractFunctionNameFromPath(filePath);
           await deploySupabaseFunction({
+            appId,
             supabaseProjectId: app.supabaseProjectId,
             functionName,
             appPath,
             organizationSlug: app.supabaseOrganizationSlug ?? null,
           });
         } catch (error) {
+          if (isSupabaseFunctionSyncDeferred(error)) {
+            return { warning: `File saved. ${error.message}` };
+          }
           logger.error(`Error deploying Supabase function ${filePath}:`, error);
           return {
             warning: `File saved, but failed to deploy Supabase function: ${filePath}: ${error}`,

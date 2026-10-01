@@ -21,7 +21,6 @@ import {
 } from "@/ipc/services/pre_commit_service";
 import { queueCloudSandboxSnapshotSync } from "@/ipc/utils/cloud_sandbox_provider";
 import { getPackageManagerCommandEnv } from "@/ipc/utils/socket_firewall";
-import { deleteSupabaseFunction } from "@/supabase_admin/supabase_management_client";
 import {
   extractFunctionNameFromPath,
   isServerFunction,
@@ -34,6 +33,9 @@ import {
   escapeXmlContent,
 } from "./types";
 import { trackWorkspaceMutation } from "./tool_invocation";
+import { deleteSupabaseFunction } from "@/supabase_admin/supabase_management_client";
+import { isSupabaseFunctionNotFoundError } from "../processors/file_operations";
+import { isSupabaseFunctionSyncDeferred } from "@/supabase_admin/supabase_recording_deferred_sync";
 
 export { isPreCommitHookAvailable } from "@/ipc/services/pre_commit_service";
 
@@ -180,6 +182,7 @@ async function collectCurrentChangedPaths(
 async function scheduleHookGeneratedFileSideEffects(
   ctx: AgentContext,
   beforeFunctionEntries: Set<string> | undefined,
+  removedFunctionNamesOut: string[],
 ): Promise<string | undefined> {
   queueCloudSandboxSnapshotSync({ appId: ctx.appId, fullSync: true });
   if (!ctx.supabaseProjectId) {
@@ -247,31 +250,23 @@ async function scheduleHookGeneratedFileSideEffects(
         `Pre-commit removed local Supabase function(s) ${removedFunctionNames.join(", ")}, but Dyad kept their remote deployments because "Keep extra Supabase edge functions" is enabled.`,
       );
     } else {
-      const deletedFunctionNames: string[] = [];
+      // Queue first so the root finalizer retries if the immediate deletion
+      // after this claim fails or never runs. Deleting inside this claim could
+      // let an older captured deployment's activation recreate the function;
+      // the post-claim deletion waits for that deployment instead.
+      ctx.pendingFunctionDeletes ??= [];
       for (const functionName of removedFunctionNames) {
-        try {
-          await deleteSupabaseFunction({
-            supabaseProjectId: ctx.supabaseProjectId,
-            functionName,
-            organizationSlug: ctx.supabaseOrganizationSlug ?? null,
-          });
-          ctx.pendingFunctionDeploys = ctx.pendingFunctionDeploys.filter(
-            (pendingName) => pendingName !== functionName,
-          );
-          deletedFunctionNames.push(functionName);
-        } catch (deleteError) {
-          logger.warn(
-            `Failed to delete Supabase function ${functionName} removed by pre-commit:`,
-            deleteError,
-          );
-          ctx.onWarningMessage?.(
-            `Pre-commit removed Supabase function ${functionName}, but Dyad could not delete its remote deployment: ${deleteError}`,
-          );
+        if (!ctx.pendingFunctionDeletes.includes(functionName)) {
+          ctx.pendingFunctionDeletes.push(functionName);
         }
+        ctx.pendingFunctionDeploys = ctx.pendingFunctionDeploys.filter(
+          (pendingName) => pendingName !== functionName,
+        );
+        removedFunctionNamesOut.push(functionName);
       }
-      if (deletedFunctionNames.length > 0) {
+      if (removedFunctionNames.length > 0) {
         notes.push(
-          `Dyad removed the corresponding remote Supabase function deployment(s): ${deletedFunctionNames.join(", ")}.`,
+          `Dyad is removing the corresponding remote Supabase function deployment(s): ${removedFunctionNames.join(", ")}.`,
         );
       }
     }
@@ -319,7 +314,8 @@ export const runPreCommitTool: ToolDefinition<
   getConsentPreview: () => "Stage all changes and run the pre-commit hook",
 
   execute: async (_args, ctx) => {
-    return appOperationCoordinator.run(
+    const hookRemovedFunctionNames: string[] = [];
+    const result = await appOperationCoordinator.run(
       {
         appId: ctx.appId,
         operation: "run-local-agent-pre-commit",
@@ -545,6 +541,7 @@ export const runPreCommitTool: ToolDefinition<
           reconciliationNote = await scheduleHookGeneratedFileSideEffects(
             ctx,
             beforeFunctionEntries,
+            hookRemovedFunctionNames,
           );
         } else if (result.timedOut && ctx.supabaseProjectId) {
           reconciliationNote =
@@ -625,5 +622,51 @@ export const runPreCommitTool: ToolDefinition<
         );
       },
     );
+    await deleteHookRemovedFunctions(ctx, hookRemovedFunctionNames);
+    return result;
   },
 };
+
+/**
+ * Delete remote functions the hook removed, after the pre-commit claim is
+ * released: deployment admission would otherwise nest inside it. Names stay in
+ * `pendingFunctionDeletes` until deleted so the root finalizer can retry.
+ */
+async function deleteHookRemovedFunctions(
+  ctx: AgentContext,
+  functionNames: readonly string[],
+): Promise<void> {
+  const supabaseProjectId = ctx.supabaseProjectId;
+  if (!supabaseProjectId) return;
+  for (const functionName of functionNames) {
+    try {
+      await deleteSupabaseFunction({
+        appId: ctx.appId,
+        supabaseProjectId,
+        functionName,
+        organizationSlug: ctx.supabaseOrganizationSlug ?? null,
+        signal: ctx.abortSignal,
+      });
+    } catch (error) {
+      // Deferred until a recording ends, or already gone: nothing left to do.
+      if (
+        !isSupabaseFunctionSyncDeferred(error) &&
+        !isSupabaseFunctionNotFoundError(error)
+      ) {
+        logger.warn(
+          `Failed to delete Supabase function ${functionName} removed by pre-commit:`,
+          error,
+        );
+        // Finalization retries only if the turn completes; say so, because a
+        // cancelled or failed turn leaves the remote function deployed.
+        ctx.onWarningMessage?.(
+          `Pre-commit removed Supabase function ${functionName}, but Dyad could not delete its remote deployment yet: ${error}. Dyad retries when this turn finishes; if the turn is cancelled, delete it from Supabase or run Redeploy all.`,
+        );
+        continue;
+      }
+    }
+    ctx.pendingFunctionDeletes = ctx.pendingFunctionDeletes?.filter(
+      (pendingName) => pendingName !== functionName,
+    );
+  }
+}

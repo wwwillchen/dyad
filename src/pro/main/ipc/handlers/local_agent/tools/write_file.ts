@@ -17,6 +17,7 @@ import {
 } from "../../../../../../supabase_admin/supabase_utils";
 import { queueCloudSandboxSnapshotSync } from "@/ipc/utils/cloud_sandbox_provider";
 import { withLock, getFileWriteKey } from "@/ipc/utils/lock_utils";
+import { isSupabaseFunctionSyncDeferred } from "@/supabase_admin/supabase_recording_deferred_sync";
 const logger = log.scope("write_file");
 
 const writeFileSchema = z.object({
@@ -93,12 +94,17 @@ export const writeFileTool: ToolDefinition<z.infer<typeof writeFileSchema>> = {
       } else if (!ctx.isSharedModulesChanged) {
         try {
           await deploySupabaseFunction({
+            appId: ctx.appId,
             supabaseProjectId: ctx.supabaseProjectId,
             functionName,
             appPath: ctx.appPath,
             organizationSlug: ctx.supabaseOrganizationSlug ?? null,
+            signal: ctx.abortSignal,
           });
         } catch (error) {
+          if (isSupabaseFunctionSyncDeferred(error)) {
+            return `Successfully wrote ${args.path}. ${error.message}`;
+          }
           return `File written, but failed to deploy Supabase function: ${error}`;
         }
       } else {

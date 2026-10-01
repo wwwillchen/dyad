@@ -17,6 +17,144 @@ function deferred<T = void>() {
 }
 
 describe("AppOperationCoordinator", () => {
+  it("releases preparation claims without releasing deployment or deletion ownership", async () => {
+    const coordinator = new AppOperationCoordinator();
+    const captured = deferred();
+    const upload = deferred();
+    const prepared = deferred();
+    const deploy = coordinator.run(
+      {
+        appId: 1,
+        operation: "deploy",
+        allowCompatibleQueueBypass: true,
+        resources: [
+          readAppResource("app-path"),
+          readAppResource("repository"),
+          "provider",
+          "supabase-functions",
+        ],
+      },
+      async ({ releaseResources }) => {
+        prepared.resolve();
+        await captured.promise;
+        releaseResources(["repository", "provider"]);
+        await upload.promise;
+      },
+    );
+    await prepared.promise;
+    const nextDeploy = vi.fn(async () => {});
+    const queuedDeploy = coordinator.run(
+      {
+        appId: 1,
+        operation: "next deploy",
+        allowCompatibleQueueBypass: true,
+        resources: [
+          readAppResource("app-path"),
+          readAppResource("repository"),
+          "provider",
+          "supabase-functions",
+        ],
+      },
+      nextDeploy,
+    );
+    const build = vi.fn(async () => {});
+    const tests = vi.fn(async () => {});
+    const buildResult = coordinator.run(
+      { appId: 1, operation: "build", resources: ["repository-worktree"] },
+      build,
+    );
+    const testResult = coordinator.run(
+      { appId: 1, operation: "tests", resources: ["provider", "test-files"] },
+      tests,
+    );
+    const deletion = coordinator.beginAppDeletion(1);
+    const drained = vi.fn();
+    const drain = deletion.drain().then(drained);
+    try {
+      expect(build).not.toHaveBeenCalled();
+      expect(tests).not.toHaveBeenCalled();
+      captured.resolve();
+      await Promise.all([buildResult, testResult]);
+      expect(build).toHaveBeenCalledOnce();
+      expect(tests).toHaveBeenCalledOnce();
+      expect(coordinator.isBusy(1, ["supabase-functions"])).toBe(true);
+      expect(nextDeploy).not.toHaveBeenCalled();
+      expect(drained).not.toHaveBeenCalled();
+    } finally {
+      captured.resolve();
+      upload.resolve();
+      await Promise.all([deploy, queuedDeploy, drain]);
+      deletion.release();
+    }
+  });
+
+  it("does not let released domains overtake a queued exclusive revert", async () => {
+    const coordinator = new AppOperationCoordinator();
+    const captured = deferred();
+    const upload = deferred();
+    const deploy = coordinator.run(
+      {
+        appId: 1,
+        operation: "deploy",
+        allowCompatibleQueueBypass: true,
+        resources: [
+          readAppResource("app-path"),
+          readAppResource("repository"),
+          readAppResource("provider"),
+          "supabase-functions",
+        ],
+      },
+      async ({ releaseResources }) => {
+        releaseResources(["repository", "provider"]);
+        captured.resolve();
+        await upload.promise;
+      },
+    );
+    await captured.promise;
+    const order: string[] = [];
+    const revert = coordinator.run(
+      {
+        appId: 1,
+        operation: "revert",
+        resources: [
+          readAppResource("app-path"),
+          "provider",
+          "supabase-functions",
+          "repository",
+        ],
+      },
+      async () => {
+        order.push("revert");
+      },
+    );
+    const checkpoint = coordinator.run(
+      { appId: 1, operation: "checkpoint", resources: ["repository"] },
+      async () => {
+        order.push("checkpoint");
+      },
+    );
+    try {
+      await Promise.resolve();
+      expect(order).toEqual([]);
+    } finally {
+      upload.resolve();
+      await Promise.all([deploy, revert, checkpoint]);
+    }
+    expect(order).toEqual(["revert", "checkpoint"]);
+  });
+
+  it("rejects resource release from a settled operation context", async () => {
+    const coordinator = new AppOperationCoordinator();
+    let release!: () => void;
+    await coordinator.run(
+      { appId: 1, operation: "capture", resources: ["repository"] },
+      async (context) => {
+        release = () => context.releaseResources(["repository"]);
+      },
+    );
+    expect(release).toThrow("App operation already settled");
+  });
+
   it("detaches abort listeners when a safety fence rejects queued work", async () => {
     const coordinator = new AppOperationCoordinator();
     const release = deferred();
