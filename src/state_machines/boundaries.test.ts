@@ -835,6 +835,8 @@ describe("state-machine boundaries", () => {
     const allowedRoots = [
       path.join(SOURCE_ROOT, "ipc"),
       path.join(SOURCE_ROOT, "main"),
+      // Supabase administration runs in main, including deferred-sync toasts.
+      path.join(SOURCE_ROOT, "supabase_admin"),
       path.join(SOURCE_ROOT, "testing"),
       mainOnlyRoot,
     ];

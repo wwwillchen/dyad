@@ -89,6 +89,11 @@ Before running `pr_push.sh` from a worktree for an existing fork PR, make the lo
 
 ## Final automated-review audit
 
+When `gh run list --workflow CI` shows stale runs, query by commit without the
+workflow filter and select `workflowName == "CI"`; the name filter can resolve
+an older workflow ID. For completed jobs in an unfinished run, download logs
+with `gh api repos/dyad-sh/dyad/actions/jobs/<id>/logs --allow-escape-sequences`.
+
 An automated review workflow can finish successfully before its GitHub review
 comments become visible. After every review and CI check is terminal, query
 unresolved review threads again before declaring the PR clean; do not treat a
