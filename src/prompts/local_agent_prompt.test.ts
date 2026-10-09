@@ -513,6 +513,54 @@ describe("local_agent_prompt", () => {
     expect(enabled).toContain("# Writing end-to-end tests");
   });
 
+  it.each(["root", "basic", "implementer"] as const)(
+    "%s inspects Supabase auth requirements before choosing test-user setup",
+    (audience) => {
+      const prompt =
+        audience === "implementer"
+          ? constructImplementerPrompt(undefined, {
+              provider: "supabase",
+              supabaseConnected: true,
+              testingEnabled: true,
+            })
+          : constructLocalAgentPrompt(undefined, undefined, {
+              basicAgentMode: audience === "basic",
+              testingEnabled: true,
+            });
+
+      const inspect = prompt.indexOf(
+        "FIRST inspect the database and the app's signup code",
+      );
+      const choose = prompt.indexOf(
+        "If a single default user satisfies those requirements",
+      );
+      expect(inspect).toBeGreaterThan(-1);
+      expect(choose).toBeGreaterThan(inspect);
+      expect(prompt).toContain("relevant triggers and functions");
+      expect(prompt).toContain("foreign keys, defaults, and RLS policies");
+      expect(prompt).toContain('guide="custom-supabase-test-fixtures"');
+      expect(prompt).not.toContain("supabase.auth.admin.createUser");
+      expect(prompt).not.toContain("must succeed before custom setup can run");
+      expect(prompt).not.toContain(
+        "You do NOT need to write any setup/teardown code",
+      );
+    },
+  );
+
+  it("routes missing trigger inspection through root for Implementers", () => {
+    const prompt = constructImplementerPrompt(undefined, {
+      provider: "supabase",
+      supabaseConnected: false,
+      testingEnabled: true,
+    });
+
+    expect(prompt).toContain(
+      "ask the root Agent to obtain them with read-only catalog queries",
+    );
+    expect(prompt).toContain('guide="custom-supabase-test-fixtures"');
+    expect(prompt).not.toContain("through `execute_sql`");
+  });
+
   it("gates pre-commit workflow guidance on hook availability", () => {
     const unavailable = constructLocalAgentPrompt(undefined);
     expect(unavailable).not.toContain("call `run_pre_commit`");

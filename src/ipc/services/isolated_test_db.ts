@@ -25,6 +25,7 @@ import {
   type AdminKey,
   type TempTestUser,
 } from "../utils/supabase_test_user";
+import { SupabaseTestUserCreationRejectedError } from "../utils/supabase_test_user_errors";
 import { detectLegacyAppKey } from "../../supabase_admin/supabase_app_key";
 import { getPublishableKey } from "../../supabase_admin/supabase_context";
 import {
@@ -117,10 +118,17 @@ export interface PreparedIsolation {
   /**
    * Extra env vars to inject into the test runner (e.g. the isolated test
    * user's credentials the generated test signs in with). Never contains
-   * privileged keys — the service_role key stays in the main process. Recordings
-   * receive these now; test runs receive fresh credentials from beforeEach.
+   * privileged keys. Recordings receive these now; test runs receive fresh
+   * credentials from beforeEach.
    */
   testCredentials?: Record<string, string>;
+  /**
+   * Node test-fixture environment, which can include the connected Supabase
+   * project's admin key. Inject only into Playwright processes, never copied
+   * dotenv files, dependency installs, dev servers, or recorder/browser auth.
+   * Keep this main-only field out of IPC results, logs, and telemetry.
+   */
+  testRunnerEnv?: Record<string, string>;
   /**
    * Credentials + endpoint the recorder uses to sign the preview in before
    * recording. Undefined when the app has no supported auth or provisioning
@@ -578,8 +586,8 @@ export async function prepareIsolatedTestDatabase({
  * Supabase (free tier) isolation: create a throwaway auth user in the real
  * project and have the test sign in as it. Isolation comes from Row-Level
  * Security, so we warn (but don't block) when some public tables lack RLS. On
- * setup failure we dead-end with an infra error, never running against real
- * data unguarded.
+ * setup failure we stop, except that per-case tests may supply custom users
+ * after a database-create rejection verified to have left no auth user.
  */
 async function prepareSupabaseTestUserIsolation({
   app,
@@ -609,7 +617,7 @@ async function prepareSupabaseTestUserIsolation({
   }
 
   let testUser: TempTestUser | undefined;
-  // Main-process memory only, shared by all cases and final teardown in this run.
+  // Fetched once per run for lifecycle hooks and Node test-fixture injection.
   let adminKey: AdminKey | undefined;
   // Keep failed deletions tracked. Never overwrite the durable recovery slot
   // by creating the next user while the previous one still exists.
@@ -743,6 +751,12 @@ async function prepareSupabaseTestUserIsolation({
       },
       cleanupProvider: "supabase-test-user",
       testCredentials,
+      testRunnerEnv: adminKey
+        ? {
+            SUPABASE_SECRET_KEY: adminKey.apiKey,
+            SUPABASE_URL: `https://${projectId}.supabase.co`,
+          }
+        : undefined,
       authSetup,
       testCaseLifecycle: perTestCase
         ? {
@@ -751,13 +765,25 @@ async function prepareSupabaseTestUserIsolation({
               await afterEach(caseSignal);
               signal?.throwIfAborted();
               caseSignal?.throwIfAborted();
-              testUser = await createTempTestUser(
-                {
-                  ...app,
-                  supabaseTestUserId: null,
-                },
-                { adminKey, signal: caseSignal },
-              );
+              try {
+                testUser = await createTempTestUser(
+                  {
+                    ...app,
+                    supabaseTestUserId: null,
+                  },
+                  { adminKey, signal: caseSignal },
+                );
+              } catch (error) {
+                signal?.throwIfAborted();
+                caseSignal?.throwIfAborted();
+                if (!(error instanceof SupabaseTestUserCreationRejectedError))
+                  throw error;
+                emit(
+                  "Warning: Supabase rejected default test-user creation with a database error (often caused by a signup trigger). Dyad verified that no user was created. Continuing without default sign-in credentials so test fixtures can create and clean up their own users and required records.\n",
+                  "running",
+                );
+                return {};
+              }
               trackedUserId = testUser.userId;
               return credentialsFor(testUser);
             },

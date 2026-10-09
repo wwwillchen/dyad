@@ -1,4 +1,8 @@
 import type { ChildProcess } from "node:child_process";
+import {
+  createTestOutputRedactor,
+  redactTestRunArtifacts,
+} from "../utils/test_output_redaction";
 import { previewTestNodeOptions } from "../utils/preview_dns";
 import fs from "node:fs";
 import os from "node:os";
@@ -524,8 +528,8 @@ export interface RunAppTestsCoreOptions {
   onOutput?: (chunk: string, phase: "setup" | "running") => void;
   /**
    * Extra env vars merged into the Playwright runner (e.g. Supabase test-user
-   * credentials the generated test signs in with). Never contains privileged
-   * keys.
+   * credentials and the admin key for Node-only fixture setup). Never forward
+   * these to the dev server, dependency installs, or renderer.
    */
   testEnv?: Record<string, string>;
   /**
@@ -688,6 +692,8 @@ async function runPreviewTestBatch({
         message: error instanceof Error ? error.message : String(error),
       };
       return result;
+    } finally {
+      await redactTestRunArtifacts(batchDir, Object.values(testEnv ?? {}));
     }
 
     if (discoveryRun.aborted) {
@@ -817,6 +823,11 @@ async function runPreviewTestBatch({
           message: error instanceof Error ? error.message : String(error),
         };
         break;
+      } finally {
+        await redactTestRunArtifacts(
+          invocationDir,
+          Object.values(testEnv ?? {}),
+        );
       }
 
       if (run.aborted) {
@@ -946,7 +957,38 @@ async function runPreviewTestBatch({
  * Bootstrap Playwright when requested, run against an explicit sandbox server
  * (or the legacy preview URL for direct callers), and parse the JSON report.
  */
-export async function runAppTestsCore({
+export async function runAppTestsCore(
+  options: RunAppTestsCoreOptions,
+): Promise<RunAppTestsResult> {
+  const redactor = createTestOutputRedactor(
+    Object.values(options.testEnv ?? {}),
+  );
+  const streams = {
+    setup: redactor.stream((chunk) => options.onOutput?.(chunk, "setup")),
+    running: redactor.stream((chunk) => options.onOutput?.(chunk, "running")),
+  };
+  try {
+    return redactor.result(
+      await runAppTestsCoreUnredacted({
+        ...options,
+        onOutput: (chunk, phase) => streams[phase].push(chunk),
+      }),
+    );
+  } catch (error) {
+    // Unexpected failures must not leak runner credentials through IPC either.
+    if (error instanceof Error) {
+      error.message = redactor.redact(error.message);
+      if (error.stack) error.stack = redactor.redact(error.stack);
+      throw error;
+    }
+    throw new Error(redactor.redact(String(error)));
+  } finally {
+    streams.setup.flush();
+    streams.running.flush();
+  }
+}
+
+async function runAppTestsCoreUnredacted({
   isolateTestCases,
   appId,
   appPath: explicitAppPath,
@@ -1235,8 +1277,14 @@ export async function runAppTestsCore({
     // non-zero. Surface it as a structured infra error in the Tests panel
     // instead of letting it bubble up as a generic IPC failure.
     const message = error instanceof Error ? error.message : String(error);
-    logger.error(`Failed to spawn the test runner: ${message}`);
+    logger.error(
+      createTestOutputRedactor(Object.values(testEnv ?? {})).redact(
+        `Failed to spawn the test runner: ${message}`,
+      ),
+    );
     return { appId, results: [], infraError: { message } };
+  } finally {
+    await redactTestRunArtifacts(artifactsDir, Object.values(testEnv ?? {}));
   }
 
   if (run.aborted) {
@@ -1266,7 +1314,11 @@ export async function runAppTestsCore({
       results = parsePlaywrightReport(JSON.parse(raw), appPath);
       parseOk = true;
     } catch (error) {
-      logger.error(`Failed to parse Playwright report: ${error}`);
+      logger.error(
+        createTestOutputRedactor(Object.values(testEnv ?? {})).redact(
+          `Failed to parse Playwright report: ${error}`,
+        ),
+      );
     }
   }
 
@@ -1817,7 +1869,10 @@ async function runTestsAgainstNormalPreview({
             signal,
             timeoutMs,
             onOutput: emit,
-            testEnv: prepared.testCredentials,
+            testEnv: {
+              ...prepared.testCredentials,
+              ...prepared.testRunnerEnv,
+            },
           },
         });
         return { ...result, isolation };
@@ -2703,7 +2758,7 @@ async function executeAppTestsWithIsolation(
             }
             if (isolationMode === "supabase-test-user") {
               emit(
-                "The test workspace keeps public Supabase client settings for the test user. Service-role and direct database credentials are removed.\n",
+                "The test workspace keeps public Supabase client settings. Privileged credentials are removed from its files; Node test fixtures receive the connected project's admin key for custom setup and cleanup.\n",
                 "setup",
               );
             }
@@ -2839,7 +2894,10 @@ async function executeAppTestsWithIsolation(
               signal,
               timeoutMs,
               onOutput: emit,
-              testEnv: prepared.testCredentials,
+              testEnv: {
+                ...prepared.testCredentials,
+                ...prepared.testRunnerEnv,
+              },
             },
           });
 
