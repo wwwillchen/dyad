@@ -14,31 +14,57 @@ export interface ClaudeUsageCheckpoint {
 
 const logger = log.scope("claude_code_usage");
 
-/** Bill per-model turn deltas, including auxiliary calls, never session totals. */
+/** Bill per-model turn deltas, including auxiliary calls, never session totals.
+ * Never rejects for checkpoint or normalization failures: the turn has already
+ * finished, and accounting problems must not surface as a failed response. */
 export async function reportClaudeUsage(
   id: string | undefined,
   result: unknown,
   checkpoint?: ClaudeUsageCheckpoint,
 ) {
-  let models;
-  let baseline: ClaudeUsageBaseline | undefined;
+  let delta;
   try {
-    const delta = claudeUsageDelta(result, checkpoint?.previous ?? {});
-    models = normalizeClaudeUsage(delta.result);
-    baseline = delta.baseline;
+    delta = claudeUsageDelta(result, checkpoint?.previous ?? {});
   } catch {
+    // Missing or inconsistent counters: without a trustworthy baseline the
+    // session must not resume, so leave it un-checkpointed.
     interruptExternalModelUsage(id);
     return;
+  }
+  let models;
+  try {
+    // Models used only in earlier turns have an all-zero delta; skip them so
+    // they neither post empty reports nor take the primary billing id.
+    models = normalizeClaudeUsage(delta.result).filter(
+      (model) =>
+        model.uncachedInputTokens +
+          model.cacheReadInputTokens +
+          model.cacheWrite5mInputTokens +
+          model.cacheWrite1hInputTokens +
+          model.cacheWriteUnclassifiedInputTokens +
+          model.outputTokens >
+        0,
+    );
+  } catch {
+    // The counters are consistent, so still checkpoint them below: an
+    // unbillable turn must not discard the resumable session.
+    models = undefined;
   }
   if (checkpoint) {
     try {
       // Advance before the single debit attempt, even if that attempt fails.
       // A resumed turn must never replay tokens from an earlier turn.
-      await checkpoint.save(baseline);
-    } catch (error) {
+      await checkpoint.save(delta.baseline);
+    } catch {
+      // The session stays un-checkpointed and will start fresh next turn.
+      logger.warn("Claude Code usage checkpoint failed; not reporting usage");
       interruptExternalModelUsage(id);
-      throw error;
+      return;
     }
+  }
+  if (!models) {
+    interruptExternalModelUsage(id);
+    return;
   }
   await finishExternalModelUsageBatch(
     id,
