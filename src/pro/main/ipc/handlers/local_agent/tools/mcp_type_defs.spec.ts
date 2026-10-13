@@ -20,11 +20,18 @@ import {
   tryBeginTurnFinalization,
 } from "../subagents/mutation_activity_tracker";
 
-vi.mock("@/ipc/utils/mcp_manager", () => ({
-  mcpManager: {
-    getClient: vi.fn(),
-  },
-}));
+vi.mock("@/ipc/utils/mcp_manager", () => {
+  const getClient = vi.fn();
+  return {
+    mcpManager: {
+      getClient,
+      // Mirror the real wrapper so tests can stub the client alone.
+      listToolsWithin: vi.fn((serverId: number) =>
+        getClient(serverId).then((client: any) => client.tools()),
+      ),
+    },
+  };
+});
 
 vi.mock("@/ipc/utils/mcp_consent", () => ({
   requireMcpToolConsent: vi.fn(),
@@ -374,6 +381,50 @@ describe("buildMcpCapabilityMap", () => {
     expect(tryBeginTurnFinalization(turnId)).toBe(false);
     finishExecute({ content: [] });
     await call;
+    expect(tryBeginTurnFinalization(turnId)).toBe(true);
+    endTurnFinalization(turnId);
+  });
+
+  it("holds the turn open during the client lookup and skips execution after a Stop", async () => {
+    vi.mocked(requireMcpToolConsent).mockResolvedValue({ approved: true });
+    const execute = vi.fn().mockResolvedValue({ content: [] });
+    let finishLookup!: (client: unknown) => void;
+    vi.mocked(mcpManager.getClient).mockReturnValue(
+      new Promise<any>((resolve) => {
+        finishLookup = resolve;
+      }),
+    );
+    const abortController = new AbortController();
+    const ctx = createCtx();
+    ctx.abortSignal = abortController.signal;
+    const turnId = "sandbox-mcp-lookup-test";
+    ctx.mutationActivityOwner = createMutationActivityOwner({
+      appId: ctx.appId,
+      chatId: ctx.chatId,
+      turnId,
+      actorRunId: "root",
+    });
+    const call = buildMcpCapabilityMap({
+      event: {} as any,
+      ctx,
+      defs: [makeDef()],
+    }).srv__hello({});
+
+    await vi.waitFor(() =>
+      expect(mcpManager.getClient).toHaveBeenCalledWith(42),
+    );
+    expect(mcpManager.listToolsWithin).toHaveBeenCalledWith(42, {
+      signal: abortController.signal,
+    });
+    // The lookup is in flight, so the turn must not be finalizable yet.
+    expect(tryBeginTurnFinalization(turnId)).toBe(false);
+    abortController.abort();
+    finishLookup({ tools: async () => ({ hello: { execute } }) });
+
+    await expect(call).rejects.toMatchObject({
+      kind: DyadErrorKind.UserCancelled,
+    });
+    expect(execute).not.toHaveBeenCalled();
     expect(tryBeginTurnFinalization(turnId)).toBe(true);
     endTurnFinalization(turnId);
   });

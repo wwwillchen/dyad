@@ -263,16 +263,6 @@ export function buildMcpCapabilityMap(params: {
         );
       }
 
-      const client = await mcpManager.getClient(def.serverId);
-      const toolSet = await client.tools();
-      const mcpTool = toolSet[def.toolName];
-      if (!mcpTool || typeof mcpTool.execute !== "function") {
-        throw new DyadError(
-          `MCP tool ${def.toolKey} not found at runtime`,
-          DyadErrorKind.NotFound,
-        );
-      }
-
       const contentPretty = JSON.stringify(args, null, 2);
       const autoApprovedAttr = autoApprovedReason
         ? ` auto-approved-reason="${escapeXmlAttr(autoApprovedReason)}"`
@@ -283,8 +273,34 @@ export function buildMcpCapabilityMap(params: {
 
       let executionStarted = false;
       try {
-        params.ctx.mcpToolRan = true;
+        // Reserve mutation activity right after consent, before the client
+        // lookup. Otherwise a Stop during the lookup can finalize the turn
+        // and the tool would still run afterwards. The lookup is bounded by
+        // the turn's signal and a timeout so a wedged server cannot hold the
+        // reservation open.
         const res = await withTrackedMutation(params.ctx, async () => {
+          const cancelled = () =>
+            new DyadError(
+              "This agent run was cancelled.",
+              DyadErrorKind.UserCancelled,
+            );
+          let toolSet: McpToolSet;
+          try {
+            toolSet = await mcpManager.listToolsWithin(def.serverId, {
+              signal: params.ctx.abortSignal,
+            });
+          } catch (error) {
+            throw params.ctx.abortSignal?.aborted ? cancelled() : error;
+          }
+          const mcpTool = toolSet[def.toolName];
+          if (!mcpTool || typeof mcpTool.execute !== "function") {
+            throw new DyadError(
+              `MCP tool ${def.toolKey} not found at runtime`,
+              DyadErrorKind.NotFound,
+            );
+          }
+          if (params.ctx.abortSignal?.aborted) throw cancelled();
+          params.ctx.mcpToolRan = true;
           executionStarted = true;
           return mcpTool.execute(args, {
             toolCallId: `mcp-sandbox-${def.toolKey}`,
