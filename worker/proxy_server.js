@@ -431,8 +431,8 @@ function isExpiringCookie(attrs) {
 /**
  * Returns the Set-Cookie strings the browser should receive for one upstream
  * cookie. HttpOnly cookies are moved into this app's namespace. A deletion
- * without HttpOnly may target a cookie that was namespaced when set, so it
- * also clears the namespaced copy.
+ * also clears the legacy shared copy, otherwise subsequent requests can
+ * fall back to the old session after the namespaced session is removed.
  */
 function namespaceSetCookie(cookieStr) {
   if (!COOKIE_NAMESPACE) return [cookieStr];
@@ -440,8 +440,9 @@ function namespaceSetCookie(cookieStr) {
   const eq = nameValue.indexOf("=");
   if (eq <= 0) return [cookieStr];
   const namespaced = [COOKIE_NAMESPACE + nameValue, ...attrs].join("; ");
+  if (isExpiringCookie(attrs)) return [cookieStr, namespaced];
   if (attrs.some((p) => p.toLowerCase() === "httponly")) return [namespaced];
-  return isExpiringCookie(attrs) ? [cookieStr, namespaced] : [cookieStr];
+  return [cookieStr];
 }
 
 /* Rewrites the Set-Cookie header (an array in Node) in place on `headers`. */
