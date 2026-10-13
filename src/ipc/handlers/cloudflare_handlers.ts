@@ -13,6 +13,11 @@ import { readAppResource } from "../services/app_operation_coordinator";
 import { createTypedHandler } from "./base";
 import { getGitHubApiBase } from "./github_handlers";
 import {
+  removeNeonEnvVarsFromCloudflare,
+  syncNeonConfigToCloudflare,
+} from "../utils/cloudflare_neon_sync";
+import { combineWarnings } from "../utils/neon_utils";
+import {
   cloudflareContracts,
   type CloudflareAppStatus,
   type CloudflareConnection,
@@ -42,6 +47,7 @@ import {
   listTriggers,
   listWorkers,
   probeBuildsAccess,
+  resolveWorkersDevUrl,
   restoreTrigger,
   setTriggerBuildToken,
   setTriggerBuildVariables,
@@ -826,16 +832,41 @@ async function handleConnectWorker(
     createdTriggerUuid = null;
     rewrittenTrigger = null;
 
-    let warning: string | undefined;
+    const warnings: Array<string | undefined> = [];
+    if (app.neonProjectId) {
+      // The deployed code reads its database from the Worker's secrets, so a
+      // Neon app deployed without them serves pages and fails every query.
+      // Set before the first build so the first deployment has them.
+      const retryHint =
+        'Use "Sync to Cloudflare" in the Database section to try again.';
+      try {
+        const sync = await syncNeonConfigToCloudflare({
+          appId,
+          connections: [row],
+        });
+        warnings.push(sync.warning);
+        if (!sync.envPushed) warnings.push(retryHint);
+      } catch (error) {
+        logger.warn("Could not sync the Neon config to the Worker:", error);
+        warnings.push(
+          `The Worker is connected, but its database secrets were not set: ${error instanceof Error ? error.message : String(error)} ${retryHint}`,
+        );
+      }
+    }
     try {
       await startBuild(token, accountId, triggerUuid, branch);
     } catch (error) {
       logger.warn("Could not start the first Cloudflare build:", error);
-      warning =
-        "The Worker is connected, but the first deployment did not start. It will deploy on your next sync to GitHub.";
+      warnings.push(
+        "The Worker is connected, but the first deployment did not start. It will deploy on your next sync to GitHub.",
+      );
     }
 
-    return { status: "connected", connection: toConnection(row), warning };
+    return {
+      status: "connected",
+      connection: toConnection(row),
+      warning: combineWarnings(...warnings),
+    };
   } catch (error) {
     if (rewrittenTrigger) {
       // The Worker's own rule was repointed at this folder. Left that way it
@@ -879,23 +910,6 @@ async function handleConnectWorker(
   }
 }
 
-/** The Worker's address given what its route is now, which may not be what was stored. */
-async function currentWorkerUrl(
-  token: string,
-  row: ConnectionRow,
-  routeEnabled: boolean | undefined,
-): Promise<string | null> {
-  if (routeEnabled === undefined) return row.workerUrl;
-  if (!routeEnabled) return null;
-  if (row.workerUrl) return row.workerUrl;
-  const subdomain = await getAccountSubdomain(token, row.accountId).catch(
-    () => null,
-  );
-  return subdomain
-    ? `https://${row.workerName}.${subdomain}.workers.dev`
-    : null;
-}
-
 async function handleGetDeploymentStatus({
   appId,
   rootDirectory,
@@ -933,7 +947,13 @@ async function handleGetDeploymentStatus({
         () => undefined,
       ),
     ]);
-    const workerUrl = await currentWorkerUrl(token, row, routeEnabled);
+    const workerUrl = await resolveWorkersDevUrl(
+      token,
+      row.accountId,
+      row.workerName,
+      row.workerUrl,
+      routeEnabled,
+    );
     const ruleMissing = rule === null;
     // The rule stays on the branch and repository it was made for. An app
     // moved to another one still syncs, but nothing deploys.
@@ -1115,6 +1135,24 @@ export function registerCloudflareHandlers() {
         await handleDisconnect(params);
       },
     ),
+  );
+
+  // DO NOT LOG these handlers: they resolve secret values.
+  createTypedHandler(
+    cloudflareContracts.syncNeonConfig,
+    async (_, { appId, branchType }) => {
+      assertCloudflareEnabled();
+      return syncNeonConfigToCloudflare({ appId, branchType });
+    },
+  );
+
+  // Not gated on the experiment: secrets pointing at a database the app no
+  // longer uses should come off whether or not the tab is still shown.
+  createTypedHandler(
+    cloudflareContracts.removeNeonEnvVars,
+    async (_, { appId }) => {
+      return removeNeonEnvVarsFromCloudflare({ appId });
+    },
   );
 
   logger.debug("Registered Cloudflare IPC handlers");
