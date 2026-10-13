@@ -156,15 +156,21 @@ describe("proxy worker per-app cookie namespacing", () => {
     expect(receivedCookies).toEqual([undefined]);
   });
 
-  it("namespaces HttpOnly deletions", async () => {
+  it("clears the legacy session as well as the namespaced session on sign-out", async () => {
     const port = await startProxy({
       cookieNamespace: getPreviewCookieNamespace(12),
     });
 
     const cookies = await request(port, "/sign-out");
 
-    expect(cookies).toHaveLength(1);
-    expect(cookies[0]).toMatch(new RegExp(`^dyad-a12\\.${SESSION_COOKIE}=;`));
+    expect(cookies.map((cookie) => cookie.split("=", 1)[0])).toEqual([
+      SESSION_COOKIE,
+      `dyad-a12.${SESSION_COOKIE}`,
+    ]);
+    for (const cookie of cookies) {
+      expect(cookie).toContain("Max-Age=0");
+      expect(cookie).toContain("HttpOnly");
+    }
   });
 
   it("clears both copies when a deletion omits HttpOnly", async () => {
