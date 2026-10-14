@@ -63,11 +63,13 @@ Earlier, `claude-triage.yml` granted `Edit(/tmp/issue-triage/**)` while the deci
 
 Anchor path rules to the checkout with `/${{ github.workspace }}/...` (the workspace is already absolute, so this yields `//home/runner/...`), and name the exact output files rather than a directory glob: `Edit(/${{ github.workspace }}/tmp/issue-triage/triage.json)`. An `Edit` rule also covers `Write` creating the file. To check a rule change locally, run `claude -p --setting-sources user --allowedTools "..."` in a scratch git repo, have it `cd` into a subdirectory before writing, and read `permission_denials` from `--output-format json`.
 
-## Issue triage (`claude-triage.yml`) layout
+## Proxy authentication and diagnostics
 
 - A GitHub debug rerun does not enable the actions' `show_full_output` input. When a run reports `is_error: true` without its underlying error, temporarily enable that input to expose Claude's response; full output includes tool results and is visible in public Actions logs.
 
-- Issue triage and closed-issue classification connect to Tailscale with `tag:gha-dyad` and route Claude requests to `http://100.73.172.24:8081` using `secrets.UNDERCLASS_KEY` for both the `anthropic_api_key` input and `ANTHROPIC_AUTH_TOKEN` environment variable (the proxy expects a bearer token). Keep `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` scoped to the Claude step and Tailscale credentials scoped to the connection step; the separate GitHub mutation jobs do not need tailnet access.
+- All Claude workflow jobs use `claude-opus-5-5`, connect to Tailscale with `tag:gha-dyad` and route Claude requests to `http://100.73.172.24:8081` using `secrets.UNDERCLASS_KEY` for both the `anthropic_api_key` input and `ANTHROPIC_AUTH_TOKEN` environment variable (the proxy expects a bearer token). Keep `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` scoped to the Claude step and Tailscale credentials scoped to the connection step; the separate GitHub mutation jobs do not need tailnet access. Full-output logging is off by default. Use an Opus 5.5-compatible CLI pin (the full action bundles 2.1.280; the base action bundles 2.1.300), not the older 2.1.216/2.1.219 pins.
+
+## Issue triage (`claude-triage.yml`) layout
 
 - The agent only writes `tmp/issue-triage/triage.json`; `scripts/issue-triage/triage-comment.mjs` validates it (enum fields, link-host allowlist, @-mention stripping, length caps, `fixedIn` must be a published release) and composes the single reporter-facing comment. To change what the bot tells reporters, add or edit an entry in `.github/prompts/triage-playbook.md` first; edit the prompt only for behavior rules.
 - Trusted context (current version, `gh release list` minus drafts, GitHub/Supabase `status.json`, playbook) comes from `scripts/issue-triage/prepare-context.mjs` in a trusted step and reaches the prompt through `TEMPLATE_VARS_PATH` in `render-template.mjs`; the apply job rebuilds it rather than trusting the agent's artifact.

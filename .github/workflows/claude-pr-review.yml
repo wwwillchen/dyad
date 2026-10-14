@@ -71,16 +71,24 @@ jobs:
           OUTPUT_FINDINGS_PATH: ${{ env.REVIEW_FINDINGS_PATH }}
         run: node scripts/issue-agent/render-template.mjs
 
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:gha-dyad
+
       - name: PR Review
         # This commit bundles Claude Code 2.1.280, required by claude-opus-5-5.
         uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # post-v1.0.231
         env:
+          ANTHROPIC_BASE_URL: http://100.73.172.24:8081
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.UNDERCLASS_KEY }}
           # Default is 32,000 which Claude willl sometimes hit.
           # https://code.claude.com/docs/en/settings
           CLAUDE_CODE_MAX_OUTPUT_TOKENS: 48000
         with:
-          # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.UNDERCLASS_KEY }}
 
           # See: https://github.com/anthropics/claude-code-action/blob/v1/docs/security.md
           github_token: ${{ github.token }}
@@ -90,12 +98,6 @@ jobs:
           # Disable progress tracking (try to save tokens)
           track_progress: false
           display_report: false
-
-          # Log the full Claude transcript so flaky runs where Claude exits
-          # without writing the review output files can be diagnosed.
-          # Review inputs/outputs are derived from public PR data, so the
-          # logs do not expose anything sensitive.
-          show_full_output: true
 
           prompt: ${{ steps.render-prompt.outputs.prompt }}
 
