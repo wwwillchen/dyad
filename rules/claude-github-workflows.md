@@ -65,6 +65,8 @@ Anchor path rules to the checkout with `/${{ github.workspace }}/...` (the works
 
 ## Issue triage (`claude-triage.yml`) layout
 
+- A GitHub debug rerun does not enable the actions' `show_full_output` input. When a run reports `is_error: true` without its underlying error, temporarily enable that input to expose Claude's response; full output includes tool results and is visible in public Actions logs.
+
 - Issue triage and closed-issue classification use the actions' native `anthropic_federation_rule_id` / organization / service-account / workspace inputs with job-level `id-token: write`. Do not also supply `claude_code_oauth_token` or `anthropic_api_key`, which override federation. Their `environment: ai-bots` makes the default GitHub OIDC subject `repo:dyad-sh/dyad:environment:ai-bots`; configure Anthropic trust for that subject and the intended workflow identities, rather than a push-only branch subject.
 
 - The agent only writes `tmp/issue-triage/triage.json`; `scripts/issue-triage/triage-comment.mjs` validates it (enum fields, link-host allowlist, @-mention stripping, length caps, `fixedIn` must be a published release) and composes the single reporter-facing comment. To change what the bot tells reporters, add or edit an entry in `.github/prompts/triage-playbook.md` first; edit the prompt only for behavior rules.
