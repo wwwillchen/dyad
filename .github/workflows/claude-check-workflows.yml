@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read # checkout repository
       issues: write # create issues for workflow failures
+      id-token: write # authenticate to Anthropic using GitHub OIDC
     steps:
       - name: Create GitHub App token
         id: app-token
@@ -41,7 +42,11 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           CLAUDE_CODE_MAX_OUTPUT_TOKENS: 48000
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_federation_rule_id: fdrl_012h8Yvsyr9pG3VK8Yth1KA7
+          anthropic_organization_id: 9c5d6433-6b64-4bd3-8f67-37aabe87e660
+          anthropic_service_account_id: svac_014TYeMKrypMrB3vQvVf4CeF
+          anthropic_workspace_id: wrkspc_01KnNGygk2MZqtz1Ms9fj1LH
+          anthropic_oidc_audience: https://api.anthropic.com
           github_token: ${{ steps.app-token.outputs.token }}
           claude_args: --model claude-sonnet-4-5-20250929
           display_report: true
