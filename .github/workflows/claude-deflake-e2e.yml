@@ -1,9 +1,11 @@
 name: Claude Deflake E2E
 
+# Disabled until the blocker below is resolved. Restore the schedule and remove
+# the job guard together to re-enable execution. Manual dispatch is also guarded.
 on:
-  schedule:
-    # Weekdays at 10:00 UTC (2 AM PST / 3 AM PDT due to DST)
-    - cron: "0 10 * * 1-5"
+  # schedule:
+  #   Weekdays at 10:00 UTC (2 AM PST / 3 AM PDT due to DST)
+  #   - cron: "0 10 * * 1-5"
   workflow_dispatch:
     inputs:
       commit_count:
@@ -14,6 +16,8 @@ on:
 
 jobs:
   deflake:
+    # Disabled: Shares the macOS Tailscale setup blocker (sudo is unavailable).
+    if: ${{ false }}
     environment: ai-bots
     runs-on:
       - self-hosted
