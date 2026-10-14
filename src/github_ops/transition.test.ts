@@ -15,16 +15,17 @@ import {
   type GithubOpsState,
 } from "./state";
 import { transition } from "./transition";
+import { projectGithubOps } from "./projection";
 import { MAX_GITHUB_OPS_ERROR_MESSAGE_LENGTH } from "./error_message";
 import { GithubOpsRemoteSnapshotSchema } from "./transport";
 
 const REPRESENTATIVE_OPS: readonly GithubOperation[] = [
-  { type: "push", mode: "normal" },
-  { type: "push", mode: "lease" },
-  { type: "pull" },
-  { type: "fetch" },
-  { type: "rebase" },
-  { type: "rebase-continue" },
+  { type: "push", mode: "normal", provider: "github" },
+  { type: "push", mode: "lease", provider: "github" },
+  { type: "pull", provider: "github" },
+  { type: "fetch", provider: "github" },
+  { type: "rebase", provider: "github" },
+  { type: "rebase-continue", provider: "github" },
   { type: "rebase-abort" },
   { type: "merge-abort" },
   { type: "merge", branch: "feature" },
@@ -40,6 +41,7 @@ const REPRESENTATIVE_OPS: readonly GithubOperation[] = [
   { type: "disconnect" },
   {
     type: "connect-repo",
+    provider: "github",
     mode: "existing",
     owner: "dyad",
     repo: "app",
@@ -74,7 +76,11 @@ function eventsFor(state: GithubOpsState): readonly GithubOpsEvent[] {
   const activeOp =
     state.type === "running"
       ? state.op
-      : ({ type: "push", mode: "normal" } satisfies GithubOperation);
+      : ({
+          type: "push",
+          mode: "normal",
+          provider: "github",
+        } satisfies GithubOperation);
   return [
     ...REPRESENTATIVE_OPS.map(
       (op): GithubOpsEvent => ({ type: "OP_REQUESTED", op }),
@@ -112,11 +118,26 @@ function eventsFor(state: GithubOpsState): readonly GithubOpsEvent[] {
       op: activeOp,
       failure: { kind: "unknown", message: "failed" },
     },
-    { type: "CONFLICTS", files: ["src/a.ts"] },
-    { type: "CONFLICTS", files: [] },
-    { type: "GIT_STATE", mergeInProgress: false, rebaseInProgress: false },
-    { type: "GIT_STATE", mergeInProgress: true, rebaseInProgress: false },
-    { type: "GIT_STATE", mergeInProgress: false, rebaseInProgress: true },
+    { type: "CONFLICTS", provider: "github", files: ["src/a.ts"] },
+    { type: "CONFLICTS", provider: "github", files: [] },
+    {
+      type: "GIT_STATE",
+      provider: "github",
+      mergeInProgress: false,
+      rebaseInProgress: false,
+    },
+    {
+      type: "GIT_STATE",
+      provider: "github",
+      mergeInProgress: true,
+      rebaseInProgress: false,
+    },
+    {
+      type: "GIT_STATE",
+      provider: "github",
+      mergeInProgress: false,
+      rebaseInProgress: true,
+    },
     { type: "ABORT_AND_SWITCH_CONFIRMED" },
     { type: "BLOCKED_DISMISSED" },
     { type: "RESOLVE_WITH_AI_STARTED" },
@@ -217,11 +238,11 @@ describe("github_ops transition", () => {
   it("ignores user-enqueued work while an operation is running", () => {
     const running = transition(INITIAL_GITHUB_OPS_STATE, {
       type: "OP_REQUESTED",
-      op: { type: "push", mode: "normal" },
+      op: { type: "push", mode: "normal", provider: "github" },
     }).state;
     const result = transition(running, {
       type: "OP_REQUESTED",
-      op: { type: "pull" },
+      op: { type: "pull", provider: "github" },
     });
 
     expect(result.state).toBe(running);
@@ -236,6 +257,7 @@ describe("github_ops transition", () => {
 
     const gitState = transition(reconcile.state, {
       type: "GIT_STATE",
+      provider: "github",
       mergeInProgress: false,
       rebaseInProgress: true,
     });
@@ -244,11 +266,12 @@ describe("github_ops transition", () => {
 
     const conflicts = transition(gitState.state, {
       type: "CONFLICTS",
+      provider: "github",
       files: ["src/conflicted.ts"],
     });
     expect(conflicts.state).toMatchObject({
       type: "conflicted",
-      origin: { type: "rebase" },
+      origin: { type: "rebase", provider: "github" },
     });
   });
 
@@ -262,13 +285,14 @@ describe("github_ops transition", () => {
 
     const result = transition(conflicted, {
       type: "GIT_STATE",
+      provider: "github",
       mergeInProgress: false,
       rebaseInProgress: true,
     });
 
     expect(result.state).toEqual({
       ...conflicted,
-      origin: { type: "rebase" },
+      origin: { type: "rebase", provider: "github" },
     });
     expect(commandsOf(result)).toEqual([{ type: "probe-conflicts" }]);
   });
@@ -281,6 +305,7 @@ describe("github_ops transition", () => {
       },
       {
         type: "GIT_STATE",
+        provider: "github",
         mergeInProgress: false,
         rebaseInProgress: true,
       },
@@ -299,6 +324,7 @@ describe("github_ops transition", () => {
   it("clears the synthesized REBASE_IN_PROGRESS banner when a rebase finishes without conflicts (reconciliation path)", () => {
     const rebasePaused = transition(INITIAL_GITHUB_OPS_STATE, {
       type: "GIT_STATE",
+      provider: "github",
       mergeInProgress: false,
       rebaseInProgress: true,
     }).state;
@@ -309,6 +335,7 @@ describe("github_ops transition", () => {
 
     const finished = transition(rebasePaused, {
       type: "GIT_STATE",
+      provider: "github",
       mergeInProgress: false,
       rebaseInProgress: false,
     });
@@ -317,6 +344,7 @@ describe("github_ops transition", () => {
 
     const afterConflicts = transition(finished.state, {
       type: "CONFLICTS",
+      provider: "github",
       files: [],
     });
     expect(afterConflicts.state).toEqual({ type: "idle", banner: null });
@@ -327,11 +355,11 @@ describe("github_ops transition", () => {
     const failureMessage = "git: rebase already in progress";
     const running = transition(INITIAL_GITHUB_OPS_STATE, {
       type: "OP_REQUESTED",
-      op: { type: "push", mode: "normal" },
+      op: { type: "push", mode: "normal", provider: "github" },
     }).state;
     const rebasePaused = transition(running, {
       type: "OP_FAILED",
-      op: { type: "push", mode: "normal" },
+      op: { type: "push", mode: "normal", provider: "github" },
       failure: {
         kind: "known",
         code: "REBASE_IN_PROGRESS",
@@ -349,6 +377,7 @@ describe("github_ops transition", () => {
 
     const finished = transition(rebasePaused, {
       type: "GIT_STATE",
+      provider: "github",
       mergeInProgress: false,
       rebaseInProgress: false,
     });
@@ -357,8 +386,8 @@ describe("github_ops transition", () => {
   });
 
   it.each([
-    { type: "rebase" },
-    { type: "rebase-continue" },
+    { type: "rebase", provider: "github" },
+    { type: "rebase-continue", provider: "github" },
     { type: "rebase-abort" },
   ] satisfies readonly GithubOperation[])(
     "reconciles recovery after an uncoded $type failure",
@@ -381,6 +410,7 @@ describe("github_ops transition", () => {
 
       const reconciled = transition(failed.state, {
         type: "GIT_STATE",
+        provider: "github",
         mergeInProgress: false,
         rebaseInProgress: true,
       });
@@ -414,7 +444,7 @@ describe("github_ops transition", () => {
     const conflicted: GithubOpsState = {
       type: "conflicted",
       files: ["src/conflicted.ts"],
-      origin: { type: "push", mode: "normal" },
+      origin: { type: "push", mode: "normal", provider: "github" },
       banner: null,
     };
 
@@ -437,12 +467,14 @@ describe("github_ops transition", () => {
     ]);
     const checkedGitState = transition(reconciling.state, {
       type: "GIT_STATE",
+      provider: "github",
       mergeInProgress: false,
       rebaseInProgress: false,
       verificationAttempt: 1,
     });
     const ready = transition(checkedGitState.state, {
       type: "CONFLICTS",
+      provider: "github",
       files: [],
       verificationAttempt: 1,
     });
@@ -455,11 +487,11 @@ describe("github_ops transition", () => {
 
     const continued = transition(ready.state, {
       type: "OP_REQUESTED",
-      op: { type: "push", mode: "normal" },
+      op: { type: "push", mode: "normal", provider: "github" },
     });
     expect(continued.state).toMatchObject({
       type: "running",
-      op: { type: "push", mode: "normal" },
+      op: { type: "push", mode: "normal", provider: "github" },
     });
   });
 
@@ -467,12 +499,16 @@ describe("github_ops transition", () => {
     const resolving: GithubOpsState = {
       type: "conflicted",
       files: ["src/conflicted.ts"],
-      origin: { type: "push", mode: "normal" },
+      origin: { type: "push", mode: "normal", provider: "github" },
       resolution: "resolving",
       banner: null,
     };
 
-    const result = transition(resolving, { type: "CONFLICTS", files: [] });
+    const result = transition(resolving, {
+      type: "CONFLICTS",
+      provider: "github",
+      files: [],
+    });
 
     expect(result.state).toBe(resolving);
     expect(ignoreReasonOf(result)).toBe("no-change");
@@ -482,7 +518,7 @@ describe("github_ops transition", () => {
     const resolving: GithubOpsState = {
       type: "conflicted",
       files: ["src/conflicted.ts"],
-      origin: { type: "push", mode: "normal" },
+      origin: { type: "push", mode: "normal", provider: "github" },
       resolution: "resolving",
       resolutionChatId: 42,
       banner: null,
@@ -501,7 +537,7 @@ describe("github_ops transition", () => {
     const checking: GithubOpsState = {
       type: "conflicted",
       files: ["src/conflicted.ts"],
-      origin: { type: "push", mode: "normal" },
+      origin: { type: "push", mode: "normal", provider: "github" },
       resolution: "checking",
       resolutionChatId: 42,
       verificationAttempt: 1,
@@ -522,6 +558,7 @@ describe("github_ops transition", () => {
 
     const ambientProbe = transition(failed.state, {
       type: "CONFLICTS",
+      provider: "github",
       files: [],
     });
     expect(ambientProbe.state).toBe(failed.state);
@@ -544,7 +581,7 @@ describe("github_ops transition", () => {
     const checking: GithubOpsState = {
       type: "conflicted",
       files: ["src/conflicted.ts"],
-      origin: { type: "push", mode: "normal" },
+      origin: { type: "push", mode: "normal", provider: "github" },
       resolution: "checking",
       resolutionChatId: 42,
       verificationAttempt: 2,
@@ -558,11 +595,17 @@ describe("github_ops transition", () => {
       },
       {
         type: "GIT_STATE",
+        provider: "github",
         mergeInProgress: false,
         rebaseInProgress: false,
         verificationAttempt: 1,
       },
-      { type: "CONFLICTS", files: [], verificationAttempt: 1 },
+      {
+        type: "CONFLICTS",
+        provider: "github",
+        files: [],
+        verificationAttempt: 1,
+      },
     ];
 
     for (const event of staleEvents) {
@@ -576,28 +619,30 @@ describe("github_ops transition", () => {
     const checking: GithubOpsState = {
       type: "conflicted",
       files: ["src/conflicted.ts"],
-      origin: { type: "rebase" },
+      origin: { type: "rebase", provider: "github" },
       resolution: "checking",
       banner: null,
     };
     const gitState = transition(checking, {
       type: "GIT_STATE",
+      provider: "github",
       mergeInProgress: false,
       rebaseInProgress: true,
     });
     const ready = transition(gitState.state, {
       type: "CONFLICTS",
+      provider: "github",
       files: [],
     });
     const continued = transition(ready.state, {
       type: "OP_REQUESTED",
-      op: { type: "rebase-continue" },
+      op: { type: "rebase-continue", provider: "github" },
     });
 
     expect(continued.state).toMatchObject({
       type: "running",
-      op: { type: "rebase-continue" },
-      next: { type: "push", mode: "normal" },
+      op: { type: "rebase-continue", provider: "github" },
+      next: { type: "push", mode: "normal", provider: "github" },
     });
   });
 
@@ -605,20 +650,21 @@ describe("github_ops transition", () => {
     const checking: GithubOpsState = {
       type: "conflicted",
       files: ["src/conflicted.ts"],
-      origin: { type: "rebase" },
+      origin: { type: "rebase", provider: "github" },
       resolution: "checking",
       banner: null,
     };
 
     const gitState = transition(checking, {
       type: "GIT_STATE",
+      provider: "github",
       mergeInProgress: false,
       rebaseInProgress: false,
     });
 
     expect(gitState.state).toMatchObject({
       type: "conflicted",
-      origin: { type: "push", mode: "normal" },
+      origin: { type: "push", mode: "normal", provider: "github" },
     });
   });
 
@@ -626,18 +672,20 @@ describe("github_ops transition", () => {
     const ready: GithubOpsState = {
       type: "conflicted",
       files: ["src/conflicted.ts"],
-      origin: { type: "push", mode: "normal" },
+      origin: { type: "push", mode: "normal", provider: "github" },
       resolution: "ready-to-sync",
       banner: null,
     };
 
     const gitState = transition(ready, {
       type: "GIT_STATE",
+      provider: "github",
       mergeInProgress: false,
       rebaseInProgress: false,
     });
     const conflicts = transition(gitState.state, {
       type: "CONFLICTS",
+      provider: "github",
       files: [],
     });
 
@@ -646,7 +694,7 @@ describe("github_ops transition", () => {
   });
 
   it("uses the dedicated recovery surface with one background-sync notice", () => {
-    const push = { type: "push", mode: "normal" } as const;
+    const push = { type: "push", mode: "normal", provider: "github" } as const;
     const running = transition(INITIAL_GITHUB_OPS_STATE, {
       type: "OP_REQUESTED",
       op: push,
@@ -662,6 +710,7 @@ describe("github_ops transition", () => {
     }).state;
     const conflicted = transition(probing, {
       type: "CONFLICTS",
+      provider: "github",
       files: ["src/conflicted.ts"],
     });
 
@@ -682,7 +731,7 @@ describe("github_ops transition", () => {
     const resolving: GithubOpsState = {
       type: "conflicted",
       files: ["src/old.ts"],
-      origin: { type: "push", mode: "normal" },
+      origin: { type: "push", mode: "normal", provider: "github" },
       resolution: "resolving",
       resolutionChatId: 42,
       banner: null,
@@ -690,6 +739,7 @@ describe("github_ops transition", () => {
 
     const stillResolving = transition(resolving, {
       type: "CONFLICTS",
+      provider: "github",
       files: ["src/still-conflicted.ts"],
     });
     expect(stillResolving.state).toEqual({
@@ -704,13 +754,14 @@ describe("github_ops transition", () => {
     expect(
       transition(checking.state, {
         type: "CONFLICTS",
+        provider: "github",
         files: ["src/still-conflicted.ts"],
         verificationAttempt: 1,
       }).state,
     ).toEqual({
       type: "conflicted",
       files: ["src/still-conflicted.ts"],
-      origin: { type: "push", mode: "normal" },
+      origin: { type: "push", mode: "normal", provider: "github" },
       resolution: undefined,
       resolutionChatId: undefined,
       verificationAttempt: undefined,
@@ -736,6 +787,7 @@ describe("github_ops transition", () => {
     }).state;
     const conflicted = transition(probingConflicts, {
       type: "CONFLICTS",
+      provider: "github",
       files: ["src/conflicted.ts"],
     }).state;
     const runningSwitch = transition(conflicted, {
@@ -844,6 +896,7 @@ describe("github_ops transition", () => {
   it("preserves connect success context when the automatic push fails", () => {
     const connect: GithubOperation = {
       type: "connect-repo",
+      provider: "github",
       mode: "create",
       org: "",
       repo: "demo",
@@ -860,13 +913,13 @@ describe("github_ops transition", () => {
 
     expect(runningPush).toMatchObject({
       type: "running",
-      op: { type: "push", mode: "normal" },
+      op: { type: "push", mode: "normal", provider: "github" },
       banner: { kind: "success" },
     });
 
     const failedPush = transition(runningPush, {
       type: "OP_FAILED",
-      op: { type: "push", mode: "normal" },
+      op: { type: "push", mode: "normal", provider: "github" },
       failure: {
         kind: "unknown",
         message: `push rejected ${"x".repeat(MAX_GITHUB_OPS_ERROR_MESSAGE_LENGTH)}`,
@@ -892,7 +945,7 @@ describe("github_ops transition", () => {
   });
 
   it("reports rebase success only after its composite push completes", () => {
-    const rebase: GithubOperation = { type: "rebase" };
+    const rebase: GithubOperation = { type: "rebase", provider: "github" };
     const runningRebase = transition(INITIAL_GITHUB_OPS_STATE, {
       type: "OP_REQUESTED",
       op: rebase,
@@ -903,7 +956,7 @@ describe("github_ops transition", () => {
     }).state;
     const completed = transition(runningPush, {
       type: "OP_SUCCEEDED",
-      op: { type: "push", mode: "normal" },
+      op: { type: "push", mode: "normal", provider: "github" },
     });
 
     expect(runningPush.banner?.message).toBe("Rebase completed successfully.");
@@ -913,7 +966,7 @@ describe("github_ops transition", () => {
   });
 
   it("renders operation success through the banner without a duplicate toast", () => {
-    const pull = { type: "pull" } as const;
+    const pull = { type: "pull", provider: "github" } as const;
     const running = transition(INITIAL_GITHUB_OPS_STATE, {
       type: "OP_REQUESTED",
       op: pull,
@@ -934,7 +987,7 @@ describe("github_ops transition", () => {
   });
 
   it("renders operation failures through the banner without a duplicate toast", () => {
-    const push = { type: "push", mode: "normal" } as const;
+    const push = { type: "push", mode: "normal", provider: "github" } as const;
     const running = transition(INITIAL_GITHUB_OPS_STATE, {
       type: "OP_REQUESTED",
       op: push,
@@ -971,5 +1024,219 @@ describe("github_ops transition", () => {
     expect(commandsOf(failed)).toEqual([
       { type: "notify", kind: "error", message: "branch operation failed" },
     ]);
+  });
+});
+
+describe("github_ops transition with a GitLab provider", () => {
+  it("names GitLab in the push that follows linking a GitLab project", () => {
+    const connect: GithubOperation = {
+      type: "connect-repo",
+      provider: "gitlab",
+      mode: "create",
+      namespaceId: 20,
+      repo: "demo",
+      thenAutoPush: true,
+    };
+    const running = transition(INITIAL_GITHUB_OPS_STATE, {
+      type: "OP_REQUESTED",
+      op: connect,
+    }).state;
+    const pushing = transition(running, {
+      type: "OP_SUCCEEDED",
+      op: connect,
+    }).state;
+
+    expect(pushing).toMatchObject({
+      type: "running",
+      op: { type: "push", mode: "normal", provider: "gitlab" },
+    });
+
+    const pushed = transition(pushing, {
+      type: "OP_SUCCEEDED",
+      op: { type: "push", mode: "normal", provider: "gitlab" },
+    }).state;
+    expect(pushed.banner).toMatchObject({
+      kind: "success",
+      message: "Successfully pushed to GitLab!",
+    });
+  });
+
+  it("names GitHub in the push that follows linking a GitHub repo", () => {
+    const connect: GithubOperation = {
+      type: "connect-repo",
+      provider: "github",
+      mode: "create",
+      org: "",
+      repo: "demo",
+      thenAutoPush: true,
+    };
+    const running = transition(INITIAL_GITHUB_OPS_STATE, {
+      type: "OP_REQUESTED",
+      op: connect,
+    }).state;
+    const pushing = transition(running, {
+      type: "OP_SUCCEEDED",
+      op: connect,
+    }).state;
+    expect(pushing).toMatchObject({
+      type: "running",
+      op: { type: "push", mode: "normal", provider: "github" },
+    });
+    const pushed = transition(pushing, {
+      type: "OP_SUCCEEDED",
+      op: { type: "push", mode: "normal", provider: "github" },
+    }).state;
+    expect(pushed.banner?.message).toBe("Successfully pushed to GitHub!");
+  });
+
+  it("still names GitLab when a rebase-continue conflicts again", () => {
+    // The regression this guards: `rebase-continue` carried no provider, so
+    // the push composed after a second conflict fell back to GitHub. A GitLab
+    // user resolving conflicts was then told their work had gone to a service
+    // they may have no account on — in the one banner whose job is reassurance.
+    const resumed: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "rebase-continue", provider: "gitlab" },
+      resolution: "checking",
+      banner: null,
+    };
+
+    const rebaseFinished = transition(resumed, {
+      type: "GIT_STATE",
+      provider: "github",
+      mergeInProgress: false,
+      rebaseInProgress: false,
+    });
+    expect(rebaseFinished.state).toMatchObject({
+      type: "conflicted",
+      origin: { type: "push", mode: "normal", provider: "gitlab" },
+    });
+
+    const ready = transition(rebaseFinished.state, {
+      type: "CONFLICTS",
+      provider: "github",
+      files: [],
+    });
+    const pushing = transition(ready.state, {
+      type: "OP_REQUESTED",
+      op: { type: "push", mode: "normal", provider: "gitlab" },
+    });
+    expect(pushing.state).toMatchObject({
+      type: "running",
+      op: { type: "push", mode: "normal", provider: "gitlab" },
+    });
+    const pushed = transition(pushing.state, {
+      type: "OP_SUCCEEDED",
+      op: { type: "push", mode: "normal", provider: "gitlab" },
+    }).state;
+
+    expect(pushed.banner?.message).toBe("Successfully pushed to GitLab!");
+  });
+
+  it("names GitLab for a rebase that was already in progress, through to the push", () => {
+    // A rebase that conflicted before the app was reopened: nothing in the
+    // machine started it, so the provider comes from the probes.
+    const reconcile = transition(INITIAL_GITHUB_OPS_STATE, {
+      type: "RECONCILE_REQUESTED",
+    }).state;
+    const paused = transition(reconcile, {
+      type: "GIT_STATE",
+      provider: "gitlab",
+      mergeInProgress: false,
+      rebaseInProgress: true,
+    }).state;
+    const conflicted = transition(paused, {
+      type: "CONFLICTS",
+      provider: "gitlab",
+      files: ["src/conflicted.ts"],
+    }).state;
+    expect(conflicted).toMatchObject({
+      type: "conflicted",
+      origin: { type: "rebase", provider: "gitlab" },
+    });
+
+    const checking = {
+      ...conflicted,
+      resolution: "checking",
+    } as GithubOpsState;
+    const stillRebasing = transition(checking, {
+      type: "GIT_STATE",
+      provider: "gitlab",
+      mergeInProgress: false,
+      rebaseInProgress: true,
+    }).state;
+    const ready = transition(stillRebasing, {
+      type: "CONFLICTS",
+      provider: "gitlab",
+      files: [],
+    }).state;
+    const continuation = projectGithubOps(ready).syncContinuationOperation;
+    expect(continuation).toEqual({
+      type: "rebase-continue",
+      provider: "gitlab",
+    });
+
+    const continued = transition(ready, {
+      type: "OP_REQUESTED",
+      op: continuation as GithubOperation,
+    });
+    expect(continued.state).toMatchObject({
+      type: "running",
+      next: { type: "push", mode: "normal", provider: "gitlab" },
+    });
+  });
+
+  it("names GitLab when a conflicted pull turns out to be a rebase", () => {
+    const conflicted: GithubOpsState = {
+      type: "conflicted",
+      files: ["src/conflicted.ts"],
+      origin: { type: "reconcile" },
+      banner: null,
+    };
+
+    const result = transition(conflicted, {
+      type: "GIT_STATE",
+      provider: "gitlab",
+      mergeInProgress: false,
+      rebaseInProgress: true,
+    });
+
+    expect(result.state).toMatchObject({
+      origin: { type: "rebase", provider: "gitlab" },
+    });
+  });
+
+  it("falls back to GitHub only for an app with no linked remote", () => {
+    const paused = transition(INITIAL_GITHUB_OPS_STATE, {
+      type: "GIT_STATE",
+      provider: null,
+      mergeInProgress: false,
+      rebaseInProgress: true,
+    }).state;
+    const conflicted = transition(paused, {
+      type: "CONFLICTS",
+      provider: null,
+      files: ["src/conflicted.ts"],
+    }).state;
+
+    expect(conflicted).toMatchObject({
+      origin: { type: "rebase", provider: "github" },
+    });
+  });
+
+  it("carries GitLab through a rebase into the push that follows it", () => {
+    const running = transition(INITIAL_GITHUB_OPS_STATE, {
+      type: "OP_REQUESTED",
+      op: { type: "rebase", provider: "gitlab" },
+    }).state;
+    const pushing = transition(running, {
+      type: "OP_SUCCEEDED",
+      op: { type: "rebase", provider: "gitlab" },
+    }).state;
+    expect(pushing).toMatchObject({
+      type: "running",
+      op: { type: "push", mode: "normal", provider: "gitlab" },
+    });
   });
 });

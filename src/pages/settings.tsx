@@ -11,6 +11,8 @@ import { useSettings } from "@/hooks/useSettings";
 import { useAppVersion } from "@/hooks/useAppVersion";
 import { BackButton } from "@/components/ui/back-button";
 import { GitHubIntegration } from "@/components/GitHubIntegration";
+import { GitLabIntegration } from "@/components/GitLabIntegration";
+import { GitLabPublishingExperimentSwitch } from "@/components/GitLabPublishingExperimentSwitch";
 import { VercelIntegration } from "@/components/VercelIntegration";
 import { CloudflareIntegration } from "@/components/CloudflareIntegration";
 import { SupabaseIntegration } from "@/components/SupabaseIntegration";
@@ -176,6 +178,9 @@ export default function SettingsPage() {
             <div id={SETTING_IDS.github}>
               <GitHubIntegration />
             </div>
+            <div id={SETTING_IDS.gitlab}>
+              <GitLabIntegration />
+            </div>
             <div id={SETTING_IDS.vercel}>
               <VercelIntegration />
             </div>
@@ -290,6 +295,10 @@ export default function SettingsPage() {
                 run yourself. This is in early development: it is undocumented,
                 unstable, and may change or break without notice.
               </p>
+            </div>
+
+            <div id={SETTING_IDS.enableGitlabPublishing}>
+              <GitLabPublishingExperimentSwitch />
             </div>
 
             <div

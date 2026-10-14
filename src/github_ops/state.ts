@@ -12,9 +12,14 @@
 
 export type PushMode = "normal" | "force" | "lease";
 
+/** Which hosting provider an operation talks to. */
+export type GitRemoteProviderName = "github" | "gitlab";
+
+/** Linking an app to a repository on one of the supported providers. */
 export type ConnectRepositoryOperation =
   | {
       type: "connect-repo";
+      provider: "github";
       mode: "create";
       org: string;
       repo: string;
@@ -23,19 +28,44 @@ export type ConnectRepositoryOperation =
     }
   | {
       type: "connect-repo";
+      provider: "github";
       mode: "existing";
       owner: string;
       repo: string;
       branch: string;
       thenAutoPush: boolean;
+    }
+  | {
+      type: "connect-repo";
+      provider: "gitlab";
+      mode: "create";
+      /** Where the project is created: a group or the user's own namespace. */
+      namespaceId: number;
+      repo: string;
+      branch?: string;
+      thenAutoPush: boolean;
+    }
+  | {
+      type: "connect-repo";
+      provider: "gitlab";
+      mode: "existing";
+      projectId: number;
+      branch: string;
+      thenAutoPush: boolean;
     };
 
 export type GithubOperation =
-  | { type: "push"; mode: PushMode }
-  | { type: "pull" }
-  | { type: "fetch" }
-  | { type: "rebase" }
-  | { type: "rebase-continue" }
+  // The operation itself is plain git either way; `provider` names who the
+  // remote belongs to, for the banner the machine composes. It is required
+  // rather than optional on purpose: an optional field had to be re-attached
+  // by hand at every composite edge, and `rebase-continue` was missed — a
+  // resumed rebase on a GitLab app announced a push to GitHub. Required, the
+  // compiler finds the next such gap instead of a user finding it.
+  | { type: "push"; mode: PushMode; provider: GitRemoteProviderName }
+  | { type: "pull"; provider: GitRemoteProviderName }
+  | { type: "fetch"; provider: GitRemoteProviderName }
+  | { type: "rebase"; provider: GitRemoteProviderName }
+  | { type: "rebase-continue"; provider: GitRemoteProviderName }
   | { type: "rebase-abort" }
   | { type: "merge-abort" }
   | { type: "merge"; branch: string }
@@ -126,15 +156,22 @@ export type GithubOpsEvent =
       op: GithubOperation;
       failure: GithubOperationFailure;
     }
+  // Both probes report whose remote the app is linked to, read from the app
+  // row: a rebase git reports in progress was not started by an operation the
+  // machine knows about, so this is the only place its provider can come
+  // from. Null when the app has no linked remote, or when a failed conflicts
+  // probe settles with no files.
   | {
       type: "CONFLICTS";
       files: readonly string[];
+      provider: GitRemoteProviderName | null;
       verificationAttempt?: number;
     }
   | {
       type: "GIT_STATE";
       mergeInProgress: boolean;
       rebaseInProgress: boolean;
+      provider: GitRemoteProviderName | null;
       verificationAttempt?: number;
     }
   | { type: "ABORT_AND_SWITCH_CONFIRMED" }

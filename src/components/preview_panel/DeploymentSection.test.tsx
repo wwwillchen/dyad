@@ -244,3 +244,42 @@ describe("chooseDefaultDeploymentTab", () => {
     );
   });
 });
+
+describe("for an app linked to GitLab", () => {
+  const GITLAB_APP = {
+    ...APP,
+    githubOrg: null,
+    githubRepo: null,
+    gitlabInstanceUrl: "https://gitlab.com",
+    gitlabProjectId: 42,
+    gitlabProjectPath: "acme/demo",
+  };
+
+  it("says Vercel deploys from GitHub only, not that the app is unlinked", () => {
+    render(<DeploymentSection appId={1} app={GITLAB_APP} />);
+
+    expect(
+      screen.getByText(
+        /This app is linked to GitLab\. Vercel deploys from GitHub only/,
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(/requires connecting to GitHub first/),
+    ).toBeNull();
+    expect(screen.queryByText("vercel-connector")).toBeNull();
+  });
+
+  it("says the same on the Cloudflare tab and points to your own server", () => {
+    settings.value = ALL_ON;
+    render(<DeploymentSection appId={1} app={GITLAB_APP} />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Cloudflare" }));
+
+    expect(
+      screen.getByText(
+        "This app is linked to GitLab. Cloudflare deploys from GitHub only; deploy it to your own server instead.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("cloudflare-connector")).toBeNull();
+  });
+});

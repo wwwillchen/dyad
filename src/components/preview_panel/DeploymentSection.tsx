@@ -7,6 +7,7 @@ import type { DeploymentProvidersInUse } from "@/ipc/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSettings } from "@/hooks/useSettings";
+import { describeLinkedRemote } from "@/shared/linked_remote";
 
 /**
  * Where an app is published: Vercel, Cloudflare, or a server the user runs
@@ -24,6 +25,9 @@ interface AppSummary {
   name: string;
   githubOrg: string | null;
   githubRepo: string | null;
+  gitlabInstanceUrl?: string | null;
+  gitlabProjectId?: number | null;
+  gitlabProjectPath?: string | null;
   deploymentProvidersInUse: DeploymentProvidersInUse;
 }
 
@@ -84,9 +88,30 @@ function VercelDashboardLink() {
   );
 }
 
-function GithubRequiredNotice({ provider }: { provider: string }) {
+/**
+ * Why a destination that deploys from GitHub cannot deploy this app: it has no
+ * repository yet, or its repository is on another provider.
+ */
+function GithubRequiredNotice({
+  provider,
+  app,
+}: {
+  provider: string;
+  app: AppSummary;
+}) {
+  const linked = describeLinkedRemote(app);
+  const { settings, settingsLoading } = useSettings();
+  // Own-server deployment is itself behind an experiment that is off by
+  // default, so pointing a GitLab user at it without saying where it lives
+  // named a control that is nowhere on their screen. Until settings arrive
+  // the flag reads false, so neither branch of that advice is known to be
+  // true yet — say nothing rather than the wrong thing.
+  const ownServerAvailable = Boolean(settings?.enableOwnServerDeployment);
   return (
-    <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+    <div
+      className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4"
+      data-testid={`${provider.toLowerCase()}-requires-github`}
+    >
       <div className="flex items-start gap-3">
         <svg
           className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0"
@@ -106,8 +131,22 @@ function GithubRequiredNotice({ provider }: { provider: string }) {
             GitHub Required for {provider} Deployment
           </h3>
           <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
-            Deploying to {provider} requires connecting to GitHub first. Please
-            set up your GitHub repository above.
+            {linked && linked.provider !== "github" ? (
+              <>
+                This app is linked to {linked.providerLabel}. {provider} deploys
+                from GitHub only
+                {settingsLoading
+                  ? "."
+                  : ownServerAvailable
+                    ? "; deploy it to your own server instead."
+                    : "; turn on “Deploy to your own server” in Settings → Experiments to deploy it."}
+              </>
+            ) : (
+              <>
+                Deploying to {provider} requires connecting to GitHub first.
+                Please set up your GitHub repository above.
+              </>
+            )}
           </p>
         </div>
       </div>
@@ -123,7 +162,7 @@ function VercelDeployment({ appId, app }: { appId: number; app: AppSummary }) {
       </p>
 
       {!app.githubOrg || !app.githubRepo ? (
-        <GithubRequiredNotice provider="Vercel" />
+        <GithubRequiredNotice provider="Vercel" app={app} />
       ) : (
         <VercelConnector appId={appId} folderName={app.name} />
       )}
@@ -145,7 +184,7 @@ function CloudflareDeployment({
         GitHub repository on every sync.
       </p>
       {!app.githubOrg || !app.githubRepo ? (
-        <GithubRequiredNotice provider="Cloudflare" />
+        <GithubRequiredNotice provider="Cloudflare" app={app} />
       ) : (
         <CloudflareConnector appId={appId} />
       )}

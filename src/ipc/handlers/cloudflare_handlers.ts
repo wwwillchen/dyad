@@ -11,7 +11,7 @@ import { getPnpmMinimumReleaseAgeSupport } from "../utils/socket_firewall";
 import { createAppOperationHandler } from "../utils/app_mutation_lock";
 import { readAppResource } from "../services/app_operation_coordinator";
 import { createTypedHandler } from "./base";
-import { getGitHubApiBase } from "./github_handlers";
+import { getGitHubApiBase } from "@/ipc/utils/github_endpoints";
 import {
   removeNeonEnvVarsFromCloudflare,
   syncNeonConfigToCloudflare,

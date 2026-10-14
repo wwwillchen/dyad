@@ -27,9 +27,19 @@ const service = vi.hoisted(() => ({
   run: vi.fn<() => Promise<void>>(),
   getGitState:
     vi.fn<
-      () => Promise<{ mergeInProgress: boolean; rebaseInProgress: boolean }>
+      () => Promise<{
+        mergeInProgress: boolean;
+        rebaseInProgress: boolean;
+        provider: "github" | "gitlab" | null;
+      }>
     >(),
-  getConflicts: vi.fn<() => Promise<string[]>>(),
+  getConflicts:
+    vi.fn<
+      () => Promise<{
+        files: string[];
+        provider: "github" | "gitlab" | null;
+      }>
+    >(),
   settle: vi.fn<() => Promise<void>>(async () => undefined),
   assertAcceptingOperations: vi.fn(),
 }));
@@ -156,8 +166,9 @@ describe("main-hosted github_ops actor", () => {
     service.getGitState.mockResolvedValue({
       mergeInProgress: false,
       rebaseInProgress: false,
+      provider: "github",
     });
-    service.getConflicts.mockResolvedValue([]);
+    service.getConflicts.mockResolvedValue({ files: [], provider: "github" });
   });
 
   it("shares one mutation across two windows and retains it after the initiating window closes", async () => {
@@ -170,13 +181,13 @@ describe("main-hosted github_ops actor", () => {
 
     const receipt = await actorA.dispatch({
       type: "OP_REQUESTED",
-      op: { type: "pull" },
+      op: { type: "pull", provider: "github" },
       operationId: "pull-a",
     });
     expect(receipt.kind).toBe("applied");
     expect(actorB.getSnapshot().state).toMatchObject({
       type: "running",
-      op: { type: "pull" },
+      op: { type: "pull", provider: "github" },
     });
     expect(service.run).toHaveBeenCalledOnce();
 
@@ -205,7 +216,7 @@ describe("main-hosted github_ops actor", () => {
     await actorA.resync();
     await actorA.dispatch({
       type: "OP_REQUESTED",
-      op: { type: "rebase" },
+      op: { type: "rebase", provider: "github" },
       operationId: "rebase-before-reload",
     });
 
@@ -224,7 +235,7 @@ describe("main-hosted github_ops actor", () => {
     await reattached.resync();
     expect(reattached.getSnapshot().state).toMatchObject({
       type: "running",
-      op: { type: "rebase" },
+      op: { type: "rebase", provider: "github" },
     });
 
     pending.resolve();
@@ -242,7 +253,11 @@ describe("main-hosted github_ops actor", () => {
       githubOpsKey(7),
     );
     const actorInstanceId = local.actorInstanceId;
-    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    local.send({
+      type: "CONFLICTS",
+      provider: "github",
+      files: ["src/conflicted.ts"],
+    });
     await flush();
 
     await expect(
@@ -296,7 +311,11 @@ describe("main-hosted github_ops actor", () => {
       githubOpsDefinition,
       githubOpsKey(7),
     );
-    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    local.send({
+      type: "CONFLICTS",
+      provider: "github",
+      files: ["src/conflicted.ts"],
+    });
     await flush();
     expect(actorA.getSnapshot().state.type).toBe("conflicted");
 
@@ -332,6 +351,7 @@ describe("main-hosted github_ops actor", () => {
     service.getGitState.mockResolvedValue({
       mergeInProgress: false,
       rebaseInProgress: true,
+      provider: "github",
     });
     const { actorA, host } = createHarness();
     await actorA.resync();
@@ -341,11 +361,16 @@ describe("main-hosted github_ops actor", () => {
     );
     local.send({
       type: "GIT_STATE",
+      provider: "github",
       mergeInProgress: false,
       rebaseInProgress: true,
     });
     await flush();
-    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    local.send({
+      type: "CONFLICTS",
+      provider: "github",
+      files: ["src/conflicted.ts"],
+    });
     await flush();
 
     await actorA.dispatch({
@@ -364,23 +389,25 @@ describe("main-hosted github_ops actor", () => {
     await flush();
     expect(actorA.getSnapshot().state).toMatchObject({
       type: "conflicted",
-      origin: { type: "rebase" },
+      origin: { type: "rebase", provider: "github" },
       resolution: "ready-to-sync",
     });
 
     await actorA.dispatch({
       type: "OP_REQUESTED",
-      op: { type: "rebase-continue" },
+      op: { type: "rebase-continue", provider: "github" },
       operationId: "continue-rebase-and-push",
     });
     await flush();
 
     expect(service.run).toHaveBeenNthCalledWith(1, 7, {
       type: "rebase-continue",
+      provider: "github",
     });
     expect(service.run).toHaveBeenNthCalledWith(2, 7, {
       type: "push",
       mode: "normal",
+      provider: "github",
     });
     expect(actorA.getSnapshot().state.type).toBe("idle");
   });
@@ -395,7 +422,11 @@ describe("main-hosted github_ops actor", () => {
       githubOpsDefinition,
       githubOpsKey(7),
     );
-    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    local.send({
+      type: "CONFLICTS",
+      provider: "github",
+      files: ["src/conflicted.ts"],
+    });
     await flush();
 
     await actorA.dispatch({
@@ -445,7 +476,11 @@ describe("main-hosted github_ops actor", () => {
       githubOpsDefinition,
       githubOpsKey(7),
     );
-    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    local.send({
+      type: "CONFLICTS",
+      provider: "github",
+      files: ["src/conflicted.ts"],
+    });
     await flush();
 
     await actorA.dispatch({
@@ -490,7 +525,10 @@ describe("main-hosted github_ops actor", () => {
   });
 
   it("preserves the claim through reconcile and rejects a second window", async () => {
-    service.getConflicts.mockResolvedValue(["src/conflicted.ts"]);
+    service.getConflicts.mockResolvedValue({
+      files: ["src/conflicted.ts"],
+      provider: "github",
+    });
     const { actorA, actorB, host } = createHarness();
     await actorA.resync();
     await actorB.resync();
@@ -498,7 +536,11 @@ describe("main-hosted github_ops actor", () => {
       githubOpsDefinition,
       githubOpsKey(7),
     );
-    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    local.send({
+      type: "CONFLICTS",
+      provider: "github",
+      files: ["src/conflicted.ts"],
+    });
     await flush();
 
     await actorA.dispatch({
@@ -526,7 +568,11 @@ describe("main-hosted github_ops actor", () => {
       githubOpsDefinition,
       githubOpsKey(7),
     );
-    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    local.send({
+      type: "CONFLICTS",
+      provider: "github",
+      files: ["src/conflicted.ts"],
+    });
     await flush();
     const staleRevision = actorA.getSnapshot().revision;
 
@@ -563,7 +609,11 @@ describe("main-hosted github_ops actor", () => {
       githubOpsDefinition,
       githubOpsKey(7),
     );
-    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    local.send({
+      type: "CONFLICTS",
+      provider: "github",
+      files: ["src/conflicted.ts"],
+    });
     await flush();
     await actorA.dispatch({
       type: "RESOLVE_WITH_AI_STARTED",
@@ -590,7 +640,11 @@ describe("main-hosted github_ops actor", () => {
       githubOpsDefinition,
       githubOpsKey(7),
     );
-    local.send({ type: "CONFLICTS", files: ["src/conflicted.ts"] });
+    local.send({
+      type: "CONFLICTS",
+      provider: "github",
+      files: ["src/conflicted.ts"],
+    });
     await flush();
     await actorA.dispatch({
       type: "RESOLVE_WITH_AI_STARTED",
@@ -615,6 +669,7 @@ describe("main-hosted github_ops actor", () => {
     service.getGitState.mockResolvedValue({
       mergeInProgress: false,
       rebaseInProgress: true,
+      provider: "github",
     });
     const { actorA, host } = createHarness();
     await actorA.resync();
@@ -642,6 +697,7 @@ describe("main-hosted github_ops actor", () => {
       .mockResolvedValue({
         mergeInProgress: false,
         rebaseInProgress: false,
+        provider: "github",
       });
     const { actorA } = createHarness();
     await actorA.resync();
@@ -660,7 +716,7 @@ describe("main-hosted github_ops actor", () => {
           rejectConflicts = reject;
         }),
       )
-      .mockResolvedValue([]);
+      .mockResolvedValue({ files: [], provider: "github" });
 
     await actorA.dispatch({ type: "RECONCILE_REQUESTED" });
     await flush();
@@ -726,6 +782,7 @@ describe("main-hosted github_ops actor", () => {
         operationId: "sentinel-operation",
         op: {
           type: "connect-repo",
+          provider: "github",
           mode: "create",
           org: "acme",
           repo: "orphan",
@@ -771,7 +828,7 @@ describe("main-hosted github_ops actor", () => {
     await actorA.dispatch({
       type: "OP_REQUESTED",
       operationId: "unsafe-error",
-      op: { type: "push", mode: "normal" },
+      op: { type: "push", mode: "normal", provider: "github" },
     });
     await vi.waitFor(() =>
       expect(actorA.getSnapshot().state).toMatchObject({

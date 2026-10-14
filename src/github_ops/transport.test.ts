@@ -12,14 +12,14 @@ describe("github_ops wire contracts", () => {
     expect(
       GithubOpsIntentEventSchema.safeParse({
         type: "OP_REQUESTED",
-        op: { type: "pull" },
+        op: { type: "pull", provider: "github" },
         operationId: "pull-1",
       }).success,
     ).toBe(true);
     expect(
       GithubOpsIntentEventSchema.safeParse({
         type: "OP_SUCCEEDED",
-        op: { type: "pull" },
+        op: { type: "pull", provider: "github" },
         invocationRef: {
           kind: GITHUB_OPS_INVOCATION_KIND,
           entityKey: 7,
@@ -58,7 +58,7 @@ describe("github_ops wire contracts", () => {
     expect(
       GithubOpsProducerEventSchema.safeParse({
         type: "OP_FAILED",
-        op: { type: "pull" },
+        op: { type: "pull", provider: "github" },
         failure: new Error("not encodable"),
         invocationRef: {
           kind: GITHUB_OPS_INVOCATION_KIND,
@@ -70,18 +70,21 @@ describe("github_ops wire contracts", () => {
     expect(
       GithubOpsProducerEventSchema.safeParse({
         type: "CONFLICTS",
+        provider: "github",
         files: ["/Users/alice/secret/app.ts"],
       }).success,
     ).toBe(false);
     expect(
       GithubOpsProducerEventSchema.safeParse({
         type: "CONFLICTS",
+        provider: "github",
         files: ["\\Users\\alice\\secret\\app.ts"],
       }).success,
     ).toBe(false);
     expect(
       GithubOpsProducerEventSchema.safeParse({
         type: "CONFLICTS",
+        provider: "github",
         files: ["src/app.tsx"],
       }).success,
     ).toBe(true);

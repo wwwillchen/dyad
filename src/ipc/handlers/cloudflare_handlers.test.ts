@@ -39,7 +39,7 @@ vi.mock("@/paths/paths", () => ({
   getDyadAppPath: (appPath: string) => `/apps/${appPath}`,
 }));
 
-vi.mock("./github_handlers", () => ({
+vi.mock("@/ipc/utils/github_endpoints", () => ({
   getGitHubApiBase: () => "https://github.test",
 }));
 

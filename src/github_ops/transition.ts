@@ -11,10 +11,35 @@ import type {
   GithubOpsIgnoreReason,
   GithubOpsState,
   GithubOpsTransitionResult,
+  GitRemoteProviderName,
 } from "./state";
 import { truncateGithubOpsErrorMessage } from "./error_message";
 
-const PUSH_NORMAL: GithubOperation = { type: "push", mode: "normal" };
+/**
+ * The normal push that follows `op`, against the same provider.
+ *
+ * Takes the provider from the operation it continues rather than defaulting,
+ * so a composed push cannot name a provider the app is not on. Every caller
+ * passes an operation that carries one, which the type demands.
+ */
+function pushAfter(op: { provider: GitRemoteProviderName }): GithubOperation {
+  return { type: "push", mode: "normal", provider: op.provider };
+}
+
+/**
+ * The provider a rebase belongs to when git reports one in progress that no
+ * rebase operation started: a conflicted pull, or a rebase left over from
+ * before the app was opened. The probe reads it from the app row.
+ *
+ * Null only for an app with no linked remote. The continuation then pushes
+ * nowhere and is refused as unlinked whichever provider it names, so GitHub
+ * stands in.
+ */
+function foundRebaseProvider(
+  provider: GitRemoteProviderName | null,
+): GitRemoteProviderName {
+  return provider ?? "github";
+}
 
 export function transition(
   state: GithubOpsState,
@@ -84,7 +109,9 @@ function requestOperation(
           ? beginOperation(
               state,
               op,
-              continuation.type === "rebase-continue" ? PUSH_NORMAL : undefined,
+              continuation.type === "rebase-continue"
+                ? pushAfter(continuation)
+                : undefined,
             )
           : ignore(state, "blocked-by-conflicts");
       }
@@ -365,7 +392,12 @@ function conflictsReceived(
           });
     case "rebase-paused":
       return files.length > 0
-        ? enterConflicted(files, { type: "rebase" }, false)
+        ? // A rebase git was already in the middle of when the machine looked.
+          enterConflicted(
+            files,
+            { type: "rebase", provider: foundRebaseProvider(event.provider) },
+            false,
+          )
         : ignore(state, "no-change");
     case "idle":
       return files.length > 0
@@ -400,10 +432,10 @@ function gitStateReceived(
       const nextOrigin: ConflictOrigin = event.rebaseInProgress
         ? state.resolution !== undefined || isRebaseConflictOrigin(state.origin)
           ? state.origin
-          : { type: "rebase" }
+          : { type: "rebase", provider: foundRebaseProvider(event.provider) }
         : state.resolution !== undefined &&
             isResumableRebaseOrigin(state.origin)
-          ? PUSH_NORMAL
+          ? pushAfter(state.origin)
           : state.resolution === undefined &&
               isRebaseConflictOrigin(state.origin)
             ? { type: "reconcile" }
@@ -731,7 +763,9 @@ export function continuationOperation(
       return origin;
     case "rebase":
     case "rebase-continue":
-      return { type: "rebase-continue" };
+      // Carries the provider forward: this is the operation a resumed rebase
+      // runs, and the push composed after it takes its provider from here.
+      return { type: "rebase-continue", provider: origin.provider };
     case "reconcile":
     case "pull":
     case "fetch":
@@ -762,7 +796,9 @@ function isRebaseConflictOrigin(origin: ConflictOrigin): boolean {
   return origin.type !== "reconcile" && isRebaseOperation(origin);
 }
 
-function isResumableRebaseOrigin(origin: ConflictOrigin): boolean {
+function isResumableRebaseOrigin(
+  origin: ConflictOrigin,
+): origin is Extract<GithubOperation, { type: "rebase" | "rebase-continue" }> {
   return origin.type === "rebase" || origin.type === "rebase-continue";
 }
 
@@ -812,11 +848,13 @@ function getBlockedSwitchResume(
 function compositeNext(op: GithubOperation): GithubOperation | undefined {
   switch (op.type) {
     case "rebase":
-      return PUSH_NORMAL;
+      return pushAfter(op);
     case "create-branch":
       return op.thenSwitch ? { type: "switch", branch: op.name } : undefined;
     case "connect-repo":
-      return op.thenAutoPush ? PUSH_NORMAL : undefined;
+      // The push that follows a link names the provider it links to, so its
+      // success banner does too.
+      return op.thenAutoPush ? pushAfter(op) : undefined;
     case "push":
     case "pull":
     case "fetch":
@@ -867,7 +905,7 @@ function successBannerContent(op: GithubOperation): GithubOpsBanner | null {
     case "push":
       return {
         kind: "success",
-        message: "Successfully pushed to GitHub!",
+        message: `Successfully pushed to ${op.provider === "gitlab" ? "GitLab" : "GitHub"}!`,
       };
     case "pull":
       return { kind: "success", message: "Pulled latest changes from remote" };

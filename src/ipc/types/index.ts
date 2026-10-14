@@ -124,6 +124,7 @@ export { appClient } from "./app";
 export { chatClient, chatStreamClient } from "./chat";
 export { agentClient, agentEventClient } from "./agent";
 export { githubClient, gitClient, gitEventClient } from "./github";
+export { gitlabClient } from "./gitlab";
 export {
   connectionFlowClient,
   connectionFlowEventClient,
@@ -544,6 +545,7 @@ import {
 } from "./connection_flow";
 import { mcpClient } from "./mcp";
 import { vercelClient } from "./vercel";
+import { gitlabClient } from "./gitlab";
 import { cloudflareClient } from "./cloudflare";
 import { coolifyClient, coolifyEventClient } from "./coolify";
 import { coolifySetupClient, coolifySetupEventClient } from "./coolify_setup";
@@ -629,6 +631,7 @@ export const ipc = {
   connectionFlow: connectionFlowClient,
   mcp: mcpClient,
   vercel: vercelClient,
+  gitlab: gitlabClient,
   cloudflare: cloudflareClient,
   coolify: coolifyClient,
   coolifySetup: coolifySetupClient,
