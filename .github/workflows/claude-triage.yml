@@ -59,17 +59,25 @@ jobs:
           TEMPLATE_VARS_PATH: ${{ env.TRIAGE_CONTEXT_PATH }}
         run: node scripts/issue-agent/render-template.mjs
 
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:gha-dyad
+
       - name: Triage issue
         uses: anthropics/claude-code-base-action@30234c90700acf18e36ad3d509af11032df842ff # Claude Code 2.1.219
         env:
+          ANTHROPIC_BASE_URL: http://100.73.172.24:8081
           GITHUB_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Temporary diagnostics for the API-key authentication smoke tests.
+          anthropic_api_key: ${{ secrets.UNDERCLASS_KEY }}
+          # Temporary diagnostics for the Tailscale proxy smoke tests.
           show_full_output: true
           prompt: ${{ steps.render-prompt.outputs.prompt }}
           # Write/Edit are scoped to the single decision file. Path rules are

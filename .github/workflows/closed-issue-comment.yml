@@ -30,11 +30,20 @@ jobs:
       - name: Strip any project Claude settings (defense in depth)
         run: rm -f .claude/settings.json .claude/settings.local.json
 
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:gha-dyad
+
       - uses: anthropics/claude-code-action@b76a0776ae74036e77cd11018083743453d7ad35 # v1.0.179
         id: claude-decision
+        env:
+          ANTHROPIC_BASE_URL: http://100.73.172.24:8081
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Temporary diagnostics for the API-key authentication smoke tests.
+          anthropic_api_key: ${{ secrets.UNDERCLASS_KEY }}
+          # Temporary diagnostics for the Tailscale proxy smoke tests.
           show_full_output: true
           # See: https://github.com/anthropics/claude-code-action/blob/v1/docs/security.md
           github_token: ${{ github.token }}
