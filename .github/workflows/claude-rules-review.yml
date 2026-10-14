@@ -2,19 +2,23 @@
 # current, valuable, and cost-effective. Uses Claude Code to audit existing
 # rules and propose improvements.
 #
-# Runs every Monday at 5:00 AM PST = 13:00 UTC (PST is UTC-8)
-# Can be triggered manually via workflow_dispatch for testing.
+# The original schedule and manual-dispatch definition are retained below
+# for re-enabling after the publication permissions are fixed.
 
 name: Claude Rules Review
 
+# Disabled until the blocker below is resolved. Restore the schedule and remove
+# the job guard together to re-enable execution. Manual dispatch is also guarded.
 on:
-  schedule:
-    # Every Monday at 5:00 AM PST = 13:00 UTC (PST is UTC-8)
-    - cron: "0 13 * * 1"
+  # schedule:
+  #   Every Monday at 5:00 AM PST = 13:00 UTC (PST is UTC-8)
+  #   - cron: "0 13 * * 1"
   workflow_dispatch:
 
 jobs:
   review-rules:
+    # Disabled: Permission denials prevent the rules report from being published.
+    if: ${{ false }}
     environment: ai-bots
     runs-on: ubuntu-latest
     timeout-minutes: 30

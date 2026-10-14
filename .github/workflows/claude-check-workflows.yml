@@ -1,9 +1,11 @@
 name: Claude Check Workflows
 
+# Disabled until the blocker below is resolved. Restore the schedule and remove
+# the job guard together to re-enable execution. Manual dispatch is also guarded.
 on:
-  schedule:
-    # Daily at 13:00 UTC (5 AM PST / 6 AM PDT)
-    - cron: "0 13 * * *"
+  # schedule:
+  #   Daily at 13:00 UTC (5 AM PST / 6 AM PDT)
+  #   - cron: "0 13 * * *"
   workflow_dispatch:
     inputs:
       hours:
@@ -14,6 +16,8 @@ on:
 
 jobs:
   check-workflows:
+    # Disabled: Tailscale setup requires sudo, which is unavailable on the macOS runner.
+    if: ${{ false }}
     environment: ai-bots
     runs-on:
       - self-hosted
