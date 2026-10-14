@@ -19,7 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: read
-      id-token: write # authenticate to Anthropic using GitHub OIDC
     outputs:
       should_reopen: ${{ steps.decision.outputs.should_reopen }}
     steps:
@@ -34,12 +33,8 @@ jobs:
       - uses: anthropics/claude-code-action@b76a0776ae74036e77cd11018083743453d7ad35 # v1.0.179
         id: claude-decision
         with:
-          anthropic_federation_rule_id: fdrl_012h8Yvsyr9pG3VK8Yth1KA7
-          anthropic_organization_id: 9c5d6433-6b64-4bd3-8f67-37aabe87e660
-          anthropic_service_account_id: svac_014TYeMKrypMrB3vQvVf4CeF
-          anthropic_workspace_id: wrkspc_01KnNGygk2MZqtz1Ms9fj1LH
-          anthropic_oidc_audience: https://api.anthropic.com
-          # Temporary diagnostics for the failed OIDC smoke tests.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Temporary diagnostics for the API-key authentication smoke tests.
           show_full_output: true
           # See: https://github.com/anthropics/claude-code-action/blob/v1/docs/security.md
           github_token: ${{ github.token }}
