@@ -269,8 +269,8 @@ describe("global subscription turn routing", () => {
     expect(mocks.credits).not.toHaveBeenCalled();
   });
   it.each([
-    ["free", "gpt-5.6-luna"],
-    [undefined, "gpt-5.6-luna"],
+    ["free", "gpt-6-luna"],
+    [undefined, "gpt-6-luna"],
     ["plus", "eligible-model"],
     ["pro", "eligible-model"],
   ] as const)(
@@ -279,7 +279,7 @@ describe("global subscription turn routing", () => {
       mocks.account.mockResolvedValue({
         connected: true,
         planType,
-        models: ["first-model", "eligible-model", "gpt-5.6-luna"],
+        models: ["first-model", "eligible-model", "gpt-5.6-luna", "gpt-6-luna"],
       });
       const result = await preflightSubscriptionTurn(
         { provider: "auto", name: "auto", effortLevel: "medium" },

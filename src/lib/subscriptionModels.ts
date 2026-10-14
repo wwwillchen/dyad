@@ -34,7 +34,7 @@ export function getSubscriptionDefaultModel(
   current: LargeLanguageModel,
 ): string | undefined {
   if (planType !== "plus" && planType !== "pro") {
-    return models.includes("gpt-5.6-luna") ? "gpt-5.6-luna" : models[0];
+    return models.includes("gpt-6-luna") ? "gpt-6-luna" : models[0];
   }
   return current.provider === "openai" && models.includes(current.name)
     ? current.name

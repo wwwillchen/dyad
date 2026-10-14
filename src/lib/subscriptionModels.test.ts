@@ -6,23 +6,32 @@ import {
 } from "./subscriptionModels";
 
 const current = { provider: "openai", name: "gpt-5.6-terra" };
-const catalog = ["gpt-5.6-luna", current.name];
+const catalog = ["gpt-6-luna", current.name];
 describe("subscription defaults", () => {
   it.each([undefined, "free", "go", "business", "enterprise", "edu"])(
-    "prefers Luna for %s plans even with an eligible current selection",
+    "prefers GPT-6 Luna for %s plans even with an eligible current selection",
     (plan) => {
       expect(
         getSubscriptionDefaultModel(
-          [current.name, "gpt-5.6-luna"],
+          [current.name, "gpt-5.6-luna", "gpt-6-luna"],
           plan,
           current,
         ),
-      ).toBe("gpt-5.6-luna");
+      ).toBe("gpt-6-luna");
       expect(getSubscriptionDefaultModel([current.name], plan, current)).toBe(
         current.name,
       );
     },
   );
+  it("uses the first available model when GPT-6 Luna is unavailable", () => {
+    expect(
+      getSubscriptionDefaultModel(
+        [current.name, "gpt-5.6-luna"],
+        "free",
+        current,
+      ),
+    ).toBe(current.name);
+  });
   it.each(["plus", "pro"])("preserves a supported selection for %s", (plan) => {
     expect(getSubscriptionDefaultModel(catalog, plan, current)).toBe(
       current.name,
