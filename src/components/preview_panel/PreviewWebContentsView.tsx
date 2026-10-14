@@ -29,11 +29,8 @@ import { runAppLifecycleInBackground, useRunApp } from "@/hooks/useRunApp";
 import { useSettings } from "@/hooks/useSettings";
 import { ipc } from "@/ipc/types";
 import type { PreviewViewNavigationState } from "@/ipc/types";
-import { formatPreviewAddressPath, getPreviewHost } from "./previewAddressPath";
-import {
-  LOCAL_PREVIEW_BROWSER_HINT,
-  resolvePreviewBrowserUrl,
-} from "./previewBrowserUrl";
+import { formatPreviewAddressPath } from "./previewAddressPath";
+import { resolvePreviewBrowserUrl } from "./previewBrowserUrl";
 import { PreviewLoadingScreen } from "./PreviewLoadingScreen";
 import { PREVIEW_TOOLBAR_BUTTON_CLASSES } from "./previewToolbarStyles";
 import {
@@ -72,7 +69,8 @@ interface LoadFailure {
  */
 export const PreviewWebContentsView = ({ loading }: { loading: boolean }) => {
   const selectedAppId = useAtomValue(selectedAppIdAtom);
-  const { appUrl, mode, previewAuth } = useCurrentAppUrl(selectedAppId);
+  const { appUrl, originalUrl, mode, previewAuth } =
+    useCurrentAppUrl(selectedAppId);
   const { settings } = useSettings();
   const setPreviewNativeViewAppId = useSetAtom(previewNativeViewAppIdAtom);
   const isNativeOverlayActive = useAtomValue(previewNativeOverlayActiveAtom);
@@ -249,6 +247,7 @@ export const PreviewWebContentsView = ({ loading }: { loading: boolean }) => {
         isCloudMode,
         selectedAppId,
         appUrl,
+        originalUrl,
         createCloudSandboxShareLink,
       });
       await ipc.system.openExternalUrl(url);
@@ -352,7 +351,6 @@ export const PreviewWebContentsView = ({ loading }: { loading: boolean }) => {
             className="truncate text-xs text-muted-foreground"
             data-testid="preview-native-path"
           >
-            {getPreviewHost(appUrl)}
             {currentPath}
           </span>
           <span
@@ -388,9 +386,7 @@ export const PreviewWebContentsView = ({ loading }: { loading: boolean }) => {
           >
             <ExternalLink size={14} />
           </TooltipTrigger>
-          <TooltipContent>
-            Open in browser{!isCloudMode && `. ${LOCAL_PREVIEW_BROWSER_HINT}`}
-          </TooltipContent>
+          <TooltipContent>Open in browser</TooltipContent>
         </Tooltip>
 
         <div className="flex shrink-0 items-center gap-1.5">
