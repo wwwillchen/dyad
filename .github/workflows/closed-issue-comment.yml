@@ -41,7 +41,6 @@ jobs:
         id: claude-decision
         env:
           ANTHROPIC_BASE_URL: http://100.73.172.24:8081
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.UNDERCLASS_KEY }}
         with:
           anthropic_api_key: ${{ secrets.UNDERCLASS_KEY }}
           # See: https://github.com/anthropics/claude-code-action/blob/v1/docs/security.md
