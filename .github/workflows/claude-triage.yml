@@ -74,6 +74,8 @@ jobs:
           anthropic_service_account_id: svac_014TYeMKrypMrB3vQvVf4CeF
           anthropic_workspace_id: wrkspc_01KnNGygk2MZqtz1Ms9fj1LH
           anthropic_oidc_audience: https://api.anthropic.com
+          # Temporary diagnostics for the failed OIDC smoke tests.
+          show_full_output: true
           prompt: ${{ steps.render-prompt.outputs.prompt }}
           # Write/Edit are scoped to the single decision file. Path rules are
           # absolute ("//" + workspace): relative rules resolve against the

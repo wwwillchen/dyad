@@ -39,6 +39,8 @@ jobs:
           anthropic_service_account_id: svac_014TYeMKrypMrB3vQvVf4CeF
           anthropic_workspace_id: wrkspc_01KnNGygk2MZqtz1Ms9fj1LH
           anthropic_oidc_audience: https://api.anthropic.com
+          # Temporary diagnostics for the failed OIDC smoke tests.
+          show_full_output: true
           # See: https://github.com/anthropics/claude-code-action/blob/v1/docs/security.md
           github_token: ${{ github.token }}
           # display_report left as default (false) — this workflow processes untrusted issue comments
