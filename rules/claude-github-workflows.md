@@ -65,6 +65,8 @@ Anchor path rules to the checkout with `/${{ github.workspace }}/...` (the works
 
 ## Issue triage (`claude-triage.yml`) layout
 
+- Issue triage and closed-issue classification use the actions' native `anthropic_federation_rule_id` / organization / service-account / workspace inputs with job-level `id-token: write`. Do not also supply `claude_code_oauth_token` or `anthropic_api_key`, which override federation. Their `environment: ai-bots` makes the default GitHub OIDC subject `repo:dyad-sh/dyad:environment:ai-bots`; configure Anthropic trust for that subject and the intended workflow identities, rather than a push-only branch subject.
+
 - The agent only writes `tmp/issue-triage/triage.json`; `scripts/issue-triage/triage-comment.mjs` validates it (enum fields, link-host allowlist, @-mention stripping, length caps, `fixedIn` must be a published release) and composes the single reporter-facing comment. To change what the bot tells reporters, add or edit an entry in `.github/prompts/triage-playbook.md` first; edit the prompt only for behavior rules.
 - Trusted context (current version, `gh release list` minus drafts, GitHub/Supabase `status.json`, playbook) comes from `scripts/issue-triage/prepare-context.mjs` in a trusted step and reaches the prompt through `TEMPLATE_VARS_PATH` in `render-template.mjs`; the apply job rebuilds it rather than trusting the agent's artifact.
 - Preview a decision without posting: `node scripts/issue-triage/preview.mjs scripts/issue-triage/examples/node-not-found.json`. A missing or invalid decision still posts a fallback comment and adds `triage/failed`; `apply-triage` runs with `if: always()` for that reason.
