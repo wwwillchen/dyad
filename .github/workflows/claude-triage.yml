@@ -70,7 +70,6 @@ jobs:
         uses: anthropics/claude-code-base-action@4e9cf25b0766dc03c02b984cd6386a41690b27b5 # Claude Code 2.1.300
         env:
           ANTHROPIC_BASE_URL: http://100.73.172.24:8081
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.UNDERCLASS_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}

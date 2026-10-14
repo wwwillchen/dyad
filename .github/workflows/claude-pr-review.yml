@@ -83,7 +83,6 @@ jobs:
         uses: anthropics/claude-code-action@9ca9355b36297178e28d37c799d1c9c8a28e6507 # post-v1.0.231
         env:
           ANTHROPIC_BASE_URL: http://100.73.172.24:8081
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.UNDERCLASS_KEY }}
           # Default is 32,000 which Claude willl sometimes hit.
           # https://code.claude.com/docs/en/settings
           CLAUDE_CODE_MAX_OUTPUT_TOKENS: 48000
