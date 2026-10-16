@@ -2044,3 +2044,69 @@ describe("saving an API token", () => {
     );
   });
 });
+
+describe("a plain Vite app", () => {
+  // No target anywhere, but a Vite config and a manifest at the root, which
+  // the conversion can turn into a Nitro target.
+  beforeEach(() => {
+    holder.committedFiles = ["package.json", "vite.config.ts", "src/App.tsx"];
+    holder.files = {
+      "package.json": JSON.stringify({
+        scripts: { build: "vite build" },
+        devDependencies: { vite: "^7.0.0" },
+      }),
+    };
+  });
+
+  it("is offered a Nitro conversion in place of a target", async () => {
+    const status = await handlers.handleGetAppStatus(appId);
+    expect(status.targets).toEqual([]);
+    expect(status.canConvertToNitro).toBe(true);
+  });
+
+  it("is not offered one once it is a Nitro app", async () => {
+    holder.files["package.json"] = JSON.stringify({
+      dependencies: { nitro: "^3.0.0" },
+    });
+    const status = await handlers.handleGetAppStatus(appId);
+    expect(status.targets).toEqual([
+      expect.objectContaining({ kind: "nitro", rootDirectory: "" }),
+    ]);
+    expect(status.canConvertToNitro).toBe(false);
+  });
+
+  it("is not offered one when a subfolder already deploys a Worker", async () => {
+    holder.committedFiles.push("worker/wrangler.jsonc");
+    holder.files["worker/wrangler.jsonc"] = `{ "name": "shop-api" }`;
+    const status = await handlers.handleGetAppStatus(appId);
+    expect(status.targets).toHaveLength(1);
+    expect(status.canConvertToNitro).toBe(false);
+  });
+
+  it("is not offered one when the branch cannot be read but a Worker is connected", async () => {
+    db.insert(cloudflareAppConnections)
+      .values({
+        appId,
+        rootDirectory: "worker",
+        accountId: ACCOUNT,
+        workerName: "shop-api",
+        workerTag: "tag-1",
+        triggerUuid: "trigger-1",
+        workerUrl: null,
+      })
+      .run();
+    holder.refs = {};
+    const status = await handlers.handleGetAppStatus(appId);
+    expect(status.targets).toEqual([]);
+    expect(status.canConvertToNitro).toBe(false);
+  });
+
+  it("is not offered one when the app is on Supabase", async () => {
+    // The agent's enable_nitro tool is withheld from an app on Supabase, so
+    // the offer would send a request the chat cannot carry out.
+    db.update(apps).set({ supabaseProjectId: "supa-proj" }).run();
+    const status = await handlers.handleGetAppStatus(appId);
+    expect(status.targets).toEqual([]);
+    expect(status.canConvertToNitro).toBe(false);
+  });
+});

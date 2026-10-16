@@ -13,7 +13,7 @@ interface AgentModeRequiredDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onContinue: () => void;
-  action: "generate" | "fix" | "assertions" | "deploy";
+  action: "generate" | "fix" | "assertions" | "deploy" | "convert";
 }
 
 const DESCRIPTIONS: Record<AgentModeRequiredDialogProps["action"], string> = {
@@ -24,14 +24,16 @@ const DESCRIPTIONS: Record<AgentModeRequiredDialogProps["action"], string> = {
     "Generating a test proposal runs in Agent mode, which names the test, describes your recorded steps and proposes checks you review before the test file is created. Continue will send this request in Agent mode.",
   deploy:
     "Fixing a failed deployment means editing your deployment config or code, which this chat's mode cannot do. Continue will send this request in Agent mode.",
+  convert:
+    "Adding a Nitro server layer means changing your app's config and dependencies, which this chat's mode cannot do. Continue will send this request in Agent mode.",
 };
 
 /**
  * Confirmation shown when the user triggers "Generate test" / "Fix with AI" /
- * "Generate test proposal" / a deployment fix while the current chat isn't in
- * Agent mode. All of them run in Agent mode (they read the app and write
- * files), so Continue sends the request in Agent mode regardless of the chat's
- * current mode.
+ * "Generate test proposal" / a deployment fix / a Nitro conversion while the
+ * current chat isn't in Agent mode. All of them run in Agent mode (they read
+ * the app and write files), so Continue sends the request in Agent mode
+ * regardless of the chat's current mode.
  */
 export function AgentModeRequiredDialog({
   open,

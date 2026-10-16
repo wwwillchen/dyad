@@ -75,6 +75,7 @@ import {
   buildsWithNitro,
   describeCloudflareTarget,
   detectCloudflareTargets,
+  isPlainViteRoot,
   readWranglerWorkerName,
   type CloudflareTarget,
 } from "@/cloudflare_deploy/targets";
@@ -155,10 +156,10 @@ async function revParse(appPath: string, ref: string): Promise<string | null> {
  * builds what is on GitHub, so a Wrangler config or Nitro setup that was never
  * committed is not something it can deploy.
  */
-async function listCommittedTargets(
+async function listCommittedFiles(
   appPath: string,
   branch: string,
-): Promise<CloudflareTarget[]> {
+): Promise<string[]> {
   const result = await execGit(
     ["ls-tree", "-r", "--name-only", "-z", `refs/heads/${branch}`],
     appPath,
@@ -171,10 +172,35 @@ async function listCommittedTargets(
       DyadErrorKind.Precondition,
     );
   }
+  return result.stdout.split("\0").filter(Boolean);
+}
+
+async function listCommittedTargets(
+  appPath: string,
+  branch: string,
+): Promise<CloudflareTarget[]> {
   return detectCloudflareTargets(
-    result.stdout.split("\0").filter(Boolean),
+    await listCommittedFiles(appPath, branch),
     (paths) => readCommittedFiles(appPath, branch, paths),
   );
+}
+
+/**
+ * The targets on the branch and, when there are none, whether the root is a
+ * plain Vite app that the conversion could turn into one.
+ */
+async function inspectCommittedBranch(
+  appPath: string,
+  branch: string,
+): Promise<{ targets: CloudflareTarget[]; canConvertToNitro: boolean }> {
+  const files = await listCommittedFiles(appPath, branch);
+  const read = (paths: string[]) => readCommittedFiles(appPath, branch, paths);
+  const targets = await detectCloudflareTargets(files, read);
+  return {
+    targets,
+    canConvertToNitro:
+      targets.length === 0 && (await isPlainViteRoot(files, read)),
+  };
 }
 
 /**
@@ -536,9 +562,13 @@ async function handleGetAppStatus(appId: number): Promise<CloudflareAppStatus> {
 
   const [synced, listing, rows] = await Promise.all([
     isBranchSynced(appPath, branch),
-    listCommittedTargets(appPath, branch).then(
-      (targets) => ({ targets, error: null }),
-      (error: unknown) => ({ targets: [] as CloudflareTarget[], error }),
+    inspectCommittedBranch(appPath, branch).then(
+      (inspection) => ({ ...inspection, error: null }),
+      (error: unknown) => ({
+        targets: [] as CloudflareTarget[],
+        canConvertToNitro: false,
+        error,
+      }),
     ),
     db.query.cloudflareAppConnections.findMany({
       where: eq(cloudflareAppConnections.appId, appId),
@@ -595,6 +625,11 @@ async function handleGetAppStatus(appId: number): Promise<CloudflareAppStatus> {
     branch,
     targets: targetSummaries,
     connections: rows.map(toConnection),
+    // The conversion is the agent's enable_nitro tool, which an app on
+    // Supabase does not get: its Edge Functions already serve as the server
+    // layer. Offering it would send a request the chat cannot carry out.
+    canConvertToNitro:
+      listing.canConvertToNitro && app.supabaseProjectId === null,
   };
 }
 

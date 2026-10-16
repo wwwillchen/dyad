@@ -63,6 +63,12 @@ export const CloudflareAppStatusSchema = z.object({
   branch: z.string(),
   targets: z.array(CloudflareTargetSchema),
   connections: z.array(CloudflareConnectionSchema),
+  /**
+   * Whether the app root is a plain Vite app that the agent can turn into a
+   * Nitro target. Only true when there are no targets at all: an app that
+   * already deploys a Worker from a subfolder is not offered a conversion.
+   */
+  canConvertToNitro: z.boolean(),
 });
 
 export type CloudflareAppStatus = z.infer<typeof CloudflareAppStatusSchema>;

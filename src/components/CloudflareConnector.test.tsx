@@ -101,6 +101,7 @@ function appStatus(overrides: Record<string, unknown> = {}) {
     branch: "main",
     targets: [TARGET],
     connections: [],
+    canConvertToNitro: false,
     ...overrides,
   };
 }
@@ -1347,5 +1348,122 @@ describe("an app with one Worker", () => {
 
     await screen.findByTestId("cloudflare-worker-form");
     expect(screen.queryByTestId("cloudflare-target-list")).toBeNull();
+  });
+});
+
+describe("a plain Vite app with no Worker", () => {
+  beforeEach(() => {
+    cloudflare.getAppStatus.mockResolvedValue(
+      appStatus({ targets: [], canConvertToNitro: true }),
+    );
+  });
+
+  it("is offered a Nitro conversion beside the notice, after Refresh", async () => {
+    renderConnector();
+    expect(await screen.findByTestId("cloudflare-nitro-offer")).toBeTruthy();
+    expect(screen.getByTestId("cloudflare-no-targets")).toBeTruthy();
+    const refresh = screen.getByRole("button", { name: /refresh/i });
+    const convert = screen.getByRole("button", { name: "Convert to Nitro" });
+    expect(
+      refresh.compareDocumentPosition(convert) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("is not told to add a Wrangler config while offered the conversion", async () => {
+    renderConnector();
+    const notice = await screen.findByTestId("cloudflare-no-targets");
+    expect(notice.textContent).toContain("contain a Wrangler config");
+    expect(notice.textContent).not.toContain("Add one to this app");
+  });
+
+  it("is not offered one when it is not a Vite app", async () => {
+    cloudflare.getAppStatus.mockResolvedValue(appStatus({ targets: [] }));
+    renderConnector();
+    const notice = await screen.findByTestId("cloudflare-no-targets");
+    expect(screen.queryByTestId("cloudflare-nitro-offer")).toBeNull();
+    expect(notice.textContent).toContain("Add one to this app");
+  });
+
+  it("asks an Agent mode chat to add Nitro, in its own mode", async () => {
+    renderConnector();
+
+    fireEvent.click(await screen.findByTestId("cloudflare-convert-to-nitro"));
+
+    expect(streamMessage).toHaveBeenCalledTimes(1);
+    const request = streamMessage.mock.calls[0][0];
+    expect(request.chatId).toBe(CHAT_ID);
+    expect(request.requestedChatMode).toBeUndefined();
+    expect(request.prompt).toContain("`enable_nitro` tool");
+    await waitFor(() =>
+      expect(showInfo).toHaveBeenCalledWith(
+        expect.stringMatching(/Sent to chat/),
+      ),
+    );
+    expect(screen.queryByTestId("agent-mode-required-dialog")).toBeNull();
+  });
+
+  it("keeps a Build mode chat in Build mode, with no confirmation", async () => {
+    // Build mode has the tool too, and its turns are not billed.
+    chatMode.value = "build";
+    renderConnector();
+
+    fireEvent.click(await screen.findByTestId("cloudflare-convert-to-nitro"));
+
+    expect(streamMessage).toHaveBeenCalledTimes(1);
+    expect(streamMessage.mock.calls[0][0].requestedChatMode).toBeUndefined();
+    expect(screen.queryByTestId("agent-mode-required-dialog")).toBeNull();
+  });
+
+  it("asks before sending from a chat whose mode cannot edit files", async () => {
+    chatMode.value = "ask";
+    renderConnector();
+
+    fireEvent.click(await screen.findByTestId("cloudflare-convert-to-nitro"));
+
+    expect(streamMessage).not.toHaveBeenCalled();
+    const dialog = await screen.findByTestId("agent-mode-required-dialog");
+    expect(dialog.textContent).toMatch(/Nitro server layer/);
+    fireEvent.click(within(dialog).getByTestId("agent-mode-continue"));
+
+    await waitFor(() => expect(streamMessage).toHaveBeenCalledTimes(1));
+    expect(streamMessage.mock.calls[0][0].requestedChatMode).toBe(
+      "local-agent",
+    );
+  });
+
+  it("does not claim a send that the chat refused", async () => {
+    streamMessage.mockResolvedValue(false);
+    renderConnector();
+
+    fireEvent.click(await screen.findByTestId("cloudflare-convert-to-nitro"));
+
+    await waitFor(() => expect(streamMessage).toHaveBeenCalledTimes(1));
+    expect(showInfo).not.toHaveBeenCalled();
+  });
+
+  it("says to open a chat when none is selected, instead of sending nowhere", async () => {
+    chatMode.value = "ask";
+    renderConnector({ chatId: null });
+
+    fireEvent.click(await screen.findByTestId("cloudflare-convert-to-nitro"));
+
+    expect(streamMessage).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("agent-mode-required-dialog")).toBeNull();
+    expect(showInfo).toHaveBeenCalledWith(expect.stringMatching(/Open a chat/));
+  });
+
+  it("cannot be clicked while the chat is streaming or its mode is unknown", async () => {
+    chatStream.isStreaming = true;
+    renderConnector();
+    const streaming = await screen.findByTestId("cloudflare-convert-to-nitro");
+    expect(streaming).toHaveProperty("disabled", true);
+    cleanup();
+
+    chatStream.isStreaming = false;
+    chatMode.isLoading = true;
+    renderConnector();
+    const loading = await screen.findByTestId("cloudflare-convert-to-nitro");
+    expect(loading).toHaveProperty("disabled", true);
   });
 });

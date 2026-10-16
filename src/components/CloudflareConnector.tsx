@@ -41,6 +41,7 @@ import {
   isValidWorkerName,
   type CloudflareDeploymentState,
 } from "@/cloudflare_deploy/build_config";
+import { buildCloudflareNitroConversionPrompt } from "@/cloudflare_deploy/convert_prompt";
 import { buildCloudflareDeployFixPrompt } from "@/cloudflare_deploy/fix_prompt";
 
 /**
@@ -234,6 +235,99 @@ function RecheckButton({
   );
 }
 
+/**
+ * A plain Vite app is static files, which the Workers build has no way to
+ * run. Adding a Nitro server layer makes it an app whose build produces a
+ * Worker: the same change the Neon integration makes on connect, and the one
+ * the agent's `enable_nitro` tool makes, so the offer sends that request to
+ * the chat. Build and Agent mode both have the tool; Ask and Plan mode cannot
+ * write, so a chat in one of those is asked to switch first. The chat commits
+ * the change; pushing stays with the user's sync, which the tab asks for once
+ * the new target appears.
+ */
+function NitroConversionOffer({
+  onRecheck,
+}: {
+  onRecheck: () => Promise<{ error: Error | null }>;
+}) {
+  const chatId = useAtomValue(selectedChatIdAtom);
+  const { streamMessage, isStreaming } = useStreamChat();
+  const { selectedMode, isLoading: isChatModeLoading } = useChatMode(chatId);
+  // Open while the Agent-mode confirmation is showing.
+  const [needsAgentMode, setNeedsAgentMode] = useState(false);
+
+  const send = async ({ inAgentMode }: { inAgentMode: boolean }) => {
+    if (chatId == null) return;
+    // A refused send reports itself, so the confirmation is only for a send
+    // that went through.
+    const sent = await streamMessage({
+      prompt: buildCloudflareNitroConversionPrompt(),
+      chatId,
+      ...(inAgentMode ? { requestedChatMode: "local-agent" as const } : {}),
+    });
+    if (sent) {
+      // Nothing tells this tab when the chat is done, so the user is told
+      // how to see the result.
+      showInfo(
+        "Sent to chat — asking the AI to convert the app to Nitro. Click Refresh here once it is done.",
+      );
+    }
+  };
+
+  const handleConvert = () => {
+    if (chatId == null) {
+      showInfo("Open a chat to ask the AI to convert this app.");
+      return;
+    }
+    // Build and Agent mode both have the tool, and a Build chat stays a Build
+    // chat: for a Pro user, an Agent turn is billed where a Build turn is not.
+    if (selectedMode === "build" || selectedMode === "local-agent") {
+      void send({ inAgentMode: false });
+    } else {
+      setNeedsAgentMode(true);
+    }
+  };
+
+  return (
+    <div className="mt-3 space-y-2" data-testid="cloudflare-nitro-offer">
+      <p>
+        This is a Vite app, so Dyad can convert it into a Nitro app to deploy it
+        to Cloudflare; the app will keep working as it does now.
+      </p>
+      <div className="flex items-center gap-2">
+        <RecheckButton onCheck={onRecheck} />
+        <Button
+          type="button"
+          size="sm"
+          // The main action of a blue notice, styled as the token boxes
+          // style theirs.
+          className="bg-blue-600 hover:bg-blue-700 text-white"
+          onClick={handleConvert}
+          // The mode decides whether to ask first, so it has to be known.
+          // While the chat is already streaming, another click would only
+          // queue the same request again.
+          disabled={isChatModeLoading || isStreaming}
+          data-testid="cloudflare-convert-to-nitro"
+        >
+          <Sparkles className="h-3 w-3" />
+          Convert to Nitro
+        </Button>
+      </div>
+      <AgentModeRequiredDialog
+        open={needsAgentMode}
+        onOpenChange={(open) => {
+          if (!open) setNeedsAgentMode(false);
+        }}
+        action="convert"
+        onContinue={() => {
+          setNeedsAgentMode(false);
+          void send({ inAgentMode: true });
+        }}
+      />
+    </div>
+  );
+}
+
 function ConnectedAccount({ appId }: { appId: number }) {
   const accounts = useCloudflareAccounts();
   const status = useCloudflareAppStatus({ appId });
@@ -290,10 +384,15 @@ function ConnectedAccount({ appId }: { appId: number }) {
         <p className="font-medium mb-1">No Cloudflare Worker found</p>
         <p>
           Dyad deploys Nitro apps and folders that contain a Wrangler config
-          (wrangler.jsonc, wrangler.json or wrangler.toml). Add one to this app,
-          then sync it to GitHub and click Refresh.
+          (wrangler.jsonc, wrangler.json or wrangler.toml).
+          {!status.data.canConvertToNitro &&
+            " Add one to this app, then sync it to GitHub and click Refresh."}
         </p>
-        <RecheckButton className="mt-3" onCheck={() => status.refetch()} />
+        {status.data.canConvertToNitro ? (
+          <NitroConversionOffer onRecheck={() => status.refetch()} />
+        ) : (
+          <RecheckButton className="mt-3" onCheck={() => status.refetch()} />
+        )}
       </div>
     );
   }
