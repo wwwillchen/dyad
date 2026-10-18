@@ -25,3 +25,8 @@ export function getPreviewCookieNamespace(appId: number): string {
   getAppPreviewHostname(appId);
   return `dyad-a${appId}.`;
 }
+
+/** True for a cookie name carrying any app's getPreviewCookieNamespace prefix. */
+export function isPreviewNamespacedCookie(name: string): boolean {
+  return /^dyad-a[1-9]\d*\./.test(name);
+}

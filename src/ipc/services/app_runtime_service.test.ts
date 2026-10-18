@@ -32,6 +32,7 @@ const {
   spawnMock,
   killPortMock,
   startProxyMock,
+  clearSharedPreviewSessionCookiesMock,
 } = vi.hoisted(() => ({
   getPnpmMinimumReleaseAgeSupportMock: vi.fn<
     () => Promise<{
@@ -62,6 +63,7 @@ const {
   spawnMock: vi.fn(),
   killPortMock: vi.fn<() => Promise<void>>(async () => {}),
   startProxyMock: vi.fn(),
+  clearSharedPreviewSessionCookiesMock: vi.fn<() => Promise<void>>(),
 }));
 
 vi.mock("@/ipc/services/neon_preview_domain_service", () => ({
@@ -166,6 +168,11 @@ vi.mock("@/ipc/utils/cloud_sandbox_provider", () => ({
 
 vi.mock("@/ipc/utils/start_proxy_server", () => ({
   startProxy: (...args: unknown[]) => startProxyMock(...args),
+}));
+
+vi.mock("@/ipc/services/preview_storage", () => ({
+  clearSharedPreviewSessionCookies: () =>
+    clearSharedPreviewSessionCookiesMock(),
 }));
 
 import {
@@ -335,6 +342,9 @@ describe("executeApp", () => {
       opts.onStarted(`http://${opts.hostname}:${opts.port}`);
       return { terminate: vi.fn() };
     });
+    clearSharedPreviewSessionCookiesMock
+      .mockReset()
+      .mockResolvedValue(undefined);
   });
 
   it("does not emit app-exit when a replaced process closes later", async () => {
@@ -1513,6 +1523,22 @@ describe("executeApp", () => {
       expect(
         neonPreviewDomainService.ensureTrustedDomain,
       ).toHaveBeenCalledTimes(enabled ? 1 : 0);
+      // Only the shared-localhost proxy namespaces cookies, and it must not
+      // serve a request before pre-namespace sessions are swept.
+      expect(startProxyMock).toHaveBeenCalledWith(
+        "http://localhost:32142",
+        expect.objectContaining({
+          cookieNamespace: enabled ? undefined : "dyad-a42.",
+        }),
+      );
+      expect(clearSharedPreviewSessionCookiesMock).toHaveBeenCalledTimes(
+        enabled ? 0 : 1,
+      );
+      if (!enabled) {
+        expect(
+          clearSharedPreviewSessionCookiesMock.mock.invocationCallOrder[0],
+        ).toBeLessThan(startProxyMock.mock.invocationCallOrder[0]);
+      }
 
       // A preference change leaves the running proxy at its existing address.
       readSettingsMock.mockReturnValue({ enableAppPreviewDomains: !enabled });
@@ -1521,6 +1547,26 @@ describe("executeApp", () => {
       expect(runningApps.get(42)?.proxyUrl).toBe(`http://${hostname}:42142`);
     },
   );
+
+  it("starts the shared-localhost proxy when the cookie sweep fails", async () => {
+    readSettingsMock.mockReturnValue({ enableAppPreviewDomains: false });
+    clearSharedPreviewSessionCookiesMock.mockRejectedValueOnce(
+      new Error("cookie store unavailable"),
+    );
+    runningApps.set(42, {
+      process: null,
+      processId: 1,
+      mode: "host",
+      lastViewedAt: 0,
+    });
+    await ensureProxyForRunningApp({
+      appId: 42,
+      output: createOutput(),
+      originalUrl: "http://localhost:32142",
+      mode: "host",
+    });
+    expect(runningApps.get(42)?.proxyUrl).toBe("http://localhost:42142");
+  });
 
   it.each([undefined, false])(
     "skips preview auth lookups when domains are %s",

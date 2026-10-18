@@ -71,3 +71,58 @@ describe("recording storage cleanup", () => {
     expect(mocks.clear).not.toHaveBeenCalled();
   });
 });
+
+describe("shared preview session cookie cleanup", () => {
+  // The sweep runs once per process, so each test loads a fresh module.
+  const load = async () =>
+    (await import("./preview_storage")).clearSharedPreviewSessionCookies;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  it("removes only unprefixed HttpOnly cookies on shared localhost", async () => {
+    mocks.get.mockResolvedValue([
+      {
+        name: "__Secure_neon-auth.session_token",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
+      { name: "sid", domain: ".localhost", path: "/api", httpOnly: true },
+      {
+        name: "dyad-a1.__Secure_neon-auth.session_token",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
+      { name: "theme", domain: "localhost", path: "/", httpOnly: false },
+      {
+        name: "session",
+        domain: "app-42.localhost",
+        path: "/",
+        httpOnly: true,
+      },
+    ]);
+    await (
+      await load()
+    )();
+    expect(mocks.get).toHaveBeenCalledWith({ domain: "localhost" });
+    expect(mocks.remove.mock.calls).toEqual([
+      ["https://localhost/", "__Secure_neon-auth.session_token"],
+      ["http://localhost/api", "sid"],
+    ]);
+  });
+
+  it("sweeps once per process and retries after a failure", async () => {
+    const clear = await load();
+    mocks.get.mockRejectedValueOnce(new Error("cookie store unavailable"));
+    await expect(clear()).rejects.toThrow("cookie store unavailable");
+    mocks.get.mockResolvedValue([]);
+    await clear();
+    await clear();
+    expect(mocks.get).toHaveBeenCalledTimes(2);
+  });
+});

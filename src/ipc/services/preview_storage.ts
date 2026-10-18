@@ -1,6 +1,9 @@
 import { session } from "electron";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
-import { isAppPreviewHostname } from "../../../shared/preview_hostname";
+import {
+  isAppPreviewHostname,
+  isPreviewNamespacedCookie,
+} from "../../../shared/preview_hostname";
 
 /** App domains isolate cookies; legacy localhost cookies are shared across ports. */
 export async function clearPreviewStorage(origin: string): Promise<void> {
@@ -31,4 +34,36 @@ export async function clearPreviewStorage(origin: string): Promise<void> {
     const cookieUrl = `${cookie.secure ? "https:" : "http:"}//${url.host}${cookie.path || "/"}`;
     await session.defaultSession.cookies.remove(cookieUrl, cookie.name);
   }
+}
+
+let sharedSessionCookieCleanup: Promise<void> | undefined;
+
+/**
+ * Removes HttpOnly cookies that shared-localhost previews stored under their
+ * original names before the proxy namespaced them per app. Nothing records
+ * which app set them, and the proxy cannot see HttpOnly in a Cookie header,
+ * so it would forward another app's session to any app without its own
+ * namespaced copy yet. The proxy namespaces every HttpOnly cookie it writes,
+ * so one sweep per process is enough; a failed sweep is retried next call.
+ */
+export function clearSharedPreviewSessionCookies(): Promise<void> {
+  sharedSessionCookieCleanup ??= (async () => {
+    const cookies = await session.defaultSession.cookies.get({
+      domain: "localhost",
+    });
+    for (const cookie of cookies) {
+      if (
+        !cookie.httpOnly ||
+        cookie.domain?.replace(/^\./, "") !== "localhost" ||
+        isPreviewNamespacedCookie(cookie.name)
+      )
+        continue;
+      const cookieUrl = `${cookie.secure ? "https:" : "http:"}//localhost${cookie.path || "/"}`;
+      await session.defaultSession.cookies.remove(cookieUrl, cookie.name);
+    }
+  })().catch((error) => {
+    sharedSessionCookieCleanup = undefined;
+    throw error;
+  });
+  return sharedSessionCookieCleanup;
 }

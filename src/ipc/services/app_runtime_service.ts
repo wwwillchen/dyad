@@ -16,6 +16,7 @@ import {
   ensureSupabasePreviewRedirects,
   resolveSupabasePreviewTarget,
 } from "./supabase_preview_redirect_service";
+import { clearSharedPreviewSessionCookies } from "./preview_storage";
 import {
   samePreviewAuthTarget,
   type PreviewAuthTarget,
@@ -782,6 +783,13 @@ export async function ensureProxyForRunningApp({
     appInfo.proxyWorker = undefined;
     appInfo.proxyUrl = undefined;
     appInfo.proxyStartupError = undefined;
+    if (hostname === "localhost") {
+      // The namespaced proxy would otherwise forward pre-namespace sessions.
+      await clearSharedPreviewSessionCookies().catch((error) =>
+        logger.warn("Failed to clear shared preview session cookies:", error),
+      );
+      if (!current()) return;
+    }
     const authBootstrapToken = randomUUID();
     let resolveReady!: (url: string) => void;
     let rejectReady!: (error: unknown) => void;
