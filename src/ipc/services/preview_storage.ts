@@ -1,6 +1,7 @@
-import { session } from "electron";
+import { session, type Cookie } from "electron";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import {
+  getPreviewCookieNamespace,
   isAppPreviewHostname,
   isPreviewNamespacedCookie,
 } from "../../../shared/preview_hostname";
@@ -47,23 +48,44 @@ let sharedSessionCookieCleanup: Promise<void> | undefined;
  * so one sweep per process is enough; a failed sweep is retried next call.
  */
 export function clearSharedPreviewSessionCookies(): Promise<void> {
-  sharedSessionCookieCleanup ??= (async () => {
-    const cookies = await session.defaultSession.cookies.get({
-      domain: "localhost",
-    });
-    for (const cookie of cookies) {
-      if (
-        !cookie.httpOnly ||
-        cookie.domain?.replace(/^\./, "") !== "localhost" ||
-        isPreviewNamespacedCookie(cookie.name)
-      )
-        continue;
-      const cookieUrl = `${cookie.secure ? "https:" : "http:"}//localhost${cookie.path || "/"}`;
-      await session.defaultSession.cookies.remove(cookieUrl, cookie.name);
-    }
-  })().catch((error) => {
+  sharedSessionCookieCleanup ??= removeSharedLocalhostCookies(
+    (cookie) => !!cookie.httpOnly && !isPreviewNamespacedCookie(cookie.name),
+  ).catch((error) => {
     sharedSessionCookieCleanup = undefined;
     throw error;
   });
   return sharedSessionCookieCleanup;
+}
+
+/**
+ * Removes a deleted app's namespaced cookies from shared localhost. App IDs
+ * are never reused, so no later app would clear or overwrite them, and they
+ * would count against the per-host cookie limit every shared-localhost
+ * preview draws on.
+ */
+export async function clearPreviewNamespacedCookies(
+  appId: number,
+): Promise<void> {
+  const namespace = getPreviewCookieNamespace(appId);
+  await removeSharedLocalhostCookies((cookie) =>
+    cookie.name.startsWith(namespace),
+  );
+}
+
+/** Removes localhost (not subdomain) cookies matching `shouldRemove`, on any port. */
+async function removeSharedLocalhostCookies(
+  shouldRemove: (cookie: Cookie) => boolean,
+): Promise<void> {
+  const cookies = await session.defaultSession.cookies.get({
+    domain: "localhost",
+  });
+  for (const cookie of cookies) {
+    if (
+      cookie.domain?.replace(/^\./, "") !== "localhost" ||
+      !shouldRemove(cookie)
+    )
+      continue;
+    const cookieUrl = `${cookie.secure ? "https:" : "http:"}//localhost${cookie.path || "/"}`;
+    await session.defaultSession.cookies.remove(cookieUrl, cookie.name);
+  }
 }

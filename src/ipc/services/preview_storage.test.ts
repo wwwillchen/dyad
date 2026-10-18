@@ -13,7 +13,10 @@ vi.mock("electron", () => ({
     },
   },
 }));
-import { clearPreviewStorage } from "./preview_storage";
+import {
+  clearPreviewNamespacedCookies,
+  clearPreviewStorage,
+} from "./preview_storage";
 
 describe("recording storage cleanup", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -124,5 +127,31 @@ describe("shared preview session cookie cleanup", () => {
     await clear();
     await clear();
     expect(mocks.get).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("deleted app preview cookie cleanup", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("removes only that app's namespaced localhost cookies", async () => {
+    mocks.get.mockResolvedValue([
+      {
+        name: "dyad-a1.__Secure_neon-auth.session_token",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
+      { name: "dyad-a1.sid", domain: ".localhost", path: "/api" },
+      { name: "dyad-a12.sid", domain: "localhost", path: "/", secure: true },
+      { name: "sid", domain: "localhost", path: "/", httpOnly: true },
+      { name: "dyad-a1.sid", domain: "app-1.localhost", path: "/" },
+    ]);
+    await clearPreviewNamespacedCookies(1);
+    expect(mocks.get).toHaveBeenCalledWith({ domain: "localhost" });
+    expect(mocks.remove.mock.calls).toEqual([
+      ["https://localhost/", "dyad-a1.__Secure_neon-auth.session_token"],
+      ["http://localhost/api", "dyad-a1.sid"],
+    ]);
   });
 });
