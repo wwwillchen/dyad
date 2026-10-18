@@ -374,6 +374,8 @@ If a targeted E2E fails before launch with `ENOENT: no such file or directory, s
 ## Dialog focus readiness
 
 - After opening the Add Plugin dialog, wait for its initial Name field to be focused before filling other inputs. Base UI autofocus can otherwise redirect a fast Command fill into Name.
+- For native keyboard/focus investigations, disable Playwright's `Emulation.setFocusEmulationEnabled` on the relevant pages and record Electron's `getFocusedWebContents()` / `isFocused()` alongside DOM focus. Protocol typing can succeed on a locked/backgrounded desktop, so it cannot prove the physical OS keyboard path works; use an interactive desktop and physical input too.
+- The Help dialog preserves its report screen and draft when reopened. Repeated bug-report probes should select "Report a Bug" only when the main Help screen is showing, then explicitly clear the preserved description.
 
 ## Native scroll readiness
 
