@@ -6,7 +6,7 @@ actually touches; never use a raw numeric `appId` with `withLock`.
 
 ## Resource domains
 
-Shared-localhost preview cookie namespacing must expire both the per-app and legacy shared cookie on deletion, including HttpOnly deletions. Otherwise removing the namespaced cookie lets request forwarding fall back to the stale shared session.
+Shared-localhost preview cookie namespacing must expire both the per-app and legacy shared cookie on deletion, including HttpOnly deletions. Otherwise removing the namespaced cookie lets request forwarding fall back to the stale shared session. Detect deletions with RFC 6265 precedence (last attribute wins; a valid integer `Max-Age` overrides `Expires`; an empty `Max-Age=` is ignored), and emit the shared-name copy as `name=; …; Max-Age=0` with `Expires`/`Max-Age` stripped so a misjudged expiry can never store a live session under the shared name.
 
 | Resource              | Protects                                                                                                                                                      |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
