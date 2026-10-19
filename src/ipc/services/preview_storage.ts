@@ -8,7 +8,7 @@ import {
 
 /**
  * App domains isolate cookies; legacy localhost cookies are shared across
- * ports, so there other apps' namespaced sessions are left in place.
+ * ports, so other apps' namespaced sessions are left in place.
  */
 export async function clearPreviewStorage(
   origin: string,

@@ -41,6 +41,17 @@ describe("proxy worker per-app cookie namespacing", () => {
         "/invalid-max-age": [
           `${SESSION_COOKIE}=token; Path=/; HttpOnly; Max-Age=`,
         ],
+        "/sign-out-cookie-date": [
+          `${SESSION_COOKIE}=; Path=/; HttpOnly; Expires=Wed@09@Jun@2021@10:18:14@GMT`,
+        ],
+        "/sign-out-invalid-later-expires": [
+          `${SESSION_COOKIE}=; Path=/; HttpOnly; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Expires=never`,
+        ],
+        "/impossible-expires": [
+          `${SESSION_COOKIE}=token; Path=/; HttpOnly; Expires=Sat, 31 Feb 1970 00:00:00 GMT`,
+        ],
+        "/valued-httponly": [`${SESSION_COOKIE}=token; Path=/; HttpOnly=false`],
+        "/script-readable-session": [`${SESSION_COOKIE}=token; Path=/`],
       };
       res.writeHead(200, {
         "content-type": "text/plain",
@@ -121,13 +132,45 @@ describe("proxy worker per-app cookie namespacing", () => {
 
     const cookies = await request(port, "/sign-in");
 
-    expect(cookies).toHaveLength(2);
+    expect(cookies).toHaveLength(3);
     expect(cookies[0]).toMatch(
       new RegExp(`^dyad-a12\\.${SESSION_COOKIE}=token;`),
     );
     expect(cookies[0]).toContain("HttpOnly");
     expect(cookies[0]).toMatch(/;\s*SameSite=None/);
-    expect(cookies[1]).toMatch(/^theme=dark;/);
+    expect(cookies[1]).toMatch(/^dyad-a12\.theme=;.*Max-Age=0/);
+    expect(cookies[2]).toMatch(/^theme=dark;/);
+  });
+
+  it("retires the namespaced copy when a cookie becomes script-readable", async () => {
+    const port = await startProxy({
+      cookieNamespace: getPreviewCookieNamespace(12),
+    });
+
+    const [deletion, shared] = await request(port, "/script-readable-session");
+
+    expect(deletion).toMatch(new RegExp(`^dyad-a12\\.${SESSION_COOKIE}=;`));
+    expect(deletion).toContain("Path=/");
+    expect(deletion).toContain("Max-Age=0");
+    expect(shared).toMatch(new RegExp(`^${SESSION_COOKIE}=token;`));
+  });
+
+  it("accepts a shared-localhost Cookie header beyond Node's 16 KiB default", async () => {
+    const port = await startProxy({
+      cookieNamespace: getPreviewCookieNamespace(1),
+    });
+    const siblingSessions = Array.from(
+      { length: 40 },
+      (_, i) => `dyad-a${i + 2}.${SESSION_COOKIE}=${"x".repeat(1000)}`,
+    );
+
+    await request(
+      port,
+      "/",
+      [`dyad-a1.${SESSION_COOKIE}=token-a`, ...siblingSessions].join("; "),
+    );
+
+    expect(receivedCookies).toEqual([`${SESSION_COOKIE}=token-a`]);
   });
 
   it("keeps each app's session when two apps share the localhost cookie jar", async () => {
@@ -192,12 +235,16 @@ describe("proxy worker per-app cookie namespacing", () => {
     }
   });
 
-  it("clears both copies when a deletion omits HttpOnly", async () => {
+  it.each([
+    ["omits HttpOnly", "/sign-out-without-httponly"],
+    ["uses an RFC 6265 cookie-date", "/sign-out-cookie-date"],
+    ["ends with an unparseable Expires", "/sign-out-invalid-later-expires"],
+  ])("clears both copies when a deletion %s", async (_case, urlPath) => {
     const port = await startProxy({
       cookieNamespace: getPreviewCookieNamespace(12),
     });
 
-    const cookies = await request(port, "/sign-out-without-httponly");
+    const cookies = await request(port, urlPath);
 
     expect(cookies.map((cookie) => cookie.split("=", 1)[0])).toEqual([
       SESSION_COOKIE,
@@ -226,6 +273,8 @@ describe("proxy worker per-app cookie namespacing", () => {
       "/max-age-overrides-expires",
     ],
     ["an empty Max-Age is ignored", "/invalid-max-age"],
+    ["an impossible Expires date is ignored", "/impossible-expires"],
+    ["its HttpOnly attribute has a value", "/valued-httponly"],
   ])("namespaces a live HttpOnly cookie when %s", async (_case, urlPath) => {
     const port = await startProxy({
       cookieNamespace: getPreviewCookieNamespace(12),
