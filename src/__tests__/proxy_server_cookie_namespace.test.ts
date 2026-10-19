@@ -32,6 +32,15 @@ describe("proxy worker per-app cookie namespacing", () => {
         "/sign-out-without-httponly": [
           `${SESSION_COOKIE}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
         ],
+        "/sign-out-with-value": [
+          `${SESSION_COOKIE}=stale; Path=/; HttpOnly; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+        ],
+        "/max-age-overrides-expires": [
+          `${SESSION_COOKIE}=token; Path=/; HttpOnly; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=3600`,
+        ],
+        "/invalid-max-age": [
+          `${SESSION_COOKIE}=token; Path=/; HttpOnly; Max-Age=`,
+        ],
       };
       res.writeHead(200, {
         "content-type": "text/plain",
@@ -146,6 +155,16 @@ describe("proxy worker per-app cookie namespacing", () => {
     ]);
   });
 
+  it("forwards every same-name namespaced cookie, as the browser would", async () => {
+    const port = await startProxy({
+      cookieNamespace: getPreviewCookieNamespace(1),
+    });
+
+    await request(port, "/", "dyad-a1.sid=api; dyad-a1.sid=root; sid=legacy");
+
+    expect(receivedCookies).toEqual(["sid=api; sid=root"]);
+  });
+
   it("drops the cookie header when only other apps' cookies remain", async () => {
     const port = await startProxy({
       cookieNamespace: getPreviewCookieNamespace(1),
@@ -182,6 +201,39 @@ describe("proxy worker per-app cookie namespacing", () => {
 
     expect(cookies.map((cookie) => cookie.split("=", 1)[0])).toEqual([
       SESSION_COOKIE,
+      `dyad-a12.${SESSION_COOKIE}`,
+    ]);
+  });
+
+  it("never stores a live value under the shared name when clearing it", async () => {
+    const port = await startProxy({
+      cookieNamespace: getPreviewCookieNamespace(12),
+    });
+
+    const [legacy, namespaced] = await request(port, "/sign-out-with-value");
+
+    expect(legacy).toMatch(new RegExp(`^${SESSION_COOKIE}=;`));
+    expect(legacy).toContain("Max-Age=0");
+    expect(legacy).not.toMatch(/Expires=/i);
+    expect(namespaced).toMatch(
+      new RegExp(`^dyad-a12\\.${SESSION_COOKIE}=stale;`),
+    );
+  });
+
+  it.each([
+    [
+      "a positive Max-Age overrides a past Expires",
+      "/max-age-overrides-expires",
+    ],
+    ["an empty Max-Age is ignored", "/invalid-max-age"],
+  ])("namespaces a live HttpOnly cookie when %s", async (_case, urlPath) => {
+    const port = await startProxy({
+      cookieNamespace: getPreviewCookieNamespace(12),
+    });
+
+    const cookies = await request(port, urlPath);
+
+    expect(cookies.map((cookie) => cookie.split("=", 1)[0])).toEqual([
       `dyad-a12.${SESSION_COOKIE}`,
     ]);
   });

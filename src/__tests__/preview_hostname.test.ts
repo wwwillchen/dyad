@@ -3,6 +3,7 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import {
   getAppPreviewHostname,
   isAppPreviewHostname,
+  isPreviewNamespacedCookie,
 } from "../../shared/preview_hostname";
 
 it("uses the full immutable numeric identity even when app IDs share preferred ports", () => {
@@ -33,4 +34,15 @@ it.each([
   "app-9007199254740992.localhost",
 ])("rejects deceptive or ambiguous hostname %s", (hostname) => {
   expect(isAppPreviewHostname(hostname)).toBe(false);
+});
+
+it.each([
+  ["dyad-a12.sid", true],
+  [`dyad-a${Number.MAX_SAFE_INTEGER}.sid`, true],
+  ["dyad-a9007199254740992.sid", false],
+  ["dyad-a012.sid", false],
+  ["dyad-a12sid", false],
+  ["sid", false],
+])("recognizes namespaced cookie %s: %s", (name, expected) => {
+  expect(isPreviewNamespacedCookie(name)).toBe(expected);
 });

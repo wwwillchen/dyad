@@ -418,14 +418,24 @@ function rewriteCookieForIframe(cookieStr) {
   return [nameValue, ...attrs].join("; ");
 }
 
+const EXPIRY_ATTR_RE = /^(max-age|expires)\s*=\s*(.*)$/i;
+
+/* RFC 6265 §5.3: the last of each attribute wins, and a valid Max-Age
+   overrides Expires. A Max-Age that is not an integer is ignored. */
 function isExpiringCookie(attrs) {
-  return attrs.some((p) => {
-    const match = /^(max-age|expires)\s*=\s*(.*)$/i.exec(p);
-    if (!match) return false;
-    if (match[1].toLowerCase() === "max-age") return Number(match[2]) <= 0;
-    const expires = Date.parse(match[2]);
-    return !Number.isNaN(expires) && expires <= Date.now();
-  });
+  let maxAge;
+  let expires;
+  for (const p of attrs) {
+    const match = EXPIRY_ATTR_RE.exec(p);
+    if (!match) continue;
+    const value = match[2].trim();
+    if (match[1].toLowerCase() === "expires") expires = value;
+    else if (/^-?\d+$/.test(value)) maxAge = Number(value);
+  }
+  if (maxAge !== undefined) return maxAge <= 0;
+  if (expires === undefined) return false;
+  const expiresAt = Date.parse(expires);
+  return !Number.isNaN(expiresAt) && expiresAt <= Date.now();
 }
 
 /**
@@ -440,7 +450,16 @@ function namespaceSetCookie(cookieStr) {
   const eq = nameValue.indexOf("=");
   if (eq <= 0) return [cookieStr];
   const namespaced = [COOKIE_NAMESPACE + nameValue, ...attrs].join("; ");
-  if (isExpiringCookie(attrs)) return [cookieStr, namespaced];
+  if (isExpiringCookie(attrs)) {
+    // Emit the shared-name copy as an unconditional deletion so a
+    // misjudged expiry can never store a live session under the shared name.
+    const legacyDeletion = [
+      nameValue.slice(0, eq + 1),
+      ...attrs.filter((p) => !EXPIRY_ATTR_RE.test(p)),
+      "Max-Age=0",
+    ].join("; ");
+    return [legacyDeletion, namespaced];
+  }
   if (attrs.some((p) => p.toLowerCase() === "httponly")) return [namespaced];
   return [cookieStr];
 }
@@ -475,11 +494,9 @@ function rewriteRequestCookies(headers) {
   for (const pair of pairs) {
     if (pair.startsWith(COOKIE_NAMESPACE)) {
       const original = pair.slice(COOKIE_NAMESPACE.length);
-      const name = original.split("=", 1)[0];
-      if (!restoredNames.has(name)) {
-        restoredNames.add(name);
-        restored.push(original);
-      }
+      // Keep same-name copies (e.g. different paths), as the browser would.
+      restoredNames.add(original.split("=", 1)[0]);
+      restored.push(original);
     } else if (!NAMESPACED_COOKIE_RE.test(pair)) {
       shared.push(pair);
     }

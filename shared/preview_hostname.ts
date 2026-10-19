@@ -28,5 +28,6 @@ export function getPreviewCookieNamespace(appId: number): string {
 
 /** True for a cookie name carrying any app's getPreviewCookieNamespace prefix. */
 export function isPreviewNamespacedCookie(name: string): boolean {
-  return /^dyad-a[1-9]\d*\./.test(name);
+  const match = /^dyad-a([1-9]\d*)\./.exec(name);
+  return !!match && Number.isSafeInteger(Number(match[1]));
 }

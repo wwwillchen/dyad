@@ -133,7 +133,7 @@ describe("shared preview session cookie cleanup", () => {
 describe("deleted app preview cookie cleanup", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("removes only that app's namespaced localhost cookies", async () => {
+  it("removes only that app's namespaced HttpOnly localhost cookies", async () => {
     mocks.get.mockResolvedValue([
       {
         name: "dyad-a1.__Secure_neon-auth.session_token",
@@ -142,10 +142,27 @@ describe("deleted app preview cookie cleanup", () => {
         secure: true,
         httpOnly: true,
       },
-      { name: "dyad-a1.sid", domain: ".localhost", path: "/api" },
-      { name: "dyad-a12.sid", domain: "localhost", path: "/", secure: true },
+      {
+        name: "dyad-a1.sid",
+        domain: ".localhost",
+        path: "/api",
+        httpOnly: true,
+      },
+      { name: "dyad-a1.theme", domain: "localhost", path: "/" },
+      {
+        name: "dyad-a12.sid",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
       { name: "sid", domain: "localhost", path: "/", httpOnly: true },
-      { name: "dyad-a1.sid", domain: "app-1.localhost", path: "/" },
+      {
+        name: "dyad-a1.sid",
+        domain: "app-1.localhost",
+        path: "/",
+        httpOnly: true,
+      },
     ]);
     await clearPreviewNamespacedCookies(1);
     expect(mocks.get).toHaveBeenCalledWith({ domain: "localhost" });

@@ -61,14 +61,15 @@ export function clearSharedPreviewSessionCookies(): Promise<void> {
  * Removes a deleted app's namespaced cookies from shared localhost. App IDs
  * are never reused, so no later app would clear or overwrite them, and they
  * would count against the per-host cookie limit every shared-localhost
- * preview draws on.
+ * preview draws on. Only HttpOnly cookies are namespaced by the proxy, so
+ * script-readable cookies are left alone.
  */
 export async function clearPreviewNamespacedCookies(
   appId: number,
 ): Promise<void> {
   const namespace = getPreviewCookieNamespace(appId);
-  await removeSharedLocalhostCookies((cookie) =>
-    cookie.name.startsWith(namespace),
+  await removeSharedLocalhostCookies(
+    (cookie) => !!cookie.httpOnly && cookie.name.startsWith(namespace),
   );
 }
 
