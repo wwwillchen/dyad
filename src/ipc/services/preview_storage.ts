@@ -6,8 +6,15 @@ import {
   isPreviewNamespacedCookie,
 } from "../../../shared/preview_hostname";
 
-/** App domains isolate cookies; legacy localhost cookies are shared across ports. */
-export async function clearPreviewStorage(origin: string): Promise<void> {
+/**
+ * App domains isolate cookies; legacy localhost cookies are shared across
+ * ports, so there other apps' namespaced sessions are left in place.
+ */
+export async function clearPreviewStorage(
+  origin: string,
+  appId: number,
+): Promise<void> {
+  const namespace = getPreviewCookieNamespace(appId);
   const url = URL.parse(origin);
   if (
     !url ||
@@ -32,6 +39,11 @@ export async function clearPreviewStorage(origin: string): Promise<void> {
   });
   for (const cookie of cookies) {
     if (cookie.domain?.replace(/^\./, "") !== url.hostname) continue;
+    if (
+      isPreviewNamespacedCookie(cookie.name) &&
+      !cookie.name.startsWith(namespace)
+    )
+      continue;
     const cookieUrl = `${cookie.secure ? "https:" : "http:"}//${url.host}${cookie.path || "/"}`;
     await session.defaultSession.cookies.remove(cookieUrl, cookie.name);
   }

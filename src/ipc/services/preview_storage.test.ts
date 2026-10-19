@@ -33,7 +33,7 @@ describe("recording storage cleanup", () => {
       { name: "session", domain: "child.app-42.localhost", path: "/" },
       { name: "legacy", domain: "localhost", path: "/" },
     ]);
-    await clearPreviewStorage("http://app-42.localhost:42142/screen");
+    await clearPreviewStorage("http://app-42.localhost:42142/screen", 42);
     expect(mocks.clear).toHaveBeenCalledWith({
       origins: ["http://app-42.localhost:42142"],
       originMatchingMode: "origin-in-all-contexts",
@@ -45,12 +45,27 @@ describe("recording storage cleanup", () => {
       ["http://app-42.localhost:42142/auth", "session"],
     ]);
   });
-  it("clears ordinary localhost storage and its shared cookies", async () => {
+  it("clears ordinary localhost storage, its shared cookies, and only this app's namespaced cookies", async () => {
     mocks.get.mockResolvedValue([
       { name: "session", domain: "localhost", path: "/" },
       { name: "session", domain: "app-42.localhost", path: "/" },
+      {
+        name: "dyad-a1.__Secure_neon-auth.session_token",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
+      {
+        name: "dyad-a12.__Secure_neon-auth.session_token",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
+      { name: "dyad-a2.sid", domain: ".localhost", path: "/", httpOnly: true },
     ]);
-    await clearPreviewStorage("http://localhost:42142");
+    await clearPreviewStorage("http://localhost:42142", 1);
     expect(mocks.clear).toHaveBeenCalledWith({
       origins: ["http://localhost:42142"],
       originMatchingMode: "origin-in-all-contexts",
@@ -58,6 +73,7 @@ describe("recording storage cleanup", () => {
     });
     expect(mocks.remove.mock.calls).toEqual([
       ["http://localhost:42142/", "session"],
+      ["https://localhost:42142/", "dyad-a1.__Secure_neon-auth.session_token"],
     ]);
   });
 
@@ -68,9 +84,16 @@ describe("recording storage cleanup", () => {
     "http://app-42.localhost.evil:42142",
     "http://child.app-42.localhost:42142",
   ])("refuses ambiguous cleanup for %s", async (origin) => {
-    await expect(clearPreviewStorage(origin)).rejects.toMatchObject({
+    await expect(clearPreviewStorage(origin, 42)).rejects.toMatchObject({
       kind: DyadErrorKind.Validation,
     });
+    expect(mocks.clear).not.toHaveBeenCalled();
+  });
+
+  it("refuses cleanup without a valid app ID", async () => {
+    await expect(
+      clearPreviewStorage("http://localhost:42142", 0),
+    ).rejects.toMatchObject({ kind: DyadErrorKind.Validation });
     expect(mocks.clear).not.toHaveBeenCalled();
   });
 });
