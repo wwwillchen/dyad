@@ -18,14 +18,16 @@ describe("RecordingStorageWarningDialog", () => {
   it("says other apps are unaffected on an app-specific domain", () => {
     const text = renderDialog(true);
     expect(text).toContain("Other apps aren't affected.");
-    expect(text).not.toContain("Other apps stay signed in.");
+    expect(text).not.toContain("stay signed in");
   });
 
   // Shared localhost still shares script-readable cookies, so only sign-ins
   // (namespaced HttpOnly sessions) are promised to survive.
-  it("only promises other apps stay signed in on shared localhost", () => {
+  it("only promises HttpOnly-cookie sign-ins survive on shared localhost", () => {
     const text = renderDialog(false);
-    expect(text).toContain("Other apps stay signed in.");
+    expect(text).toContain(
+      "Other apps that use HttpOnly cookies for sign-in stay signed in.",
+    );
     expect(text).not.toContain("Other apps aren't affected.");
   });
 });

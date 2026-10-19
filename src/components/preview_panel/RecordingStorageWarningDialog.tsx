@@ -48,7 +48,7 @@ export function RecordingStorageWarningDialog({
             signs you out.{" "}
             {isAppSpecificDomain
               ? "Other apps aren't affected."
-              : "Other apps stay signed in."}{" "}
+              : "Other apps that use HttpOnly cookies for sign-in stay signed in."}{" "}
             Your code and database aren't touched.
           </AlertDialogDescription>
         </AlertDialogHeader>
