@@ -1558,11 +1558,18 @@ describe("executeApp", () => {
     },
   );
 
-  it.each([undefined, false, true])(
-    "uses Dyad's startup cookie isolation preference %s across app and proxy restarts",
-    async (enabled) => {
+  it.each(
+    [false, true].flatMap((domainsEnabled) =>
+      [undefined, false, true].map((enabled) => ({ domainsEnabled, enabled })),
+    ),
+  )(
+    "uses Dyad's startup cookie isolation preference $enabled with preview domains $domainsEnabled across app and proxy restarts",
+    async ({ domainsEnabled, enabled }) => {
+      const hostname = domainsEnabled ? "app-42.localhost" : "localhost";
+      const usesNamespace = !domainsEnabled && (enabled ?? true);
       readSettingsMock.mockReturnValue({
         enablePreviewCookieIsolation: enabled,
+        enableAppPreviewDomains: domainsEnabled,
       });
       isPreviewCookieIsolationEnabledMock.mockReturnValue(enabled ?? true);
       runningApps.set(42, {
@@ -1582,8 +1589,8 @@ describe("executeApp", () => {
       expect(startProxyMock).toHaveBeenLastCalledWith(
         request.originalUrl,
         expect.objectContaining({
-          hostname: "localhost",
-          cookieNamespace: (enabled ?? true) ? "dyad-a42." : undefined,
+          hostname,
+          cookieNamespace: usesNamespace ? "dyad-a42." : undefined,
         }),
       );
       if (enabled === false) {
@@ -1593,12 +1600,15 @@ describe("executeApp", () => {
           clearPreviewNamespacedCookiesMock.mock.invocationCallOrder[0],
         ).toBeLessThan(startProxyMock.mock.invocationCallOrder[0]);
       } else {
-        expect(clearSharedPreviewSessionCookiesMock).toHaveBeenCalled();
+        expect(clearSharedPreviewSessionCookiesMock).toHaveBeenCalledTimes(
+          domainsEnabled ? 0 : 1,
+        );
         expect(clearPreviewNamespacedCookiesMock).not.toHaveBeenCalled();
       }
 
       readSettingsMock.mockReturnValue({
         enablePreviewCookieIsolation: !(enabled ?? true),
+        enableAppPreviewDomains: domainsEnabled,
       });
       // A replacement proxy within the same app run keeps its startup choice.
       await ensureProxyForRunningApp({
@@ -1608,7 +1618,8 @@ describe("executeApp", () => {
       expect(startProxyMock).toHaveBeenLastCalledWith(
         "http://localhost:32143",
         expect.objectContaining({
-          cookieNamespace: (enabled ?? true) ? "dyad-a42." : undefined,
+          hostname,
+          cookieNamespace: usesNamespace ? "dyad-a42." : undefined,
         }),
       );
 
@@ -1622,7 +1633,8 @@ describe("executeApp", () => {
       expect(startProxyMock).toHaveBeenLastCalledWith(
         request.originalUrl,
         expect.objectContaining({
-          cookieNamespace: (enabled ?? true) ? "dyad-a42." : undefined,
+          hostname,
+          cookieNamespace: usesNamespace ? "dyad-a42." : undefined,
         }),
       );
 
@@ -1636,16 +1648,23 @@ describe("executeApp", () => {
       expect(startProxyMock).toHaveBeenLastCalledWith(
         request.originalUrl,
         expect.objectContaining({
-          cookieNamespace: (enabled ?? true) ? "dyad-a43." : undefined,
+          hostname: domainsEnabled ? "app-43.localhost" : "localhost",
+          cookieNamespace: usesNamespace ? "dyad-a43." : undefined,
         }),
       );
     },
   );
 
-  it.each([false, true])(
-    "refuses to expose sessions if startup cookie cleanup fails with isolation %s",
-    async (enabled) => {
-      readSettingsMock.mockReturnValue({ enableAppPreviewDomains: false });
+  it.each([
+    { enabled: false, domainsEnabled: false },
+    { enabled: false, domainsEnabled: true },
+    { enabled: true, domainsEnabled: false },
+  ])(
+    "refuses to expose sessions if startup cookie cleanup fails with isolation $enabled and preview domains $domainsEnabled",
+    async ({ enabled, domainsEnabled }) => {
+      readSettingsMock.mockReturnValue({
+        enableAppPreviewDomains: domainsEnabled,
+      });
       isPreviewCookieIsolationEnabledMock.mockReturnValue(enabled);
       const cleanup = enabled
         ? clearSharedPreviewSessionCookiesMock

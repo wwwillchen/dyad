@@ -800,17 +800,15 @@ export async function ensureProxyForRunningApp({
     void readyUrl.catch(() => undefined);
     let worker: RunningAppInfo["proxyWorker"];
     try {
-      if (hostname === "localhost") {
-        if (cookieIsolationEnabled) {
-          // Do not serve requests until legacy shared credentials are gone.
-          await clearSharedPreviewSessionCookies();
-        } else {
-          // Retire hidden credentials so a later opt-in cannot restore an old
-          // login after the user signed in or out with isolation disabled.
-          await clearPreviewNamespacedCookies(appId);
-        }
-        if (!current()) return;
+      if (!cookieIsolationEnabled) {
+        // Retire hidden localhost credentials even on app-specific domains,
+        // so returning to isolated localhost cannot restore an old login.
+        await clearPreviewNamespacedCookies(appId);
+      } else if (hostname === "localhost") {
+        // Do not serve requests until legacy shared credentials are gone.
+        await clearSharedPreviewSessionCookies();
       }
+      if (!current()) return;
       worker = await startProxy(originalUrl, {
         port: getAppProxyPort(appId),
         hostname,

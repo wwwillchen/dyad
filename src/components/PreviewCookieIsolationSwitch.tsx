@@ -2,8 +2,10 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useSettings } from "@/hooks/useSettings";
 import { DEFAULT_ENABLE_PREVIEW_COOKIE_ISOLATION } from "@/shared/settings_defaults";
+import { useTranslation } from "react-i18next";
 
 export function PreviewCookieIsolationSwitch() {
+  const { t } = useTranslation("settings");
   const { settings, settingsLoading, updateSettings } = useSettings();
 
   return (
@@ -11,12 +13,14 @@ export function PreviewCookieIsolationSwitch() {
       <div className="flex items-center gap-2">
         {!settings ? (
           <span role="status" className="text-sm text-muted-foreground">
-            {settingsLoading ? "Loading setting…" : "Unable to load setting"}
+            {settingsLoading
+              ? t("experiments.previewCookieIsolation.loading")
+              : t("experiments.previewCookieIsolation.loadError")}
           </span>
         ) : (
           <Switch
             id="enable-preview-cookie-isolation"
-            aria-label="Isolate preview sign-in cookies"
+            aria-label={t("experiments.previewCookieIsolation.label")}
             checked={
               settings.enablePreviewCookieIsolation ??
               DEFAULT_ENABLE_PREVIEW_COOKIE_ISOLATION
@@ -30,12 +34,11 @@ export function PreviewCookieIsolationSwitch() {
           />
         )}
         <Label htmlFor="enable-preview-cookie-isolation">
-          Isolate preview sign-in cookies
+          {t("experiments.previewCookieIsolation.label")}
         </Label>
       </div>
       <p className="text-[13px] leading-relaxed text-muted-foreground">
-        Keep each app's HttpOnly sign-in cookies separate on shared localhost.
-        On by default. Restart Dyad to apply changes to all previews.
+        {t("experiments.previewCookieIsolation.description")}
       </p>
     </div>
   );
