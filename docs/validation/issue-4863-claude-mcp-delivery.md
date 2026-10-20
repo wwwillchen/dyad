@@ -186,6 +186,17 @@ a new request ID is a new operation, not an idempotent retry.
 response, including while execution is queued. Existing tokens, 15-s cadence,
 overall deadlines, FIFO ownership, cancellation, and retry identity are retained.
 
+These heartbeats establish bridge liveness, not advancing tool execution. Once
+delivered, they keep the CLI idle watchdog from detecting a hung tool as well
+as a legitimately slow one. Noninteractive tools still rely on their own
+execution deadlines; a tool or FIFO wait without an effective bound can remain
+pending up to the overall MCP limit. The user must use Stop to request
+cancellation of a stuck turn. A tool that ignores cancellation can continue
+running, and its FIFO ownership and cleanup must remain pending until it
+actually settles. Adding deadlines for unbounded noninteractive tools would be
+a separate lifecycle change; a blanket bridge ceiling would also terminate
+intentional human waits.
+
 - New bridge regression holds execution on a controllable Promise, advances only
   heartbeat intervals, and asserts the real SDK client receives progress before
   final completion. It **failed before the fix** (zero progress callbacks) and
