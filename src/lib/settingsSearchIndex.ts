@@ -623,7 +623,7 @@ export const SETTINGS_SEARCH_INDEX: SearchableSettingItem[] = [
     id: SETTING_IDS.enablePreviewCookieIsolation,
     label: "Isolate preview sign-in cookies",
     description:
-      "Keep each app's HttpOnly sign-in cookies separate on shared localhost. On by default. Restart running apps to apply changes",
+      "Keep each app's HttpOnly sign-in cookies separate on shared localhost. On by default. Restart Dyad to apply changes to all previews",
     keywords: [
       "preview",
       "localhost",

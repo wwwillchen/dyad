@@ -52,6 +52,16 @@ describe("proxy worker per-app cookie namespacing", () => {
         ],
         "/valued-httponly": [`${SESSION_COOKIE}=token; Path=/; HttpOnly=false`],
         "/script-readable-session": [`${SESSION_COOKIE}=token; Path=/`],
+        "/security-prefixes": [
+          "__Host-",
+          "__Secure-",
+          "__Http-",
+          "__Host-Http-",
+          "__host-",
+        ].map((prefix) => `${prefix}session=token; Path=/; HttpOnly; Secure`),
+        "/host-sign-out": [
+          "__Host-session=; Path=/; HttpOnly; Secure; Max-Age=0",
+        ],
       };
       res.writeHead(200, {
         "content-type": "text/plain",
@@ -171,6 +181,56 @@ describe("proxy worker per-app cookie namespacing", () => {
     );
 
     expect(receivedCookies).toEqual([`${SESSION_COOKIE}=token-a`]);
+  });
+
+  it("keeps security prefixes first on writes and restores them on requests", async () => {
+    const port = await startProxy({
+      cookieNamespace: getPreviewCookieNamespace(12),
+    });
+    const prefixes = [
+      "__Host-",
+      "__Secure-",
+      "__Http-",
+      "__Host-Http-",
+      "__host-",
+    ];
+    const cookies = await request(port, "/security-prefixes");
+    expect(cookies.map((cookie) => cookie.split(";", 1)[0])).toEqual(
+      prefixes.map((prefix) => `${prefix}dyad-a12.session=token`),
+    );
+    await request(
+      port,
+      "/",
+      [
+        ...cookies.map((cookie) => cookie.split(";", 1)[0]),
+        "__Host-dyad-a13.session=sibling",
+        "__Host-session=shared",
+        "theme=dark",
+      ].join("; "),
+    );
+    expect(receivedCookies.at(-1)).toBe(
+      [
+        ...prefixes.map((prefix) => `${prefix}session=token`),
+        "theme=dark",
+      ].join("; "),
+    );
+    const deletions = await request(port, "/host-sign-out");
+    expect(deletions.map((cookie) => cookie.split(";", 1)[0])).toEqual([
+      "__Host-session=",
+      "__Host-dyad-a12.session=",
+    ]);
+  });
+
+  it("does not restore legacy security-prefixed cookies that scripts could shadow", async () => {
+    const port = await startProxy({
+      cookieNamespace: getPreviewCookieNamespace(12),
+    });
+    await request(
+      port,
+      "/",
+      "dyad-a12.__Host-session=shadow; dyad-a12.__Secure-session=shadow; theme=dark",
+    );
+    expect(receivedCookies).toEqual(["theme=dark"]);
   });
 
   it("keeps each app's session when two apps share the localhost cookie jar", async () => {

@@ -44,6 +44,14 @@ if (
   throw new Error("Invalid cookie namespace");
 }
 const NAMESPACED_COOKIE_RE = /^dyad-a[1-9]\d*\./;
+// Keep security prefixes first; moving __Host- behind the namespace disables
+// Chromium's host-only and Path=/ enforcement (including script writes).
+const COOKIE_SECURITY_PREFIX_RE = /^__(?:Host-Http-|Host-|Secure-|Http-)/i;
+
+function namespaceCookieName(name) {
+  const prefix = COOKIE_SECURITY_PREFIX_RE.exec(name)?.[0] ?? "";
+  return prefix + COOKIE_NAMESPACE + name.slice(prefix.length);
+}
 
 /* ---------- pre-configure rememberedOrigin from workerData ------- */
 {
@@ -538,7 +546,10 @@ function namespaceSetCookie(cookieStr) {
   const eq = nameValue.indexOf("=");
   if (eq <= 0) return [cookieStr];
   const name = nameValue.slice(0, eq);
-  const namespaced = [COOKIE_NAMESPACE + nameValue, ...attrs].join("; ");
+  const namespaced = [
+    namespaceCookieName(name) + nameValue.slice(eq),
+    ...attrs,
+  ].join("; ");
   if (isExpiringCookie(attrs)) {
     // Emit the shared-name copy as an unconditional deletion so a
     // misjudged expiry can never store a live session under the shared name.
@@ -548,7 +559,7 @@ function namespaceSetCookie(cookieStr) {
     return [namespaced];
   // A cookie that was HttpOnly and is now script-readable must retire this
   // app's namespaced copy, which would otherwise win on the way upstream.
-  return [cookieDeletion(COOKIE_NAMESPACE + name, attrs), cookieStr];
+  return [cookieDeletion(namespaceCookieName(name), attrs), cookieStr];
 }
 
 /* Rewrites the Set-Cookie header (an array in Node) in place on `headers`. */
@@ -579,12 +590,19 @@ function rewriteRequestCookies(headers) {
   const restoredNames = new Set();
   const shared = [];
   for (const pair of pairs) {
-    if (pair.startsWith(COOKIE_NAMESPACE)) {
-      const original = pair.slice(COOKIE_NAMESPACE.length);
+    const prefix = COOKIE_SECURITY_PREFIX_RE.exec(pair)?.[0] ?? "";
+    const unprefixed = pair.slice(prefix.length);
+    if (unprefixed.startsWith(COOKIE_NAMESPACE)) {
+      const originalNameValue = unprefixed.slice(COOKIE_NAMESPACE.length);
+      // Never restore old cookies whose browser-visible name lost a security
+      // prefix: scripts could have shadowed those at a narrower path.
+      if (!prefix && COOKIE_SECURITY_PREFIX_RE.test(originalNameValue))
+        continue;
+      const original = prefix + originalNameValue;
       // Keep same-name copies (e.g. different paths), as the browser would.
       restoredNames.add(original.split("=", 1)[0]);
       restored.push(original);
-    } else if (!NAMESPACED_COOKIE_RE.test(pair)) {
+    } else if (!NAMESPACED_COOKIE_RE.test(unprefixed)) {
       shared.push(pair);
     }
   }

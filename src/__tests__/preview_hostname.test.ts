@@ -38,6 +38,12 @@ it.each([
 
 it.each([
   ["dyad-a12.sid", true],
+  ["__Host-dyad-a12.sid", true],
+  ["__Secure-dyad-a12.sid", true],
+  ["__Http-dyad-a12.sid", true],
+  ["__Host-Http-dyad-a12.sid", true],
+  ["__host-dyad-a12.sid", true],
+  ["__Host-dyad-a012.sid", false],
   [`dyad-a${Number.MAX_SAFE_INTEGER}.sid`, true],
   ["dyad-a9007199254740992.sid", false],
   ["dyad-a012.sid", false],

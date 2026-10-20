@@ -16,7 +16,11 @@ import {
   ensureSupabasePreviewRedirects,
   resolveSupabasePreviewTarget,
 } from "./supabase_preview_redirect_service";
-import { clearSharedPreviewSessionCookies } from "./preview_storage";
+import {
+  clearPreviewNamespacedCookies,
+  clearSharedPreviewSessionCookies,
+} from "./preview_storage";
+import { isPreviewCookieIsolationEnabled } from "./preview_cookie_isolation";
 import {
   samePreviewAuthTarget,
   type PreviewAuthTarget,
@@ -32,7 +36,6 @@ import { getAppPort, getAppProxyPort } from "../../../shared/ports";
 import { db } from "@/db";
 import { apps } from "@/db/schema";
 import { readSettings } from "@/main/settings";
-import { DEFAULT_ENABLE_PREVIEW_COOKIE_ISOLATION } from "@/shared/settings_defaults";
 import {
   shouldShowPnpmMinimumReleaseAgeWarning,
   type RuntimeMode2,
@@ -723,9 +726,7 @@ export async function ensureProxyForRunningApp({
     .enableAppPreviewDomains
     ? getAppPreviewHostname(appId)
     : "localhost");
-  const cookieIsolationEnabled = (appInfo.previewCookieIsolationEnabled ??=
-    readSettings().enablePreviewCookieIsolation ??
-    DEFAULT_ENABLE_PREVIEW_COOKIE_ISOLATION);
+  const cookieIsolationEnabled = isPreviewCookieIsolationEnabled();
   // Install the promise before the first asynchronous boundary: dev servers
   // can print their URL more than once before the proxy has bound.
   while (appInfo.proxyStartup) {
@@ -787,14 +788,6 @@ export async function ensureProxyForRunningApp({
     appInfo.proxyWorker = undefined;
     appInfo.proxyUrl = undefined;
     appInfo.proxyStartupError = undefined;
-    if (hostname === "localhost") {
-      // The namespaced proxy would otherwise forward pre-namespace sessions.
-      await clearSharedPreviewSessionCookies(cookieIsolationEnabled).catch(
-        (error) =>
-          logger.warn("Failed to clear shared preview session cookies:", error),
-      );
-      if (!current()) return;
-    }
     const authBootstrapToken = randomUUID();
     let resolveReady!: (url: string) => void;
     let rejectReady!: (error: unknown) => void;
@@ -807,6 +800,17 @@ export async function ensureProxyForRunningApp({
     void readyUrl.catch(() => undefined);
     let worker: RunningAppInfo["proxyWorker"];
     try {
+      if (hostname === "localhost") {
+        if (cookieIsolationEnabled) {
+          // Do not serve requests until legacy shared credentials are gone.
+          await clearSharedPreviewSessionCookies();
+        } else {
+          // Retire hidden credentials so a later opt-in cannot restore an old
+          // login after the user signed in or out with isolation disabled.
+          await clearPreviewNamespacedCookies(appId);
+        }
+        if (!current()) return;
+      }
       worker = await startProxy(originalUrl, {
         port: getAppProxyPort(appId),
         hostname,

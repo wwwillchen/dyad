@@ -32,6 +32,19 @@ describe("recording storage cleanup", () => {
       { name: "session", domain: "app-43.localhost", path: "/" },
       { name: "session", domain: "child.app-42.localhost", path: "/" },
       { name: "legacy", domain: "localhost", path: "/" },
+      {
+        name: "dyad-a7.session",
+        domain: "app-42.localhost",
+        path: "/",
+        httpOnly: true,
+      },
+      {
+        name: "__Host-dyad-a7.session",
+        domain: "app-42.localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
     ]);
     await clearPreviewStorage("http://app-42.localhost:42142/screen", 42);
     expect(mocks.clear).toHaveBeenCalledWith({
@@ -43,6 +56,8 @@ describe("recording storage cleanup", () => {
     expect(mocks.remove.mock.calls).toEqual([
       ["https://app-42.localhost:42142/", "session"],
       ["http://app-42.localhost:42142/auth", "session"],
+      ["http://app-42.localhost:42142/", "dyad-a7.session"],
+      ["https://app-42.localhost:42142/", "__Host-dyad-a7.session"],
     ]);
   });
   it("clears ordinary localhost storage, its shared cookies, and only this app's namespaced cookies", async () => {
@@ -64,6 +79,20 @@ describe("recording storage cleanup", () => {
         httpOnly: true,
       },
       { name: "dyad-a2.sid", domain: ".localhost", path: "/", httpOnly: true },
+      {
+        name: "__Host-dyad-a1.sid",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
+      {
+        name: "__Host-dyad-a2.sid",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
     ]);
     await clearPreviewStorage("http://localhost:42142", 1);
     expect(mocks.clear).toHaveBeenCalledWith({
@@ -74,6 +103,7 @@ describe("recording storage cleanup", () => {
     expect(mocks.remove.mock.calls).toEqual([
       ["http://localhost:42142/", "session"],
       ["https://localhost:42142/", "dyad-a1.__Secure_neon-auth.session_token"],
+      ["https://localhost:42142/", "__Host-dyad-a1.sid"],
     ]);
   });
 
@@ -126,6 +156,13 @@ describe("shared preview session cookie cleanup", () => {
       },
       { name: "theme", domain: "localhost", path: "/", httpOnly: false },
       {
+        name: "__Host-dyad-a1.session",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
+      {
         name: "session",
         domain: "app-42.localhost",
         path: "/",
@@ -152,24 +189,30 @@ describe("shared preview session cookie cleanup", () => {
     expect(mocks.get).toHaveBeenCalledTimes(2);
   });
 
-  it("preserves shared sessions while disabled and sweeps again when re-enabled", async () => {
+  it("shares an in-flight sweep and waits for every deletion before admitting proxies", async () => {
     const clear = await load();
+    let finishRemoval!: () => void;
+    const removal = new Promise<void>((resolve) => {
+      finishRemoval = resolve;
+    });
+    mocks.remove.mockReturnValueOnce(removal);
     mocks.get.mockResolvedValue([
       { name: "sid", domain: "localhost", path: "/", httpOnly: true },
     ]);
-
-    await clear(false);
-    expect(mocks.get).not.toHaveBeenCalled();
-    expect(mocks.remove).not.toHaveBeenCalled();
-
-    await clear(true);
-    await clear(true);
+    const first = clear();
+    const second = clear();
+    expect(second).toBe(first);
+    let completed = false;
+    void first.then(() => {
+      completed = true;
+    });
+    await vi.waitFor(() => expect(mocks.remove).toHaveBeenCalledTimes(1));
+    expect(completed).toBe(false);
+    finishRemoval();
+    await Promise.all([first, second]);
+    await clear();
+    expect(mocks.get).toHaveBeenCalledTimes(1);
     expect(mocks.remove).toHaveBeenCalledTimes(1);
-
-    await clear(false);
-    expect(mocks.remove).toHaveBeenCalledTimes(1);
-    await clear(true);
-    expect(mocks.remove).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -193,6 +236,20 @@ describe("deleted app preview cookie cleanup", () => {
       },
       { name: "dyad-a1.theme", domain: "localhost", path: "/" },
       {
+        name: "__Host-dyad-a1.sid",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
+      {
+        name: "__Host-dyad-a12.sid",
+        domain: "localhost",
+        path: "/",
+        secure: true,
+        httpOnly: true,
+      },
+      {
         name: "dyad-a12.sid",
         domain: "localhost",
         path: "/",
@@ -212,6 +269,7 @@ describe("deleted app preview cookie cleanup", () => {
     expect(mocks.remove.mock.calls).toEqual([
       ["https://localhost/", "dyad-a1.__Secure_neon-auth.session_token"],
       ["http://localhost/api", "dyad-a1.sid"],
+      ["https://localhost/", "__Host-dyad-a1.sid"],
     ]);
   });
 });

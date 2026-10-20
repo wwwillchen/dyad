@@ -4,6 +4,7 @@ import { PreviewCookieIsolationSwitch } from "./PreviewCookieIsolationSwitch";
 
 const mocks = vi.hoisted(() => ({
   settings: undefined as Record<string, unknown> | undefined,
+  settingsLoading: true,
   updateSettings: vi.fn(),
 }));
 
@@ -14,13 +15,24 @@ vi.mock("@/hooks/useSettings", () => ({
 describe("PreviewCookieIsolationSwitch", () => {
   beforeEach(() => {
     mocks.settings = undefined;
+    mocks.settingsLoading = true;
     mocks.updateSettings.mockReset().mockResolvedValue(undefined);
   });
 
-  it("waits for settings before allowing changes", () => {
+  it("shows loading without presenting an unconfirmed setting", () => {
     render(<PreviewCookieIsolationSwitch />);
-    fireEvent.click(screen.getByRole("switch"));
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Loading setting…");
     expect(mocks.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("shows a load failure without presenting the default as a saved value", () => {
+    mocks.settingsLoading = false;
+    render(<PreviewCookieIsolationSwitch />);
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe(
+      "Unable to load setting",
+    );
   });
 
   it.each([undefined, false, true])(

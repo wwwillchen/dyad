@@ -33,6 +33,8 @@ const {
   killPortMock,
   startProxyMock,
   clearSharedPreviewSessionCookiesMock,
+  clearPreviewNamespacedCookiesMock,
+  isPreviewCookieIsolationEnabledMock,
 } = vi.hoisted(() => ({
   getPnpmMinimumReleaseAgeSupportMock: vi.fn<
     () => Promise<{
@@ -64,6 +66,8 @@ const {
   killPortMock: vi.fn<() => Promise<void>>(async () => {}),
   startProxyMock: vi.fn(),
   clearSharedPreviewSessionCookiesMock: vi.fn<() => Promise<void>>(),
+  clearPreviewNamespacedCookiesMock: vi.fn<() => Promise<void>>(),
+  isPreviewCookieIsolationEnabledMock: vi.fn<() => boolean>(),
 }));
 
 vi.mock("@/ipc/services/neon_preview_domain_service", () => ({
@@ -172,6 +176,11 @@ vi.mock("@/ipc/utils/start_proxy_server", () => ({
 
 vi.mock("@/ipc/services/preview_storage", () => ({
   clearSharedPreviewSessionCookies: clearSharedPreviewSessionCookiesMock,
+  clearPreviewNamespacedCookies: clearPreviewNamespacedCookiesMock,
+}));
+
+vi.mock("@/ipc/services/preview_cookie_isolation", () => ({
+  isPreviewCookieIsolationEnabled: isPreviewCookieIsolationEnabledMock,
 }));
 
 import {
@@ -344,6 +353,8 @@ describe("executeApp", () => {
     clearSharedPreviewSessionCookiesMock
       .mockReset()
       .mockResolvedValue(undefined);
+    clearPreviewNamespacedCookiesMock.mockReset().mockResolvedValue(undefined);
+    isPreviewCookieIsolationEnabledMock.mockReset().mockReturnValue(true);
   });
 
   it("does not emit app-exit when a replaced process closes later", async () => {
@@ -1548,11 +1559,12 @@ describe("executeApp", () => {
   );
 
   it.each([undefined, false, true])(
-    "uses cookie isolation preference %s until the app restarts",
+    "uses Dyad's startup cookie isolation preference %s across app and proxy restarts",
     async (enabled) => {
       readSettingsMock.mockReturnValue({
         enablePreviewCookieIsolation: enabled,
       });
+      isPreviewCookieIsolationEnabledMock.mockReturnValue(enabled ?? true);
       runningApps.set(42, {
         process: null,
         processId: 1,
@@ -1574,9 +1586,16 @@ describe("executeApp", () => {
           cookieNamespace: (enabled ?? true) ? "dyad-a42." : undefined,
         }),
       );
-      expect(clearSharedPreviewSessionCookiesMock).toHaveBeenLastCalledWith(
-        enabled ?? true,
-      );
+      if (enabled === false) {
+        expect(clearSharedPreviewSessionCookiesMock).not.toHaveBeenCalled();
+        expect(clearPreviewNamespacedCookiesMock).toHaveBeenCalledWith(42);
+        expect(
+          clearPreviewNamespacedCookiesMock.mock.invocationCallOrder[0],
+        ).toBeLessThan(startProxyMock.mock.invocationCallOrder[0]);
+      } else {
+        expect(clearSharedPreviewSessionCookiesMock).toHaveBeenCalled();
+        expect(clearPreviewNamespacedCookiesMock).not.toHaveBeenCalled();
+      }
 
       readSettingsMock.mockReturnValue({
         enablePreviewCookieIsolation: !(enabled ?? true),
@@ -1603,31 +1622,54 @@ describe("executeApp", () => {
       expect(startProxyMock).toHaveBeenLastCalledWith(
         request.originalUrl,
         expect.objectContaining({
-          cookieNamespace: (enabled ?? true) ? undefined : "dyad-a42.",
+          cookieNamespace: (enabled ?? true) ? "dyad-a42." : undefined,
+        }),
+      );
+
+      runningApps.set(43, {
+        process: null,
+        processId: 3,
+        mode: "host",
+        lastViewedAt: 0,
+      });
+      await ensureProxyForRunningApp({ ...request, appId: 43 });
+      expect(startProxyMock).toHaveBeenLastCalledWith(
+        request.originalUrl,
+        expect.objectContaining({
+          cookieNamespace: (enabled ?? true) ? "dyad-a43." : undefined,
         }),
       );
     },
   );
 
-  it("starts the shared-localhost proxy when the cookie sweep fails", async () => {
-    readSettingsMock.mockReturnValue({ enableAppPreviewDomains: false });
-    clearSharedPreviewSessionCookiesMock.mockRejectedValueOnce(
-      new Error("cookie store unavailable"),
-    );
-    runningApps.set(42, {
-      process: null,
-      processId: 1,
-      mode: "host",
-      lastViewedAt: 0,
-    });
-    await ensureProxyForRunningApp({
-      appId: 42,
-      output: createOutput(),
-      originalUrl: "http://localhost:32142",
-      mode: "host",
-    });
-    expect(runningApps.get(42)?.proxyUrl).toBe("http://localhost:42142");
-  });
+  it.each([false, true])(
+    "refuses to expose sessions if startup cookie cleanup fails with isolation %s",
+    async (enabled) => {
+      readSettingsMock.mockReturnValue({ enableAppPreviewDomains: false });
+      isPreviewCookieIsolationEnabledMock.mockReturnValue(enabled);
+      const cleanup = enabled
+        ? clearSharedPreviewSessionCookiesMock
+        : clearPreviewNamespacedCookiesMock;
+      cleanup.mockRejectedValueOnce(new Error("cookie store unavailable"));
+      runningApps.set(42, {
+        process: null,
+        processId: 1,
+        mode: "host",
+        lastViewedAt: 0,
+      });
+      await ensureProxyForRunningApp({
+        appId: 42,
+        output: createOutput(),
+        originalUrl: "http://localhost:32142",
+        mode: "host",
+      });
+      expect(startProxyMock).not.toHaveBeenCalled();
+      expect(runningApps.get(42)?.proxyUrl).toBeUndefined();
+      expect(runningApps.get(42)?.proxyStartupError?.message).toBe(
+        "cookie store unavailable",
+      );
+    },
+  );
 
   it.each([undefined, false])(
     "skips preview auth lookups when domains are %s",

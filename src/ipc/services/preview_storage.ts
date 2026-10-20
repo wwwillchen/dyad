@@ -2,6 +2,7 @@ import { session, type Cookie } from "electron";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import {
   getPreviewCookieNamespace,
+  getCookiePreviewNamespace,
   isAppPreviewHostname,
   isPreviewNamespacedCookie,
 } from "../../../shared/preview_hostname";
@@ -40,8 +41,9 @@ export async function clearPreviewStorage(
   for (const cookie of cookies) {
     if (cookie.domain?.replace(/^\./, "") !== url.hostname) continue;
     if (
+      url.hostname === "localhost" &&
       isPreviewNamespacedCookie(cookie.name) &&
-      !cookie.name.startsWith(namespace)
+      getCookiePreviewNamespace(cookie.name) !== namespace
     )
       continue;
     const cookieUrl = `${cookie.secure ? "https:" : "http:"}//${url.host}${cookie.path || "/"}`;
@@ -58,16 +60,10 @@ let sharedSessionCookieCleanup: Promise<void> | undefined;
  * so it would forward another app's session to any app without its own
  * namespaced copy yet. The proxy namespaces every HttpOnly cookie it writes,
  * so one sweep per process is enough; a failed sweep is retried next call.
- * Starting a proxy without isolation invalidates the sweep, since it may
- * write shared sessions that must be cleared if isolation is re-enabled.
+ * Isolation mode is fixed until Dyad restarts, so no unisolated proxy can
+ * start while this sweep is pending or write new shared sessions afterward.
  */
-export function clearSharedPreviewSessionCookies(
-  cookieIsolationEnabled = true,
-): Promise<void> {
-  if (!cookieIsolationEnabled) {
-    sharedSessionCookieCleanup = undefined;
-    return Promise.resolve();
-  }
+export function clearSharedPreviewSessionCookies(): Promise<void> {
   sharedSessionCookieCleanup ??= removeSharedLocalhostCookies(
     (cookie) => !!cookie.httpOnly && !isPreviewNamespacedCookie(cookie.name),
   ).catch((error) => {
@@ -78,18 +74,18 @@ export function clearSharedPreviewSessionCookies(
 }
 
 /**
- * Removes a deleted app's namespaced cookies from shared localhost. App IDs
- * are never reused, so no later app would clear or overwrite them, and they
- * would count against the per-host cookie limit every shared-localhost
- * preview draws on. Only HttpOnly cookies are namespaced by the proxy, so
- * script-readable cookies are left alone.
+ * Retires an app's namespaced cookies on deletion or before starting without
+ * isolation. Otherwise hidden credentials could survive a sign-out in shared
+ * mode and reappear after opting back in. Only HttpOnly cookies are namespaced
+ * by the proxy, so script-readable cookies are left alone.
  */
 export async function clearPreviewNamespacedCookies(
   appId: number,
 ): Promise<void> {
   const namespace = getPreviewCookieNamespace(appId);
   await removeSharedLocalhostCookies(
-    (cookie) => !!cookie.httpOnly && cookie.name.startsWith(namespace),
+    (cookie) =>
+      !!cookie.httpOnly && getCookiePreviewNamespace(cookie.name) === namespace,
   );
 }
 

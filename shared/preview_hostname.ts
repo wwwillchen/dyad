@@ -28,6 +28,12 @@ export function getPreviewCookieNamespace(appId: number): string {
 
 /** True for a cookie name carrying any app's getPreviewCookieNamespace prefix. */
 export function isPreviewNamespacedCookie(name: string): boolean {
-  const match = /^dyad-a([1-9]\d*)\./.exec(name);
-  return !!match && Number.isSafeInteger(Number(match[1]));
+  return getCookiePreviewNamespace(name) !== undefined;
+}
+
+/** Security prefixes must remain first so Chromium enforces their guarantees. */
+export function getCookiePreviewNamespace(name: string): string | undefined {
+  const unprefixed = name.replace(/^__(?:Host-Http-|Host-|Secure-|Http-)/i, "");
+  const match = /^(dyad-a([1-9]\d*)\.)/.exec(unprefixed);
+  return match && Number.isSafeInteger(Number(match[2])) ? match[1] : undefined;
 }

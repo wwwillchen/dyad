@@ -98,6 +98,13 @@ test("shared localhost previews isolate app sessions and clear them on delete", 
     await expect(frame().getByTestId("auth-state")).toHaveText("Signed in");
   }
 
+  // Even a change before the first app starts must wait for a Dyad restart.
+  await po.page.evaluate(() =>
+    (window as any).electron.ipcRenderer.invoke("set-user-settings", {
+      enablePreviewCookieIsolation: false,
+    }),
+  );
+
   // Starting the first shared-localhost proxy sweeps the pre-namespace session.
   const appOne = await importRecorder("cookie-app-one");
   expect(await sessionUser()).toBeNull();
@@ -111,6 +118,47 @@ test("shared localhost previews isolate app sessions and clear them on delete", 
       httpOnly: true,
     },
   ]);
+
+  // Chromium must still enforce __Host-'s Path=/ guarantee after namespacing.
+  await frame()
+    .locator("body")
+    .evaluate(async (_body, appId) => {
+      await fetch("/api/auth/security-prefix-session", { method: "POST" });
+      document.cookie = `__Host-dyad-a${appId}.protected-session=shadow; Path=/api; Secure; SameSite=None`;
+    }, appOne);
+  expect(
+    await electronApp.evaluate(
+      async ({ session }, appId) =>
+        (await session.defaultSession.cookies.get({ domain: "localhost" }))
+          .filter(
+            (cookie) =>
+              cookie.name === `__Host-dyad-a${appId}.protected-session`,
+          )
+          .map(({ name, value, path, httpOnly }) => ({
+            name,
+            value,
+            path,
+            httpOnly,
+          })),
+      appOne,
+    ),
+  ).toEqual([
+    {
+      name: `__Host-dyad-a${appOne}.protected-session`,
+      value: "authenticated",
+      path: "/",
+      httpOnly: true,
+    },
+  ]);
+  const protectedSession = await frame()
+    .locator("body")
+    .evaluate(async () =>
+      (await fetch("/api/auth/security-prefix-session")).json(),
+    );
+  expect(protectedSession.cookie).toContain(
+    "__Host-protected-session=authenticated",
+  );
+  expect(protectedSession.cookie).not.toContain("shadow");
 
   await po.navigation.goToAppsTab();
   if (
