@@ -24,8 +24,9 @@ describe("RecordingStorageWarningDialog", () => {
 
   it("warns about shared sessions without relying on the saved isolation preference", () => {
     const text = renderDialog(false);
-    expect(text).toContain("Other apps on localhost may also be signed out.");
-    expect(text).toContain("Their isolated HttpOnly cookies are preserved.");
+    expect(text).toContain(
+      "Other apps on localhost may also be signed out if they use shared cookies.",
+    );
     expect(text).not.toContain("Other apps aren't affected.");
     expect(text).not.toContain("stay signed in");
   });
