@@ -171,8 +171,7 @@ vi.mock("@/ipc/utils/start_proxy_server", () => ({
 }));
 
 vi.mock("@/ipc/services/preview_storage", () => ({
-  clearSharedPreviewSessionCookies: () =>
-    clearSharedPreviewSessionCookiesMock(),
+  clearSharedPreviewSessionCookies: clearSharedPreviewSessionCookiesMock,
 }));
 
 import {
@@ -1545,6 +1544,68 @@ describe("executeApp", () => {
       await start();
       expect(startProxyMock).toHaveBeenCalledTimes(1);
       expect(runningApps.get(42)?.proxyUrl).toBe(`http://${hostname}:42142`);
+    },
+  );
+
+  it.each([undefined, false, true])(
+    "uses cookie isolation preference %s until the app restarts",
+    async (enabled) => {
+      readSettingsMock.mockReturnValue({
+        enablePreviewCookieIsolation: enabled,
+      });
+      runningApps.set(42, {
+        process: null,
+        processId: 1,
+        mode: "host",
+        lastViewedAt: 0,
+      });
+      const request = {
+        appId: 42,
+        output: createOutput(),
+        originalUrl: "http://localhost:32142",
+        mode: "host" as const,
+      };
+      await ensureProxyForRunningApp(request);
+
+      expect(startProxyMock).toHaveBeenLastCalledWith(
+        request.originalUrl,
+        expect.objectContaining({
+          hostname: "localhost",
+          cookieNamespace: (enabled ?? true) ? "dyad-a42." : undefined,
+        }),
+      );
+      expect(clearSharedPreviewSessionCookiesMock).toHaveBeenLastCalledWith(
+        enabled ?? true,
+      );
+
+      readSettingsMock.mockReturnValue({
+        enablePreviewCookieIsolation: !(enabled ?? true),
+      });
+      // A replacement proxy within the same app run keeps its startup choice.
+      await ensureProxyForRunningApp({
+        ...request,
+        originalUrl: "http://localhost:32143",
+      });
+      expect(startProxyMock).toHaveBeenLastCalledWith(
+        "http://localhost:32143",
+        expect.objectContaining({
+          cookieNamespace: (enabled ?? true) ? "dyad-a42." : undefined,
+        }),
+      );
+
+      runningApps.set(42, {
+        process: null,
+        processId: 2,
+        mode: "host",
+        lastViewedAt: 0,
+      });
+      await ensureProxyForRunningApp(request);
+      expect(startProxyMock).toHaveBeenLastCalledWith(
+        request.originalUrl,
+        expect.objectContaining({
+          cookieNamespace: (enabled ?? true) ? undefined : "dyad-a42.",
+        }),
+      );
     },
   );
 

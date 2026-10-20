@@ -22,6 +22,8 @@ const logger = log.scope("process_manager");
 export interface RunningAppInfo {
   /** Preview address choice captured at startup; settings changes need a restart. */
   previewHostname?: string;
+  /** Cookie isolation choice captured at startup; changes need an app restart. */
+  previewCookieIsolationEnabled?: boolean;
   process: ChildProcess | null;
   processId: number;
   /** Correlation identity of the run/restart that owns this producer. */

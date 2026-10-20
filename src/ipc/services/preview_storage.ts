@@ -58,8 +58,16 @@ let sharedSessionCookieCleanup: Promise<void> | undefined;
  * so it would forward another app's session to any app without its own
  * namespaced copy yet. The proxy namespaces every HttpOnly cookie it writes,
  * so one sweep per process is enough; a failed sweep is retried next call.
+ * Starting a proxy without isolation invalidates the sweep, since it may
+ * write shared sessions that must be cleared if isolation is re-enabled.
  */
-export function clearSharedPreviewSessionCookies(): Promise<void> {
+export function clearSharedPreviewSessionCookies(
+  cookieIsolationEnabled = true,
+): Promise<void> {
+  if (!cookieIsolationEnabled) {
+    sharedSessionCookieCleanup = undefined;
+    return Promise.resolve();
+  }
   sharedSessionCookieCleanup ??= removeSharedLocalhostCookies(
     (cookie) => !!cookie.httpOnly && !isPreviewNamespacedCookie(cookie.name),
   ).catch((error) => {

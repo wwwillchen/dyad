@@ -151,6 +151,26 @@ describe("shared preview session cookie cleanup", () => {
     await clear();
     expect(mocks.get).toHaveBeenCalledTimes(2);
   });
+
+  it("preserves shared sessions while disabled and sweeps again when re-enabled", async () => {
+    const clear = await load();
+    mocks.get.mockResolvedValue([
+      { name: "sid", domain: "localhost", path: "/", httpOnly: true },
+    ]);
+
+    await clear(false);
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.remove).not.toHaveBeenCalled();
+
+    await clear(true);
+    await clear(true);
+    expect(mocks.remove).toHaveBeenCalledTimes(1);
+
+    await clear(false);
+    expect(mocks.remove).toHaveBeenCalledTimes(1);
+    await clear(true);
+    expect(mocks.remove).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("deleted app preview cookie cleanup", () => {

@@ -8,11 +8,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { DEFAULT_ENABLE_PREVIEW_COOKIE_ISOLATION } from "@/shared/settings_defaults";
 
 interface RecordingStorageWarningDialogProps {
   open: boolean;
   /** Whether the running preview is served from its own `app-<id>.localhost`. */
   isAppSpecificDomain: boolean;
+  isCookieIsolationEnabled?: boolean;
   onOpenChange: (open: boolean) => void;
   onContinue: () => void;
 }
@@ -27,12 +29,13 @@ interface RecordingStorageWarningDialogProps {
  * a surprise.
  *
  * App hostnames let cleanup leave other previews signed in. On shared
- * localhost only other apps' namespaced HttpOnly sessions survive; their
- * script-readable cookies are shared with this preview and cleared.
+ * localhost only other apps' namespaced HttpOnly sessions survive when the
+ * cookie isolation experiment is enabled.
  */
 export function RecordingStorageWarningDialog({
   open,
   isAppSpecificDomain,
+  isCookieIsolationEnabled = DEFAULT_ENABLE_PREVIEW_COOKIE_ISOLATION,
   onOpenChange,
   onContinue,
 }: RecordingStorageWarningDialogProps) {
@@ -48,7 +51,9 @@ export function RecordingStorageWarningDialog({
             signs you out.{" "}
             {isAppSpecificDomain
               ? "Other apps aren't affected."
-              : "Other apps that use HttpOnly cookies for sign-in stay signed in."}{" "}
+              : isCookieIsolationEnabled
+                ? "Other apps that use HttpOnly cookies for sign-in stay signed in."
+                : "Other apps on localhost may also be signed out."}{" "}
             Your code and database aren't touched.
           </AlertDialogDescription>
         </AlertDialogHeader>

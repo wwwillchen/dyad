@@ -1593,6 +1593,7 @@ export const PreviewIframe = ({
 
       <RecordingStorageWarningDialog
         open={recorder.pendingStart !== null}
+        isCookieIsolationEnabled={settings?.enablePreviewCookieIsolation}
         // The running proxy's hostname, not the setting: toggling it only
         // applies once the app restarts.
         isAppSpecificDomain={isAppPreviewHostname(

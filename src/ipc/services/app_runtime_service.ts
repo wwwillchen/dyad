@@ -32,6 +32,7 @@ import { getAppPort, getAppProxyPort } from "../../../shared/ports";
 import { db } from "@/db";
 import { apps } from "@/db/schema";
 import { readSettings } from "@/main/settings";
+import { DEFAULT_ENABLE_PREVIEW_COOKIE_ISOLATION } from "@/shared/settings_defaults";
 import {
   shouldShowPnpmMinimumReleaseAgeWarning,
   type RuntimeMode2,
@@ -722,6 +723,9 @@ export async function ensureProxyForRunningApp({
     .enableAppPreviewDomains
     ? getAppPreviewHostname(appId)
     : "localhost");
+  const cookieIsolationEnabled = (appInfo.previewCookieIsolationEnabled ??=
+    readSettings().enablePreviewCookieIsolation ??
+    DEFAULT_ENABLE_PREVIEW_COOKIE_ISOLATION);
   // Install the promise before the first asynchronous boundary: dev servers
   // can print their URL more than once before the proxy has bound.
   while (appInfo.proxyStartup) {
@@ -785,8 +789,9 @@ export async function ensureProxyForRunningApp({
     appInfo.proxyStartupError = undefined;
     if (hostname === "localhost") {
       // The namespaced proxy would otherwise forward pre-namespace sessions.
-      await clearSharedPreviewSessionCookies().catch((error) =>
-        logger.warn("Failed to clear shared preview session cookies:", error),
+      await clearSharedPreviewSessionCookies(cookieIsolationEnabled).catch(
+        (error) =>
+          logger.warn("Failed to clear shared preview session cookies:", error),
       );
       if (!current()) return;
     }
@@ -807,7 +812,7 @@ export async function ensureProxyForRunningApp({
         hostname,
         // App-specific hostnames already isolate cookies.
         cookieNamespace:
-          hostname === "localhost"
+          hostname === "localhost" && cookieIsolationEnabled
             ? getPreviewCookieNamespace(appId)
             : undefined,
         authBootstrapToken,
