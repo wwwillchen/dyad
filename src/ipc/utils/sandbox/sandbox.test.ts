@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DyadErrorKind } from "@/errors/dyad_error";
 import {
   appendAttachmentManifestEntries,
   appendAttachmentManifestEntriesWithLogicalNames,
@@ -291,6 +292,51 @@ describe("sandbox capabilities", () => {
     ]);
   });
 
+  it("lists unpacked archive entries under attachments:<archive>", async () => {
+    const mediaDir = getDyadMediaDir(appPath);
+    await fs.mkdir(path.join(mediaDir, "hash", "src"), { recursive: true });
+    await fs.writeFile(
+      path.join(mediaDir, "hash", "src", "index.ts"),
+      "export {};",
+      "utf8",
+    );
+    await fs.writeFile(path.join(mediaDir, "hash.zip"), "zipbytes");
+    await appendAttachmentManifestEntriesWithLogicalNames(appPath, [
+      {
+        requestedLogicalName: "proj.zip",
+        originalName: "proj.zip",
+        storedFileName: "hash.zip",
+        mimeType: "application/zip",
+        sizeBytes: 8,
+        createdAt: new Date("2026-04-22T00:00:00.000Z").toISOString(),
+      },
+      {
+        requestedLogicalName: "proj.zip/src/index.ts",
+        nestedLogicalName: true,
+        originalName: "src/index.ts",
+        storedFileName: "hash/src/index.ts",
+        mimeType: "text/typescript",
+        sizeBytes: 12,
+        createdAt: new Date("2026-04-22T00:00:00.000Z").toISOString(),
+        archiveLogicalName: "proj.zip",
+      },
+    ]);
+    await expect(
+      sandboxListFiles(appPath, "attachments:proj.zip"),
+    ).resolves.toEqual(["attachments:proj.zip/src/index.ts"]);
+    await expect(
+      sandboxListFiles(appPath, "attachments:proj.zip/src/"),
+    ).resolves.toEqual(["attachments:proj.zip/src/index.ts"]);
+    await expect(
+      sandboxListFiles(appPath, "attachments:missing.zip"),
+    ).rejects.toMatchObject({ kind: DyadErrorKind.NotFound });
+    // The archive itself is listed at the top level, but not its entries.
+    await expect(sandboxListFiles(appPath, "attachments:")).resolves.toEqual([
+      "attachments:server.log",
+      "attachments:proj.zip",
+    ]);
+  });
+
   it("lists attachment logical paths and returns file stats", async () => {
     await expect(sandboxListFiles(appPath, "attachments:")).resolves.toEqual([
       "attachments:server.log",
@@ -324,6 +370,44 @@ describe("sandbox capabilities", () => {
       "attachments:server.log",
       "attachments:.env",
     ]);
+  });
+
+  it("redacts dotenv attachments even under a suffixed name", async () => {
+    const mediaDir = getDyadMediaDir(appPath);
+    // An ordinary dotenv entry unpacked from an archive, a suffixed archive
+    // entry, and a suffixed plain upload stored without an extension.
+    await fs.mkdir(path.join(mediaDir, "hash", "a"), { recursive: true });
+    await fs.writeFile(path.join(mediaDir, "hash", "a", ".env"), "ZIPPED=1");
+    await fs.mkdir(path.join(mediaDir, "hash", "b"), { recursive: true });
+    await fs.writeFile(path.join(mediaDir, "hash", "b", ".env"), "ALIASED=1");
+    await fs.writeFile(path.join(mediaDir, "plainhash"), "UPLOADED=1");
+    const entry = (
+      logicalName: string,
+      originalName: string,
+      storedFileName: string,
+    ) => ({
+      logicalName,
+      originalName,
+      storedFileName,
+      mimeType: "text/plain",
+      sizeBytes: 8,
+      createdAt: new Date("2026-04-22T00:00:00.000Z").toISOString(),
+    });
+    await appendAttachmentManifestEntries(appPath, [
+      entry("proj.zip/a/.env", "a/.env", "hash/a/.env"),
+      entry("proj.zip/a/.env-2", "b/.env", "hash/b/.env"),
+      entry(".env-2", ".env", "plainhash"),
+    ]);
+
+    await expect(
+      sandboxReadFile(appPath, "attachments:proj.zip/a/.env"),
+    ).resolves.toBe("ZIPPED=[redacted]");
+    await expect(
+      sandboxReadFile(appPath, "attachments:proj.zip/a/.env-2"),
+    ).resolves.toBe("ALIASED=[redacted]");
+    await expect(sandboxReadFile(appPath, "attachments:.env-2")).resolves.toBe(
+      "UPLOADED=[redacted]",
+    );
   });
 
   it("filters stale attachment manifest entries", async () => {

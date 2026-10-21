@@ -114,6 +114,89 @@ describe("listFilesTool", () => {
     vi.clearAllMocks();
   });
 
+  it("lists attachments and, per archive, its unpacked entries from the manifest", async () => {
+    const mediaDir = path.join(testDir, ".dyad", "media");
+    await fs.promises.mkdir(mediaDir, { recursive: true });
+    const entry = (
+      logicalName: string,
+      storedFileName: string,
+      archiveLogicalName?: string,
+    ) => ({
+      logicalName,
+      originalName: logicalName,
+      storedFileName,
+      mimeType: "text/plain",
+      sizeBytes: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      ...(archiveLogicalName ? { archiveLogicalName } : {}),
+    });
+    await fs.promises.writeFile(
+      path.join(mediaDir, "attachments-manifest.json"),
+      JSON.stringify([
+        entry("notes.txt", "n.txt"),
+        entry("proj.zip", "h.zip"),
+        entry("proj.zip/src/index.ts", "h/src/index.ts", "proj.zip"),
+        entry("proj.zip/README.md", "h/README.md", "proj.zip"),
+        entry("proj.zip-notes.txt", "p.txt"),
+      ]),
+    );
+    for (const stored of [
+      "n.txt",
+      "h.zip",
+      "h/src/index.ts",
+      "h/README.md",
+      "p.txt",
+    ]) {
+      const filePath = path.join(mediaDir, ...stored.split("/"));
+      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.promises.writeFile(filePath, "x");
+    }
+
+    const archiveListing = await listFilesTool.execute(
+      { directory: "attachments:proj.zip" },
+      mockContext,
+    );
+    expect(archiveListing.split("\n")).toEqual([
+      " - attachments:proj.zip/README.md",
+      " - attachments:proj.zip/src/index.ts",
+    ]);
+
+    // The top level lists the archive itself, not its entries.
+    const topLevel = await listFilesTool.execute(
+      { directory: "attachments:" },
+      mockContext,
+    );
+    expect(topLevel.split("\n")).toEqual([
+      " - attachments:notes.txt",
+      " - attachments:proj.zip",
+      " - attachments:proj.zip-notes.txt",
+    ]);
+    expect(mockContext.onXmlComplete).toHaveBeenLastCalledWith(
+      expect.stringContaining('directory="attachments:" count="3"'),
+    );
+
+    const narrowed = await listFilesTool.execute(
+      { directory: "attachments:proj.zip/src" },
+      mockContext,
+    );
+    expect(narrowed.split("\n")).toEqual([
+      " - attachments:proj.zip/src/index.ts",
+    ]);
+
+    await expect(
+      listFilesTool.execute(
+        { directory: "attachments:missing.zip" },
+        mockContext,
+      ),
+    ).rejects.toMatchObject({ kind: DyadErrorKind.NotFound });
+    await expect(
+      listFilesTool.execute(
+        { directory: "attachments:", app_name: "other" },
+        mockContext,
+      ),
+    ).rejects.toMatchObject({ kind: DyadErrorKind.Validation });
+  });
+
   it("accepts include_ignored in the schema", () => {
     expect(() =>
       listFilesTool.inputSchema.parse({ include_ignored: true }),

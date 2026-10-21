@@ -1,6 +1,7 @@
 import { SubscriptionBillingError } from "@/shared/subscription_billing_error";
 import { DEFAULT_ENABLE_SUGGESTED_PROMPTS } from "@/shared/settings_defaults";
 import { modelForChatBackend } from "@/shared/execution_backend";
+import { isZipAttachmentName } from "@/shared/zip_attachments";
 import { isDotenvFilePath } from "@/utils/dotenv_redaction";
 import type { ExternalModelAdmission } from "../services/external_model_admission";
 import { awaitTurnPreflight } from "../services/await_turn_preflight";
@@ -156,9 +157,11 @@ import { resolveMediaMentions } from "../utils/resolve_media_mentions";
 import { parsePlanFile, validatePlanId } from "./planUtils";
 import { ensureDyadGitignored } from "./gitignoreUtils";
 import {
-  appendAttachmentManifestEntriesWithLogicalNames,
+  appendAttachmentManifestEntryGroups,
   createUniqueAttachmentLogicalName,
   DYAD_MEDIA_DIR_NAME,
+  removeUnreferencedMediaPaths,
+  reserveMediaPath,
   type AttachmentManifestEntryInput,
 } from "../utils/media_path_utils";
 import {
@@ -195,18 +198,31 @@ import { getAiMessagesJsonIfWithinLimit } from "../utils/ai_messages_utils";
 import { readSettings, setSentinelActiveChat } from "@/main/settings";
 import { recordAppSizeForSession } from "@/main/last_session_store";
 import {
+  buildArchiveAttachmentInfo,
   buildLocalAgentAttachmentInfo,
   assertInlineAttachmentsFit,
   buildInlinePdfFileParts,
   getInlineImageMimeType,
   hasInlineMediaParts,
   INLINE_ATTACHMENTS_TOO_LARGE_MESSAGE,
+  hasArchiveAttachment,
   hasScriptReadableAttachment,
   isTextFile,
   resolveAttachmentDeliveryConfig,
   type PendingStoredChatAttachment,
   type StoredChatAttachment,
 } from "../utils/chat_attachment_utils";
+import {
+  buildArchiveManifestEntries,
+  extractedDirNameForStoredFile,
+  extractZipAttachment,
+  isZipExtractionError,
+  toZipExtractionErrorMessage,
+  withFinalizedEntryNames,
+  type ExtractedArchiveSummary,
+} from "../utils/zip/zip_attachment";
+import { DEFAULT_ZIP_EXTRACTION_LIMITS } from "../utils/zip/zip_extract";
+import { fileExists } from "../utils/file_utils";
 import { inspectBase64DataUrl } from "../../shared/chatAttachmentLimits";
 import { toRendererMessages } from "../utils/renderer_chat_message";
 
@@ -1268,6 +1284,38 @@ export function registerChatStreamHandlers() {
       let storedAttachments: StoredChatAttachment[] = [];
       const pendingStoredAttachments: PendingStoredChatAttachment[] = [];
       const manifestEntries: AttachmentManifestEntryInput[] = [];
+      // Parallel to pendingStoredAttachments: the unpacked contents of each
+      // zip attachment, registered under the archive's final logical name
+      // once that name is known.
+      const pendingArchiveSummaries: (ExtractedArchiveSummary | undefined)[] =
+        [];
+      // One expansion budget for the whole turn, so several small archives
+      // cannot each expand to the full per-archive limit.
+      let remainingArchiveBytes =
+        DEFAULT_ZIP_EXTRACTION_LIMITS.maxTotalUncompressedBytes;
+      let remainingArchiveEntries = DEFAULT_ZIP_EXTRACTION_LIMITS.maxEntries;
+      // Stored files and extraction directories this turn created. Stored
+      // files are shared by content hash across chats, so if the turn is
+      // rejected before the manifest records them, only paths that no other
+      // turn has registered meanwhile are removed.
+      const turnCreatedMediaPaths: string[] = [];
+      // Every media path this turn touches is reserved until the manifest
+      // records it, so a concurrent turn's rollback leaves it alone.
+      const mediaReservations: Array<() => void> = [];
+      const releaseMediaReservations = () => {
+        for (const release of mediaReservations.splice(0)) {
+          release();
+        }
+      };
+      const discardTurnCreatedMedia = async () => {
+        releaseMediaReservations();
+        const candidates = turnCreatedMediaPaths.splice(0);
+        await removeUnreferencedMediaPaths(appPath, candidates).catch(
+          (error) => {
+            logger.warn("Failed to discard media from a rejected turn:", error);
+          },
+        );
+      };
       const usedLogicalNames = new Set<string>();
       const appPath = getDyadAppPath(chat.app.path);
 
@@ -1286,92 +1334,177 @@ export function registerChatStreamHandlers() {
         }
         await ensureDyadGitignored(appPath);
 
-        for (const attachment of incomingAttachments) {
-          if (
-            chat.executionBackend === "claude-code" &&
-            isDotenvFilePath(attachment.name)
-          ) {
-            throw new DyadError(
-              "Claude Code cannot read dotenv attachments. Remove the attachment before sending.",
-              DyadErrorKind.Validation,
+        try {
+          for (const attachment of incomingAttachments) {
+            if (
+              chat.executionBackend === "claude-code" &&
+              isDotenvFilePath(attachment.name)
+            ) {
+              throw new DyadError(
+                "Claude Code cannot read dotenv attachments. Remove the attachment before sending.",
+                DyadErrorKind.Validation,
+              );
+            }
+            const inspection = inspectBase64DataUrl(attachment.data);
+            if (!inspection.ok) {
+              throw new DyadError(
+                `"${attachment.name}" is not a valid base64 attachment.`,
+                DyadErrorKind.Validation,
+              );
+            }
+            const base64Data = attachment.data.slice(inspection.payloadStart);
+            const fileBuffer = Buffer.from(base64Data, "base64");
+            const hash = crypto
+              .createHash("sha256")
+              .update(fileBuffer)
+              .digest("hex");
+            const isZipArchive = isZipAttachmentName(attachment.name);
+            // Archives always store as ".zip" so the same bytes map to one
+            // stored file and one extraction directory whatever the upload's
+            // extension casing.
+            const fileExtension = isZipArchive
+              ? ".zip"
+              : path.extname(attachment.name);
+            const filename = `${hash}${fileExtension}`;
+            const logicalName = createUniqueAttachmentLogicalName(
+              attachment.name,
+              usedLogicalNames,
             );
-          }
-          const inspection = inspectBase64DataUrl(attachment.data);
-          if (!inspection.ok) {
-            throw new DyadError(
-              `"${attachment.name}" is not a valid base64 attachment.`,
-              DyadErrorKind.Validation,
-            );
-          }
-          const base64Data = attachment.data.slice(inspection.payloadStart);
-          const fileBuffer = Buffer.from(base64Data, "base64");
-          const hash = crypto
-            .createHash("sha256")
-            .update(fileBuffer)
-            .digest("hex");
-          const fileExtension = path.extname(attachment.name);
-          const filename = `${hash}${fileExtension}`;
-          const logicalName = createUniqueAttachmentLogicalName(
-            attachment.name,
-            usedLogicalNames,
-          );
 
-          // Save to .dyad/media dir
-          const persistentPath = path.join(mediaDir, filename);
-          await writeFile(persistentPath, fileBuffer);
-          attachmentPaths.push(persistentPath);
-          pendingStoredAttachments.push({
-            filePath: persistentPath,
-            attachmentType: attachment.attachmentType,
-          });
-          manifestEntries.push({
-            requestedLogicalName: logicalName,
-            originalName: attachment.name,
-            storedFileName: filename,
-            mimeType: attachment.type,
-            sizeBytes: fileBuffer.byteLength,
-            createdAt: new Date().toISOString(),
-          });
-          sendTelemetryEvent("attachment.stored", {
-            appId: chat.app.id,
-            chatId: req.chatId,
-            attachmentType: attachment.attachmentType,
-            mimeType: attachment.type,
-            sizeBytes: fileBuffer.byteLength,
-          });
+            // Save to .dyad/media dir
+            const persistentPath = path.join(mediaDir, filename);
+            mediaReservations.push(reserveMediaPath(persistentPath));
+            const storedFileExisted = await fileExists(persistentPath);
+            await writeFile(persistentPath, fileBuffer);
+            if (!storedFileExisted) {
+              turnCreatedMediaPaths.push(persistentPath);
+            }
 
-          // Build dyad-media:// URL for display
-          // Use a fixed hostname to avoid URL hostname normalization (lowercasing)
-          // Encode path segments so special characters (spaces, #, ?, %) don't
-          // break URL parsing. The protocol handler already decodeURIComponent's.
-          const mediaUrl = `dyad-media://media/${encodeURIComponent(chat.app.path)}/.dyad/media/${encodeURIComponent(filename)}`;
-
-          // Build display tag for inline rendering (escape attribute values)
-          displayAttachmentInfo += buildDyadAttachmentTag({
-            name: attachment.name,
-            type: attachment.type,
-            url: mediaUrl,
-            path: persistentPath,
-            attachmentType: attachment.attachmentType,
-          });
-
-          if (attachment.attachmentType === "upload-to-codebase") {
-            // Provide the .dyad/media path so the AI can copy it into the codebase
-            attachmentInfo += `\n\nFile to upload to codebase: "${attachment.name}" (path: ${persistentPath})\nUse the copy_file tool when tools are available, or emit a <dyad-copy> tag otherwise, to copy this file into the codebase at the appropriate location.\n`;
-          } else {
-            // For chat-context, provide file info for reference (no path to avoid auto-copying)
-            attachmentInfo += `- ${attachment.name} (${attachment.type})\n`;
-            // If it's a text-based file, try to include the content
-            if (await isTextFile(persistentPath)) {
+            // Unpack zip archives next to the stored file so the agent can
+            // reach each entry as attachments:<archive>/<path>. A corrupt or
+            // oversized archive rejects the turn with a clear message.
+            let archiveSummary: ExtractedArchiveSummary | undefined;
+            if (isZipArchive) {
+              const extractionDir = path.join(
+                mediaDir,
+                extractedDirNameForStoredFile(filename),
+              );
+              mediaReservations.push(reserveMediaPath(extractionDir));
+              const extractionDirExisted = await fileExists(extractionDir);
               try {
-                attachmentInfo += `<dyad-text-attachment filename="${escapeXmlAttr(attachment.name)}" type="${escapeXmlAttr(attachment.type)}" path="${escapeXmlAttr(persistentPath)}">
+                archiveSummary = await extractZipAttachment({
+                  mediaDir,
+                  storedFileName: filename,
+                  archive: fileBuffer,
+                  limits: {
+                    maxTotalUncompressedBytes: remainingArchiveBytes,
+                    maxEntries: remainingArchiveEntries,
+                  },
+                  signal: abortController.signal,
+                });
+              } catch (error) {
+                if (isZipExtractionError(error)) {
+                  throw new DyadError(
+                    toZipExtractionErrorMessage(attachment.name, error, {
+                      sharedBudgetBytes:
+                        remainingArchiveBytes <
+                        DEFAULT_ZIP_EXTRACTION_LIMITS.maxTotalUncompressedBytes
+                          ? DEFAULT_ZIP_EXTRACTION_LIMITS.maxTotalUncompressedBytes
+                          : undefined,
+                      sharedBudgetEntries:
+                        remainingArchiveEntries <
+                        DEFAULT_ZIP_EXTRACTION_LIMITS.maxEntries
+                          ? DEFAULT_ZIP_EXTRACTION_LIMITS.maxEntries
+                          : undefined,
+                    }),
+                    DyadErrorKind.Validation,
+                  );
+                }
+                throw error;
+              }
+              remainingArchiveBytes -= archiveSummary.totalBytes;
+              remainingArchiveEntries -= archiveSummary.entryCount;
+              if (!extractionDirExisted) {
+                turnCreatedMediaPaths.push(extractionDir);
+              }
+              sendTelemetryEvent("attachment.archive_extracted", {
+                appId: chat.app.id,
+                chatId: req.chatId,
+                fileCount: archiveSummary.files.length,
+                totalBytes: archiveSummary.totalBytes,
+                skipped: archiveSummary.skipped,
+              });
+            }
+            pendingArchiveSummaries.push(archiveSummary);
+            attachmentPaths.push(persistentPath);
+            pendingStoredAttachments.push({
+              filePath: persistentPath,
+              attachmentType: attachment.attachmentType,
+            });
+            manifestEntries.push({
+              requestedLogicalName: logicalName,
+              originalName: attachment.name,
+              storedFileName: filename,
+              mimeType: attachment.type,
+              sizeBytes: fileBuffer.byteLength,
+              createdAt: new Date().toISOString(),
+            });
+            sendTelemetryEvent("attachment.stored", {
+              appId: chat.app.id,
+              chatId: req.chatId,
+              attachmentType: attachment.attachmentType,
+              mimeType: attachment.type,
+              sizeBytes: fileBuffer.byteLength,
+            });
+
+            // Build dyad-media:// URL for display
+            // Use a fixed hostname to avoid URL hostname normalization (lowercasing)
+            // Encode path segments so special characters (spaces, #, ?, %) don't
+            // break URL parsing. The protocol handler already decodeURIComponent's.
+            const mediaUrl = `dyad-media://media/${encodeURIComponent(chat.app.path)}/.dyad/media/${encodeURIComponent(filename)}`;
+
+            // Build display tag for inline rendering (escape attribute values)
+            displayAttachmentInfo += buildDyadAttachmentTag({
+              name: attachment.name,
+              type: attachment.type,
+              url: mediaUrl,
+              path: persistentPath,
+              attachmentType: attachment.attachmentType,
+            });
+
+            if (archiveSummary) {
+              // Archives are described, with their entries, once the manifest
+              // has assigned their final names.
+            } else if (attachment.attachmentType === "upload-to-codebase") {
+              // Provide the .dyad/media path so the AI can copy it into the codebase
+              attachmentInfo += `\n\nFile to upload to codebase: "${attachment.name}" (path: ${persistentPath})\nUse the copy_file tool when tools are available, or emit a <dyad-copy> tag otherwise, to copy this file into the codebase at the appropriate location.\n`;
+            } else {
+              // For chat-context, provide file info for reference (no path to avoid auto-copying)
+              attachmentInfo += `- ${attachment.name} (${attachment.type})\n`;
+              // If it's a text-based file, try to include the content
+              if (await isTextFile(persistentPath)) {
+                try {
+                  attachmentInfo += `<dyad-text-attachment filename="${escapeXmlAttr(attachment.name)}" type="${escapeXmlAttr(attachment.type)}" path="${escapeXmlAttr(persistentPath)}">
                 </dyad-text-attachment>
                 \n\n`;
-              } catch (err) {
-                logger.error(`Error reading file content: ${err}`);
+                } catch (err) {
+                  logger.error(`Error reading file content: ${err}`);
+                }
               }
             }
           }
+          // A Stop that lands after the extractor's last check (for example
+          // while moving its directory into place) still discards this
+          // turn's media.
+          abortController.signal.throwIfAborted();
+        } catch (error) {
+          await discardTurnCreatedMedia();
+          // Stop during attachment handling is a cancel, not a failure;
+          // cancelTrackedStreams already sent the cancelled end events.
+          if (abortController.signal.aborted) {
+            return req.chatId;
+          }
+          throw error;
         }
       }
       incomingAttachments = undefined;
@@ -1486,23 +1619,61 @@ export function registerChatStreamHandlers() {
 
       // Before registering the attachments, so a rejected turn leaves no
       // manifest entries behind.
-      assertInlineAttachmentsFit(
-        pendingStoredAttachments.map((attachment, index) => ({
-          ...attachment,
-          sizeBytes: manifestEntries[index].sizeBytes,
-        })),
-        userPrompt.length,
-      );
-      const finalizedManifestEntries =
-        await appendAttachmentManifestEntriesWithLogicalNames(
-          appPath,
-          manifestEntries,
+      try {
+        assertInlineAttachmentsFit(
+          pendingStoredAttachments.map((attachment, index) => ({
+            ...attachment,
+            sizeBytes: manifestEntries[index].sizeBytes,
+          })),
+          userPrompt.length,
         );
-      storedAttachments = finalizedManifestEntries.map((entry, index) => ({
-        ...entry,
-        filePath: pendingStoredAttachments[index].filePath,
-        attachmentType: pendingStoredAttachments[index].attachmentType,
-      }));
+      } catch (error) {
+        await discardTurnCreatedMedia();
+        throw error;
+      }
+      try {
+        // Unpacked archive entries are registered under the archive's final
+        // logical name (which may have gained a suffix) so
+        // attachments:<archive>/<path> resolves through the manifest like any
+        // other attachment. The prompt then lists the names the manifest
+        // actually assigned.
+        const { entries: finalizedManifestEntries, childEntries } =
+          await appendAttachmentManifestEntryGroups(
+            appPath,
+            manifestEntries,
+            (finalized) =>
+              finalized.map((entry, index) => {
+                const archive = pendingArchiveSummaries[index];
+                return archive
+                  ? buildArchiveManifestEntries(
+                      entry.logicalName,
+                      archive,
+                      entry.createdAt,
+                    )
+                  : [];
+              }),
+          );
+        storedAttachments = finalizedManifestEntries.map((entry, index) => {
+          const archive = pendingArchiveSummaries[index];
+          return {
+            ...entry,
+            filePath: pendingStoredAttachments[index].filePath,
+            attachmentType: pendingStoredAttachments[index].attachmentType,
+            archive:
+              archive &&
+              withFinalizedEntryNames(
+                archive,
+                entry.logicalName,
+                childEntries[index],
+              ),
+          };
+        });
+      } catch (error) {
+        await discardTurnCreatedMedia();
+        throw error;
+      }
+      // Everything this turn stored is now in the manifest.
+      releaseMediaReservations();
 
       // Expand /implement-plan= into full implementation prompt
       // Keep a human-readable title for display in the UI; the expanded
@@ -2072,10 +2243,26 @@ ${componentSnippet}
         }
         const useReferencedAppManifest =
           willUseLocalAgentStream && referencedAppsForAgent.length > 0;
+        // Modes that inline attachments instead of using the on-disk block
+        // still need to know how to reach an archive's entries, with the
+        // hints the final mode allows.
+        const inlineArchiveInfo = storedAttachments
+          .flatMap((attachment) =>
+            attachment.archive
+              ? [
+                  buildArchiveAttachmentInfo(
+                    { ...attachment, archive: attachment.archive },
+                    attachmentDeliveryConfig,
+                  ).join("\n"),
+                ]
+              : [],
+          )
+          .map((info) => `\n${info}\n`)
+          .join("");
         const effectiveAiUserPrompt =
           attachmentDeliveryConfig.useOnDiskAttachmentBlock
             ? localAgentAiUserPrompt
-            : defaultAiUserPrompt;
+            : defaultAiUserPrompt + inlineArchiveInfo;
 
         // Every currently selectable chat mode returns through the tool-backed
         // handlers below. This legacy full-context path is intentionally
@@ -2866,7 +3053,8 @@ This conversation includes one or more image attachments. When the user uploads 
               externalModelAdmission,
               freeModelMode,
               referencedApps: referencedAppsForAgent,
-              currentTurnHasOnDiskAttachment: false,
+              currentTurnHasOnDiskAttachment:
+                hasArchiveAttachment(storedAttachments),
               supabaseProviderToolsAvailable:
                 initialSupabaseProviderToolsAvailable,
               neonProviderToolsAvailable: initialNeonProviderToolsAvailable,

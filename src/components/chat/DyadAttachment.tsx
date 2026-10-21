@@ -1,8 +1,9 @@
 import type React from "react";
 import { useEffect, useState } from "react";
-import { ExternalLink, FileText, Image } from "lucide-react";
+import { ExternalLink, FileArchive, FileText, Image } from "lucide-react";
 import { DyadCard, DyadCardHeader, DyadBadge } from "./DyadCardPrimitives";
 import { ImageLightbox, openFile } from "./ImageLightbox";
+import { isZipAttachmentName } from "@/shared/zip_attachments";
 
 export type AttachmentSize = "sm" | "md" | "lg";
 
@@ -36,6 +37,7 @@ export const DyadAttachment: React.FC<DyadAttachmentProps> = ({
   const attachmentType = node?.properties?.attachmentType || "chat-context";
 
   const isImage = type.startsWith("image/");
+  const isArchive = isZipAttachmentName(name);
   const accentColor =
     attachmentType === "upload-to-codebase" ? "blue" : "green";
   const [imageError, setImageError] = useState(false);
@@ -90,10 +92,20 @@ export const DyadAttachment: React.FC<DyadAttachmentProps> = ({
   return (
     <DyadCard
       accentColor={accentColor}
-      onClick={filePath ? () => openFile(filePath) : undefined}
+      // Archives are unpacked for the agent; the OS has nothing useful to
+      // open them with from here.
+      onClick={filePath && !isArchive ? () => openFile(filePath) : undefined}
     >
       <DyadCardHeader
-        icon={isImage ? <Image size={15} /> : <FileText size={15} />}
+        icon={
+          isImage ? (
+            <Image size={15} />
+          ) : isArchive ? (
+            <FileArchive size={15} />
+          ) : (
+            <FileText size={15} />
+          )
+        }
         accentColor={accentColor}
       >
         <span className="font-medium text-sm text-foreground truncate">
@@ -102,7 +114,7 @@ export const DyadAttachment: React.FC<DyadAttachmentProps> = ({
         <DyadBadge color={accentColor}>
           {attachmentType === "upload-to-codebase" ? "Upload" : "Context"}
         </DyadBadge>
-        {filePath && (
+        {filePath && !isArchive && (
           <ExternalLink
             size={14}
             className="ml-auto text-muted-foreground shrink-0"

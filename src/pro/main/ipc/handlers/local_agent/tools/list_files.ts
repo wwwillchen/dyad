@@ -15,11 +15,17 @@ import {
   filterDyadInternalFiles,
   resolveTargetAppPath,
 } from "./resolve_app_context";
+import { listAttachmentLogicalPaths } from "@/ipc/utils/media_path_utils";
 
 const MAX_PATHS_TO_RETURN = 1_000;
 
 const listFilesSchema = z.object({
-  directory: z.string().optional().describe("Optional subdirectory to list"),
+  directory: z
+    .string()
+    .optional()
+    .describe(
+      'Optional subdirectory to list. Use "attachments:" to list uploaded attachments (archives appear as one path each), or "attachments:<archive>" to list every entry unpacked from that archive.',
+    ),
   app_name: z
     .string()
     .optional()
@@ -78,10 +84,61 @@ function getXmlAttributes(args: ListFilesArgs, count?: number, total?: number) {
   return `${dirAttr}${appNameAttr}${recursiveAttr}${includeIgnoredAttr}${countAttr}${totalAttr}${truncatedAttr}`;
 }
 
+/**
+ * Attachment listings come from the manifest, not the filesystem. The
+ * directory is "attachments:" for uploaded files, or "attachments:<name>" for
+ * the entries under one unpacked archive. Both are returned as logical paths that
+ * read_file and copy_file accept.
+ */
+async function listAttachmentPaths(
+  appPath: string,
+  directory: string,
+): Promise<ListedPath[]> {
+  return (await listAttachmentLogicalPaths(appPath, directory)).map(
+    (logicalPath) => ({ path: logicalPath, isDirectory: false }),
+  );
+}
+
+function buildListFilesResult(
+  args: ListFilesArgs,
+  ctx: AgentContext,
+  allPaths: ListedPath[],
+): string {
+  const totalCount = allPaths.length;
+  const cappedPaths = allPaths.slice(0, MAX_PATHS_TO_RETURN);
+  const wasTruncated = totalCount > cappedPaths.length;
+
+  // Build full file list for LLM
+  const allFilesList =
+    cappedPaths.map((entry) => " - " + getDisplayPath(entry)).join("\n") || "";
+  const resultText = wasTruncated
+    ? `${allFilesList}\n\n[TRUNCATED: Showing ${cappedPaths.length} of ${totalCount} paths. Use directory to narrow the listing.]`
+    : allFilesList;
+
+  // Build abbreviated list for UI display
+  const MAX_FILES_TO_SHOW = 20;
+  const displayedFiles = cappedPaths.slice(0, MAX_FILES_TO_SHOW);
+  const abbreviatedList =
+    displayedFiles.map((entry) => " - " + getDisplayPath(entry)).join("\n") ||
+    "";
+  const countInfo =
+    totalCount > MAX_FILES_TO_SHOW
+      ? `\n... and ${totalCount - MAX_FILES_TO_SHOW} more paths (${totalCount} total)`
+      : `\n(${totalCount} paths total)`;
+
+  // Write abbreviated list to UI
+  ctx.onXmlComplete(
+    `<dyad-list-files${getXmlAttributes(args, cappedPaths.length, totalCount)}>${escapeXmlContent(abbreviatedList + countInfo)}</dyad-list-files>`,
+  );
+
+  // Return full file list for LLM
+  return resultText;
+}
+
 export const listFilesTool: ToolDefinition<ListFilesArgs> = {
   name: "list_files",
   description:
-    "List files in the application directory. By default, lists only the immediate directory contents. Use recursive=true to list all files recursively. Use include_ignored=true to include git-ignored and hidden paths; recursive ignored listings require directory to be set. Results are capped at 1000 paths.",
+    'List files in the application directory. By default, lists only the immediate directory contents. Use recursive=true to list all files recursively. Use include_ignored=true to include git-ignored and hidden paths; recursive ignored listings require directory to be set. Set directory to "attachments:" to list uploaded attachments, or "attachments:<archive>" to list the entries unpacked from an archive, by their attachments: paths. Results are capped at 1000 paths.',
   inputSchema: listFilesSchema,
   defaultConsent: "always",
 
@@ -101,6 +158,22 @@ export const listFilesTool: ToolDefinition<ListFilesArgs> = {
   },
 
   execute: async (args, ctx: AgentContext) => {
+    if (args.directory?.startsWith("attachments:")) {
+      // Attachments belong to the current app; a referenced app's .dyad
+      // internals stay private, as they do for read_file.
+      if (args.app_name) {
+        throw new DyadError(
+          "Attachments of a referenced app cannot be listed.",
+          DyadErrorKind.Validation,
+        );
+      }
+      return buildListFilesResult(
+        args,
+        ctx,
+        await listAttachmentPaths(ctx.appPath, args.directory),
+      );
+    }
+
     const targetAppPath = resolveTargetAppPath(ctx, args.app_name);
 
     // Validate directory path to prevent path traversal attacks
@@ -178,35 +251,6 @@ export const listFilesTool: ToolDefinition<ListFilesArgs> = {
       );
     }
 
-    const totalCount = allPaths.length;
-    const cappedPaths = allPaths.slice(0, MAX_PATHS_TO_RETURN);
-    const wasTruncated = totalCount > cappedPaths.length;
-
-    // Build full file list for LLM
-    const allFilesList =
-      cappedPaths.map((entry) => " - " + getDisplayPath(entry)).join("\n") ||
-      "";
-    const resultText = wasTruncated
-      ? `${allFilesList}\n\n[TRUNCATED: Showing ${cappedPaths.length} of ${totalCount} paths. Use directory to narrow the listing.]`
-      : allFilesList;
-
-    // Build abbreviated list for UI display
-    const MAX_FILES_TO_SHOW = 20;
-    const displayedFiles = cappedPaths.slice(0, MAX_FILES_TO_SHOW);
-    const abbreviatedList =
-      displayedFiles.map((entry) => " - " + getDisplayPath(entry)).join("\n") ||
-      "";
-    const countInfo =
-      totalCount > MAX_FILES_TO_SHOW
-        ? `\n... and ${totalCount - MAX_FILES_TO_SHOW} more paths (${totalCount} total)`
-        : `\n(${totalCount} paths total)`;
-
-    // Write abbreviated list to UI
-    ctx.onXmlComplete(
-      `<dyad-list-files${getXmlAttributes(args, cappedPaths.length, totalCount)}>${escapeXmlContent(abbreviatedList + countInfo)}</dyad-list-files>`,
-    );
-
-    // Return full file list for LLM
-    return resultText;
+    return buildListFilesResult(args, ctx, allPaths);
   },
 };

@@ -14,6 +14,12 @@ const logger = log.scope("media_cleanup");
 
 export const MEDIA_TTL_DAYS = 30;
 
+// Unpacked zip attachments live in "<sha256>-unpacked". A staging copy has an
+// ".extracting-<id>" suffix, and a damaged copy being replaced ".old-<id>";
+// no other directories are expected under .dyad/media.
+const EXTRACTED_ARCHIVE_DIR_NAME =
+  /^[0-9a-f]{64}-unpacked(?:\.(?:extracting|old)-[0-9a-f-]+)?$/;
+
 function isPathWithinDirectory(filePath: string, directoryPath: string) {
   const relativePath = path.relative(directoryPath, filePath);
   return !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
@@ -90,7 +96,15 @@ export async function cleanupOldMediaFiles(): Promise<void> {
             const filePath = path.join(safeMediaDir.path, file);
             try {
               const entryStat = await fs.lstat(filePath);
-              if (entryStat.isSymbolicLink() || !entryStat.isFile()) {
+              if (entryStat.isSymbolicLink()) {
+                return 0;
+              }
+              // Extracted archive directories age out on the same schedule as
+              // stored files.
+              const isExtractedArchiveDir =
+                entryStat.isDirectory() &&
+                EXTRACTED_ARCHIVE_DIR_NAME.test(file);
+              if (!isExtractedArchiveDir && !entryStat.isFile()) {
                 return 0;
               }
               const realFilePath = await fs.realpath(filePath);
@@ -99,7 +113,11 @@ export async function cleanupOldMediaFiles(): Promise<void> {
               }
               const stat = await fs.stat(filePath);
               if (stat.mtimeMs < cutoffMs) {
-                await fs.unlink(filePath);
+                if (isExtractedArchiveDir) {
+                  await fs.rm(filePath, { recursive: true, force: true });
+                } else {
+                  await fs.unlink(filePath);
+                }
                 return 1;
               }
             } catch (err) {

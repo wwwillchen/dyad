@@ -2465,6 +2465,76 @@ describe("handleLocalAgentStream", () => {
       );
     });
 
+    it("does not warn when a sandbox script lists one archive", async () => {
+      const { event } = createFakeEvent();
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat();
+      mockStreamResult = createFakeStream([
+        {
+          type: "tool-call",
+          toolName: "execute_sandbox_script",
+          input: {
+            script: 'const files = await list_files("attachments:proj.zip");',
+          },
+        },
+        { type: "text-delta", text: "I checked the archive." },
+      ]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+          currentTurnHasOnDiskAttachment: true,
+        },
+      );
+
+      const finalContent = [...dbOperations.updates]
+        .reverse()
+        .find((update) => typeof update.data.content === "string")
+        ?.data.content;
+      expect(finalContent).not.toContain(
+        "Your model did not reference the attached file",
+      );
+    });
+
+    it("does not warn when list_files lists an attached archive", async () => {
+      const { event } = createFakeEvent();
+      mockSettings = buildTestSettings({ enableDyadPro: true });
+      mockChatData = buildTestChat();
+      mockStreamResult = createFakeStream([
+        {
+          type: "tool-call",
+          toolName: "list_files",
+          input: { directory: "attachments:project.zip" },
+        },
+        { type: "text-delta", text: "The archive holds three files." },
+      ]);
+
+      await handleLocalAgentStream(
+        event,
+        { chatId: 1, prompt: "test" },
+        new AbortController(),
+        {
+          placeholderMessageId: 10,
+          systemPrompt: "You are helpful",
+          dyadRequestId,
+          currentTurnHasOnDiskAttachment: true,
+        },
+      );
+
+      const finalContent = [...dbOperations.updates]
+        .reverse()
+        .find((update) => typeof update.data.content === "string")
+        ?.data.content;
+      expect(finalContent).not.toContain(
+        "Your model did not reference the attached file",
+      );
+    });
+
     it("warns when a sandbox script only mentions attachments in prose", async () => {
       const { event } = createFakeEvent();
       mockSettings = buildTestSettings({ enableDyadPro: true });

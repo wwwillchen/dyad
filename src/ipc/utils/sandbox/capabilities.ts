@@ -3,13 +3,18 @@ import path from "node:path";
 import { assertMutationPathAllowed, safeJoin } from "@/ipc/utils/path_utils";
 import {
   getDyadMediaDir,
+  listAttachmentLogicalPaths,
   listStoredAttachments,
   resolveAttachmentLogicalPath,
   toAttachmentLogicalPath,
 } from "@/ipc/utils/media_path_utils";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { readContainedTextFile } from "@/ipc/utils/bounded_text_file";
-import { isDotenvFilePath, redactDotenvValues } from "@/utils/dotenv_redaction";
+import {
+  isDotenvAttachment,
+  isDotenvFilePath,
+  redactDotenvValues,
+} from "@/utils/dotenv_redaction";
 import { SANDBOX_READ_FILE_LIMIT_BYTES } from "./limits";
 
 type StructuredObject = { [key: string]: unknown };
@@ -218,7 +223,11 @@ async function resolveSandboxPath(params: {
   appPath: string;
   guestPath: string;
   allowDotenvRead?: boolean;
-}): Promise<{ filePath: string; displayPath: string }> {
+}): Promise<{
+  filePath: string;
+  displayPath: string;
+  isDotenvAttachment?: boolean;
+}> {
   if (params.guestPath.startsWith("attachments:")) {
     const attachment = await resolveAttachmentLogicalPath(
       params.appPath,
@@ -233,6 +242,7 @@ async function resolveSandboxPath(params: {
     return {
       filePath: attachment.filePath,
       displayPath: toAttachmentLogicalPath(attachment.logicalName),
+      isDotenvAttachment: isDotenvAttachment(attachment),
     };
   }
 
@@ -251,6 +261,7 @@ async function assertResolvedPathAllowed(params: {
   appPath: string;
   filePath: string;
   displayPath: string;
+  isDotenvAttachment?: boolean;
   allowDotenvRead?: boolean;
 }): Promise<{ realFilePath: string; isDotenv: boolean }> {
   const realAppPath = await fs.realpath(params.appPath);
@@ -282,7 +293,13 @@ async function assertResolvedPathAllowed(params: {
         DyadErrorKind.Precondition,
       );
     }
-    return { realFilePath, isDotenv: isDotenvFilePath(params.displayPath) };
+    return {
+      realFilePath,
+      isDotenv:
+        params.isDotenvAttachment === true ||
+        isDotenvFilePath(params.displayPath) ||
+        isDotenvFilePath(realFilePath),
+    };
   }
   const normalized = relative.split(path.sep).join("/");
   if (
@@ -425,10 +442,17 @@ export async function sandboxListFiles(
 ): Promise<string[]> {
   const dir = guestDir ?? ".";
   if (dir === "attachments:" || dir === "attachments") {
-    const attachments = await listStoredAttachments(appPath);
+    // Archive entries are listed with attachments:<archive>.
+    const attachments = await listStoredAttachments(appPath, {
+      topLevelOnly: true,
+    });
     return attachments.map((attachment) =>
       toAttachmentLogicalPath(attachment.logicalName),
     );
+  }
+  if (dir.startsWith("attachments:")) {
+    // attachments:<archive> lists the entries unpacked from that archive.
+    return listAttachmentLogicalPaths(appPath, dir);
   }
 
   assertAllowedGuestPath(dir);
