@@ -88,6 +88,9 @@ import {
   doesSqlMutateSchema,
 } from "@/lib/sqlSchemaMutation";
 import { ChatImageGenerationStrip } from "./ChatImageGenerationStrip";
+import { SuggestedPromptsStrip } from "./SuggestedPromptsStrip";
+import { selectSuggestedPrompts } from "@/lib/suggestedPrompts";
+import { DEFAULT_ENABLE_SUGGESTED_PROMPTS } from "@/shared/settings_defaults";
 import { dismissedImageGenerationJobIdsAtom } from "@/atoms/imageGenerationAtoms";
 import { useChatImageGenerationJobs } from "@/image_generation/hooks";
 import { ImageGeneratorDialog } from "@/components/ImageGeneratorDialog";
@@ -271,6 +274,13 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     );
   }, [chatImageJobs, dismissedImageJobIds, appId]);
   const hasSuccessfulImageJobs = visibleSuccessfulImageJobs.length > 0;
+  const hasPendingImageJobs = chatImageJobs.some(
+    (job) =>
+      (!appId || job.targetAppId === appId) &&
+      !dismissedImageJobIds.has(job.id) &&
+      // A cancelling job can still finish and be attached to the next message.
+      (job.status === "pending" || job.status === "cancelling"),
+  );
 
   // Use the attachments hook
   const {
@@ -333,11 +343,12 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     [setInputValue],
   );
 
-  const { isRecording, isTranscribing, toggleRecording } = useVoiceToText({
-    enabled: isProEnabled,
-    onTranscription: handleTranscription,
-    onError: (message) => showErrorToast(message),
-  });
+  const { isRecording, isTranscribing, isVoiceBusy, toggleRecording } =
+    useVoiceToText({
+      enabled: isProEnabled,
+      onTranscription: handleTranscription,
+      onError: (message) => showErrorToast(message),
+    });
 
   // Token counting for context limit banner
   const { result: tokenCountResult } = useCountTokens(
@@ -772,6 +783,75 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     setShowError(false);
   };
 
+  // Follow-up prompts the model attached to its last reply. Hidden while a
+  // pending consent or unapproved proposal still owns the composer's attention,
+  // and entirely when the user has turned the setting off.
+  const suggestedPromptsEnabled =
+    settings?.enableSuggestedPrompts ?? DEFAULT_ENABLE_SUGGESTED_PROMPTS;
+  const suggestedPrompts = useMemo(
+    () =>
+      suggestedPromptsEnabled
+        ? selectSuggestedPrompts({
+            messages,
+            isStreaming,
+            hasError: !!error,
+            composerHasContent:
+              hasComposerPayload ||
+              selectedComponents.length > 0 ||
+              !!pendingFiles ||
+              hasPendingImageJobs ||
+              isVoiceBusy,
+          })
+        : null,
+    [
+      suggestedPromptsEnabled,
+      messages,
+      isStreaming,
+      error,
+      hasComposerPayload,
+      selectedComponents,
+      pendingFiles,
+      hasPendingImageJobs,
+      isVoiceBusy,
+    ],
+  );
+  const handleSelectSuggestedPrompt = useCallback(
+    (prompt: string) => {
+      if (!chatId || isStreaming || isAwaitingTurnAcceptanceRef.current) {
+        return;
+      }
+      // Same latch as handleSubmit, so a second click before the optimistic
+      // user message renders cannot queue a duplicate turn.
+      isAwaitingTurnAcceptanceRef.current = true;
+      const releaseLatch = () => {
+        isAwaitingTurnAcceptanceRef.current = false;
+      };
+      void openPreviewIfSetupRequired(appId);
+      void streamMessage({
+        prompt,
+        chatId,
+        redo: false,
+        showOptimisticMessage: true,
+        requestedChatMode: isChatModeLoading ? null : storedChatMode,
+        onAccepted: releaseLatch,
+        onAcceptanceRejected: releaseLatch,
+        onSettled: releaseLatch,
+      });
+      posthog.capture("chat:submit", { chatMode, source: "suggested_prompt" });
+    },
+    [
+      chatId,
+      isStreaming,
+      appId,
+      openPreviewIfSetupRequired,
+      streamMessage,
+      isChatModeLoading,
+      storedChatMode,
+      posthog,
+      chatMode,
+    ],
+  );
+
   const handleNewChat = async () => {
     if (appId) {
       try {
@@ -1054,6 +1134,19 @@ export function ChatInput({ chatId }: { chatId?: number }) {
           <ChatImageGenerationStrip
             onGenerateImage={handleOpenImageGenerator}
           />
+
+          {/* Model-suggested follow-up prompts from the last reply */}
+          {chatId &&
+            suggestedPrompts &&
+            !pendingToolConsent &&
+            !disableSendButton && (
+              <SuggestedPromptsStrip
+                chatId={chatId}
+                messageId={suggestedPrompts.messageId}
+                prompts={suggestedPrompts.prompts}
+                onSelect={handleSelectSuggestedPrompt}
+              />
+            )}
 
           {/* Use the DragDropOverlay component */}
           <DragDropOverlay isDraggingOver={isDraggingOver} />

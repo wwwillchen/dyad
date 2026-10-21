@@ -260,4 +260,32 @@ describe("useCopyToClipboard", () => {
       expect(out).not.toContain("```\n\n\nTail para.");
     });
   });
+
+  describe("suggested prompts", () => {
+    it("leaves out a closed suggestions block but keeps the text around it", async () => {
+      const text = await copy(
+        "Done!\n<dyad-suggested-prompts>\nAdd a dark mode toggle\n</dyad-suggested-prompts>\nThanks",
+      );
+      expect(text).toContain("Done!");
+      expect(text).toContain("Thanks");
+      expect(text).not.toContain("dark mode");
+    });
+
+    it("treats an unrecognized dyad-like tag inside the block as content", async () => {
+      const text = await copy(
+        "Done!\n<dyad-suggested-prompts>\nAdd a <dyad-widget> section\n</dyad-suggested-prompts>\nThanks",
+      );
+      expect(text).toContain("Thanks");
+      expect(text).not.toContain("dyad-widget");
+      expect(text).not.toContain("dyad-suggested-prompts");
+    });
+
+    it("keeps a host notice that follows an unclosed suggestions block", async () => {
+      const text = await copy(
+        'Done!\n<dyad-suggested-prompts>\nAdd a dark\n\n<dyad-output type="error" message="Deploy failed">boom</dyad-output>',
+      );
+      expect(text).toContain("Deploy failed");
+      expect(text).not.toContain("Add a dark");
+    });
+  });
 });

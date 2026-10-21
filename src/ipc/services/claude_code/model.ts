@@ -20,7 +20,7 @@ import type { AgentContext } from "@/pro/main/ipc/handlers/local_agent/tools/typ
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { createDyadToolBridge } from "./tool_bridge";
 import { runClaudeTurn, safeClaudeDiagnostic } from "./runtime";
-import { claudeTextFilter } from "./text";
+import { allowsSuggestedPrompts, claudeTextFilter } from "./text";
 import { startExternalModelUsage } from "../external_model_usage";
 import type { ExternalModelAdmission } from "../external_model_admission";
 import { reportClaudeUsage, type ClaudeUsageCheckpoint } from "./accounting";
@@ -82,6 +82,7 @@ export class ClaudeCodeModel implements LanguageModelV3 {
     readonly modelId: string,
     private billingKey: string | null,
     private admission?: ExternalModelAdmission,
+    private suggestedPromptsEnabled = false,
   ) {}
   bindTools(
     tools: ToolSet,
@@ -160,10 +161,15 @@ export class ClaudeCodeModel implements LanguageModelV3 {
     let failed = false;
     let cleanupFailure: PromiseRejectedResult | undefined;
     let stopAfterTool = false;
-    const filter = claudeTextFilter(
+    const systemPromptIncludes = (marker: string) =>
       options.prompt.some(
-        (p) =>
-          p.role === "system" && p.content.includes("dyad-security-finding"),
+        (p) => p.role === "system" && p.content.includes(marker),
+      );
+    const filter = claudeTextFilter(
+      systemPromptIncludes("dyad-security-finding"),
+      allowsSuggestedPrompts(
+        this.suggestedPromptsEnabled,
+        options.prompt.flatMap((p) => (p.role === "system" ? [p.content] : [])),
       ),
     );
     let textStarted = false;

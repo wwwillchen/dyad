@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { getLanguage } from "@/utils/get_language";
 import { unescapeXmlAttr, unescapeXmlContent } from "../../shared/xmlEscape";
+import { closeUnclosedSuggestedPrompts } from "@/lib/streamingMessageParser";
 
 const CUSTOM_TAG_NAMES = [
   "dyad-write",
@@ -13,6 +14,7 @@ const CUSTOM_TAG_NAMES = [
   "dyad-output",
   "dyad-problem-report",
   "dyad-chat-summary",
+  "dyad-suggested-prompts",
   "dyad-edit",
   "dyad-codebase-context",
   "dyad-script",
@@ -244,6 +246,7 @@ export const useCopyToClipboard = () => {
       }
 
       case "dyad-chat-summary":
+      case "dyad-suggested-prompts":
       case "dyad-command":
         // Don't include these in copy
         return "";
@@ -313,7 +316,7 @@ export const useCopyToClipboard = () => {
 
   // Simplified version of preprocessUnclosedTags
   const preprocessUnclosedTags = (content: string) => {
-    let processedContent = content;
+    let processedContent = closeUnclosedSuggestedPrompts(content);
 
     for (const tagName of CUSTOM_TAG_NAMES) {
       const openTagPattern = new RegExp(`<${tagName}(?:\\s[^>]*)?>`, "g");

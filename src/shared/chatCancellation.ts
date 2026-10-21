@@ -1,3 +1,5 @@
+import { closeUnclosedSuggestedPrompts } from "@/lib/streamingMessageParser";
+
 const RESPONSE_CANCELLED_BY_USER_NOTICE = "[Response cancelled by user]";
 
 export function isCancelledResponseContent(content: string): boolean {
@@ -5,10 +7,13 @@ export function isCancelledResponseContent(content: string): boolean {
 }
 
 export function appendCancelledResponseNotice(content: string): string {
-  const trimmedContent = content.trimEnd();
-  if (isCancelledResponseContent(trimmedContent)) {
-    return trimmedContent;
+  const original = content.trimEnd();
+  if (isCancelledResponseContent(original)) {
+    return original;
   }
+  // Stopping mid-suggestions leaves the tag open, which would hide the notice
+  // in the chat, search, and history. Close it where the parser would.
+  const trimmedContent = closeUnclosedSuggestedPrompts(original);
 
   return trimmedContent
     ? `${trimmedContent}\n\n${RESPONSE_CANCELLED_BY_USER_NOTICE}`
