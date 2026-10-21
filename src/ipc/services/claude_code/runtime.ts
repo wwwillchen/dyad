@@ -13,6 +13,7 @@ import {
   setClaudeUsageAccount,
 } from "./usage_limits";
 import treeKill from "tree-kill";
+import { recordTerminationDiagnostic } from "@/utils/termination_diagnostics";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { safeGithubOpsErrorMessage } from "@/ipc/services/github_ops_safe_error";
 import { killProcessTreeSync } from "@/ipc/utils/kill_process_tree_sync";
@@ -414,6 +415,19 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
       detached: process.platform !== "win32",
     });
     running.add(child);
+    const diagnosticId = randomUUID();
+    recordTerminationDiagnostic("child-start", {
+      operationId: diagnosticId,
+      childPid: child.pid,
+    });
+    child.once("exit", (exitCode, signal) =>
+      recordTerminationDiagnostic("child-exit", {
+        operationId: diagnosticId,
+        childPid: child.pid,
+        exitCode,
+        signal,
+      }),
+    );
     let buffer = "";
     const decoder = new StringDecoder("utf8");
     let failure: Error | undefined;
@@ -424,6 +438,11 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
     let cliError: string | undefined;
     let stderr = "";
     const signalProcess = (signal: NodeJS.Signals) => {
+      recordTerminationDiagnostic("kill-requested", {
+        operationId: diagnosticId,
+        childPid: child.pid,
+        signal,
+      });
       try {
         if (process.platform !== "win32" && child.pid)
           process.kill(-child.pid, signal);
@@ -563,6 +582,10 @@ export async function runClaudeTurn(turn: BackendTurn): Promise<void> {
 }
 
 function stopClaudeProcess(child: ChildProcess): void {
+  recordTerminationDiagnostic("kill-requested", {
+    childPid: child.pid,
+    signal: "SIGKILL",
+  });
   try {
     if (process.platform !== "win32" && child.pid)
       process.kill(-child.pid, "SIGKILL");

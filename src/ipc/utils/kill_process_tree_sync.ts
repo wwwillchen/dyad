@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { recordTerminationDiagnostic } from "@/utils/termination_diagnostics";
 
 interface ProcessRow {
   pid: number;
@@ -46,6 +47,10 @@ export function killProcessTreeSync(
   platform: NodeJS.Platform = process.platform,
   dependencies: ProcessTreeSyncDependencies = processTreeSyncDependencies,
 ): boolean {
+  recordTerminationDiagnostic("kill-requested", {
+    childPid: rootPid,
+    signal: platform === "win32" ? "SIGKILL" : "SIGTERM",
+  });
   if (platform === "win32") {
     const result = dependencies.spawnSync(
       "taskkill.exe",

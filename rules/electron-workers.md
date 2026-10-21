@@ -36,6 +36,11 @@ Read this when spawning `worker_threads` or `utilityProcess` children, moving he
 - On macOS, `os.totalmem() - os.freemem()` is misleading: `os.freemem()` counts only truly-free pages, so reclaimable file cache reads as "used" (a healthy 16 GB Mac can show ~85% "used" by this formula while `memory_pressure` reports the system 86% free). For real pressure signals use `vm_stat` (pageouts, compressed pages), `sysctl vm.swapusage`, and `memory_pressure`.
 - Two V8 string facts that change memory math: ASCII text is stored at 1 byte/char (not 2), and string concatenation builds lazy cons strings — a `` `${prefix} ${hugeString}` `` template is nearly free until something flattens it (e.g. `JSON.stringify`). Corollary: never re-materialize codebase-scale strings just to measure them — sum `content.length` values instead of `join(...)` followed by `.length`.
 
+## Investigating abrupt desktop termination
+
+- Resolve release incidents against the platform's `release-provenance-*.json` source commit, not a nearby checkout. High system RAM usage alone does not establish heap OOM; collect commit-limit signals, a matching dump, or Windows Application events 1000/1001 before attributing the exit.
+- On restart, Dyad moves Crashpad dumps into the sibling `dyad-crash-reports` directory and retains five; inspect both locations. Preserve the source when both rename and copy fail. Keep raw dumps local and share sanitized stack/module summaries; new termination-journal fields must pass the runtime privacy allowlist.
+
 ## Development launcher cleanup
 
 - Treat Ctrl+C cleanup for `npm start` as development tooling; do not add signal-only shutdown behavior to packaged runtime paths. A POSIX supervisor should launch Electron Forge as a process-group leader and signal the negative group PID so Forge, Electron, renderer helpers, and preview servers are terminated together.

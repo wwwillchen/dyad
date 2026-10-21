@@ -1,5 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import type { ChildProcess } from "node:child_process";
+import {
+  recordTerminationDiagnostic,
+  diagnosticErrorCode,
+} from "@/utils/termination_diagnostics";
 
 import log from "electron-log/main";
 import { z } from "zod";
@@ -243,8 +249,9 @@ export async function cleanupStaleBuildSnapshots(): Promise<void> {
 export async function removeSnapshot(
   snapshotPath: string,
   sourceRepoPath?: string,
+  snapshotId?: ReturnType<typeof randomUUID>,
 ): Promise<void> {
-  await removeGitOverlayWorkspace(snapshotPath, sourceRepoPath);
+  await removeGitOverlayWorkspace(snapshotPath, sourceRepoPath, snapshotId);
 }
 
 export { findPackageManagerRoot, getCleanInstallArgs };
@@ -291,12 +298,14 @@ async function runBuildProcess({
   signal,
   timeoutMs,
   onOutput,
+  onProcess,
 }: {
   cwd: string;
   packageManager: "npm" | "pnpm";
   signal?: AbortSignal;
   timeoutMs: number;
   onOutput: (chunk: string) => void;
+  onProcess?: (child: ChildProcess) => void;
 }) {
   return spawnStreaming({
     command: packageManager,
@@ -306,6 +315,7 @@ async function runBuildProcess({
     signal,
     timeoutMs,
     onOutput,
+    onProcess,
   });
 }
 
@@ -351,6 +361,7 @@ function streamBuildOutput(ctx: AgentContext, accumulatedOutput: string): void {
 // A separate cleanup admission could lose its place to a queued rename/delete.
 function runBuildOperation(
   ctx: AgentContext,
+  operationId: string,
   operation: (
     releaseResources: AppOperationContext["releaseResources"],
     registerSnapshot: (snapshot: Snapshot) => void,
@@ -373,10 +384,15 @@ function runBuildOperation(
         },
         async ({ releaseResources }) => {
           let snapshot: Snapshot | undefined;
+          const snapshotId = randomUUID();
           try {
             resolve(
               await operation(releaseResources, (captured) => {
                 snapshot = captured;
+                recordTerminationDiagnostic("snapshot-captured", {
+                  operationId,
+                  snapshotId,
+                });
               }),
             );
           } catch (error) {
@@ -391,11 +407,12 @@ function runBuildOperation(
               await removeSnapshot(
                 snapshot.worktreePath,
                 snapshot.sourceRepoPath,
+                snapshotId,
               ).catch((error) => {
-                logger.warn(
-                  "Failed to clean production build snapshot:",
-                  error,
-                );
+                logger.warn("Failed to clean production build snapshot:", {
+                  snapshotId,
+                  errorCode: diagnosticErrorCode(error),
+                });
               });
             }
           }
@@ -434,9 +451,28 @@ export const runBuildTool: ToolDefinition<z.infer<typeof runBuildSchema>> = {
     }
 
     activeBuilds.add(ctx.appId);
+    const operationId = randomUUID();
+    recordTerminationDiagnostic("build-start", { operationId });
+    const observeChild =
+      (phase: "install" | "build") => (child: ChildProcess) => {
+        recordTerminationDiagnostic("child-start", {
+          operationId,
+          phase,
+          childPid: child.pid,
+        });
+        child.once("exit", (exitCode) =>
+          recordTerminationDiagnostic("child-exit", {
+            operationId,
+            phase,
+            childPid: child.pid,
+            exitCode,
+          }),
+        );
+      };
     try {
       return await runBuildOperation(
         ctx,
+        operationId,
         async (releaseResources, registerSnapshot) => {
           const state = (ctx.buildAttemptState ??= {
             count: 0,
@@ -519,6 +555,7 @@ export const runBuildTool: ToolDefinition<z.infer<typeof runBuildSchema>> = {
               signal: abortScope.signal,
               timeoutMs: Math.max(1, abortScope.deadlineAt - Date.now()),
               onOutput: installOutputPreview.append,
+              onProcess: observeChild("install"),
             }).finally(installOutputPreview.flush);
             dependencyInstallMs = Date.now() - installStartedAt;
             const installOutput = tail(
@@ -566,8 +603,16 @@ export const runBuildTool: ToolDefinition<z.infer<typeof runBuildSchema>> = {
               signal: abortScope.signal,
               timeoutMs: Math.max(1, abortScope.deadlineAt - Date.now()),
               onOutput: buildOutputPreview.append,
+              onProcess: observeChild("build"),
             }).finally(buildOutputPreview.flush);
             const buildMs = Date.now() - buildStartedAt;
+            recordTerminationDiagnostic("build-result", {
+              operationId,
+              durationMs: buildMs,
+              exitCode: result.code,
+              aborted: result.aborted,
+              timedOut: result.timedOut,
+            });
             const timing = `Mode: isolated (${snapshot.strategy}); snapshot setup: ${snapshot.setupMs} ms; dependency install: ${dependencyInstallMs} ms; build: ${buildMs} ms.`;
             const output = tail(
               [result.stdout, result.stderr].filter(Boolean).join("\n"),

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import treeKill from "tree-kill";
+import { recordTerminationDiagnostic } from "@/utils/termination_diagnostics";
 import {
   BoundedOutputBuffer,
   DEFAULT_MAX_BUFFERED_OUTPUT_BYTES,
@@ -10,6 +11,7 @@ export const DEFAULT_BUFFERED_PROCESS_TIMEOUT_MS = 10 * 60 * 1000;
 export const BUFFERED_PROCESS_FORCE_KILL_GRACE_MS = 5_000;
 
 export interface BufferedProcessOptions {
+  diagnosticId?: string;
   command: string;
   args?: string[];
   cwd: string;
@@ -114,6 +116,19 @@ export async function runBufferedProcess(
     }
 
     let settled = false;
+    if (options.diagnosticId)
+      recordTerminationDiagnostic("child-start", {
+        operationId: options.diagnosticId,
+        childPid: child.pid,
+      });
+    child.once("exit", (exitCode) => {
+      if (options.diagnosticId)
+        recordTerminationDiagnostic("child-exit", {
+          operationId: options.diagnosticId,
+          childPid: child.pid,
+          exitCode,
+        });
+    });
     let aborted = false;
     let timedOut = false;
     let timeoutId: NodeJS.Timeout | undefined;
@@ -167,6 +182,12 @@ export async function runBufferedProcess(
     };
 
     const terminate = (signal: "SIGTERM" | "SIGKILL") => {
+      recordTerminationDiagnostic("kill-requested", {
+        signal,
+        operationId: options.diagnosticId,
+        childPid: child.pid,
+        reason: timedOut ? "timeout" : aborted ? "abort" : "other",
+      });
       if (child.pid) {
         treeKill(child.pid, signal, (error) => {
           if (error && !child.killed) {

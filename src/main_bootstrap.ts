@@ -1,5 +1,10 @@
 import { app, dialog } from "electron";
 import log from "electron-log";
+import path from "node:path";
+import {
+  startTerminationDiagnostics,
+  recordTerminationDiagnostic,
+} from "./utils/termination_diagnostics";
 // @ts-ignore electron-squirrel-startup does not provide TypeScript declarations
 import started from "electron-squirrel-startup";
 
@@ -18,6 +23,7 @@ function getErrorSummary(error: unknown): string {
 }
 
 function reportRuntimeLoadFailure(error: unknown): void {
+  recordTerminationDiagnostic("runtime-load-failed");
   logger.error("Failed to load the Dyad application runtime:", error);
   const logPath = log.transports.file.getFile().path;
   dialog.showErrorBox(
@@ -32,6 +38,15 @@ function reportRuntimeLoadFailure(error: unknown): void {
 if (started) {
   app.quit();
 } else {
+  // Ahead of application imports, but never start samplers in Squirrel hooks.
+  startTerminationDiagnostics(
+    path.join(
+      process.env.NODE_ENV === "development"
+        ? path.resolve(process.env.DYAD_DEV_USER_DATA_DIR?.trim() || "userData")
+        : app.getPath("userData"),
+      "termination-diagnostics",
+    ),
+  );
   // Forge emits the main target as CommonJS, so Vite lowers this import to a
   // microtask-scheduled require. That still evaluates main's pre-ready
   // registrations before Electron can deliver the ready event on a later turn.

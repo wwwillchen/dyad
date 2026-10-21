@@ -93,7 +93,9 @@ function renameQuiet(src: string, dest: string): void {
     try {
       fs.copyFileSync(src, dest);
     } catch {
-      // source may be unreadable; still remove it below to avoid reprocessing
+      // Preserve the only dump if both operations failed (e.g. locked files
+      // or a full destination). Retrying on next launch is safer than data loss.
+      return;
     }
   }
   unlinkQuiet(src);

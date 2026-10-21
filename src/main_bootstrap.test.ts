@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   runtimeGate: { value: undefined as Promise<void> | undefined },
   resolveReady: { value: undefined as (() => void) | undefined },
   squirrelStarted: { value: true },
+  startDiagnostics: vi.fn(),
+  recordDiagnostic: vi.fn(),
   whenReady: vi.fn(
     () =>
       new Promise<void>((resolve) => {
@@ -22,11 +24,17 @@ const mocks = vi.hoisted(() => ({
   ),
 }));
 
+vi.mock("./utils/termination_diagnostics", () => ({
+  startTerminationDiagnostics: mocks.startDiagnostics,
+  recordTerminationDiagnostic: mocks.recordDiagnostic,
+}));
+
 vi.mock("electron", () => ({
   app: {
     exit: mocks.exit,
     quit: mocks.quit,
     whenReady: mocks.whenReady,
+    getPath: () => "/diagnostics-fixture",
   },
   dialog: { showErrorBox: mocks.showErrorBox },
 }));
@@ -61,6 +69,8 @@ describe("main process bootstrap", () => {
     mocks.resolveReady.value = undefined;
     mocks.squirrelStarted.value = true;
     mocks.whenReady.mockClear();
+    mocks.startDiagnostics.mockClear();
+    mocks.recordDiagnostic.mockClear();
     vi.doMock("./main", async () => {
       await mocks.runtimeGate.value;
       if (mocks.runtimeError.value) {
@@ -78,6 +88,7 @@ describe("main process bootstrap", () => {
     expect(mocks.quit).toHaveBeenCalledOnce();
     expect(mocks.runtimeLoaded).not.toHaveBeenCalled();
     expect(mocks.whenReady).not.toHaveBeenCalled();
+    expect(mocks.startDiagnostics).not.toHaveBeenCalled();
   });
 
   it("loads the application outside a Squirrel event", async () => {
@@ -87,6 +98,10 @@ describe("main process bootstrap", () => {
 
     await vi.waitFor(() => expect(mocks.runtimeLoaded).toHaveBeenCalledOnce());
     expect(mocks.quit).not.toHaveBeenCalled();
+    expect(mocks.startDiagnostics).toHaveBeenCalledOnce();
+    expect(mocks.startDiagnostics.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.runtimeLoaded.mock.invocationCallOrder[0],
+    );
   });
 
   it("fails startup if Electron becomes ready before the runtime loads", async () => {
@@ -133,6 +148,7 @@ describe("main process bootstrap", () => {
       ),
     );
     expect(mocks.runtimeLoaded).not.toHaveBeenCalled();
+    expect(mocks.recordDiagnostic).toHaveBeenCalledWith("runtime-load-failed");
   });
 
   it("has no static imports outside the minimal bootstrap dependencies", () => {
@@ -157,6 +173,8 @@ describe("main process bootstrap", () => {
     expect(staticImports).toEqual([
       "electron",
       "electron-log",
+      "node:path",
+      "./utils/termination_diagnostics",
       "electron-squirrel-startup",
     ]);
   });

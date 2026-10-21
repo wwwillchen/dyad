@@ -1,4 +1,8 @@
 import { stopClaudeProcesses } from "./ipc/services/claude_code/runtime";
+import {
+  getTerminationRunId,
+  recordTerminationDiagnostic,
+} from "./utils/termination_diagnostics";
 import { isPreviewCookieIsolationEnabled } from "./ipc/services/preview_cookie_isolation";
 import {
   app,
@@ -186,6 +190,11 @@ log.errorHandler.startCatching({
       errorName === "Unhandled rejection"
         ? "unhandledRejection"
         : "uncaughtException";
+    recordTerminationDiagnostic(
+      kind === "unhandledRejection"
+        ? "unhandled-rejection"
+        : "uncaught-exception",
+    );
     log.error(formatErrorBanner(process.pid, kind, Date.now() - LAUNCH_TIME));
   },
 });
@@ -274,10 +283,12 @@ void logStartupExecutablePaths();
 // uploaded; parsed on the next launch into a summary we send as telemetry.
 // Must start before the app is ready. globalExtra annotates every dump with
 // static context; dynamic GPU status is added in onReady.
+const diagnosticRunId = getTerminationRunId();
 crashReporter.start({
   uploadToServer: false,
   compress: true,
   globalExtra: {
+    ...(diagnosticRunId ? { diagnostic_run: diagnosticRunId } : {}),
     app_version: app.getVersion(),
     electron_version: process.versions.electron ?? "unknown",
     chrome_version: process.versions.chrome ?? "unknown",
@@ -962,12 +973,14 @@ const createWindow = ({
     });
   });
   browserWindow.on("unresponsive", () => {
+    recordTerminationDiagnostic("unresponsive", { processType: "renderer" });
     logLifecycle("window:unresponsive", {
       windowId: browserWindow.id,
       windowSessionId,
     });
   });
   browserWindow.on("responsive", () => {
+    recordTerminationDiagnostic("responsive", { processType: "renderer" });
     logLifecycle("window:responsive", {
       windowId: browserWindow.id,
       windowSessionId,
@@ -1691,7 +1704,22 @@ async function handleDeepLinkReturn(url: string) {
 // These do not take down the app, so we can report them right away.
 // Skip clean-exit and killed: routine teardown stops these workers with
 // kill(), and reporting that would flood telemetry with non-crashes.
+app.on("render-process-gone", (_event, _contents, details) => {
+  // Includes preview renderers as well as product windows. Do not record URLs,
+  // window identities, or contents from the webContents object.
+  recordTerminationDiagnostic("renderer-gone", {
+    processType: "renderer",
+    reason: details.reason,
+    exitCode: details.exitCode,
+  });
+});
+
 app.on("child-process-gone", (_event, details) => {
+  recordTerminationDiagnostic("child-gone", {
+    processType: details.type,
+    reason: details.reason,
+    exitCode: details.exitCode,
+  });
   if (details.type !== "Utility" || isAppQuitting) {
     return;
   }
@@ -1767,6 +1795,7 @@ const handleMcpBeforeQuit = createMcpBeforeQuitHandler({
 });
 
 app.on("before-quit", (event) => {
+  recordTerminationDiagnostic("shutdown-requested");
   logLifecycle("app:before-quit", {
     defaultPreventedBeforeHandler: event.defaultPrevented,
   });
@@ -1801,6 +1830,7 @@ app.on("will-quit", () => {
 });
 
 app.on("quit", (_event, exitCode) => {
+  recordTerminationDiagnostic("shutdown-completed", { exitCode });
   logLifecycle("app:quit", { exitCode });
   // Unscoped and at info, matching this session's start banner. The
   // previous-session banner is deliberately scoped and at warn; see onReady.

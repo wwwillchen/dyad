@@ -125,6 +125,7 @@ describe("isolated production build execution", () => {
       expect(removeGitOverlayWorkspace).toHaveBeenCalledWith(
         workspacePath,
         appPath,
+        expect.any(String),
       );
     },
   );
@@ -229,6 +230,17 @@ describe("isolated production build execution", () => {
       );
       await runtimeChange;
       expect(switchToCloud).toHaveBeenCalledOnce();
+      await appOperationCoordinator.run(
+        {
+          appId: ctx.appId,
+          operation: "agent-edit-during-cleanup",
+          resources: ["repository-worktree"],
+        },
+        () => fs.writeFile(path.join(appPath, "source.txt"), "post-build edit"),
+      );
+      expect(await fs.readFile(path.join(appPath, "source.txt"), "utf8")).toBe(
+        "post-build edit",
+      );
       // Tool completion and runtime changes do not wait for slow disk cleanup.
       expect(appOperationCoordinator.isBusy(ctx.appId, ["app-path"])).toBe(
         true,

@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from "child_process";
 import treeKill from "tree-kill";
+import { randomUUID } from "node:crypto";
+import { recordTerminationDiagnostic } from "@/utils/termination_diagnostics";
 import log from "electron-log/main";
 import { buildWindowsCommandInvocation } from "./windows_command";
 
@@ -136,6 +138,18 @@ export async function spawnStreaming({
       env: spawnEnv,
     });
     onProcess?.(child);
+    const diagnosticId = randomUUID();
+    recordTerminationDiagnostic("child-start", {
+      operationId: diagnosticId,
+      childPid: child.pid,
+    });
+    child.once("exit", (exitCode) =>
+      recordTerminationDiagnostic("child-exit", {
+        operationId: diagnosticId,
+        childPid: child.pid,
+        exitCode,
+      }),
+    );
 
     let stdout = "";
     let stderr = "";
@@ -165,6 +179,12 @@ export async function spawnStreaming({
     };
 
     const killTree = (reason: string, signalName: "SIGTERM" | "SIGKILL") => {
+      recordTerminationDiagnostic("kill-requested", {
+        signal: signalName,
+        operationId: diagnosticId,
+        childPid: child.pid,
+        reason: timedOut ? "timeout" : aborted ? "abort" : "other",
+      });
       logger.info(`${reason}: ${command}`);
       // Kill the whole process tree — with a shell (Windows) or fast package
       // managers, the spawned child forks descendants (npx/playwright/chromium)

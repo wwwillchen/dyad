@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import * as bufferedProcess from "@/ipc/utils/buffered_process";
+import * as terminationDiagnostics from "@/utils/termination_diagnostics";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -10,6 +11,7 @@ import {
   parseGitOverlayPaths,
   secureGitOverlaySymlinks,
   listGitOverlayTrackedPaths,
+  removeGitOverlayWorkspace,
 } from "./git_overlay_workspace";
 
 const originalPlatform = process.platform;
@@ -26,6 +28,40 @@ afterEach(() => {
 function status(...fields: string[]): string {
   return `${fields.join("\0")}\0`;
 }
+
+it.each(["EBUSY", "EPERM", "ENOTEMPTY"])(
+  "records a caught cleanup error as %s without error text",
+  async (code) => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "dyad-cleanup-error-"),
+    );
+    const record = vi.spyOn(
+      terminationDiagnostics,
+      "recordTerminationDiagnostic",
+    );
+    const remove = vi
+      .spyOn(fs, "rm")
+      .mockRejectedValueOnce(
+        Object.assign(new Error("private-value"), { code }),
+      );
+    try {
+      await expect(removeGitOverlayWorkspace(root)).resolves.toBeUndefined();
+      expect(record.mock.calls).toContainEqual([
+        "delete-end",
+        expect.objectContaining({ ok: false, errorCode: code }),
+      ]);
+      expect(record.mock.calls).toContainEqual([
+        "cleanup-end",
+        expect.objectContaining({ durationMs: expect.any(Number) }),
+      ]);
+      expect(JSON.stringify(record.mock.calls)).not.toContain("private-value");
+      expect(JSON.stringify(record.mock.calls)).not.toContain(root);
+    } finally {
+      remove.mockRestore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 it("streams complete tracked paths beyond the diagnostic output limit", async () => {
   const entry = "source/" + "a".repeat(200) + ".ts";

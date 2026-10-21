@@ -1,11 +1,14 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { runningApps } from "@/ipc/utils/process_manager";
+import { spawnStreaming } from "@/ipc/utils/spawn_streaming";
+import * as terminationDiagnostics from "@/utils/termination_diagnostics";
 import type { AgentContext } from "./types";
 
 import {
@@ -41,6 +44,7 @@ describe("run_build", () => {
   const temporaryDirectories: string[] = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     runningApps.clear();
     await Promise.all(
       temporaryDirectories.splice(0).map((directory) =>
@@ -380,6 +384,181 @@ describe("run_build", () => {
     // Like the nested-app case, this runs real Git setup, worktree creation,
     // and cleanup, which can exceed the default timeout on Windows CI.
   }, 15_000);
+
+  for (const locked of [false, true]) {
+    it.skipIf(locked && process.platform !== "win32")(
+      `cleans a successful build with a large dependency tree and concurrent edits (locked: ${locked})`,
+      async () => {
+        const root = await fs.mkdtemp(
+          path.join(os.tmpdir(), "dyad-cleanup-test-"),
+        );
+        temporaryDirectories.push(root);
+        const source = path.join(root, "source");
+        await fs.mkdir(source);
+        await fs.writeFile(
+          path.join(source, "package.json"),
+          JSON.stringify({
+            scripts: {
+              build:
+                "node -e \"require('node:fs').writeFileSync('artifact.bin','fixture')\"",
+            },
+          }),
+        );
+        await runGit(source, "init");
+        await runGit(source, "add", ".");
+        await runGit(
+          source,
+          "-c",
+          "user.name=fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "-c",
+          "commit.gpgSign=false",
+          "commit",
+          "-m",
+          "fixture",
+        );
+        const snapshot = await createBuildWorktree(
+          source,
+          path.join(root, "snapshots"),
+        );
+        for (let i = 0; i < 128; i++) {
+          const dependency = path.join(
+            snapshot.path,
+            "node_modules",
+            `.dependency-${i}`,
+            "lib",
+          );
+          await fs.mkdir(dependency, { recursive: true });
+          await Promise.all(
+            Array.from({ length: 16 }, (_, j) =>
+              fs.writeFile(path.join(dependency, `${j}.js`), "fixture"),
+            ),
+          );
+        }
+        const build = await spawnStreaming({
+          command: "npm",
+          args: ["run", "build"],
+          cwd: snapshot.path,
+          timeoutMs: 30_000,
+        });
+        expect(build.code).toBe(0);
+        expect(
+          await fs.readFile(path.join(snapshot.path, "artifact.bin"), "utf8"),
+        ).toBe("fixture");
+        const diagnostics = vi.spyOn(
+          terminationDiagnostics,
+          "recordTerminationDiagnostic",
+        );
+        let locker: ChildProcess | undefined;
+        try {
+          if (locked) {
+            const lockScript = path.join(root, "hold.ps1");
+            await fs.writeFile(
+              lockScript,
+              "param([string]$Target)\n$f = [IO.File]::Open($Target, 'Open', 'ReadWrite', 'None')\n[Console]::Out.WriteLine('ready')\n[Console]::In.ReadLine() | Out-Null\n$f.Dispose()\n",
+            );
+            locker = spawn(
+              "powershell.exe",
+              [
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                lockScript,
+                path.join(
+                  snapshot.path,
+                  "node_modules",
+                  ".dependency-0",
+                  "lib",
+                  "0.js",
+                ),
+              ],
+              { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] },
+            );
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(() => {
+                cleanup();
+                reject(new Error("Lock fixture readiness timeout"));
+              }, 15_000);
+              const ready = (chunk: Buffer) => {
+                if (chunk.toString().includes("ready")) {
+                  cleanup();
+                  resolve();
+                }
+              };
+              const failed = () => {
+                cleanup();
+                reject(new Error("Lock fixture exited before readiness"));
+              };
+              const cleanup = () => {
+                clearTimeout(timer);
+                locker?.stdout?.off("data", ready);
+                locker?.off("exit", failed);
+                locker?.off("error", failed);
+              };
+              locker!.stdout!.on("data", ready);
+              locker!.once("exit", failed);
+              locker!.once("error", failed);
+            });
+          }
+          await Promise.all([
+            removeSnapshot(snapshot.worktreePath, snapshot.sourceRepoPath),
+            (async () => {
+              for (let i = 0; i < 30; i++)
+                await fs.writeFile(
+                  path.join(source, "concurrent.txt"),
+                  String(i),
+                );
+            })(),
+          ]);
+          expect(
+            await fs.readFile(path.join(source, "concurrent.txt"), "utf8"),
+          ).toBe("29");
+          if (locked) {
+            expect(diagnostics.mock.calls).toContainEqual([
+              "delete-end",
+              expect.objectContaining({
+                ok: false,
+                errorCode: expect.stringMatching(
+                  /^(EPERM|EACCES|EBUSY|ENOTEMPTY)$/,
+                ),
+              }),
+            ]);
+            expect((await fs.stat(snapshot.worktreePath)).isDirectory()).toBe(
+              true,
+            );
+          }
+        } finally {
+          if (
+            locker &&
+            locker.pid &&
+            locker.exitCode === null &&
+            locker.signalCode === null
+          ) {
+            const exited = once(locker, "exit");
+            const timer = setTimeout(() => locker?.kill(), 5000);
+            locker.stdin?.end("release\n");
+            try {
+              await exited;
+            } finally {
+              clearTimeout(timer);
+            }
+          }
+          await removeSnapshot(snapshot.worktreePath, snapshot.sourceRepoPath);
+        }
+        await expect(fs.stat(snapshot.worktreePath)).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+        expect(
+          await runGit(source, "worktree", "list", "--porcelain"),
+        ).not.toContain(snapshot.worktreePath.replaceAll("\\", "/"));
+      },
+      60_000,
+    );
+  }
 
   it("accumulates streamed build output instead of replacing earlier chunks", () => {
     const first = accumulateBuildOutput("", "compiling...\n");

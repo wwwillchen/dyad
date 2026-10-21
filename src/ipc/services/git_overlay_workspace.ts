@@ -1,6 +1,11 @@
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  recordTerminationDiagnostic,
+  diagnosticErrorCode,
+} from "@/utils/termination_diagnostics";
 
 import log from "electron-log/main";
 
@@ -180,10 +185,12 @@ async function runWorkspaceGit(
   signal?: AbortSignal,
   allowedExitCodes: readonly number[] = [0],
   onStdout?: (chunk: string) => void,
+  diagnosticId?: string,
 ) {
   const { env, gitLocation } = getGitProcessEnvironment();
   const result = await runBufferedProcess({
     command: gitLocation,
+    diagnosticId,
     args,
     cwd,
     env,
@@ -1373,7 +1380,45 @@ export function isGitOverlayWorkspaceActive(worktreePath: string): boolean {
 export async function removeGitOverlayWorkspace(
   worktreePath: string,
   sourceRepoPath?: string,
+  snapshotId = randomUUID(),
 ): Promise<void> {
+  const startedAt = Date.now();
+  const fields = { snapshotId };
+  recordTerminationDiagnostic("cleanup-start", fields);
+  const cleanupGit = async (
+    cwd: string,
+    args: string[],
+    phase: "git-remove" | "submodule-remove" | "prune",
+  ) => {
+    const operationId = randomUUID();
+    const start = Date.now();
+    recordTerminationDiagnostic(`${phase}-start`, { ...fields, operationId });
+    try {
+      await runWorkspaceGit(
+        cwd,
+        args,
+        AbortSignal.timeout(30_000),
+        [0],
+        undefined,
+        operationId,
+      );
+      recordTerminationDiagnostic(`${phase}-end`, {
+        ...fields,
+        operationId,
+        ok: true,
+        durationMs: Date.now() - start,
+      });
+    } catch (error) {
+      recordTerminationDiagnostic(`${phase}-end`, {
+        ...fields,
+        operationId,
+        ok: false,
+        errorCode: diagnosticErrorCode(error),
+        durationMs: Date.now() - start,
+      });
+      throw error;
+    }
+  };
   try {
     const storedMarker = await readGitOverlayWorkspaceMarker(worktreePath);
     const marker = sourceRepoPath
@@ -1389,26 +1434,26 @@ export async function removeGitOverlayWorkspace(
     let allSubmodulesUnregistered = true;
     for (const worktree of [...(marker?.submoduleWorktrees ?? [])].reverse()) {
       try {
-        await runWorkspaceGit(
+        await cleanupGit(
           worktree.sourceRepoPath,
           ["worktree", "remove", "--force", worktree.snapshotPath],
-          AbortSignal.timeout(30_000),
+          "submodule-remove",
         );
       } catch (error) {
-        logger.warn(
-          `Failed to unregister submodule worktree ${worktree.snapshotPath}:`,
-          error,
-        );
+        logger.warn("Failed to unregister submodule worktree [path redacted]", {
+          snapshotId,
+          errorCode: diagnosticErrorCode(error),
+        });
         try {
-          await runWorkspaceGit(
+          await cleanupGit(
             worktree.sourceRepoPath,
             ["worktree", "prune"],
-            AbortSignal.timeout(30_000),
+            "prune",
           );
         } catch (pruneError) {
           logger.warn(
-            `Failed to prune submodule worktree metadata for ${worktree.sourceRepoPath}:`,
-            pruneError,
+            "Failed to prune submodule worktree metadata [path redacted]",
+            { snapshotId, errorCode: diagnosticErrorCode(pruneError) },
           );
         }
         // A zero exit from `prune` is not evidence this registration went: it
@@ -1441,24 +1486,31 @@ export async function removeGitOverlayWorkspace(
     // is never discovered again and the registration is stranded for good.
     // Keeping both means the next launch retries this exact function.
     if (!allSubmodulesUnregistered) {
+      recordTerminationDiagnostic("cleanup-deferred", fields);
       logger.warn(
-        `Keeping the workspace at ${worktreePath}: a submodule worktree registration could not be removed, and the startup sweep needs it to retry.`,
+        "Keeping workspace [path redacted] for startup cleanup retry",
+        { snapshotId },
       );
       return;
     }
     let removedByGit = false;
     if (marker?.sourceRepoPath) {
       try {
-        await runWorkspaceGit(
+        await cleanupGit(
           marker.sourceRepoPath,
           ["worktree", "remove", "--force", worktreePath],
-          AbortSignal.timeout(30_000),
+          "git-remove",
         );
         removedByGit = true;
       } catch (error) {
-        logger.warn(`Failed to unregister worktree ${worktreePath}:`, error);
+        logger.warn("Failed to unregister worktree [path redacted]", {
+          snapshotId,
+          errorCode: diagnosticErrorCode(error),
+        });
       }
     }
+    const deleteStartedAt = Date.now();
+    recordTerminationDiagnostic("delete-start", fields);
     try {
       if (!removedByGit) {
         await fs.rm(worktreePath, {
@@ -1469,21 +1521,38 @@ export async function removeGitOverlayWorkspace(
         });
       }
       await fs.rm(markerPath(worktreePath), { force: true });
+      recordTerminationDiagnostic("delete-end", {
+        ...fields,
+        ok: true,
+        durationMs: Date.now() - deleteStartedAt,
+      });
     } catch (error) {
-      logger.warn(`Failed to remove workspace ${worktreePath}:`, error);
+      recordTerminationDiagnostic("delete-end", {
+        ...fields,
+        ok: false,
+        durationMs: Date.now() - deleteStartedAt,
+        errorCode: diagnosticErrorCode(error),
+      });
+      logger.warn("Failed to remove workspace [path redacted]", {
+        snapshotId,
+        errorCode: diagnosticErrorCode(error),
+      });
     }
     if (!removedByGit && marker?.sourceRepoPath) {
       try {
-        await runWorkspaceGit(
-          marker.sourceRepoPath,
-          ["worktree", "prune"],
-          AbortSignal.timeout(30_000),
-        );
+        await cleanupGit(marker.sourceRepoPath, ["worktree", "prune"], "prune");
       } catch (error) {
-        logger.warn(`Failed to prune stale worktree metadata:`, error);
+        logger.warn("Failed to prune stale worktree metadata", {
+          snapshotId,
+          errorCode: diagnosticErrorCode(error),
+        });
       }
     }
   } finally {
+    recordTerminationDiagnostic("cleanup-end", {
+      ...fields,
+      durationMs: Date.now() - startedAt,
+    });
     activeWorkspacePaths.delete(worktreePath);
   }
 }
