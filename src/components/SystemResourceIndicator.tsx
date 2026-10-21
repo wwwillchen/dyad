@@ -15,11 +15,11 @@ function formatBytes(bytes: number | null | undefined) {
 
 /* ANIMATION STORYBOARD
  *    0ms  show the latest measured values immediately
- * 5000ms  move recorded history left at a constant speed, then await a sample
+ * 2000ms  move recorded history left at a constant speed, then await a sample
  *         reduced motion: show static samples instead
  */
 const TIMING = {
-  sampleInterval: 5000, // also the duration of each linear scroll
+  sampleInterval: 2000, // also the duration of each linear scroll
   historyWindow: 60_000, // visible history in milliseconds
 };
 const CHART = {
@@ -36,24 +36,10 @@ type ResourceSample = {
   committed: number | null;
 };
 
-function ResourceChart({
-  history,
-  metric,
-  label,
-  compact = false,
-}: {
-  history: ResourceSample[];
-  metric: "cpu" | "ram" | "committed";
-  label: string;
-  compact?: boolean;
-}) {
-  const reducedMotion = useReducedMotionPref();
+type ResourceMetric = "cpu" | "ram" | "committed";
+
+function resourcePath(history: ResourceSample[], metric: ResourceMetric) {
   const latest = history.at(-1);
-  const scrollRef = useRef<SVGAnimateTransformElement>(null);
-  useEffect(() => {
-    // Begin relative to this sample's arrival, not the SVG's original mount.
-    if (!reducedMotion) scrollRef.current?.beginElement?.();
-  }, [latest?.at, reducedMotion]);
   let path = "";
   let previousAt: number | undefined;
   let endpoint: { x: number; y: number } | undefined;
@@ -76,24 +62,76 @@ function ResourceChart({
     previousAt = sample.at;
     endpoint = { x, y };
   }
+  return { path, endpoint };
+}
+
+function memorySeverity(value: number | null | undefined) {
+  return value == null
+    ? null
+    : value >= MEMORY_USAGE_THRESHOLDS.critical
+      ? "critical"
+      : value >= MEMORY_USAGE_THRESHOLDS.warning
+        ? "high"
+        : null;
+}
+
+function resourceColor(
+  metric: ResourceMetric,
+  value: number | null | undefined,
+) {
+  const severity = metric === "cpu" ? null : memorySeverity(value);
+  return severity === "critical"
+    ? "text-red-600 dark:text-red-400"
+    : severity === "high"
+      ? "text-yellow-600 dark:text-yellow-400"
+      : metric === "cpu" && value != null && value >= 90
+        ? "text-amber-500"
+        : metric === "committed"
+          ? "text-muted-foreground"
+          : "text-emerald-600 dark:text-emerald-400";
+}
+
+function ResourceChart({
+  history,
+  metric,
+  label,
+  compact = false,
+  includeCommitted = false,
+}: {
+  history: ResourceSample[];
+  metric: ResourceMetric;
+  label: string;
+  compact?: boolean;
+  includeCommitted?: boolean;
+}) {
+  const reducedMotion = useReducedMotionPref();
+  const latest = history.at(-1);
+  const scrollRef = useRef<SVGAnimateTransformElement>(null);
+  useEffect(() => {
+    // Begin relative to this sample's arrival, not the SVG's original mount.
+    if (!reducedMotion) scrollRef.current?.beginElement?.();
+  }, [latest?.at, reducedMotion]);
   const value = latest?.[metric];
-  const memorySeverity =
-    metric === "cpu" || value == null
-      ? null
-      : value >= MEMORY_USAGE_THRESHOLDS.critical
-        ? "critical"
-        : value >= MEMORY_USAGE_THRESHOLDS.warning
-          ? "high"
-          : null;
+  const severity = metric === "cpu" ? null : memorySeverity(value);
+  const metrics: ResourceMetric[] = includeCommitted
+    ? [metric, "committed"]
+    : [metric];
+  const description = includeCommitted
+    ? `Last 60 seconds. ${metrics
+        .map((series) => {
+          const reading = latest?.[series];
+          const status = memorySeverity(reading);
+          return `${series === "ram" ? "RAM" : "Committed"}: ${reading == null ? "unavailable" : `${Math.round(reading)}% of ${series === "ram" ? "physical RAM" : "commit limit"}`}.${status ? ` Memory usage ${status}.` : ""}`;
+        })
+        .join(" ")}`
+    : value == null
+      ? "Unavailable"
+      : `Last 60 seconds. Currently ${Math.round(value)}%.${severity ? ` Memory usage ${severity}.` : ""}`;
   return (
     <svg
       role="img"
       aria-label={label}
-      aria-description={
-        value == null
-          ? "Unavailable"
-          : `Last 60 seconds. Currently ${Math.round(value)}%.${memorySeverity ? ` Memory usage ${memorySeverity}.` : ""}`
-      }
+      aria-description={description}
       viewBox="0 0 100 24"
       preserveAspectRatio="none"
       className={cn(
@@ -101,13 +139,7 @@ function ResourceChart({
         compact
           ? "h-3 rounded-[2px] border-foreground/35 bg-background"
           : "h-14 rounded-sm border-border bg-muted/40",
-        memorySeverity === "critical"
-          ? "text-red-600 dark:text-red-400"
-          : memorySeverity === "high"
-            ? "text-yellow-600 dark:text-yellow-400"
-            : metric === "cpu" && value != null && value >= 90
-              ? "text-amber-500"
-              : "text-emerald-600 dark:text-emerald-400",
+        resourceColor(metric, value),
       )}
     >
       {!compact && (
@@ -133,20 +165,37 @@ function ResourceChart({
             fill="freeze"
           />
         )}
-        {path && (
-          <path
-            d={path.trim()}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.25"
-            strokeLinejoin="round"
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        )}
-        {endpoint && (
-          <circle cx={endpoint.x} cy={endpoint.y} r="0.8" fill="currentColor" />
-        )}
+        {metrics.map((series) => {
+          const { path, endpoint } = resourcePath(history, series);
+          return (
+            <g
+              key={series}
+              data-metric={series}
+              className={resourceColor(series, latest?.[series])}
+            >
+              {path && (
+                <path
+                  d={path.trim()}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.25"
+                  strokeDasharray={series === "committed" ? "1 3" : undefined}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )}
+              {endpoint && (
+                <circle
+                  cx={endpoint.x}
+                  cy={endpoint.y}
+                  r="0.8"
+                  fill="currentColor"
+                />
+              )}
+            </g>
+          );
+        })}
       </g>
     </svg>
   );
@@ -159,6 +208,8 @@ export function SystemResourceIndicator() {
     queryKey: queryKeys.system.resourceUsage,
     queryFn: () => ipc.system.getSystemResourceUsage(),
     refetchInterval: TIMING.sampleInterval,
+    // TanStack Query tracks document visibility, including minimized windows.
+    refetchIntervalInBackground: false,
     staleTime: TIMING.sampleInterval,
     retry: false,
   });
@@ -193,6 +244,10 @@ export function SystemResourceIndicator() {
   const current = isError ? undefined : data;
   const memory = current?.memory;
   const cpu = current?.cpu;
+  const hasCommitted =
+    memory?.committedBytes != null &&
+    memory.commitLimitBytes != null &&
+    memory.commitLimitBytes > 0;
   const cpuPercent =
     cpu?.usedPercent == null ? "Sampling…" : `${Math.round(cpu.usedPercent)}%`;
   return (
@@ -215,6 +270,7 @@ export function SystemResourceIndicator() {
             label="System RAM usage"
             history={visibleHistory}
             metric="ram"
+            includeCommitted={hasCommitted}
             compact
           />
         </span>
@@ -270,10 +326,38 @@ export function SystemResourceIndicator() {
                 </span>
               </div>
               <ResourceChart
-                label="Physical RAM used"
+                label="Memory usage"
                 history={visibleHistory}
                 metric="ram"
+                includeCommitted={hasCommitted}
               />
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+                <span className="inline-flex items-center gap-1">
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "w-4 border-t-2",
+                      resourceColor("ram", visibleHistory.at(-1)?.ram),
+                    )}
+                  />
+                  RAM (% of physical RAM)
+                </span>
+                {hasCommitted && (
+                  <span className="inline-flex items-center gap-1">
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "w-4 border-t-2 border-dotted",
+                        resourceColor(
+                          "committed",
+                          visibleHistory.at(-1)?.committed,
+                        ),
+                      )}
+                    />
+                    Committed (% of commit limit)
+                  </span>
+                )}
+              </div>
               <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-2 text-xs [&_dd]:text-right [&_dd]:tabular-nums [&_dt]:text-muted-foreground">
                 <dt>Total RAM</dt>
                 <dd>{formatBytes(memory?.totalBytes)}</dd>
@@ -300,14 +384,6 @@ export function SystemResourceIndicator() {
                   </>
                 )}
               </dl>
-              {memory?.committedBytes != null &&
-                memory.commitLimitBytes != null && (
-                  <ResourceChart
-                    label="Committed memory relative to commit limit"
-                    history={visibleHistory}
-                    metric="committed"
-                  />
-                )}
             </section>
             <p className="border-t pt-3 text-[10px] text-muted-foreground">
               Last 60 seconds · updates every {TIMING.sampleInterval / 1000}{" "}

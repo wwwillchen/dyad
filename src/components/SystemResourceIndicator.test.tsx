@@ -18,6 +18,7 @@ vi.mock("@/ipc/types", () => ({
 }));
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.useRealTimers();
   motion.reduced = false;
@@ -71,11 +72,7 @@ describe("SystemResourceIndicator", () => {
       await userEvent.click(
         screen.getByRole("button", { name: "System CPU and memory usage" }),
       );
-      for (const name of [
-        "System RAM usage",
-        "Physical RAM used",
-        "Committed memory relative to commit limit",
-      ]) {
+      for (const name of ["System RAM usage", "Memory usage"]) {
         const chart = await screen.findByRole("img", { name });
         await waitFor(() => expect(chart.classList.contains(color)).toBe(true));
         if (severity)
@@ -83,6 +80,12 @@ describe("SystemResourceIndicator", () => {
             `Memory usage ${severity}.`,
           );
       }
+      expect(
+        screen
+          .getByRole("img", { name: "Memory usage" })
+          .querySelector('[data-metric="committed"]')
+          ?.classList.contains(severity ? color : "text-muted-foreground"),
+      ).toBe(true);
       expect(
         screen
           .getByRole("img", { name: "System CPU usage" })
@@ -112,7 +115,31 @@ describe("SystemResourceIndicator", () => {
     );
     expect(chart.getAttribute("aria-description")).not.toContain("critical");
   });
-  it("polls every five seconds", async () => {
+  it("shows dotted committed memory in the mini chart before opening details", async () => {
+    getUsage.mockResolvedValue(sample);
+    mount();
+    const chart = screen.getByRole("img", { name: "System RAM usage" });
+    await waitFor(() =>
+      expect(
+        chart.querySelector('[data-metric="committed"] path'),
+      ).toBeTruthy(),
+    );
+    expect(
+      chart
+        .querySelector('[data-metric="ram"] path')!
+        .getAttribute("stroke-dasharray"),
+    ).toBeNull();
+    expect(
+      chart
+        .querySelector('[data-metric="committed"] path')!
+        .getAttribute("stroke-dasharray"),
+    ).toBe("1 3");
+    expect(chart.getAttribute("aria-description")).toBe(
+      "Last 60 seconds. RAM: 50% of physical RAM. Committed: 63% of commit limit.",
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+  it("polls every two seconds", async () => {
     vi.useFakeTimers();
     getUsage.mockResolvedValue(sample);
     mount();
@@ -121,11 +148,39 @@ describe("SystemResourceIndicator", () => {
     });
     expect(getUsage).toHaveBeenCalledTimes(1);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(4999);
+      await vi.advanceTimersByTimeAsync(1999);
     });
     expect(getUsage).toHaveBeenCalledTimes(2);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(getUsage).toHaveBeenCalledTimes(3);
+  });
+
+  it("pauses polling while hidden and resumes when visible", async () => {
+    vi.useFakeTimers();
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    visibility.mockReturnValue("visible");
+    getUsage.mockResolvedValue(sample);
+    mount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(getUsage).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      visibility.mockReturnValue("hidden");
+      window.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(getUsage).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      visibility.mockReturnValue("visible");
+      window.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(getUsage).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
     });
     expect(getUsage).toHaveBeenCalledTimes(3);
   });
@@ -138,10 +193,10 @@ describe("SystemResourceIndicator", () => {
       expect(chart.querySelector("animateTransform")).toBeTruthy(),
     );
     const animation = chart.querySelector("animateTransform")!;
-    expect(animation.getAttribute("dur")).toBe("5000ms");
+    expect(animation.getAttribute("dur")).toBe("2000ms");
     expect(animation.getAttribute("calcMode")).toBe("linear");
     expect(Number(animation.getAttribute("to")!.split(" ")[0])).toBeCloseTo(
-      (-98 * 5000) / 60000,
+      (-98 * 2000) / 60000,
     );
   });
 
@@ -230,16 +285,11 @@ describe("SystemResourceIndicator", () => {
     expect(dialog.textContent).toContain("20.0 GiB");
     expect(
       screen
-        .getByRole("img", { name: "Physical RAM used" })
+        .getByRole("img", { name: "Memory usage" })
         .getAttribute("aria-description"),
-    ).toBe("Last 60 seconds. Currently 50%.");
-    expect(
-      screen
-        .getByRole("img", {
-          name: "Committed memory relative to commit limit",
-        })
-        .getAttribute("aria-description"),
-    ).toBe("Last 60 seconds. Currently 63%.");
+    ).toBe(
+      "Last 60 seconds. RAM: 50% of physical RAM. Committed: 63% of commit limit.",
+    );
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -265,10 +315,64 @@ describe("SystemResourceIndicator", () => {
     expect(screen.getByText("Unavailable")).toBeTruthy();
     expect(screen.getByText("Compressed (included in used)")).toBeTruthy();
     expect(
-      screen.queryByRole("img", {
-        name: "Committed memory relative to commit limit",
-      }),
+      screen
+        .getByRole("img", { name: "Memory usage" })
+        .querySelector('[data-metric="committed"]'),
     ).toBeNull();
+    expect(screen.queryByText("Committed (% of commit limit)")).toBeNull();
+  });
+
+  it("overlays dotted commit usage with independent limits and pressure colors", async () => {
+    getUsage.mockResolvedValue({
+      ...sample,
+      memory: {
+        ...sample.memory,
+        committedBytes: sample.memory.commitLimitBytes! * 0.95,
+      },
+    });
+    const client = mount();
+    await userEvent.click(
+      screen.getByRole("button", { name: "System CPU and memory usage" }),
+    );
+    const chart = await screen.findByRole("img", { name: "Memory usage" });
+    await waitFor(() =>
+      expect(
+        chart.querySelector('[data-metric="committed"] path'),
+      ).toBeTruthy(),
+    );
+    const ram = chart.querySelector('[data-metric="ram"]')!;
+    const committed = chart.querySelector('[data-metric="committed"]')!;
+    expect(ram.classList.contains("text-emerald-600")).toBe(true);
+    expect(committed.classList.contains("text-red-600")).toBe(true);
+    expect(
+      ram.querySelector("path")!.getAttribute("stroke-dasharray"),
+    ).toBeNull();
+    expect(
+      committed.querySelector("path")!.getAttribute("stroke-dasharray"),
+    ).toBe("1 3");
+    expect(ram.querySelector("path")!.getAttribute("d")).toBe("M99.00,12.00");
+    expect(committed.querySelector("path")!.getAttribute("d")).toBe(
+      "M99.00,2.10",
+    );
+    expect(screen.getByText("RAM (% of physical RAM)")).toBeTruthy();
+    expect(screen.getByText("Committed (% of commit limit)")).toBeTruthy();
+    expect(screen.getAllByRole("img")).toHaveLength(4);
+    await act(async () => {
+      client.setQueryData(queryKeys.system.resourceUsage, {
+        ...sample,
+        sampledAt: sample.sampledAt + 2000,
+      });
+    });
+    await waitFor(() =>
+      expect(
+        chart
+          .querySelector('[data-metric="committed"]')!
+          .classList.contains("text-muted-foreground"),
+      ).toBe(true),
+    );
+    expect(
+      chart.querySelector('[data-metric="committed"] path')!.getAttribute("d"),
+    ).toBe("M95.73,2.10 L99.00,9.25");
   });
   it("shows a recoverable error instead of zero usage", async () => {
     getUsage.mockRejectedValue(new Error("offline"));

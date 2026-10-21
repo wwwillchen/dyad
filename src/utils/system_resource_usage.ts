@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { SystemResourceUsage } from "../ipc/types/system";
 import { parseVmStat, parseSwapUsage } from "./process_memory_diagnostics";
+import { windowsResourceHelper } from "./windows_resource_helper";
 
 const execFileAsync = promisify(execFile);
 type Memory = SystemResourceUsage["memory"];
@@ -84,6 +85,7 @@ export function createSystemResourceCollector(
     freemem: os.freemem,
     readFile: (path: string) => readFile(path, "utf8"),
     command,
+    windowsMemory: () => windowsResourceHelper.sample(),
     now: Date.now,
   },
 ) {
@@ -112,14 +114,7 @@ export function createSystemResourceCollector(
           parseLinuxResourceMemory(await deps.readFile("/proc/meminfo")),
         );
       } else if (deps.platform === "win32") {
-        const parsed = parseWindowsResourceMemory(
-          await deps.command("powershell.exe", [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Memory -Property AvailableBytes,CommittedBytes,CommitLimit | Select-Object AvailableBytes,CommittedBytes,CommitLimit | ConvertTo-Json -Compress",
-          ]),
-        );
+        const parsed = parseWindowsResourceMemory(await deps.windowsMemory());
         const { availableBytes, ...commit } = parsed;
         Object.assign(memory, commit, {
           source: "windows",
@@ -171,7 +166,7 @@ export function createSystemResourceCollector(
   return () => {
     if (pending) return pending;
     // Share one bounded sample across windows and avoid repeated OS subprocesses.
-    if (cached && deps.now() - cached.sampledAt < 2000)
+    if (cached && deps.now() - cached.sampledAt < 1000)
       return Promise.resolve(cached);
     pending = collect().finally(() => {
       pending = undefined;

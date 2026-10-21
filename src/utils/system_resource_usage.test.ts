@@ -24,6 +24,7 @@ function dependencies(platform: NodeJS.Platform = "linux") {
         "MemTotal: 16777216 kB\nMemAvailable: 4194304 kB\nCommitted_AS: 20971520 kB\nCommitLimit: 25165824 kB\nSwapTotal: 2097152 kB\nSwapFree: 1048576 kB\n",
     ),
     command: vi.fn(async (_file: string, _args: string[]) => ""),
+    windowsMemory: vi.fn(async () => ""),
     now: vi.fn(() => 0),
   };
 }
@@ -90,6 +91,18 @@ describe("system-wide resource usage", () => {
     expect((await collect()).memory.source).toBe("linux");
   });
 
+  it("expires shared samples before the next two-second poll", async () => {
+    const deps = dependencies();
+    const collect = createSystemResourceCollector(deps);
+    await collect();
+    deps.now.mockReturnValue(999);
+    await collect();
+    expect(deps.readFile).toHaveBeenCalledTimes(1);
+    deps.now.mockReturnValue(1900);
+    expect((await collect()).sampledAt).toBe(1900);
+    expect(deps.readFile).toHaveBeenCalledTimes(2);
+  });
+
   it("collects macOS RAM, compressor and swap without inventing a commit value", async () => {
     const deps = dependencies("darwin");
     deps.command.mockImplementation(async (file) =>
@@ -108,7 +121,7 @@ describe("system-wide resource usage", () => {
 
   it("reads Windows system commit and available physical memory", async () => {
     const deps = dependencies("win32");
-    deps.command.mockResolvedValue(
+    deps.windowsMemory.mockResolvedValue(
       JSON.stringify({
         AvailableBytes: 4 * gib,
         CommittedBytes: 20 * gib,

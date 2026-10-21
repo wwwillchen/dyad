@@ -1,4 +1,5 @@
 import { stopClaudeProcesses } from "./ipc/services/claude_code/runtime";
+import { windowsResourceHelper } from "./utils/windows_resource_helper";
 import { isPreviewCookieIsolationEnabled } from "./ipc/services/preview_cookie_isolation";
 import {
   app,
@@ -1791,6 +1792,7 @@ app.on("before-quit", (event) => {
 // IMPORTANT: This handler must be synchronous because Electron's EventEmitter
 // does not await async callbacks — the returned Promise would be silently ignored.
 app.on("will-quit", () => {
+  windowsResourceHelper.dispose();
   stopClaudeProcesses();
   logLifecycle("app:will-quit");
   logger.info("App is quitting");
