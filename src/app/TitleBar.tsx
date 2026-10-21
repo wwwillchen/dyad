@@ -1,4 +1,5 @@
 import { SubscriptionConnectionStatus } from "@/components/SubscriptionConnectionStatus";
+import { SystemResourceIndicator } from "@/components/SystemResourceIndicator";
 import { useAtom, useAtomValue } from "jotai";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { useLoadApps } from "@/hooks/useLoadApps";
@@ -145,6 +146,7 @@ export const TitleBar = () => {
           <ChatTabs selectedChatId={selectedChatId} />
         </div>
 
+        <SystemResourceIndicator />
         {showWindowControls && <WindowsControls />}
       </div>
 

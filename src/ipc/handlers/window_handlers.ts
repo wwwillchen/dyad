@@ -12,6 +12,7 @@ import {
   clearRendererHeapReport,
   recordRendererHeapReport,
 } from "@/utils/renderer_heap_reports";
+import { getSystemResourceUsage } from "@/utils/system_resource_usage";
 
 const logger = log.scope("window-handlers");
 
@@ -19,6 +20,10 @@ const logger = log.scope("window-handlers");
 const trackedHeapReporters = new Set<number>();
 
 export function registerWindowHandlers() {
+  createTypedHandler(
+    systemContracts.getSystemResourceUsage,
+    getSystemResourceUsage,
+  );
   logger.debug("Registering window control handlers");
 
   createTypedHandler(systemContracts.minimizeWindow, async (event) => {
