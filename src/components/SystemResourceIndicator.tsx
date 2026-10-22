@@ -244,7 +244,8 @@ function ResourceChart({
 
 export function SystemResourceIndicator() {
   const { settings } = useSettings();
-  return (settings?.showSystemResourceUsage ??
+  if (!settings) return null;
+  return (settings.showSystemResourceUsage ??
     DEFAULT_SHOW_SYSTEM_RESOURCE_USAGE) ? (
     <SystemResourceMonitor />
   ) : null;

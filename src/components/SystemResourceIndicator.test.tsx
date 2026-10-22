@@ -10,9 +10,10 @@ import {
 import { SystemResourceIndicator } from "./SystemResourceIndicator";
 import type { SystemResourceUsage } from "@/ipc/types";
 
-const { getUsage, motion, preferences } = vi.hoisted(() => ({
+const { getUsage, motion, preferences, settingsState } = vi.hoisted(() => ({
   getUsage: vi.fn(),
   preferences: { showSystemResourceUsage: undefined as boolean | undefined },
+  settingsState: { loaded: true },
   motion: { reduced: false },
 }));
 vi.mock("react-i18next", () => ({
@@ -29,7 +30,7 @@ vi.mock("react-i18next", () => ({
 }));
 import english from "@/i18n/locales/en/common.json";
 vi.mock("@/hooks/useSettings", () => ({
-  useSettings: () => ({ settings: preferences }),
+  useSettings: () => ({ settings: settingsState.loaded ? preferences : null }),
 }));
 vi.mock("@/hooks/useReducedMotion", () => ({
   useReducedMotionPref: () => motion.reduced,
@@ -44,6 +45,7 @@ afterEach(() => {
   vi.useRealTimers();
   motion.reduced = false;
   preferences.showSystemResourceUsage = undefined;
+  settingsState.loaded = true;
   onlineManager.setOnline(true);
 });
 const gib = 1024 ** 3;
@@ -74,6 +76,47 @@ function mount() {
 }
 
 describe("SystemResourceIndicator", () => {
+  it("waits for loaded settings before applying the monitoring default", async () => {
+    vi.useFakeTimers();
+    settingsState.loaded = false;
+    getUsage.mockResolvedValue(sample);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    const indicator = () => (
+      <QueryClientProvider client={client}>
+        <SystemResourceIndicator />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(indicator());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(getUsage).not.toHaveBeenCalled();
+
+    settingsState.loaded = true;
+    preferences.showSystemResourceUsage = false;
+    rerender(indicator());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(getUsage).not.toHaveBeenCalled();
+
+    // Existing users with loaded settings but no saved preference keep the
+    // built-in default; an absent settings object must never start monitoring.
+    preferences.showSystemResourceUsage = undefined;
+    rerender(indicator());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(
+      screen.getByRole("button", { name: "System CPU and memory usage" }),
+    ).toBeTruthy();
+    expect(getUsage).toHaveBeenCalledOnce();
+  });
+
   it("does not mount or poll when disabled", async () => {
     preferences.showSystemResourceUsage = false;
     mount();
