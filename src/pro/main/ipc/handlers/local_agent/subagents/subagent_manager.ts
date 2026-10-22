@@ -13,6 +13,10 @@ import {
   messages,
 } from "@/db/schema";
 import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
+import {
+  CancellationReason,
+  type CancellationCause,
+} from "@/shared/cancellation_reason";
 import { getModelClient } from "@/ipc/utils/get_model_client";
 import { getAuxiliarySettings } from "@/lib/auxiliaryModel";
 import { getAiHeaders, getProviderOptions } from "@/ipc/utils/provider_options";
@@ -226,6 +230,7 @@ export async function recoverInterruptedSubagents(): Promise<void> {
  */
 export async function settleSubagentsForChatDeletion(
   chatId: number,
+  cause: CancellationCause = "chat-deleted",
 ): Promise<() => void> {
   const disposal = subagentDisposalRegistry.beginDisposal(chatId);
   try {
@@ -242,7 +247,7 @@ export async function settleSubagentsForChatDeletion(
       }
     }
     for (const { id } of threads) {
-      abortControllers.get(id)?.controller.abort();
+      abortControllers.get(id)?.controller.abort(new CancellationReason(cause));
       followupRunners.delete(id);
       followupStarts.delete(id);
       const cleanupTimer = followupCleanupTimers.get(id);
@@ -676,6 +681,11 @@ export async function startReview(params: {
 export async function cancelSubagent(
   chatId: number,
   threadId: string,
+  /**
+   * Why the sub-agent stops, reported to work it started (e.g. a test run).
+   * The owning turn passes its own reason when its cancellation stops it.
+   */
+  reason: CancellationReason = new CancellationReason("subagent-stopped"),
 ): Promise<void> {
   assertPro();
   const thread = await getOwnedThread(chatId, threadId);
@@ -689,7 +699,7 @@ export async function cancelSubagent(
   if (thread.status === "stopping") return;
   cancelledThreadIds.add(threadId);
   const activeRun = abortControllers.get(threadId);
-  activeRun?.controller.abort();
+  activeRun?.controller.abort(reason);
   const pendingIndex = pendingRuns.findIndex(
     (run) => run.threadId === threadId,
   );
@@ -2699,7 +2709,7 @@ function watchEntitlement(
   const timer = setInterval(() => {
     if (isDyadProEnabled(readSettings())) return;
     clearInterval(timer);
-    controller.abort();
+    controller.abort(new CancellationReason("pro-revoked"));
     void finishThread(
       threadId,
       "entitlement_revoked",
