@@ -36,14 +36,18 @@ const RENAME_RETRY_DELAYS_MS = [50, 100, 200, 400];
 
 const FILE_CHECK_BATCH_SIZE = 32;
 
-/** Whether `dir` is a real directory that holds every one of `files`. */
+/**
+ * Whether `dir` is a real directory that holds every one of `files` at its
+ * extracted size, so a copy cut short partway through a file is caught.
+ */
 async function holdsExtractedFiles(
   dir: string,
   files: readonly ExtractedZipFile[],
 ): Promise<boolean> {
-  const isFile = async (target: string) => {
+  const holdsFile = async (target: string, sizeBytes: number) => {
     try {
-      return (await fs.lstat(target)).isFile();
+      const stat = await fs.lstat(target);
+      return stat.isFile() && stat.size === sizeBytes;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return false;
@@ -65,7 +69,12 @@ async function holdsExtractedFiles(
     const present = await Promise.all(
       files
         .slice(start, start + FILE_CHECK_BATCH_SIZE)
-        .map((file) => isFile(path.join(dir, ...file.relativePath.split("/")))),
+        .map((file) =>
+          holdsFile(
+            path.join(dir, ...file.relativePath.split("/")),
+            file.sizeBytes,
+          ),
+        ),
     );
     if (present.includes(false)) {
       return false;
@@ -74,17 +83,106 @@ async function holdsExtractedFiles(
   return true;
 }
 
+function isTransientRenameError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return !!code && TRANSIENT_RENAME_ERRORS.has(code);
+}
+
+/**
+ * Move a finished staging directory to `to`, which must not exist. A scan of
+ * freshly written files can keep the directory from being renamed for longer
+ * than the retries wait, though the files stay readable, so it is then
+ * copied into place instead. A copy that fails is cleared out of `to` before
+ * rethrowing, so the caller can put back what was there.
+ */
+async function installStagedDirectory(
+  from: string,
+  to: string,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  let renameError: unknown;
+  try {
+    await renameWithRetry(from, to);
+    return;
+  } catch (error) {
+    if (!isTransientRenameError(error)) {
+      throw error;
+    }
+    renameError = error;
+  }
+  // Keep the lock that forced the copy visible in logs.
+  const withRenameCause = (error: unknown) => {
+    if (
+      error instanceof Error &&
+      error !== signal?.reason &&
+      error.cause === undefined
+    ) {
+      error.cause = renameError;
+    }
+    return error;
+  };
+  signal?.throwIfAborted();
+  // Claiming `to` first means a directory that appeared there is never
+  // removed below, since only one this call created is.
+  try {
+    await fs.mkdir(to);
+  } catch (error) {
+    throw withRenameCause(error);
+  }
+  try {
+    for (const entry of await fs.readdir(from)) {
+      await fs.cp(path.join(from, entry), path.join(to, entry), {
+        recursive: true,
+        errorOnExist: true,
+        force: false,
+        // Called for every file and directory, so a stop ends the copy soon.
+        filter: () => {
+          signal?.throwIfAborted();
+          return true;
+        },
+      });
+    }
+  } catch (error) {
+    await clearPartialCopy(to);
+    throw withRenameCause(error);
+  }
+  // Best effort: media cleanup sweeps a staging directory left behind.
+  await fs
+    .rm(from, {
+      recursive: true,
+      force: true,
+      maxRetries: RENAME_RETRY_DELAYS_MS.length,
+    })
+    .catch(() => undefined);
+}
+
+// A copied file can still be held open by a scan, so if the partial copy
+// can't be removed it is moved aside under a staging name media cleanup
+// sweeps, freeing `dir` for the caller's restore.
+async function clearPartialCopy(dir: string): Promise<void> {
+  try {
+    await fs.rm(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: RENAME_RETRY_DELAYS_MS.length,
+    });
+  } catch {
+    await renameWithRetry(
+      dir,
+      `${dir}.extracting-${crypto.randomUUID()}`,
+    ).catch(() => undefined);
+  }
+}
+
 async function renameWithRetry(from: string, to: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
       await fs.rename(from, to);
       return;
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
       if (
         attempt >= RENAME_RETRY_DELAYS_MS.length ||
-        !code ||
-        !TRANSIENT_RENAME_ERRORS.has(code)
+        !isTransientRenameError(error)
       ) {
         throw error;
       }
@@ -164,11 +262,12 @@ export async function extractZipAttachment({
     }
 
     try {
-      // Only a finished extraction of these same bytes is ever moved to this
+      // Only an extraction of these same bytes is ever installed under this
       // name, so an existing directory normally holds the same files. Keep it
       // so chats reading it are never disturbed, and refresh its time so
       // cleanup ages it out with the re-uploaded zip. Replace it only when
-      // files are missing from it.
+      // files are missing from it or cut short, as an interrupted copy into
+      // place leaves them.
       if (await holdsExtractedFiles(destinationDir, result.files)) {
         await fs.rm(stagingDir, { recursive: true, force: true });
         const now = new Date();
@@ -196,7 +295,7 @@ export async function extractZipAttachment({
           }
         }
         try {
-          await renameWithRetry(stagingDir, destinationDir);
+          await installStagedDirectory(stagingDir, destinationDir, signal);
         } catch (error) {
           if (retired) {
             await renameWithRetry(retiredDir, destinationDir).catch(
