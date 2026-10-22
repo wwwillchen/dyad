@@ -13,6 +13,26 @@ import { PagefileSettingsSchema } from "../../shared/pagefile_telemetry";
 // System Schemas
 // =============================================================================
 
+export const SystemResourceUsageSchema = z.object({
+  sampledAt: z.number(),
+  platform: z.string(),
+  cpu: z.object({
+    logicalCores: z.number(),
+    usedPercent: z.number().nullable(),
+  }),
+  memory: z.object({
+    totalBytes: z.number(),
+    usedBytes: z.number(),
+    committedBytes: z.number().nullable(),
+    commitLimitBytes: z.number().nullable(),
+    compressedBytes: z.number().nullable(),
+    swapUsedBytes: z.number().nullable(),
+    source: z.enum(["macos", "linux", "windows", "fallback"]),
+  }),
+});
+
+export type SystemResourceUsage = z.infer<typeof SystemResourceUsageSchema>;
+
 export const NodeSystemInfoSchema = z.object({
   nodeVersion: z.string().nullable(),
   pnpmVersion: z.string().nullable(),
@@ -206,6 +226,11 @@ export type NativeThemeState = z.infer<typeof NativeThemeStateSchema>;
 // =============================================================================
 
 export const systemContracts = {
+  getSystemResourceUsage: defineContract({
+    channel: "system:get-resource-usage",
+    input: z.void(),
+    output: SystemResourceUsageSchema,
+  }),
   // Window controls
   minimizeWindow: defineContract({
     channel: "window:minimize",

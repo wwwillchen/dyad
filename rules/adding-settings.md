@@ -29,3 +29,6 @@ For experiments that may later become enabled by default:
 For schema-validated settings:
 
 - Assume `UserSettings` and other parsed schema types have already normalized field types. Prefer idiomatic boolean checks like `settings?.flag && !settings.hidden` over defensive literal comparisons like `settings?.flag === true && settings.hidden !== true`, unless you are intentionally handling raw unvalidated persisted data before schema parsing.
+- For default-on features that start background work, wait for settings to load
+  before applying the field's default. Otherwise a saved `false` still starts
+  work during startup; test loading settings followed by the disabled value.

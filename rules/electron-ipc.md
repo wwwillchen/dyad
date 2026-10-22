@@ -37,6 +37,10 @@ runtime `Invalid channel` failure that TypeScript cannot detect.
 
 ## Renderer usage
 
+Local-only IPC queries that must keep working offline need `networkMode: "always"`.
+TanStack Query's default mode pauses them without data or an error when offline;
+cover a fresh offline mount for local monitoring or status queries.
+
 ```ts
 // Individual domain client
 import { appClient } from "@/ipc/types";

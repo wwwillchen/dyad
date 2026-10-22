@@ -28,6 +28,7 @@ export const queryKeys = {
   // System
   // ─────────────────────────────────────────────────────────────────────────────
   system: {
+    resourceUsage: ["system", "resourceUsage"] as const,
     all: ["system"] as const,
     appVersion: ["system", "appVersion"] as const,
     nodejsStatus: ["system", "nodejsStatus"] as const,

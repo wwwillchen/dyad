@@ -547,6 +547,7 @@ export const LastKnownPerformanceSchema = z.object({
  * Base fields shared between StoredUserSettings and UserSettings
  */
 const BaseUserSettingsFields = {
+  showSystemResourceUsage: z.boolean().optional(),
   ////////////////////////////////
   // E2E TESTING ONLY.
   ////////////////////////////////

@@ -12,6 +12,7 @@ export const SECTION_IDS = {
 } as const;
 
 export const SETTING_IDS = {
+  showSystemResourceUsage: "setting-system-resource-usage",
   theme: "setting-theme",
   zoom: "setting-zoom",
   autoUpdate: "setting-auto-update",
@@ -74,6 +75,14 @@ type SearchableSettingItem = {
 };
 
 export const SETTINGS_SEARCH_INDEX: SearchableSettingItem[] = [
+  {
+    id: SETTING_IDS.showSystemResourceUsage,
+    label: "System resource usage",
+    description: "Show CPU and RAM charts in the toolbar",
+    keywords: ["cpu", "ram", "memory", "performance", "monitor"],
+    sectionId: SECTION_IDS.general,
+    sectionLabel: "General",
+  },
   // General Settings
   {
     id: SETTING_IDS.theme,

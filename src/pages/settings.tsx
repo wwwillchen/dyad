@@ -7,6 +7,7 @@ import { ipc } from "@/ipc/types";
 import { showSuccess, showError } from "@/lib/toast";
 import { TelemetrySwitch } from "@/components/TelemetrySwitch";
 import { MaxToolCallStepsSelector } from "@/components/MaxToolCallStepsSelector";
+import { SystemResourceUsageSwitch } from "@/components/SystemResourceUsageSwitch";
 import { useSettings } from "@/hooks/useSettings";
 import { useAppVersion } from "@/hooks/useAppVersion";
 import { BackButton } from "@/components/ui/back-button";
@@ -468,6 +469,9 @@ export function GeneralSettings({ appVersion }: { appVersion: string | null }) {
       </div>
 
       <LanguageSelector />
+      <div id={SETTING_IDS.showSystemResourceUsage}>
+        <SystemResourceUsageSwitch />
+      </div>
 
       <div id={SETTING_IDS.zoom}>
         <ZoomSelector />

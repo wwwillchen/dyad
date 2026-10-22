@@ -349,6 +349,7 @@ export type {
 
 // System types
 export type {
+  SystemResourceUsage,
   NodeSystemInfo,
   ManagedNodeInstallProgress,
   SystemDebugInfo,

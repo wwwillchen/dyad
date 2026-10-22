@@ -146,6 +146,7 @@ describe("readSettings", () => {
           },
           "selectedTemplateId": "react",
           "selectedThemeId": "default",
+          "showSystemResourceUsage": true,
           "telemetryConsent": "unset",
           "telemetryUserId": "[scrubbed]",
         }
@@ -612,6 +613,7 @@ describe("readSettings", () => {
           },
           "selectedTemplateId": "react",
           "selectedThemeId": "default",
+          "showSystemResourceUsage": true,
           "telemetryConsent": "unset",
           "telemetryUserId": "[scrubbed]",
         }
