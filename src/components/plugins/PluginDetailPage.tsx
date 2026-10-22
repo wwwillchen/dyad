@@ -57,6 +57,7 @@ export function PluginDetailPage({ serverId }: { serverId: number }) {
     servers,
     toolsByServer,
     statusByServer,
+    errorByServer,
     consentsMap,
     isServersLoading,
     toggleEnabled,
@@ -437,6 +438,11 @@ export function PluginDetailPage({ serverId }: { serverId: number }) {
                       : statusByServer[s.id] === "error"
                         ? "Tool discovery failed."
                         : "Discovering tools…"}
+                  {errorByServer[s.id] && (
+                    <p className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words">
+                      {errorByServer[s.id]}
+                    </p>
+                  )}
                 </div>
               )}
             </div>

@@ -142,6 +142,7 @@ export type McpTool = z.infer<typeof McpToolSchema>;
 export const McpListToolsResultSchema = z.object({
   tools: z.array(McpToolSchema),
   status: z.enum(["ok", "unauthorized", "error"]),
+  errorMessage: z.string().max(2_000).optional(),
 });
 
 export type McpListToolsResult = z.infer<typeof McpListToolsResultSchema>;

@@ -9,6 +9,7 @@ import { DyadError, DyadErrorKind } from "../../errors/dyad_error";
 
 import { getStoredConsent } from "../utils/mcp_consent";
 import { mcpManager } from "../utils/mcp_manager";
+import { safeGithubOpsErrorMessage } from "../services/github_ops_safe_error";
 import {
   disconnectOAuth,
   runOAuthFlow,
@@ -509,7 +510,14 @@ export function registerMcpHandlers() {
       const status: "unauthorized" | "error" = looksLikeUnauthorized(message)
         ? "unauthorized"
         : "error";
-      return { tools: [], status };
+      // Transport errors may include response bodies, credentials, and local
+      // paths. Reuse the diagnostic redactor before crossing IPC. This denylist
+      // preserves unknown actionable errors; it is not a telemetry allowlist.
+      const errorMessage = safeGithubOpsErrorMessage(
+        e,
+        "Could not discover tools. Check the server configuration and logs.",
+      ).slice(0, 2_000);
+      return { tools: [], status, errorMessage };
     }
   });
 
