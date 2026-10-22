@@ -2,13 +2,34 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { queryKeys } from "@/lib/queryKeys";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
 import { SystemResourceIndicator } from "./SystemResourceIndicator";
 import type { SystemResourceUsage } from "@/ipc/types";
 
-const { getUsage, motion } = vi.hoisted(() => ({
+const { getUsage, motion, preferences } = vi.hoisted(() => ({
   getUsage: vi.fn(),
+  preferences: { showSystemResourceUsage: undefined as boolean | undefined },
   motion: { reduced: false },
+}));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, values: Record<string, unknown> = {}) => {
+      const copy = key
+        .split(".")
+        .reduce((obj: any, part) => obj[part], english);
+      return copy.replace(/{{(\w+)}}/g, (_: string, name: string) =>
+        String(values[name]),
+      );
+    },
+  }),
+}));
+import english from "@/i18n/locales/en/common.json";
+vi.mock("@/hooks/useSettings", () => ({
+  useSettings: () => ({ settings: preferences }),
 }));
 vi.mock("@/hooks/useReducedMotion", () => ({
   useReducedMotionPref: () => motion.reduced,
@@ -22,11 +43,13 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.useRealTimers();
   motion.reduced = false;
+  preferences.showSystemResourceUsage = undefined;
+  onlineManager.setOnline(true);
 });
 const gib = 1024 ** 3;
 const sample: SystemResourceUsage = {
   sampledAt: Date.now(),
-  platform: "linux",
+  platform: "win32",
   cpu: { logicalCores: 8, usedPercent: 25 },
   memory: {
     totalBytes: 16 * gib,
@@ -51,6 +74,15 @@ function mount() {
 }
 
 describe("SystemResourceIndicator", () => {
+  it("does not mount or poll when disabled", async () => {
+    preferences.showSystemResourceUsage = false;
+    mount();
+    await act(async () => {});
+    expect(
+      screen.queryByRole("button", { name: "System CPU and memory usage" }),
+    ).toBeNull();
+    expect(getUsage).not.toHaveBeenCalled();
+  });
   it.each([
     [79.9, "text-emerald-600", null],
     [80, "text-yellow-600", "high"],
@@ -139,6 +171,46 @@ describe("SystemResourceIndicator", () => {
     );
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+  it("collects local metrics when mounted offline", async () => {
+    onlineManager.setOnline(false);
+    getUsage.mockResolvedValue(sample);
+    mount();
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("img", { name: "System CPU usage" })
+          .querySelector("circle"),
+      ).toBeTruthy(),
+    );
+    expect(getUsage).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Linux commit overages neutral while warning for physical RAM", async () => {
+    getUsage.mockResolvedValue({
+      ...sample,
+      platform: "linux",
+      memory: {
+        ...sample.memory,
+        usedBytes: sample.memory.totalBytes * 0.85,
+        committedBytes: sample.memory.commitLimitBytes! * 1.2,
+      },
+    });
+    mount();
+    const chart = screen.getByRole("img", { name: "System RAM usage" });
+    await waitFor(() =>
+      expect(
+        chart.querySelector('[data-metric="committed"] path'),
+      ).toBeTruthy(),
+    );
+    expect(
+      chart
+        .querySelector('[data-metric="committed"]')!
+        .classList.contains("text-muted-foreground"),
+    ).toBe(true);
+    expect(chart.classList.contains("text-yellow-600")).toBe(true);
+    expect(chart.getAttribute("aria-description")).not.toContain("critical");
+  });
+
   it("polls every two seconds", async () => {
     vi.useFakeTimers();
     getUsage.mockResolvedValue(sample);
@@ -227,6 +299,12 @@ describe("SystemResourceIndicator", () => {
     await waitFor(() =>
       expect(chart.querySelector("path")?.getAttribute("d")).toBe(
         "M95.73,17.50 L99.00,6.50",
+      ),
+    );
+    await update(6000, 50);
+    await waitFor(() =>
+      expect(chart.querySelector("path")?.getAttribute("d")).toBe(
+        "M89.20,17.50 L92.47,6.50 M99.00,12.00",
       ),
     );
     await update(25000, 50);

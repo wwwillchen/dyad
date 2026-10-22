@@ -24,7 +24,10 @@ function spawnHelper(): ChildProcessWithoutNullStreams {
     "-Command",
     WINDOWS_RESOURCE_HELPER_SCRIPT,
   ]);
-  return spawn(invocation.command, invocation.args, { windowsHide: true });
+  return spawn(invocation.command, invocation.args, {
+    windowsHide: true,
+    windowsVerbatimArguments: invocation.useVerbatimArguments,
+  });
 }
 
 export function createWindowsResourceHelper(start = spawnHelper) {
@@ -104,9 +107,12 @@ export function createWindowsResourceHelper(start = spawnHelper) {
         rejectSample = reject;
       });
       pending = result;
-      timer = setTimeout(() => {
-        stop(new Error("Windows resource helper timed out"));
-      }, 3000);
+      timer = setTimeout(
+        () => {
+          stop(new Error("Windows resource helper timed out"));
+        },
+        child ? 3000 : 15000,
+      );
       try {
         ensureChild().stdin.write("sample\n");
       } catch (error) {

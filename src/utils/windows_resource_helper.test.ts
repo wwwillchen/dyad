@@ -76,7 +76,7 @@ describe("persistent Windows resource helper", () => {
     vi.useFakeTimers();
     const { helper, children } = setup();
     const first = expect(helper.sample()).rejects.toThrow("timed out");
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(15000);
     await first;
     expect(children[0].kill).toHaveBeenCalledOnce();
     const next = helper.sample();
@@ -86,6 +86,21 @@ describe("persistent Windows resource helper", () => {
     expect(await next).toBe("fresh");
     helper.dispose();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("allows a slow cold start but bounds warm samples to three seconds", async () => {
+    vi.useFakeTimers();
+    const { helper, children } = setup();
+    const first = helper.sample();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(children[0].kill).not.toHaveBeenCalled();
+    children[0].stdout.write("cold\n");
+    expect(await first).toBe("cold");
+    const warm = expect(helper.sample()).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(3000);
+    await warm;
+    expect(children[0].kill).toHaveBeenCalledOnce();
+    helper.dispose();
   });
 
   it("bounds output and stops permanently on shutdown, including a pending sample", async () => {
@@ -138,7 +153,7 @@ describe("persistent Windows resource helper", () => {
         helper.dispose();
       }
     },
-    10000,
+    25000,
   );
 
   it.skipIf(process.platform !== "win32")(
@@ -156,6 +171,6 @@ describe("persistent Windows resource helper", () => {
         helper.dispose();
       }
     },
-    10000,
+    25000,
   );
 });

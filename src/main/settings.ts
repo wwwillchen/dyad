@@ -34,6 +34,7 @@ import {
   recoverLegacySafeStorageSecret,
 } from "./safe_storage_legacy";
 import {
+  DEFAULT_SHOW_SYSTEM_RESOURCE_USAGE,
   DEFAULT_ENABLE_PREVIEW_COOKIE_ISOLATION,
   DEFAULT_ENABLE_TESTING_FOR_NEW_APPS,
 } from "@/shared/settings_defaults";
@@ -48,6 +49,7 @@ const logger = log.scope("settings");
 // (Exported for the unit-test harness; production code should go through
 // readSettings instead of using this directly.)
 export const DEFAULT_SETTINGS: UserSettings = {
+  showSystemResourceUsage: DEFAULT_SHOW_SYSTEM_RESOURCE_USAGE,
   chatgptFastMode: false,
   selectedModel: {
     name: "auto",
