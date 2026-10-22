@@ -98,6 +98,16 @@ export function useMcp() {
     return map;
   }, [toolsByServerQuery.data]);
 
+  const errorByServer = useMemo(() => {
+    const map: Record<number, string> = {};
+    for (const [id, result] of Object.entries(toolsByServerQuery.data || {})) {
+      if (result.status !== "ok" && result.errorMessage) {
+        map[Number(id)] = result.errorMessage;
+      }
+    }
+    return map;
+  }, [toolsByServerQuery.data]);
+
   const consentsMap = useMemo(() => {
     const map: Record<string, McpToolConsent["consent"]> = {};
     for (const c of consentsQuery.data || []) {
@@ -252,6 +262,7 @@ export function useMcp() {
     servers: serversQuery.data || [],
     toolsByServer,
     statusByServer,
+    errorByServer,
     consentsList: consentsQuery.data || [],
     consentsMap,
     isLoading:

@@ -428,6 +428,128 @@ describe("McpManager.listToolsWithin", () => {
       await new Promise((resolve) => server.close(resolve));
     }
   });
+
+  it.each(["2025-11-25", "2025-06-18"])(
+    "discovers and calls tools on a session-based %s server",
+    async (protocolVersion) => {
+      const { createMCPClient } =
+        await vi.importActual<typeof import("@ai-sdk/mcp")>("@ai-sdk/mcp");
+      mocks.createMCPClient.mockImplementation(createMCPClient);
+      const requests: {
+        method: string;
+        session?: string;
+        protocol?: string;
+      }[] = [];
+      const server = createHttpServer(async (req, res) => {
+        if (req.method === "GET") {
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          res.flushHeaders();
+          return;
+        }
+        if (req.method === "DELETE") {
+          res.writeHead(200).end();
+          return;
+        }
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const message = JSON.parse(Buffer.concat(chunks).toString());
+        requests.push({
+          method: message.method,
+          session: req.headers["mcp-session-id"] as string | undefined,
+          protocol: req.headers["mcp-protocol-version"] as string | undefined,
+        });
+        if (
+          !req.headers.accept?.includes("application/json") ||
+          !req.headers.accept.includes("text/event-stream")
+        ) {
+          res.writeHead(406).end();
+          return;
+        }
+        if (
+          message.method !== "initialize" &&
+          (req.headers["mcp-session-id"] !== "rive-session" ||
+            req.headers["mcp-protocol-version"] !== protocolVersion)
+        ) {
+          res.writeHead(400).end();
+          return;
+        }
+        if (message.id === undefined) {
+          res.writeHead(202).end();
+          return;
+        }
+        const result =
+          message.method === "initialize"
+            ? {
+                protocolVersion,
+                capabilities: { tools: {} },
+                serverInfo: { name: "rive", version: "0.6" },
+              }
+            : message.method === "tools/list"
+              ? {
+                  tools: [
+                    {
+                      name: "inspect_artboard",
+                      inputSchema: { type: "object", properties: {} },
+                    },
+                  ],
+                }
+              : { content: [{ type: "text", text: "Artboard" }] };
+        res
+          .writeHead(200, {
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": "rive-session",
+          })
+          .end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+      });
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", resolve),
+      );
+      const { port } = server.address() as AddressInfo;
+      mocks.rows.set(26, {
+        id: 26,
+        name: "Rive",
+        transport: "http",
+        url: `http://127.0.0.1:${port}/mcp`,
+        oauthEnabled: false,
+      });
+      const manager = new McpManager();
+
+      try {
+        const tools = await manager.listToolsWithin(26);
+        expect(Object.keys(tools)).toEqual(["inspect_artboard"]);
+        await expect(
+          tools.inspect_artboard.execute(
+            {},
+            {
+              toolCallId: "inspect-artboard",
+              messages: [],
+            },
+          ),
+        ).resolves.toMatchObject({
+          content: [{ type: "text", text: "Artboard" }],
+        });
+        expect(requests.map((request) => request.method)).toEqual([
+          "initialize",
+          "notifications/initialized",
+          "tools/list",
+          "tools/call",
+        ]);
+        expect(requests.slice(1)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              method: "tools/call",
+              session: "rive-session",
+              protocol: protocolVersion,
+            }),
+          ]),
+        );
+      } finally {
+        await manager.disposeAll();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
 });
 
 describe("McpManager unreadable secrets", () => {

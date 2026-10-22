@@ -173,6 +173,10 @@ describe("Plugins page (integration)", () => {
     );
     const detail = await screen.findByTestId("plugin-detail");
     await within(detail).findByText("Tool discovery failed.");
+    const diagnostic = await within(detail).findByText(
+      /Failed to execute "fetch\(\)"/,
+    );
+    expect(diagnostic.textContent).toContain("[redacted URL]");
   }, 40_000);
 
   it("opens the detail page, changes a consent, and deletes the plugin", async () => {

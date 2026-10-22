@@ -562,7 +562,7 @@ describe("mcp listTools handler", () => {
     );
 
     const result = await invoke("mcp:list-tools", 1);
-    expect(result).toEqual({ tools: [], status: "error" });
+    expect(result).toMatchObject({ tools: [], status: "error" });
   });
 
   it("returns an empty list when the underlying client.tools() throws", async () => {
@@ -576,8 +576,37 @@ describe("mcp listTools handler", () => {
     getClientMock.mockResolvedValueOnce({ tools: failingTools });
 
     const result = await invoke("mcp:list-tools", 2);
-    expect(result).toEqual({ tools: [], status: "unauthorized" });
+    expect(result).toEqual({
+      tools: [],
+      status: "unauthorized",
+      errorMessage: "401 Unauthorized",
+    });
     expect(failingTools).toHaveBeenCalled();
+  });
+
+  it("returns the protocol version failure for display", async () => {
+    const message = "Server's protocol version is not supported: 2025-11-25";
+    getClientMock.mockRejectedValueOnce(new Error(message));
+    expect(await invoke("mcp:list-tools", 1)).toEqual({
+      tools: [],
+      status: "error",
+      errorMessage: message,
+    });
+  });
+
+  it("redacts and bounds discovery errors before returning them to the UI", async () => {
+    getClientMock.mockRejectedValueOnce(
+      new Error(
+        "Connection failed. Authorization: Bearer very-secret-token-value\n" +
+          "Could not read '/Users/example/Private Files/config.json'\n" +
+          "Details ".repeat(1_000),
+      ),
+    );
+    const result = await invoke<{ errorMessage: string }>("mcp:list-tools", 1);
+    expect(result.errorMessage).toContain("Connection failed");
+    expect(result.errorMessage).not.toContain("very-secret-token-value");
+    expect(result.errorMessage).not.toContain("/Users/example");
+    expect(result.errorMessage.length).toBeLessThanOrEqual(2_000);
   });
 });
 
