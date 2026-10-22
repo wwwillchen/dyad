@@ -72,6 +72,7 @@ import {
   startPerformanceMonitoring,
   stopPerformanceMonitoring,
 } from "./utils/performance_monitor";
+import { queryWindowsPagefileSettings } from "./utils/windows_pagefile";
 import {
   browserCrashAttribution,
   parseMinidumpSummary,
@@ -586,8 +587,17 @@ export async function onReady() {
   }
   logger.info("Crash dumps directory:", app.getPath("crashDumps"));
 
-  // Start performance monitoring
-  startPerformanceMonitoring();
+  // Read the pagefile configuration once, in the background, so the
+  // heartbeat and app:initial-load can report it. A no-op off Windows.
+  void queryWindowsPagefileSettings();
+
+  // Start performance monitoring. The registry lookup is passed in rather
+  // than imported there: window registry internals stay inside main-only
+  // modules (see the boundaries test).
+  startPerformanceMonitoring({
+    isProductWebContents: (webContentsId) =>
+      windowRegistry.sessionForWebContents(webContentsId) !== undefined,
+  });
 
   // Handle dyad-media:// requests. Media-library tiles use bounded, cached
   // derivatives while explicit previews continue to receive the source file.
