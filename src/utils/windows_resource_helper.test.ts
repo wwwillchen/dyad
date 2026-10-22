@@ -17,26 +17,33 @@ function fakeChild() {
 }
 
 function setup() {
+  const clock = { now: 0 };
   const children: ReturnType<typeof fakeChild>[] = [];
   const start = vi.fn(() => {
     const child = fakeChild();
     children.push(child);
     return child as unknown as ChildProcessWithoutNullStreams;
   });
-  return { children, start, helper: createWindowsResourceHelper(start) };
+  return {
+    children,
+    start,
+    clock,
+    helper: createWindowsResourceHelper(start, () => clock.now),
+  };
 }
 
 afterEach(() => vi.useRealTimers());
 
 describe("persistent Windows resource helper", () => {
   it("shares pending samples and reuses one process across fragmented CRLF replies", async () => {
-    const { helper, start, children } = setup();
+    const { helper, start, children, clock } = setup();
     const first = helper.sample();
     expect(helper.sample()).toBe(first);
     expect(children[0].stdin.read().toString()).toBe("sample\n");
     children[0].stdout.write('{"AvailableBytes":');
     children[0].stdout.write("123}\r\n");
     expect(await first).toBe('{"AvailableBytes":123}');
+    clock.now += 5000;
     const second = helper.sample();
     children[0].stdout.write('{"AvailableBytes":456}\n');
     expect(await second).toBe('{"AvailableBytes":456}');
@@ -46,11 +53,12 @@ describe("persistent Windows resource helper", () => {
   });
 
   it("rejects even a clean early exit and restarts on the next request", async () => {
-    const { helper, start, children } = setup();
+    const { helper, start, children, clock } = setup();
     const first = expect(helper.sample()).rejects.toThrow("exited");
     children[0].emit("exit", 0);
     await first;
     expect(children[0].kill).not.toHaveBeenCalled();
+    clock.now += 5000;
     const second = helper.sample();
     children[0].emit("error", new Error("late event"));
     children[1].stdout.write("{}\n");
@@ -60,12 +68,13 @@ describe("persistent Windows resource helper", () => {
   });
 
   it.each(["process", "stdin"])("recovers from %s errors", async (source) => {
-    const { helper, children } = setup();
+    const { helper, children, clock } = setup();
     const first = expect(helper.sample()).rejects.toThrow("broken pipe");
     const emitter = source === "stdin" ? children[0].stdin : children[0];
     emitter.emit("error", new Error("broken pipe"));
     await first;
     expect(children[0].kill).toHaveBeenCalledOnce();
+    clock.now += 5000;
     const next = helper.sample();
     children[1].stdout.write("{}\n");
     await next;
@@ -74,11 +83,12 @@ describe("persistent Windows resource helper", () => {
 
   it("kills a stalled process, rejects once, and restarts for the next poll", async () => {
     vi.useFakeTimers();
-    const { helper, children } = setup();
+    const { helper, children, clock } = setup();
     const first = expect(helper.sample()).rejects.toThrow("timed out");
     await vi.advanceTimersByTimeAsync(15000);
     await first;
     expect(children[0].kill).toHaveBeenCalledOnce();
+    clock.now += 5000;
     const next = helper.sample();
     children[0].stdout.write("stale\n");
     children[0].emit("exit", 1);
@@ -104,10 +114,11 @@ describe("persistent Windows resource helper", () => {
   });
 
   it("bounds output and stops permanently on shutdown, including a pending sample", async () => {
-    const { helper, children } = setup();
+    const { helper, children, clock } = setup();
     const first = expect(helper.sample()).rejects.toThrow("exceeded limit");
     children[0].stdout.write("x".repeat(64 * 1024 + 1));
     await first;
+    clock.now += 5000;
     const next = expect(helper.sample()).rejects.toThrow("stopped");
     helper.dispose();
     await next;
@@ -121,10 +132,41 @@ describe("persistent Windows resource helper", () => {
     const start = vi.fn(() => {
       throw new Error("spawn failed");
     });
-    const helper = createWindowsResourceHelper(start);
+    let now = 0;
+    const helper = createWindowsResourceHelper(start, () => now);
     await expect(helper.sample()).rejects.toThrow("spawn failed");
+    await expect(helper.sample()).rejects.toThrow("cooling down");
+    expect(start).toHaveBeenCalledTimes(1);
+    now = 5000;
     await expect(helper.sample()).rejects.toThrow("spawn failed");
     expect(start).toHaveBeenCalledTimes(2);
+    helper.dispose();
+  });
+
+  it("backs off repeated failures up to a minute and resets after recovery", async () => {
+    const { helper, start, children, clock } = setup();
+    for (const cooldown of [5000, 10000, 20000, 40000, 60000, 60000]) {
+      const failed = expect(helper.sample()).rejects.toThrow("unavailable");
+      children.at(-1)!.emit("error", new Error("unavailable"));
+      await failed;
+      const starts = start.mock.calls.length;
+      clock.now += cooldown - 1;
+      await expect(helper.sample()).rejects.toThrow("cooling down");
+      expect(start).toHaveBeenCalledTimes(starts);
+      clock.now += 1;
+    }
+    const recovered = helper.sample();
+    children.at(-1)!.stdout.write("recovered\n");
+    expect(await recovered).toBe("recovered");
+    const failed = expect(helper.sample()).rejects.toThrow("unavailable");
+    children.at(-1)!.emit("error", new Error("unavailable"));
+    await failed;
+    clock.now += 4999;
+    await expect(helper.sample()).rejects.toThrow("cooling down");
+    clock.now += 1;
+    const restarted = helper.sample();
+    children.at(-1)!.stdout.write("fresh\n");
+    expect(await restarted).toBe("fresh");
     helper.dispose();
   });
 

@@ -30,7 +30,10 @@ function spawnHelper(): ChildProcessWithoutNullStreams {
   });
 }
 
-export function createWindowsResourceHelper(start = spawnHelper) {
+export function createWindowsResourceHelper(
+  start = spawnHelper,
+  now = Date.now,
+) {
   let child: ChildProcessWithoutNullStreams | undefined;
   let pending: Promise<string> | undefined;
   let resolveSample: ((value: string) => void) | undefined;
@@ -38,6 +41,8 @@ export function createWindowsResourceHelper(start = spawnHelper) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let buffer = "";
   let disposed = false;
+  let failures = 0;
+  let retryAt = 0;
 
   function settle(error?: Error, value?: string) {
     clearTimeout(timer);
@@ -47,8 +52,17 @@ export function createWindowsResourceHelper(start = spawnHelper) {
     pending = undefined;
     resolveSample = undefined;
     rejectSample = undefined;
-    if (error) reject?.(error);
-    else resolve?.(value!);
+    if (error) {
+      if (!disposed) {
+        failures = Math.min(failures + 1, 5);
+        retryAt = now() + Math.min(5000 * 2 ** (failures - 1), 60000);
+      }
+      reject?.(error);
+    } else {
+      failures = 0;
+      retryAt = 0;
+      resolve?.(value!);
+    }
   }
 
   function stop(error: Error) {
@@ -102,6 +116,10 @@ export function createWindowsResourceHelper(start = spawnHelper) {
     sample(): Promise<string> {
       if (disposed) return Promise.reject(new Error("Resource helper stopped"));
       if (pending) return pending;
+      // Let the collector return its physical-memory fallback without launching
+      // PowerShell again on every poll when startup or sampling keeps failing.
+      if (now() < retryAt)
+        return Promise.reject(new Error("Resource helper retry cooling down"));
       const result = new Promise<string>((resolve, reject) => {
         resolveSample = resolve;
         rejectSample = reject;

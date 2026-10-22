@@ -138,4 +138,19 @@ describe("system-wide resource usage", () => {
       parseWindowsResourceMemory('{"AvailableBytes":null}'),
     ).toThrow();
   });
+
+  it("returns physical RAM and CPU samples while the Windows helper cools down", async () => {
+    const deps = dependencies("win32");
+    deps.windowsMemory.mockRejectedValue(new Error("retry cooling down"));
+    const collect = createSystemResourceCollector(deps);
+    expect((await collect()).memory).toMatchObject({
+      source: "fallback",
+      usedBytes: 12 * gib,
+      committedBytes: null,
+      commitLimitBytes: null,
+    });
+    deps.now.mockReturnValue(2000);
+    deps.cpus.mockReturnValue([core(150, 150), core(150, 150)]);
+    expect((await collect()).cpu.usedPercent).toBe(50);
+  });
 });
