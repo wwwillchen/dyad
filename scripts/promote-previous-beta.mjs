@@ -127,15 +127,7 @@ export async function promotePreviousBeta({
     );
   if (!forkRemote)
     throw new Error("No contributor fork remote found for the release PR.");
-  if (
-    git("branch", "--list", branch) ||
-    git("ls-remote", "--heads", releaseRemote.name, `refs/heads/${branch}`) ||
-    git("ls-remote", "--heads", forkRemote.name, `refs/heads/${branch}`)
-  ) {
-    throw new Error(
-      `Branch ${branch} already exists; refusing to overwrite it.`,
-    );
-  }
+  const branchRef = `refs/heads/${branch}`;
 
   git("fetch", `https://github.com/${repository}.git`, workflow.head_sha);
   // Read from the selected commit before checkout; never reuse HEAD's manifests.
@@ -153,7 +145,7 @@ export async function promotePreviousBeta({
       "Release commit package versions do not match the selected beta.",
     );
   }
-  git("checkout", "-b", branch, workflow.head_sha);
+  git("checkout", "-B", branch, workflow.head_sha);
   for (const { name, contents } of files) {
     contents.version = version;
     if (name === "package-lock.json") contents.packages[""].version = version;
@@ -161,7 +153,7 @@ export async function promotePreviousBeta({
   }
   git("add", "package.json", "package-lock.json");
   git("commit", "-m", `Bump to v${version}`);
-  git("push", releaseRemote.name, `${sha}:refs/heads/${branch}`);
+  git("push", releaseRemote.name, `${sha}:${branchRef}`);
   git("push", "-u", forkRemote.name, branch);
   log(`  Created ${repository}:${branch} at ${sha}.`);
   log(`  Pushed the stable version bump to ${forkRemote.repo}:${branch}.`);

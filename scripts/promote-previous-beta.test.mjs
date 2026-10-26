@@ -99,7 +99,7 @@ test("promotes the published beta from its successful workflow using beta manife
     f.calls.some(
       (call) =>
         JSON.stringify(call) ===
-        JSON.stringify(["git", "checkout", "-b", "release-1.15.x", sha]),
+        JSON.stringify(["git", "checkout", "-B", "release-1.15.x", sha]),
     ),
   );
   const forkPush = f.calls.findIndex(
@@ -145,6 +145,29 @@ test("selects release and fork remotes by repository even when their names diffe
   assert.equal(pr[pr.indexOf("--head") + 1], "person:release-1.15.x");
   assert.equal(pr[pr.indexOf("--repo") + 1], "dyad-sh/dyad");
   assert.ok(pr.includes("--no-maintainer-edit"));
+});
+
+test("allows existing branches while using normal pushes", async (t) => {
+  const releaseTip = "b".repeat(40);
+  const forkTip = "c".repeat(40);
+  const branchRef = "refs/heads/release-1.15.x";
+  const f = fixture(t, {
+    "branch --list release-1.15.x": "* release-1.15.x",
+    [`ls-remote --heads upstream ${branchRef}`]: `${releaseTip}\t${branchRef}\n`,
+    [`ls-remote --heads origin ${branchRef}`]: `${forkTip}\t${branchRef}\n`,
+  });
+  await f.run();
+  assert.deepEqual(
+    f.calls.find((call) => call[1] === "checkout"),
+    ["git", "checkout", "-B", "release-1.15.x", sha],
+  );
+  assert.deepEqual(
+    f.calls.filter((call) => call[1] === "push"),
+    [
+      ["git", "push", "upstream", `${sha}:${branchRef}`],
+      ["git", "push", "-u", "origin", "release-1.15.x"],
+    ],
+  );
 });
 
 test("declining confirmation performs no mutations", async (t) => {
@@ -223,21 +246,6 @@ for (const [name, overrides, error] of [
         '{"workflow_runs":[]}',
     },
     /No successful/,
-  ],
-  [
-    "existing branch",
-    { "branch --list release-1.15.x": "release-1.15.x" },
-    /already exists/,
-  ],
-  [
-    "existing upstream release branch",
-    { "ls-remote --heads upstream refs/heads/release-1.15.x": sha },
-    /already exists/,
-  ],
-  [
-    "existing fork release branch",
-    { "ls-remote --heads origin refs/heads/release-1.15.x": sha },
-    /already exists/,
   ],
   [
     "missing upstream remote",
