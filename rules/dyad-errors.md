@@ -32,6 +32,8 @@ Vercel SDK `ResponseValidationError` can follow HTTP 200 after a project was cre
 
 A new self-hosted surface has to be registered in **two** places, not one: its channel prefix in `SELF_HOSTED_CHANNEL_PREFIXES` (which strips `exception_message` and non-frame stack lines), and its error classes by name in `shouldFilterTelemetryException` (which drops the event outright). The prefix alone is not enough because another feature can reach the same server on its own channel — the Coolify deploy talks to GitLab on a `coolify:` channel — and `DyadErrorKind.External` is not otherwise filtered. Give the transport failure its own named error class; a bare `DyadError` cannot be name-matched. Put the name constants in `src/shared/*_error_names.ts` so `telemetry.ts` does not import the client (see `coolify_error_names.ts`, `gitlab_error_names.ts`).
 
+For self-hosted connection failures, inspect nested `cause` (including `AggregateError.errors`): Node's `fetch failed` alone hides TLS/DNS/socket codes. Global main-process `fetch` uses Node's HTTP stack; Electron's Chromium-backed API is `net.fetch`, so successful curl/browser requests do not prove equivalent trust or proxy configuration.
+
 ## Non-Pro event sampling (renderer)
 
 The renderer PostHog `before_send` (in `src/renderer.tsx`) drops ~90% of events for **non-Pro** users. Any event whose audience is primarily free users (conversion funnels like `promo_click`, upgrade CTAs) must be added to `shouldBypassNonProTelemetrySampling` in `src/lib/posthogTelemetry.ts`, or it will be silently undercounted 10x. Errors, `app:initial-load`, and `sandbox.script.*` already bypass sampling.

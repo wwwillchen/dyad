@@ -117,6 +117,46 @@ function boundErrorDetail(detail: string): string {
 }
 
 /**
+ * Keep Node fetch's nested TLS/DNS/socket diagnostics, including connection
+ * attempts inside AggregateError. Only project messages and codes, never raw
+ * errors, stacks, request headers or bodies. Internal hosts may remain useful
+ * in these local diagnostics; they must not be sent to third-party telemetry.
+ */
+function describeTransportError(error: unknown, token: string): string {
+  const pending: unknown[] = [error];
+  const seen = new Set<unknown>();
+  const details: string[] = [];
+  for (let index = 0; index < pending.length && index < 6; index++) {
+    const current = pending[index];
+    if (current == null || seen.has(current)) continue;
+    seen.add(current);
+    const fields =
+      typeof current === "object"
+        ? (current as { message?: unknown; code?: unknown; cause?: unknown })
+        : undefined;
+    const message =
+      typeof fields?.message === "string"
+        ? fields.message
+        : typeof current === "string"
+          ? current
+          : "";
+    const code = typeof fields?.code === "string" ? fields.code : "";
+    const detail = [code, message].filter(Boolean).join(": ");
+    // Redact before truncation so a token crossing the limit cannot leak.
+    const redacted = token ? detail.replaceAll(token, "[redacted]") : detail;
+    const bounded = redacted.slice(0, 2_000).replace(/\s+/g, " ").trim();
+    if (bounded) details.push(boundErrorDetail(bounded));
+    if (fields?.cause != null) pending.push(fields.cause);
+    if (current instanceof AggregateError) {
+      pending.push(...current.errors.slice(0, 6));
+    }
+  }
+  return (
+    boundErrorDetail(details.join("; caused by: ")) || "Unknown network error"
+  );
+}
+
+/**
  * GitLab reports validation failures as `{ message: { field: ["reason"] } }`
  * and everything else as `{ message: "..." }` or `{ error: "..." }`. Flatten
  * whichever arrived into one line a user can read.
@@ -168,9 +208,7 @@ export class GitLabClient {
       res = await fetch(`${this.base}/api/v4${path}`, {
         method,
         signal,
-        // The main-process fetch is Chromium-backed and would attach cookies
-        // from the default session; the token header is the only credential
-        // wanted here.
+        // The token header is the only credential wanted here.
         credentials: "omit",
         headers: {
           // The header form every GitLab version accepts for a personal access
@@ -214,12 +252,12 @@ export class GitLabClient {
     const reason =
       err instanceof Error && err.name === "TimeoutError"
         ? `no response within ${REQUEST_TIMEOUT_MS / 1000}s`
-        : err instanceof Error
-          ? err.message
-          : String(err);
-    return new GitLabTransportError(
+        : describeTransportError(err, this.options.token);
+    const error = new GitLabTransportError(
       `Could not reach GitLab at ${this.base}: ${reason}`,
     );
+    logger.warn(error.message);
+    return error;
   }
 
   private toError(
