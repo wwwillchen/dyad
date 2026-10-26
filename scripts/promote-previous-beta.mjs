@@ -128,6 +128,15 @@ export async function promotePreviousBeta({
   if (!forkRemote)
     throw new Error("No contributor fork remote found for the release PR.");
   const branchRef = `refs/heads/${branch}`;
+  const releaseTip = git(
+    "ls-remote",
+    "--heads",
+    releaseRemote.name,
+    branchRef,
+  ).split(/\s+/)[0];
+  const forkTip = git("ls-remote", "--heads", forkRemote.name, branchRef).split(
+    /\s+/,
+  )[0];
 
   git("fetch", `https://github.com/${repository}.git`, workflow.head_sha);
   // Read from the selected commit before checkout; never reuse HEAD's manifests.
@@ -153,8 +162,19 @@ export async function promotePreviousBeta({
   }
   git("add", "package.json", "package-lock.json");
   git("commit", "-m", `Bump to v${version}`);
-  git("push", releaseRemote.name, `${sha}:${branchRef}`);
-  git("push", "-u", forkRemote.name, branch);
+  git(
+    "push",
+    `--force-with-lease=${branchRef}:${releaseTip}`,
+    releaseRemote.name,
+    `${sha}:${branchRef}`,
+  );
+  git(
+    "push",
+    `--force-with-lease=${branchRef}:${forkTip}`,
+    "-u",
+    forkRemote.name,
+    branch,
+  );
   log(`  Created ${repository}:${branch} at ${sha}.`);
   log(`  Pushed the stable version bump to ${forkRemote.repo}:${branch}.`);
   const head = `${forkRemote.repo.split("/")[0]}:${branch}`;

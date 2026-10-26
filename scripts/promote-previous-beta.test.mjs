@@ -103,11 +103,14 @@ test("promotes the published beta from its successful workflow using beta manife
     ),
   );
   const forkPush = f.calls.findIndex(
-    (call) => call.join(" ") === "git push -u origin release-1.15.x",
+    (call) =>
+      call.join(" ") ===
+      "git push --force-with-lease=refs/heads/release-1.15.x: -u origin release-1.15.x",
   );
   const releasePush = f.calls.findIndex(
     (call) =>
-      call.join(" ") === `git push upstream ${sha}:refs/heads/release-1.15.x`,
+      call.join(" ") ===
+      `git push --force-with-lease=refs/heads/release-1.15.x: upstream ${sha}:refs/heads/release-1.15.x`,
   );
   assert.ok(releasePush >= 0 && forkPush > releasePush);
   for (const name of ["package.json", "package-lock.json"]) {
@@ -132,13 +135,16 @@ test("selects release and fork remotes by repository even when their names diffe
   await f.run();
   assert.ok(
     f.calls.some(
-      (call) => call.join(" ") === "git push -u upstream release-1.15.x",
+      (call) =>
+        call.join(" ") ===
+        "git push --force-with-lease=refs/heads/release-1.15.x: -u upstream release-1.15.x",
     ),
   );
   assert.ok(
     f.calls.some(
       (call) =>
-        call.join(" ") === `git push origin ${sha}:refs/heads/release-1.15.x`,
+        call.join(" ") ===
+        `git push --force-with-lease=refs/heads/release-1.15.x: origin ${sha}:refs/heads/release-1.15.x`,
     ),
   );
   const pr = f.calls.find((call) => call[1] === "pr");
@@ -147,7 +153,7 @@ test("selects release and fork remotes by repository even when their names diffe
   assert.ok(pr.includes("--no-maintainer-edit"));
 });
 
-test("allows existing branches while using normal pushes", async (t) => {
+test("overwrites existing branches using leases pinned to remote tips", async (t) => {
   const releaseTip = "b".repeat(40);
   const forkTip = "c".repeat(40);
   const branchRef = "refs/heads/release-1.15.x";
@@ -164,8 +170,21 @@ test("allows existing branches while using normal pushes", async (t) => {
   assert.deepEqual(
     f.calls.filter((call) => call[1] === "push"),
     [
-      ["git", "push", "upstream", `${sha}:${branchRef}`],
-      ["git", "push", "-u", "origin", "release-1.15.x"],
+      [
+        "git",
+        "push",
+        `--force-with-lease=${branchRef}:${releaseTip}`,
+        "upstream",
+        `${sha}:${branchRef}`,
+      ],
+      [
+        "git",
+        "push",
+        `--force-with-lease=${branchRef}:${forkTip}`,
+        "-u",
+        "origin",
+        "release-1.15.x",
+      ],
     ],
   );
 });
