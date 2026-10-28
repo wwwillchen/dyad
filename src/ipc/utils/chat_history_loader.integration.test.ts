@@ -186,6 +186,22 @@ describe("chat history loader", () => {
     ]);
   });
 
+  it("limits the compaction transcript to the newest messages within the budget", async () => {
+    seed([
+      { role: "user", content: "a".repeat(1_000) },
+      { role: "assistant", content: "b".repeat(1_000) },
+      { role: "user", content: "recent question" },
+      { role: "assistant", content: "recent answer" },
+      { role: "user", content: "latest question" },
+    ]);
+
+    expect(
+      (await loadPostCompactionTranscript(chatId, { maxChars: 500 })).map(
+        ({ content }) => content,
+      ),
+    ).toEqual(["recent question", "recent answer", "latest question"]);
+  });
+
   it("finds a completed planning questionnaire anywhere in the chat", async () => {
     const questionnaireTurn = (value: string): SeedMessage => ({
       role: "assistant",

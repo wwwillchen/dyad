@@ -237,15 +237,15 @@ export async function performCompaction(
       (m) => ({ role: m.role, content: m.content }),
     );
 
-    // Store readable transcript backup in the app's .dyad/chats/ directory
+    // The same transcript is the readable backup in the app's .dyad/chats/
+    // directory and the conversation sent for summarization.
+    const conversationText = formatAsTranscript(messagesToBackup, chatId);
     const backupPath = await storePreCompactionMessages(
       appPath,
       chatId,
-      messagesToBackup,
+      conversationText,
+      messagesToBackup.length,
     );
-
-    // Prepare conversation for summarization using the same XML format as the backup
-    const conversationText = formatAsTranscript(messagesToBackup, chatId);
 
     // Get model client
     const { modelClient } = await getModelClient(

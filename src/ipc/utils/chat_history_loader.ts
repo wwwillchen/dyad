@@ -192,30 +192,50 @@ export async function estimateAgentHistoryChars(
 }
 
 /**
- * Loads the messages the model can currently see, in display order, skipping
- * everything before the latest compaction boundary.
+ * Loads the messages to compact, in display order: those the model can
+ * currently see (after the latest compaction boundary), limited to the newest
+ * messages whose content fits within `maxChars`. Compacting a larger history
+ * would exceed the summarization model's context and the main-process heap,
+ * so older messages are left out of the summary and its backup transcript.
  */
 export async function loadPostCompactionTranscript(
   chatId: number,
+  { maxChars = MAX_AGENT_HISTORY_CHARS }: { maxChars?: number } = {},
 ): Promise<
   Array<{ role: "user" | "assistant"; content: string; createdAt: Date }>
 > {
   const visible = getPostCompactionMessages(await loadMessageOutlines(chatId));
   if (visible.length === 0) return [];
-  const visibleIds = new Set(visible.map((message) => message.id));
+  const sizes = await loadMessageSizes(
+    chatId,
+    lowestId(visible),
+    sql<number>`length(${messages.content})`,
+  );
+  const start = selectHistoryWindowStart(visible, sizes, maxChars);
+  const windowed = visible.slice(start);
+  if (start > 0) {
+    logger.warn(
+      `Chat ${chatId} transcript exceeds ${maxChars} characters; compacting only the newest ${windowed.length} of ${visible.length} messages`,
+    );
+  }
+
+  const windowIds = new Set(windowed.map((message) => message.id));
   const contents = new Map(
     (
       await db
         .select({ id: messages.id, content: messages.content })
         .from(messages)
         .where(
-          and(eq(messages.chatId, chatId), gte(messages.id, lowestId(visible))),
+          and(
+            eq(messages.chatId, chatId),
+            gte(messages.id, lowestId(windowed)),
+          ),
         )
     )
-      .filter((row) => visibleIds.has(row.id))
+      .filter((row) => windowIds.has(row.id))
       .map((row) => [row.id, row.content]),
   );
-  return visible.map((message) => ({
+  return windowed.map((message) => ({
     role: message.role,
     content: contents.get(message.id) ?? "",
     createdAt: message.createdAt,

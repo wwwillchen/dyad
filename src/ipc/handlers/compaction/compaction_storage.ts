@@ -90,13 +90,15 @@ export function formatAsTranscript(
  *
  * @param appPath - The absolute app directory path
  * @param chatId - The chat ID
- * @param messages - The messages to backup
+ * @param transcript - The messages to backup, formatted by {@link formatAsTranscript}
+ * @param messageCount - The number of messages in the transcript, for logging
  * @returns The relative path to the backup file (relative to appPath)
  */
 export async function storePreCompactionMessages(
   appPath: string,
   chatId: number,
-  messages: CompactionMessage[],
+  transcript: string,
+  messageCount: number,
 ): Promise<string> {
   const chatBackupDir = getChatBackupDir(appPath, chatId);
 
@@ -110,12 +112,10 @@ export async function storePreCompactionMessages(
   const backupFileName = `compaction-${timestamp}.md`;
   const backupPath = path.join(chatBackupDir, backupFileName);
 
-  const transcript = formatAsTranscript(messages, chatId);
-
   try {
     fs.writeFileSync(backupPath, transcript);
     logger.info(
-      `Stored compaction backup for chat ${chatId}: ${messages.length} messages`,
+      `Stored compaction backup for chat ${chatId}: ${messageCount} messages`,
     );
     // Return the relative path from the app directory
     return path.relative(appPath, backupPath);
