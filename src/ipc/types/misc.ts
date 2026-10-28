@@ -6,7 +6,7 @@ import {
   createEventClient,
 } from "../contracts/core";
 import { ConsoleEntrySchema } from "./supabase";
-import { MAX_LOGS_PER_APP } from "@/lib/log_store";
+import { MAX_LOGS_PER_APP } from "../../shared/log_limits";
 import { ProblemReportSchema } from "./agent";
 import { ChatStreamInvocationRefSchema } from "./chat";
 import { AppRunInvocationRefSchema } from "./app";

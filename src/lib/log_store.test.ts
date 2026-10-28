@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { ConsoleEntry } from "@/ipc/types";
+import { miscContracts } from "@/ipc/types/misc";
 import {
   addLog,
   addLogs,
@@ -43,5 +44,21 @@ describe("log_store", () => {
     expect(logs).toHaveLength(MAX_LOGS_PER_APP);
     expect(logs[0].message).toBe("m5");
     expect(logs.at(-1)?.message).toBe(`m${MAX_LOGS_PER_APP + 4}`);
+  });
+
+  it("accepts a full retained buffer over IPC and rejects an oversized batch", () => {
+    addLogs(
+      Array.from({ length: MAX_LOGS_PER_APP + 1 }, (_, i) => entry(1, `m${i}`)),
+    );
+    const entries = getLogs(1);
+
+    expect(miscContracts.addLogs.input.safeParse({ entries }).success).toBe(
+      true,
+    );
+    expect(
+      miscContracts.addLogs.input.safeParse({
+        entries: [...entries, entry(1, "extra")],
+      }).success,
+    ).toBe(false);
   });
 });

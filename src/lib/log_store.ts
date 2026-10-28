@@ -4,12 +4,12 @@
  */
 
 import type { ConsoleEntry } from "@/ipc/types";
+import { MAX_LOGS_PER_APP } from "../shared/log_limits";
+
+export { MAX_LOGS_PER_APP } from "../shared/log_limits";
 
 // In-memory log store (per app)
 const logStore = new Map<number, ConsoleEntry[]>();
-
-// Maximum logs per app (circular buffer)
-export const MAX_LOGS_PER_APP = 1000;
 
 /**
  * Add a log entry to the store
