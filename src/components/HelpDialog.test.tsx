@@ -192,6 +192,14 @@ const bundle = {
   mcpServers: [],
 };
 
+const crashDump = {
+  file: "crash-2026-07-15T20-39-37-038Z-3a7781f0.dmp",
+  crashedAt: "2026-07-15T20:39:37.039Z",
+  readable: true,
+  ptype: "browser",
+  crashReason: "SIGSEGV",
+};
+
 function OpenHelpDialog() {
   const setHelpDialog = useSetAtom(helpDialogAtom);
   const setSelectedChatId = useSetAtom(selectedChatIdAtom);
@@ -672,6 +680,61 @@ describe("HelpDialog disclosures", () => {
     expect(bodyOfOpenedIssue()).not.toContain("Session ID");
   });
 
+  it("uploads crash dumps and lists them in the issue by default", async () => {
+    mocks.getSessionDebugBundle.mockResolvedValue({
+      ...bundle,
+      crashDumps: { dumps: [crashDump] },
+    });
+    await openForm();
+    await fileIt();
+
+    expect(
+      mocks.uploadToSignedUrl.mock.calls.at(-1)?.[0]?.data.crashDumps,
+    ).toEqual({ dumps: [crashDump] });
+    expect(bodyOfOpenedIssue()).toContain("Crash dumps: 1\n");
+  });
+
+  it("says nothing about crash dumps main could not read", async () => {
+    // The bundle carries no crashDumps when collection failed.
+    await openForm();
+    await fileIt();
+
+    expect(bodyOfOpenedIssue()).toContain("Session ID: v2:abc");
+    expect(bodyOfOpenedIssue()).not.toContain("Crash dumps");
+  });
+
+  it("leaves crash dumps out when they are unticked", async () => {
+    mocks.getSessionDebugBundle.mockResolvedValue({
+      ...bundle,
+      crashDumps: { dumps: [crashDump] },
+    });
+    await openForm();
+    fireEvent.click(
+      await screen.findByRole("checkbox", {
+        name: "Native crash stack traces",
+      }),
+    );
+    await fileIt();
+
+    const sent = mocks.uploadToSignedUrl.mock.calls.at(-1)?.[0]?.data;
+    expect(sent).not.toHaveProperty("crashDumps");
+    expect(sent.codebase).toBe("codebase");
+    expect(bodyOfOpenedIssue()).toContain("Session ID: v2:abc");
+    expect(bodyOfOpenedIssue()).not.toContain("Crash dumps");
+  });
+
+  it("offers crash dumps only with the session", async () => {
+    await openForm();
+    const dumps = await screen.findByRole("checkbox", {
+      name: "Native crash stack traces",
+    });
+    expect(dumps.hasAttribute("data-disabled")).toBe(false);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Chat session" }));
+    expect(dumps.hasAttribute("data-disabled")).toBe(true);
+    expect(screen.getByText("Sent with the chat session.")).toBeTruthy();
+  });
+
   it("offers no session when there is no chat open", async () => {
     renderHelp();
     fireEvent.click(screen.getByText("clear-chat"));
@@ -682,9 +745,12 @@ describe("HelpDialog disclosures", () => {
         .getByRole("checkbox", { name: "Chat session" })
         .hasAttribute("data-disabled"),
     ).toBe(true);
+    // The crash-dump row gives the same reason rather than pointing at a
+    // session box that cannot be ticked.
     expect(
-      screen.getByText("Open a chat first to include a session."),
-    ).toBeTruthy();
+      screen.getAllByText("Open a chat first to include a session."),
+    ).toHaveLength(2);
+    expect(screen.queryByText("Sent with the chat session.")).toBeNull();
   });
 
   it("loads the session only when the disclosure is expanded", async () => {
@@ -695,8 +761,90 @@ describe("HelpDialog disclosures", () => {
     fireEvent.click(summaries[summaries.length - 1]);
 
     await waitFor(() =>
-      expect(mocks.getSessionDebugBundle).toHaveBeenCalledWith(1),
+      expect(mocks.getSessionDebugBundle).toHaveBeenCalledWith({
+        chatId: 1,
+        fromCrash: false,
+      }),
     );
+  });
+
+  it("tells unreadable crash dumps apart from there being none", async () => {
+    // The bundle carries no crashDumps when main could not read them.
+    await openForm();
+    const summaries = screen.getAllByText("Show what will be sent");
+    fireEvent.click(summaries[summaries.length - 1]);
+
+    expect(
+      await screen.findByText("Crash dumps could not be read."),
+    ).toBeTruthy();
+    expect(screen.queryByText("No crash dumps on this machine.")).toBeNull();
+  });
+
+  it("titles a dump it could not read as unreadable", async () => {
+    mocks.getSessionDebugBundle.mockResolvedValue({
+      ...bundle,
+      crashDumps: {
+        dumps: [
+          {
+            file: "crash-locked.dmp",
+            crashedAt: "2026-07-15T20:39:37.039Z",
+            readable: false,
+          },
+        ],
+      },
+    });
+    await openForm();
+    const summaries = screen.getAllByText("Show what will be sent");
+    fireEvent.click(summaries[summaries.length - 1]);
+
+    expect(await screen.findByText(/· Unreadable dump$/)).toBeTruthy();
+    expect(screen.queryByText(/· \? · \?$/)).toBeNull();
+  });
+
+  it("shows which dump a crash report names before it is sent", async () => {
+    mocks.getSessionDebugBundle.mockResolvedValue({
+      ...bundle,
+      crashDumps: { dumps: [crashDump], triggeringDump: crashDump.file },
+    });
+    await openForm();
+    const summaries = screen.getAllByText("Show what will be sent");
+    fireEvent.click(summaries[summaries.length - 1]);
+
+    expect(
+      await screen.findByText(
+        `This report names ${crashDump.file} as its crash.`,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText(/· this report's crash$/)).toBeTruthy();
+  });
+
+  it("says when a crash report names no dump", async () => {
+    mocks.getSessionDebugBundle.mockResolvedValue({
+      ...bundle,
+      crashDumps: { dumps: [crashDump], triggeringDump: null },
+    });
+    await openForm();
+    const summaries = screen.getAllByText("Show what will be sent");
+    fireEvent.click(summaries[summaries.length - 1]);
+
+    expect(
+      await screen.findByText("This report names no dump as its crash."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/this report's crash$/)).toBeNull();
+  });
+
+  it("says when there are no crash dumps", async () => {
+    mocks.getSessionDebugBundle.mockResolvedValue({
+      ...bundle,
+      crashDumps: { dumps: [] },
+    });
+    await openForm();
+    const summaries = screen.getAllByText("Show what will be sent");
+    fireEvent.click(summaries[summaries.length - 1]);
+
+    expect(
+      await screen.findByText("No crash dumps on this machine."),
+    ).toBeTruthy();
   });
 
   it("does not let consent be withdrawn after it has been acted on", async () => {
@@ -885,6 +1033,44 @@ describe("HelpDialog disclosures", () => {
     // twice, with the first copy referenced by nothing.
     expect(mocks.uploadToSignedUrl).toHaveBeenCalledTimes(1);
     expect(bodyOfOpenedIssue()).toContain("Session ID: v2:abc");
+  });
+
+  it("locks the crash-dump choice of a draft whose session is uploaded", async () => {
+    mocks.getSessionDebugBundle.mockResolvedValue({
+      ...bundle,
+      crashDumps: { dumps: [crashDump] },
+    });
+    screenshotUploadDown();
+    let release = (_: unknown) => {};
+    mocks.recopyScreenshot.mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+
+    await openForm("a slow one");
+    await addScreenshot();
+    submit();
+    await waitFor(() => expect(mocks.recopyScreenshot).toHaveBeenCalled());
+    fireEvent.click(screen.getByText("mock-dialog-dismiss"));
+    await act(async () => {
+      release({ copied: true });
+    });
+
+    fireEvent.click(screen.getByText("reopen-help"));
+    // The dumps are already on the service, so unticking could not take
+    // them back.
+    const dumps = await screen.findByRole("checkbox", {
+      name: "Native crash stack traces",
+    });
+    expect(dumps.hasAttribute("data-disabled")).toBe(true);
+    expect(
+      screen.getByText("The session was already uploaded with this choice."),
+    ).toBeTruthy();
+    await fileIt();
+
+    expect(mocks.uploadToSignedUrl).toHaveBeenCalledTimes(1);
+    expect(bodyOfOpenedIssue()).toContain("Crash dumps: 1\n");
   });
 
   it("does not cite a session whose upload was cut short", async () => {
@@ -1617,12 +1803,13 @@ describe("HelpDialog disclosures", () => {
 
   it("discards a session read that lands after its report is gone", async () => {
     let release = (_: unknown) => {};
-    mocks.getSessionDebugBundle.mockImplementation((id: number) =>
-      id === 42
-        ? new Promise((resolve) => {
-            release = () => resolve({ ...bundle, codebase: "codebase-42" });
-          })
-        : Promise.resolve({ ...bundle, codebase: `codebase-${id}` }),
+    mocks.getSessionDebugBundle.mockImplementation(
+      ({ chatId: id }: { chatId: number }) =>
+        id === 42
+          ? new Promise((resolve) => {
+              release = () => resolve({ ...bundle, codebase: "codebase-42" });
+            })
+          : Promise.resolve({ ...bundle, codebase: `codebase-${id}` }),
     );
 
     renderHelp();
@@ -1634,7 +1821,10 @@ describe("HelpDialog disclosures", () => {
     const summaries = screen.getAllByText("Show what will be sent");
     fireEvent.click(summaries[summaries.length - 1]);
     await waitFor(() =>
-      expect(mocks.getSessionDebugBundle).toHaveBeenCalledWith(42),
+      expect(mocks.getSessionDebugBundle).toHaveBeenCalledWith({
+        chatId: 42,
+        fromCrash: true,
+      }),
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
@@ -1658,8 +1848,9 @@ describe("HelpDialog disclosures", () => {
   });
 
   it("uploads the session for the report's own chat", async () => {
-    mocks.getSessionDebugBundle.mockImplementation((id: number) =>
-      Promise.resolve({ ...bundle, codebase: `codebase-${id}` }),
+    mocks.getSessionDebugBundle.mockImplementation(
+      ({ chatId: id }: { chatId: number }) =>
+        Promise.resolve({ ...bundle, codebase: `codebase-${id}` }),
     );
 
     renderHelp();
@@ -1671,7 +1862,10 @@ describe("HelpDialog disclosures", () => {
     const summaries = screen.getAllByText("Show what will be sent");
     fireEvent.click(summaries[summaries.length - 1]);
     await waitFor(() =>
-      expect(mocks.getSessionDebugBundle).toHaveBeenCalledWith(42),
+      expect(mocks.getSessionDebugBundle).toHaveBeenCalledWith({
+        chatId: 42,
+        fromCrash: true,
+      }),
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
@@ -1702,8 +1896,13 @@ describe("HelpDialog disclosures", () => {
     submit();
     await waitFor(() => expect(mocks.openExternalUrl).toHaveBeenCalled());
 
-    expect(mocks.getSessionDebugBundle).toHaveBeenCalledWith(42);
-    expect(mocks.getSessionDebugBundle).not.toHaveBeenCalledWith(1);
+    expect(mocks.getSessionDebugBundle).toHaveBeenCalledWith({
+      chatId: 42,
+      fromCrash: true,
+    });
+    expect(mocks.getSessionDebugBundle).not.toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: 1 }),
+    );
   });
 
   it("keeps the session offer after the dialog reopens with no chat selected", async () => {

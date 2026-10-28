@@ -123,6 +123,11 @@ interface ReportDisclosuresProps {
   onIncludeSessionChange: (checked: boolean) => void;
   onSessionExpand: () => void;
   sessionUnavailableReason?: string;
+  /** Crash dumps travel in the session upload, so they need it ticked. */
+  includeCrashDumps: boolean;
+  onIncludeCrashDumpsChange: (checked: boolean) => void;
+  /** The session is already on the service, along with or without the dumps. */
+  sessionUploaded: boolean;
   /** Locked once filing starts, since the choice has already been acted on. */
   locked: boolean;
 }
@@ -138,6 +143,9 @@ export function ReportDisclosures({
   onIncludeSessionChange,
   onSessionExpand,
   sessionUnavailableReason,
+  includeCrashDumps,
+  onIncludeCrashDumpsChange,
+  sessionUploaded,
   locked,
 }: ReportDisclosuresProps) {
   const { t } = useTranslation(["home", "common"]);
@@ -237,6 +245,81 @@ export function ReportDisclosures({
             )}
           </div>
         )}
+        {!bundle && !bundleLoading && (
+          <p className="text-xs text-muted-foreground">
+            {t("home:report.sessionExpand")}
+          </p>
+        )}
+      </Disclosure>
+
+      <Disclosure
+        id="include-crash-dumps"
+        title={t("home:report.crashDumpsTitle")}
+        visibility="private"
+        subtitle={t("home:report.crashDumpsSubtitle")}
+        checked={includeCrashDumps && includeSession}
+        onCheckedChange={onIncludeCrashDumpsChange}
+        disabled={locked || sessionUploaded || !includeSession}
+        disabledReason={
+          sessionUnavailableReason ??
+          (sessionUploaded
+            ? t("home:report.crashDumpsAlreadySent")
+            : includeSession
+              ? undefined
+              : t("home:report.crashDumpsNeedSession"))
+        }
+        onExpand={onSessionExpand}
+      >
+        {bundleLoading && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2Icon className="h-3 w-3 animate-spin" />
+            {t("home:report.sessionLoading")}
+          </div>
+        )}
+        {bundle && !bundle.crashDumps && (
+          // Main leaves them out when it could not read them, which is not
+          // the same as there being none.
+          <p className="text-xs text-muted-foreground">
+            {t("home:report.crashDumpsUnreadable")}
+          </p>
+        )}
+        {bundle?.crashDumps?.triggeringDump !== undefined && (
+          // Set on reports from the crash dialog, and sent with the dumps.
+          <p className="text-xs text-muted-foreground">
+            {bundle.crashDumps.triggeringDump === null
+              ? t("home:report.crashDumpsTriggeringNone")
+              : t("home:report.crashDumpsTriggering", {
+                  file: bundle.crashDumps.triggeringDump,
+                })}
+          </p>
+        )}
+        {bundle?.crashDumps &&
+          (bundle.crashDumps.dumps.length > 0 ? (
+            <div className="space-y-1.5">
+              {bundle.crashDumps.dumps.map((dump) => (
+                <Detail
+                  key={dump.file}
+                  title={[
+                    new Date(dump.crashedAt).toLocaleString(),
+                    ...(dump.readable
+                      ? [
+                          dump.ptype ?? "?",
+                          dump.crashReason ?? dump.exceptionCode ?? "?",
+                        ]
+                      : [t("home:report.crashDumpUnreadableTitle")]),
+                    ...(dump.file === bundle.crashDumps?.triggeringDump
+                      ? [t("home:report.crashDumpTriggeringMark")]
+                      : []),
+                  ].join(" · ")}
+                  data={dump}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {t("home:report.crashDumpsNone")}
+            </p>
+          ))}
         {!bundle && !bundleLoading && (
           <p className="text-xs text-muted-foreground">
             {t("home:report.sessionExpand")}

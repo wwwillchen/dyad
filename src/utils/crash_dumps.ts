@@ -1,6 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
+// Where processNativeCrashDumps keeps dumps it has already reported, under
+// userData. Separate from Crashpad's own dump dirs so its scan skips them.
+export const RETAINED_DUMPS_DIR = "dyad-crash-reports";
+
+// How many dumps are kept there, and so how many a report can include.
+export const MAX_RETAINED_DUMPS = 5;
+
 // Absolute paths of the minidump files in a directory, newest first.
 export function listDumpFiles(dir: string): string[] {
   let entries: string[];
@@ -92,6 +99,9 @@ function renameQuiet(src: string, dest: string): void {
   } catch {
     try {
       fs.copyFileSync(src, dest);
+      // The mtime is the crash time, which reports and pruning rely on.
+      const { atime, mtime } = fs.statSync(src);
+      fs.utimesSync(dest, atime, mtime);
     } catch {
       // source may be unreadable; still remove it below to avoid reprocessing
     }

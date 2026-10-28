@@ -270,6 +270,21 @@ describe("buildIssueBody", () => {
     expect(withheld).not.toContain("## Logs");
   });
 
+  it("lists the crash dumps that went with the session", () => {
+    const body = (crashDumpCount: number | null) =>
+      buildIssueBody({
+        description: "it crashed",
+        screenshot: { status: "declined" },
+        diagnostics: null,
+        sessionId: "v2:abc",
+        crashDumpCount,
+      });
+    expect(body(2)).toContain("Session Schema: v2.0\nCrash dumps: 2\n");
+    expect(body(0)).toContain("Crash dumps: none on the reporter's machine");
+    // Not sent: the issue does not claim there were none.
+    expect(body(null)).not.toContain("Crash dumps");
+  });
+
   it("references an uploaded session only when there is one", () => {
     const withSession = buildIssueBody({
       description: "it crashed",
