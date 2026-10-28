@@ -878,7 +878,7 @@
         },
         "neon": {
           "name": "Neon",
-          "description": "Hafif bir Postgres veritabanı."
+          "description": "Cömert bir ücretsiz plan ve sıfıra ölçekleme sunan sunucusuz Postgres."
         }
       }
     },
