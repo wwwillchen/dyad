@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+
 vi.mock("electron-log", () => ({
   default: {
     scope: () => ({
       log: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn,
       debug: vi.fn(),
       error: vi.fn(),
     }),
@@ -51,6 +53,7 @@ function respond(url: string, init: RequestInit): Response {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   calls.length = 0;
   routes = {};
   vi.stubGlobal(
@@ -70,6 +73,125 @@ const client = () =>
   });
 
 describe("GitLabClient requests", () => {
+  it("logs and surfaces the nested TLS cause and code without request credentials", async () => {
+    const cause = Object.assign(
+      new Error("unable to verify the first certificate"),
+      {
+        code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+      },
+    );
+    vi.mocked(fetch).mockRejectedValue(
+      new TypeError("fetch failed", { cause }),
+    );
+
+    const error = await client()
+      .getCurrentUser()
+      .catch((err) => err);
+    expect(error).toMatchObject({
+      name: "GitLabTransportError",
+      kind: DyadErrorKind.External,
+      message:
+        "Could not reach GitLab at https://gitlab.example.com: fetch failed; caused by: UNABLE_TO_VERIFY_LEAF_SIGNATURE: unable to verify the first certificate",
+    });
+    expect(warn).toHaveBeenCalledExactlyOnceWith(error.message);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("glpat-secret");
+  });
+
+  it("includes individual failures inside an aggregate connection error", async () => {
+    const attempts = ["ECONNREFUSED", "ENETUNREACH"].map((code) =>
+      Object.assign(new Error("connect failed"), { code }),
+    );
+    vi.mocked(fetch).mockRejectedValue(
+      new TypeError("fetch failed", {
+        cause: new AggregateError(attempts),
+      }),
+    );
+
+    await expect(client().getCurrentUser()).rejects.toMatchObject({
+      message: expect.stringContaining(
+        "ECONNREFUSED: connect failed; caused by: ENETUNREACH: connect failed",
+      ),
+    });
+  });
+
+  it("handles plain-object and string causes, redacts tokens and flattens log lines", async () => {
+    vi.mocked(fetch).mockRejectedValue(
+      new TypeError("fetch failed", {
+        cause: {
+          code: "ENOTFOUND",
+          message: "lookup\nfailed glpat-secret",
+          cause: "DNS unavailable",
+        },
+      }),
+    );
+    const error = await client()
+      .getCurrentUser()
+      .catch((err) => err);
+    expect(error.message).toContain(
+      "ENOTFOUND: lookup failed [redacted]; caused by: DNS unavailable",
+    );
+    expect(warn).toHaveBeenCalledExactlyOnceWith(error.message);
+    expect(error.message).not.toContain("glpat-secret");
+    expect(error.message).not.toContain("\n");
+  });
+
+  it("bounds long diagnostics and stops cyclic causes", async () => {
+    const cyclic = new Error("socket failure");
+    cyclic.cause = cyclic;
+    vi.mocked(fetch).mockRejectedValueOnce(
+      new TypeError("fetch failed", { cause: cyclic }),
+    );
+    await expect(client().getCurrentUser()).rejects.toMatchObject({
+      message: expect.stringContaining(
+        "fetch failed; caused by: socket failure",
+      ),
+    });
+    vi.mocked(fetch).mockRejectedValueOnce(
+      new TypeError("fetch failed", {
+        cause: new Error("x".repeat(10_000) + "glpat-secret"),
+      }),
+    );
+    const error = await client()
+      .getCurrentUser()
+      .catch((err) => err);
+    expect(error.message.length).toBeLessThan(600);
+    expect(error.message).toContain("…");
+  });
+
+  it("logs response-body transport failures too", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      text: async () => {
+        throw new TypeError("terminated", { cause: { code: "ECONNRESET" } });
+      },
+    } as unknown as Response);
+    const error = await client()
+      .getCurrentUser()
+      .catch((err) => err);
+    expect(error.message).toContain("terminated; caused by: ECONNRESET");
+    expect(warn).toHaveBeenCalledExactlyOnceWith(error.message);
+  });
+
+  it("keeps timeout guidance and does not log user cancellation as a network failure", async () => {
+    vi.mocked(fetch).mockRejectedValue(
+      new DOMException("timed out", "TimeoutError"),
+    );
+    await expect(client().getCurrentUser()).rejects.toMatchObject({
+      message: expect.stringContaining("no response within 30s"),
+    });
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockClear();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      new GitLabClient({
+        instanceUrl: "https://gitlab.example.com",
+        token: "secret",
+        signal: controller.signal,
+      }).getCurrentUser(),
+    ).rejects.toMatchObject({ kind: DyadErrorKind.UserCancelled });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it("builds URLs from the instance address and sends the token header", async () => {
     routes["GET https://gitlab.example.com/api/v4/user"] = {
       status: 200,

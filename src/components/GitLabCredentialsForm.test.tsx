@@ -126,4 +126,23 @@ describe("GitLabCredentialsForm", () => {
     // The token stays so the user can fix the address instead of retyping it.
     expect(screen.getByTestId("gitlab-token-input")).toHaveValue("glpat-x");
   });
+
+  it("displays the transport cause from the IPC error and allows retrying", async () => {
+    const message =
+      "Could not reach GitLab at https://gitlab.com: fetch failed; caused by: UNABLE_TO_VERIFY_LEAF_SIGNATURE: unable to verify the first certificate";
+    h.saveToken.mockRejectedValueOnce(new Error(message));
+    const onConnected = vi.fn();
+    renderForm({ onConnected });
+
+    await userEvent.type(screen.getByTestId("gitlab-token-input"), "glpat-x");
+    await userEvent.click(screen.getByTestId("gitlab-connect-button"));
+
+    expect(
+      await screen.findByTestId("gitlab-credentials-error"),
+    ).toHaveTextContent(message);
+    expect(screen.getByTestId("gitlab-connect-button")).toBeEnabled();
+    await userEvent.click(screen.getByTestId("gitlab-connect-button"));
+    await waitFor(() => expect(onConnected).toHaveBeenCalledOnce());
+    expect(screen.queryByTestId("gitlab-credentials-error")).toBeNull();
+  });
 });
