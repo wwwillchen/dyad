@@ -5,18 +5,22 @@
  * so a dev server stuck printing errors in a loop turns every output chunk
  * into a blocking file append. The limiter admits a bounded number of chunks
  * per window, truncates long chunks, and reports what it suppressed once the
- * next window starts or the process exits. It only governs logging: the
- * renderer and the app log store still receive every chunk.
+ * next window starts or the process exits. The report includes the tail of
+ * the suppressed output, because that is where failures such as a pnpm
+ * install error usually land. It only governs logging: the renderer and the
+ * app log store still receive every chunk.
  */
 
 const DEFAULT_WINDOW_MS = 10_000;
 const DEFAULT_MAX_CHUNKS_PER_WINDOW = 50;
 const DEFAULT_MAX_CHUNK_CHARS = 4096;
+const DEFAULT_MAX_SUPPRESSED_TAIL_CHARS = 2048;
 
 export interface ProcessOutputLogLimiterOptions {
   windowMs?: number;
   maxChunksPerWindow?: number;
   maxChunkChars?: number;
+  maxSuppressedTailChars?: number;
   now?: () => number;
 }
 
@@ -30,17 +34,21 @@ export class ProcessOutputLogLimiter {
   private readonly windowMs: number;
   private readonly maxChunksPerWindow: number;
   private readonly maxChunkChars: number;
+  private readonly maxSuppressedTailChars: number;
   private readonly now: () => number;
   private windowStart = Number.NEGATIVE_INFINITY;
   private admittedInWindow = 0;
   private suppressedChunks = 0;
   private suppressedChars = 0;
+  private suppressedTail = "";
 
   constructor(options: ProcessOutputLogLimiterOptions = {}) {
     this.windowMs = options.windowMs ?? DEFAULT_WINDOW_MS;
     this.maxChunksPerWindow =
       options.maxChunksPerWindow ?? DEFAULT_MAX_CHUNKS_PER_WINDOW;
     this.maxChunkChars = options.maxChunkChars ?? DEFAULT_MAX_CHUNK_CHARS;
+    this.maxSuppressedTailChars =
+      options.maxSuppressedTailChars ?? DEFAULT_MAX_SUPPRESSED_TAIL_CHARS;
     this.now = options.now ?? Date.now;
   }
 
@@ -56,6 +64,9 @@ export class ProcessOutputLogLimiter {
     if (this.admittedInWindow >= this.maxChunksPerWindow) {
       this.suppressedChunks++;
       this.suppressedChars += message.length;
+      this.suppressedTail = (this.suppressedTail + message).slice(
+        -this.maxSuppressedTailChars,
+      );
       return null;
     }
     this.admittedInWindow++;
@@ -73,9 +84,14 @@ export class ProcessOutputLogLimiter {
     if (this.suppressedChunks === 0) {
       return null;
     }
-    const note = `suppressed ${this.suppressedChunks} output chunk(s) (${this.suppressedChars} chars) from the log`;
+    const tailLabel =
+      this.suppressedTail.length < this.suppressedChars
+        ? `last ${this.suppressedTail.length} chars`
+        : "suppressed output";
+    const note = `suppressed ${this.suppressedChunks} output chunk(s) (${this.suppressedChars} chars) from the log; ${tailLabel}:\n${this.suppressedTail}`;
     this.suppressedChunks = 0;
     this.suppressedChars = 0;
+    this.suppressedTail = "";
     return note;
   }
 

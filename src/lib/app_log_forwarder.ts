@@ -33,6 +33,15 @@ export class AppLogForwarder {
     this.flushTimer ??= setTimeout(() => this.flush(), this.flushDelayMs);
   }
 
+  /**
+   * Drops entries for an app that have not been sent yet. Call before
+   * clearing or deleting an app's logs in main, so a pending batch cannot
+   * land afterwards and bring back entries the user just cleared.
+   */
+  discard(appId: number): void {
+    this.pending = this.pending.filter((entry) => entry.appId !== appId);
+  }
+
   flush(): void {
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);

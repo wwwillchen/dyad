@@ -4,6 +4,7 @@ import { ProcessOutputLogLimiter } from "./process_output_log_limiter";
 function createLimiter(options: {
   maxChunksPerWindow?: number;
   maxChunkChars?: number;
+  maxSuppressedTailChars?: number;
 }) {
   let now = 0;
   const limiter = new ProcessOutputLogLimiter({
@@ -39,7 +40,8 @@ describe("ProcessOutputLogLimiter", () => {
 
     expect(limiter.admit("d")).toEqual({
       message: "d",
-      suppressedNote: "suppressed 2 output chunk(s) (5 chars) from the log",
+      suppressedNote:
+        "suppressed 2 output chunk(s) (5 chars) from the log; suppressed output:\nbbccc",
     });
     advance(1000);
     expect(limiter.admit("e")?.suppressedNote).toBeNull();
@@ -52,9 +54,24 @@ describe("ProcessOutputLogLimiter", () => {
     limiter.admit("b");
 
     expect(limiter.takeSuppressedNote()).toBe(
-      "suppressed 1 output chunk(s) (1 chars) from the log",
+      "suppressed 1 output chunk(s) (1 chars) from the log; suppressed output:\nb",
     );
     expect(limiter.takeSuppressedNote()).toBeNull();
+  });
+
+  it("keeps only the tail of a long suppressed burst", () => {
+    const { limiter } = createLimiter({
+      maxChunksPerWindow: 1,
+      maxSuppressedTailChars: 6,
+    });
+
+    limiter.admit("start");
+    limiter.admit("progress\n");
+    limiter.admit("ERR_PNPM\n");
+
+    expect(limiter.takeSuppressedNote()).toBe(
+      "suppressed 2 output chunk(s) (18 chars) from the log; last 6 chars:\n_PNPM\n",
+    );
   });
 
   it("truncates long chunks", () => {

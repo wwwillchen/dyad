@@ -74,6 +74,20 @@ describe("AppLogForwarder", () => {
     expect(sent.at(-1)?.message).toBe(`m${total - 1}`);
   });
 
+  it("discards pending entries for one app only", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const forwarder = new AppLogForwarder(send, 100);
+
+    forwarder.enqueue([entry("a"), { ...entry("x"), appId: 2 }]);
+    forwarder.discard(1);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0].map((e: ConsoleEntry) => e.message)).toEqual([
+      "x",
+    ]);
+  });
+
   it("does not throw when sending fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const send = vi.fn(() => {
