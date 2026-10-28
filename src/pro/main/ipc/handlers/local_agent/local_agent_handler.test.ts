@@ -218,6 +218,9 @@ vi.mock("@/db", () => ({
       chats: {
         findFirst: vi.fn(async () => mockChatData),
       },
+      messages: {
+        findMany: vi.fn(async () => mockChatData?.messages ?? []),
+      },
     },
     update: vi.fn(() => ({
       set: vi.fn((data: Record<string, unknown>) => ({
@@ -235,12 +238,24 @@ vi.mock("@/db", () => ({
         }),
       })),
     })),
-    select: vi.fn(() => ({
+    select: vi.fn((fields?: Record<string, unknown>) => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => Promise.resolve(mockMcpServers)),
+        where: vi.fn(() =>
+          // The questionnaire lookup selects aiMessagesJson; return every
+          // message as a superset of its SQL prefilter.
+          Promise.resolve(
+            fields && "aiMessagesJson" in fields
+              ? (mockChatData?.messages ?? [])
+              : mockMcpServers,
+          ),
+        ),
       })),
     })),
   },
+}));
+
+vi.mock("@/ipc/utils/chat_history_loader", () => ({
+  loadAgentHistoryMessages: vi.fn(async () => mockChatData?.messages ?? []),
 }));
 
 let mockSettings: ReturnType<typeof buildTestSettings> = buildTestSettings();

@@ -27,7 +27,7 @@ import log from "electron-log";
 
 import { db } from "@/db";
 import { chats, messages, type AiMessagesJsonV6 } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { ClaudeCodeModel } from "@/ipc/services/claude_code/model";
 import { startTurnStallWatchdog } from "./turn_stall_watchdog";
 import { requireMcpToolConsent } from "@/ipc/utils/mcp_consent";
@@ -186,9 +186,11 @@ import { setChatSummaryTool } from "./tools/set_chat_summary";
 import { computeStreamingPatch } from "@/ipc/utils/stream_text_utils";
 import { userInputRegistry } from "@/user_input/main";
 import {
+  rendererMessageColumns,
   toRendererMessages,
   type RendererMessageRow,
 } from "@/ipc/utils/renderer_chat_message";
+import { loadAgentHistoryMessages } from "@/ipc/utils/chat_history_loader";
 
 export function clearPendingLocalAgentInputsForChat(chatId: number): void {
   userInputRegistry.sweepChat(chatId);
@@ -331,6 +333,7 @@ export function buildChatMessageHistory(
       model?: string | null;
       inferenceSource?: InferenceSource | null;
       createdAt: Date;
+      historyOmitted?: boolean;
     }
   >,
   options?: {
@@ -385,7 +388,7 @@ export function buildChatMessageHistory(
 
   const filtered = reorderedMessages
     .filter((msg) => !excludedIds?.has(msg.id))
-    .filter((msg) => msg.content || msg.aiMessagesJson);
+    .filter((msg) => msg.historyOmitted || msg.content || msg.aiMessagesJson);
 
   const history: ModelMessage[] = [];
   const retainedMessageIds = new Set(relevantMessages.map(({ id }) => id));
@@ -411,6 +414,16 @@ export function buildChatMessageHistory(
   let pendingReminder = buildGitReminder(precedingAssistant);
 
   for (const msg of filtered) {
+    // Omitted messages (outside the loaded history window) add nothing to the
+    // request, but still advance the git reminder as if they had been sent.
+    if (msg.historyOmitted) {
+      if (msg.role === "user") {
+        pendingReminder = null;
+      } else if (!msg.isCompactionSummary) {
+        pendingReminder = buildGitReminder(msg);
+      }
+      continue;
+    }
     const source =
       msg.inferenceSource ??
       (msg.model?.startsWith("ChatGPT subscription (") ? "subscription" : null);
@@ -483,6 +496,26 @@ export function hasCompletedAppBlueprintQuestionnaire(
         }),
     );
   });
+}
+
+/**
+ * {@link hasCompletedAppBlueprintQuestionnaire} for a stored chat. Only rows
+ * whose transcript mentions the questionnaire tool are loaded and parsed, so
+ * the check stays cheap for chats with large agent histories.
+ */
+export async function chatHasCompletedAppBlueprintQuestionnaire(
+  chatId: number,
+): Promise<boolean> {
+  const candidates = await db
+    .select({ aiMessagesJson: messages.aiMessagesJson })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.chatId, chatId),
+        sql`instr(${messages.aiMessagesJson}, ${PLANNING_QUESTIONNAIRE_TOOL_NAME}) > 0`,
+      ),
+    );
+  return hasCompletedAppBlueprintQuestionnaire(candidates);
 }
 
 /**
@@ -766,19 +799,30 @@ export async function handleLocalAgentStream(
     await updateResponseInDb(placeholderMessageId, fullResponse);
   };
 
-  const loadChat = async () =>
-    db.query.chats.findFirst({
+  // The renderer projection needs every message's display content, while the
+  // model needs only the bounded post-compaction history with its stored AI SDK
+  // transcript. Load them separately so neither carries the other's payload.
+  // Messages are not loaded via a nested `with`, which makes SQLite aggregate
+  // the whole list into a single JSON string.
+  const loadChat = async () => {
+    const chat = await db.query.chats.findFirst({
       where: eq(chats.id, req.chatId),
-      with: {
-        messages: {
-          orderBy: (messages, { asc }) => [
-            asc(messages.createdAt),
-            asc(messages.id),
-          ],
-        },
-        app: true,
-      },
+      with: { app: true },
     });
+    if (!chat) return undefined;
+    return {
+      ...chat,
+      messages: await db.query.messages.findMany({
+        where: eq(messages.chatId, req.chatId),
+        columns: rendererMessageColumns,
+        orderBy: (messages, { asc }) => [
+          asc(messages.createdAt),
+          asc(messages.id),
+        ],
+      }),
+      historyMessages: await loadAgentHistoryMessages(req.chatId),
+    };
+  };
 
   // Get the chat and app — may be re-queried after compaction
   const initialChat = await loadChat();
@@ -1044,9 +1088,8 @@ export async function handleLocalAgentStream(
       preCommitHookAvailable,
       testingEnabled: Boolean(chat.app.testingEnabled),
       testRunAttempts: new Map(),
-      appBlueprintQuestionnaireCompleted: hasCompletedAppBlueprintQuestionnaire(
-        chat.messages,
-      ),
+      appBlueprintQuestionnaireCompleted:
+        await chatHasCompletedAppBlueprintQuestionnaire(req.chatId),
       isDyadPro: isDyadProEnabled(settings),
       canUseExplorerSubagent:
         !buildMode &&
@@ -1278,7 +1321,7 @@ export async function handleLocalAgentStream(
     // (pre-compaction messages are preserved in DB for the user but not sent to LLM)
     const messageHistory: ModelMessage[] =
       messageOverride ??
-      buildChatMessageHistory(chat.messages, {
+      buildChatMessageHistory(chat.historyMessages, {
         inferenceSource: currentInferenceSource() ?? undefined,
       });
     if (
@@ -1503,7 +1546,7 @@ export async function handleLocalAgentStream(
                   // Preserve only messages generated after this compaction boundary.
                   postMidTurnCompactionStartStep = options.stepNumber;
                   const compactedMessageHistory = buildChatMessageHistory(
-                    chat.messages,
+                    chat.historyMessages,
                     {
                       // Keep the structured in-flight assistant/tool messages from
                       // the current stream instead of the placeholder DB content.

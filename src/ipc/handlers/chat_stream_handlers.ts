@@ -121,7 +121,7 @@ import { sanitizeMcpToolResult } from "../utils/mcp_result_sanitizer";
 
 import {
   clearPendingLocalAgentInputsForChat,
-  hasCompletedAppBlueprintQuestionnaire,
+  chatHasCompletedAppBlueprintQuestionnaire,
 } from "../../pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { isPreCommitHookAvailable } from "../services/pre_commit_service";
 import { userInputRegistry } from "../../user_input/main";
@@ -229,7 +229,10 @@ import {
 import { DEFAULT_ZIP_EXTRACTION_LIMITS } from "../utils/zip/zip_extract";
 import { fileExists } from "../utils/file_utils";
 import { inspectBase64DataUrl } from "../../shared/chatAttachmentLimits";
-import { toRendererMessages } from "../utils/renderer_chat_message";
+import {
+  rendererMessageColumns,
+  toRendererMessages,
+} from "../utils/renderer_chat_message";
 
 type AsyncIterableStream<T> = AsyncIterable<T> & ReadableStream<T>;
 
@@ -1086,6 +1089,8 @@ export function registerChatStreamHandlers() {
           where: eq(chats.id, req.chatId),
           with: {
             messages: {
+              // Only redo reads messages here; the turn loads its history later.
+              columns: { id: true, role: true },
               orderBy: (messages, { asc }) => [
                 asc(messages.createdAt),
                 asc(messages.id),
@@ -2097,6 +2102,8 @@ ${componentSnippet}
         where: eq(chats.id, req.chatId),
         with: {
           messages: {
+            // Agent modes load their bounded model history separately.
+            columns: rendererMessageColumns,
             orderBy: (messages, { asc }) => [
               asc(messages.createdAt),
               asc(messages.id),
@@ -2431,7 +2438,7 @@ ${componentSnippet}
         const appBlueprint = getAppBlueprintForChat(updatedChat.id);
         const hasAppBlueprint = Boolean(appBlueprint);
         const appBlueprintQuestionnaireCompleted =
-          hasCompletedAppBlueprintQuestionnaire(updatedChat.messages);
+          await chatHasCompletedAppBlueprintQuestionnaire(updatedChat.id);
         const initialSupabaseProviderToolsAvailable = Boolean(
           updatedChat.app.supabaseProjectId &&
           hasSupabaseCredentialsForOrganization(
@@ -2780,6 +2787,7 @@ This conversation includes one or more image attachments. When the user uploads 
             where: eq(chats.id, parseInt(req.prompt.split("=")[1])),
             with: {
               messages: {
+                columns: { role: true, content: true },
                 orderBy: (messages, { asc }) => [
                   asc(messages.createdAt),
                   asc(messages.id),
@@ -3424,6 +3432,7 @@ This conversation includes one or more image attachments. When the user uploads 
             where: eq(chats.id, req.chatId),
             with: {
               messages: {
+                columns: rendererMessageColumns,
                 orderBy: (messages, { asc }) => [
                   asc(messages.createdAt),
                   asc(messages.id),

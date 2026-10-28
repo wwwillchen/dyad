@@ -7,8 +7,12 @@ import { findLanguageModel } from "./findLanguageModel";
 
 // Estimate tokens (4 characters per token)
 export const estimateTokens = (text: string): number => {
-  return Math.ceil(text.length / 4);
+  return estimateTokensForLength(text.length);
 };
+
+// Same estimate from a character count, e.g. one summed in SQL.
+export const estimateTokensForLength = (length: number): number =>
+  Math.ceil(length / 4);
 
 type ToolResultForTokenEstimate = {
   toolCallId: string;

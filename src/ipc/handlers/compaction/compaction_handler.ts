@@ -32,10 +32,8 @@ import {
   formatAsTranscript,
   type CompactionMessage,
 } from "./compaction_storage";
-import {
-  buildCompactionBlock,
-  getPostCompactionMessages,
-} from "./compaction_utils";
+import { buildCompactionBlock } from "./compaction_utils";
+import { loadPostCompactionTranscript } from "@/ipc/utils/chat_history_loader";
 import {
   getProviderOptions,
   getAiHeaders,
@@ -225,30 +223,18 @@ export async function performCompaction(
     };
     logger.info(`Starting compaction for chat ${chatId}`);
 
-    // Load all messages for the chat
-    const chatMessages = await db.query.messages.findMany({
-      where: eq(messages.chatId, chatId),
-      orderBy: (messages, { asc }) => [
-        asc(messages.createdAt),
-        asc(messages.id),
-      ],
-    });
+    // Only operate on messages the LLM can currently see.
+    const llmVisibleMessages = await loadPostCompactionTranscript(chatId);
 
-    if (chatMessages.length === 0) {
+    if (llmVisibleMessages.length === 0) {
       logger.warn(`No messages found for chat ${chatId}, skipping compaction`);
       await clearPendingCompaction(chatId);
       return { success: true };
     }
 
-    // Only operate on messages the LLM can currently see.
-    const llmVisibleMessages = getPostCompactionMessages(chatMessages);
-
     // Prepare messages for backup
     const messagesToBackup: CompactionMessage[] = llmVisibleMessages.map(
-      (m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      }),
+      (m) => ({ role: m.role, content: m.content }),
     );
 
     // Store readable transcript backup in the app's .dyad/chats/ directory
@@ -340,7 +326,7 @@ Note: This file may be large. Read only the sections you need or use grep to sea
     //    user message, the user's prompt is excluded from the LLM context.
     // 3. sendResponseChunk updates the last assistant message, so the summary
     //    must not be the last assistant message (the placeholder should be).
-    const latestUserMessage = [...chatMessages]
+    const latestUserMessage = [...llmVisibleMessages]
       .reverse()
       .find((m) => m.role === "user");
     const compactionCreatedAt =
