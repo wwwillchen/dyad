@@ -18,6 +18,11 @@ IMPORTANT: Do NOT generate SQL migration files by hand! This is wrong.
 
 For SQL that drizzle cannot model (FTS5 virtual tables, triggers), generate a correctly numbered scaffold with `npm run db:generate -- --custom --name <slug>` and put the hand-written SQL inside it (statements separated by `--> statement-breakpoint`). Model any ordinary companion tables in `schema.ts` and generate their migration normally first. `createInMemoryTestDb()` applies the real `./drizzle` migrations, so virtual tables and triggers are exercised in unit tests automatically.
 
+## Loading chat messages
+
+- A nested relational query (`db.query.chats.findFirst({ with: { messages: ... } })`) compiles to `json_group_array` on SQLite: the whole child list comes back as one JSON string that is then parsed. For chats with large `content` / `ai_messages_json`, load messages with a top-level `db.query.messages.findMany` or `db.select` and an explicit column subset (`rendererMessageColumns` for display), and compute sizes with `length(...)` in SQL instead of loading payloads.
+- Agent model history goes through `src/ipc/utils/chat_history_loader.ts` (post-compaction boundary, bounded by `MAX_AGENT_HISTORY_CHARS`). `chat:count-tokens` runs on every chat open and turn end, so it estimates from stored lengths; do not build or `JSON.stringify` the history there.
+
 ## Neon migration preview
 
 When diffing Neon branches with `ts-pg-schema-diff`, use unpooled connection

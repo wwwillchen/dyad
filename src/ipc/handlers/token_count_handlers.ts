@@ -5,8 +5,8 @@ import {
 import { isFreeProModel } from "@/lib/freeProModel";
 import { DEFAULT_ENABLE_SUGGESTED_PROMPTS } from "@/shared/settings_defaults";
 import { db } from "../../db";
-import { chats } from "../../db/schema";
-import { eq } from "drizzle-orm";
+import { chats, messages } from "../../db/schema";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   constructSystemPrompt,
   readAiRules,
@@ -28,7 +28,12 @@ import {
 } from "../../supabase_admin/supabase_context";
 
 import { TokenCountParams, TokenCountResult } from "@/ipc/types";
-import { estimateTokens, getContextWindow } from "../utils/token_utils";
+import {
+  estimateTokens,
+  estimateTokensForLength,
+  getContextWindow,
+} from "../utils/token_utils";
+import { estimateAgentHistoryChars } from "../utils/chat_history_loader";
 import { createLoggedHandler } from "./safe_handle";
 import { readSettings } from "@/main/settings";
 import {
@@ -47,10 +52,7 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { resolveChatModeForTurn } from "./chat_mode_resolution";
 import { isImplementerSubagentEnabled } from "@/lib/autoSidekick";
 import { estimateAgentToolTokens } from "@/pro/main/ipc/handlers/local_agent/tool_definitions";
-import {
-  buildChatMessageHistory,
-  hasCompletedAppBlueprintQuestionnaire,
-} from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
+import { chatHasCompletedAppBlueprintQuestionnaire } from "@/pro/main/ipc/handlers/local_agent/local_agent_handler";
 import { getCachedMcpToolDefs } from "@/pro/main/ipc/handlers/local_agent/tools/mcp_type_defs";
 import { collectSuggestablePlugins } from "@/pro/main/ipc/handlers/local_agent/tools/suggest_plugin";
 import { resolveRootDatabasePromptState } from "@/shared/database_provider";
@@ -66,15 +68,7 @@ export function registerTokenCountHandlers() {
     async (event, req: TokenCountParams): Promise<TokenCountResult> => {
       const chat = await db.query.chats.findFirst({
         where: eq(chats.id, req.chatId),
-        with: {
-          messages: {
-            orderBy: (messages, { asc }) => [
-              asc(messages.createdAt),
-              asc(messages.id),
-            ],
-          },
-          app: true,
-        },
+        with: { app: true },
       });
 
       if (!chat) {
@@ -101,10 +95,20 @@ export function registerTokenCountHandlers() {
         selectedChatMode,
       };
       const willUseLocalAgentStream = isLocalAgentBackedMode(selectedChatMode);
+      // Estimated from stored sizes in SQLite: this runs whenever a chat is
+      // opened or finishes a turn, and materializing a large history here would
+      // cost as much main-process memory as sending it.
       const messageHistoryTokens = willUseLocalAgentStream
-        ? estimateTokens(JSON.stringify(buildChatMessageHistory(chat.messages)))
-        : estimateTokens(
-            chat.messages.map((message) => message.content).join(""),
+        ? estimateTokensForLength(await estimateAgentHistoryChars(chat.id))
+        : estimateTokensForLength(
+            (
+              await db
+                .select({
+                  length: sql<number>`coalesce(sum(length(${messages.content})), 0)`,
+                })
+                .from(messages)
+                .where(eq(messages.chatId, chat.id))
+            )[0].length,
           );
 
       // Count system prompt tokens
@@ -118,7 +122,7 @@ export function registerTokenCountHandlers() {
       const planningQuestionnaireAvailable =
         settings.agentToolConsents?.["planning_questionnaire"] !== "never";
       const appBlueprintQuestionnaireCompleted =
-        hasCompletedAppBlueprintQuestionnaire(chat.messages);
+        await chatHasCompletedAppBlueprintQuestionnaire(chat.id);
       let systemPrompt = constructSystemPrompt({
         aiRules: await readAiRules(getDyadAppPath(chat.app.path)),
         chatMode: selectedChatMode === "ask" ? "local-agent" : selectedChatMode,
@@ -295,9 +299,14 @@ export function registerTokenCountHandlers() {
         mentionedAppsTokens;
 
       // Find the last assistant message since totalTokens is only set on assistant messages
-      const lastAssistantMessage = [...chat.messages]
-        .reverse()
-        .find((m) => m.role === "assistant");
+      const [lastAssistantMessage] = await db
+        .select({ maxTokensUsed: messages.maxTokensUsed })
+        .from(messages)
+        .where(
+          and(eq(messages.chatId, chat.id), eq(messages.role, "assistant")),
+        )
+        .orderBy(desc(messages.createdAt), desc(messages.id))
+        .limit(1);
       const actualMaxTokens = lastAssistantMessage?.maxTokensUsed ?? null;
 
       return {

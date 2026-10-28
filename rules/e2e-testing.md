@@ -191,6 +191,12 @@ When adding new test server URLs, update **both** the test fixtures (`e2e-tests/
 
 For app features that fetch `api.dyad.sh` directly, add a test-only env override in app code and point it at the worker-specific fake server during E2E. Without that override, E2E tests cannot deterministically exercise both the remote-success and local-fallback paths.
 
+## Large-history and memory E2Es
+
+- Test mode renders `MessagesList` without virtualization unless `sessionStorage.setItem("dyad:e2e:virtualized-chat", "true")` runs before the chat opens. Without it, a chat of a few hundred MB crashes the renderer with `V8 javascript OOM (Ineffective mark-compacts near heap limit)`, which production (Virtuoso) does not do.
+- The fake LLM server parses bodies with `express.json({ limit: "50mb" })`; larger agent requests fail with `PayloadTooLargeError` and the turn ends with a provider error rather than a reply.
+- `e2e-tests/large_history_oom.repro.spec.ts` is an opt-in repro (`DYAD_REPRO_LARGE_HISTORY=1`, sizes via `DYAD_REPRO_MESSAGE_COUNT` / `_CONTENT_BYTES` / `_AI_BYTES`) that seeds history directly in SQLite and logs main-process memory.
+
 ## CI scaffold dependency installs
 
 If an E2E CI shard fails before Playwright starts with `[ERR_PNPM_IGNORED_BUILDS]` during `cd scaffold && pnpm install` or `cd nextjs-template && pnpm install`, check the workflow pnpm version first. `pnpm@latest` can change build-script policy between major versions; pin the workflow pnpm version or explicitly update the build-script policy instead of debugging test code.

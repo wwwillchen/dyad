@@ -243,7 +243,12 @@ describe("context limit banner (integration)", () => {
     );
     const result = await countTokens(chatId);
 
-    expect(result.messageHistoryTokens).toBe(expectedHistoryTokens);
+    // Counted from stored sizes rather than the serialized request, so allow
+    // for envelope and git-reminder differences. Counting the discarded
+    // pre-compaction context would overshoot by ~80%.
+    expect(
+      Math.abs(result.messageHistoryTokens - expectedHistoryTokens),
+    ).toBeLessThanOrEqual(expectedHistoryTokens * 0.05);
     expect(result.messageHistoryTokens).toBeGreaterThan(1_000);
   });
 
