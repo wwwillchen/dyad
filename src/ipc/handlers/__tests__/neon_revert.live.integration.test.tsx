@@ -218,7 +218,7 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     return result.notification;
   }
 
-  it("moves an existing child development branch to a root branch and deletes the leaked backups", async () => {
+  it("moves a child development branch at the Free-plan branch limit to a root branch and deletes the leaked backups", async () => {
     const { appId, appDir } = await createGitApp("neon-legacy");
     const versionA = commit(appDir, "A");
 
@@ -263,9 +263,10 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
       })
       .where(eq(apps.id, appId));
 
-    // Two earlier reverts under the old code: each restore left a backup
-    // that became development's parent and took preview with it.
-    for (let i = 0; i < 2; i++) {
+    // Seven earlier reverts under the old code, each leaving a backup that
+    // became development's parent. With main, development and preview that
+    // is 10 branches: a Free-plan project at its branch limit.
+    for (let i = 0; i < 7; i++) {
       await sleep(3000);
       await waitForOperations(projectId);
       await liveClient.restoreProjectBranch(projectId, devId, {
@@ -276,7 +277,8 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     }
     expect(
       (await branches(projectId)).filter((b) => b.name.startsWith("preserve_")),
-    ).toHaveLength(2);
+    ).toHaveLength(7);
+    expect(await branches(projectId)).toHaveLength(10);
 
     const dev = await sql(projectId, devId);
     await dev.query(`create type mood as enum ('happy', 'sad')`);

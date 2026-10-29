@@ -49,6 +49,7 @@ import {
   getNeonClient,
   getNeonErrorMessage,
   getRetentionWindowFromError,
+  isBranchLimitError,
   isRetentionWindowError,
 } from "../../neon_admin/neon_management_client";
 import { getConnectionUri } from "../../neon_admin/neon_context";
@@ -182,6 +183,14 @@ function getDatabaseRestoreWarning(error: unknown): string {
       }. ` +
       "Neon's free plan only keeps a limited window of database history, so this " +
       "snapshot has expired. Your current database was left unchanged."
+    );
+  }
+  if (isBranchLimitError(error)) {
+    return (
+      "Restored your code to this version, but the database could not be restored: " +
+      "your Neon project has reached its plan's branch limit. Delete a branch you no " +
+      "longer need in the Neon console, or upgrade your Neon plan, then try again. " +
+      "Your current database was left unchanged."
     );
   }
   return `Could not restore the database because of an error: ${getNeonErrorMessage(

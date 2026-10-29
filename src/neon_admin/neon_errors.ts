@@ -59,6 +59,16 @@ export function getNeonErrorMessage(error: unknown): string {
  * than the project's history retention window (e.g. 6 hours on the free plan),
  * so the requested database snapshot can no longer be recovered.
  */
+/** The project has as many branches as its Neon plan allows. */
+export function isBranchLimitError(error: unknown): boolean {
+  const data = (error as { response?: { data?: { code?: unknown } } })?.response
+    ?.data;
+  return (
+    data?.code === "BRANCHES_LIMIT_EXCEEDED" ||
+    getNeonErrorMessage(error).toLowerCase().includes("branches limit exceeded")
+  );
+}
+
 export function isRetentionWindowError(error: unknown): boolean {
   return getNeonErrorMessage(error).toLowerCase().includes("retention window");
 }

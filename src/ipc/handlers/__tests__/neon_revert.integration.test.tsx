@@ -34,11 +34,14 @@ vi.mock("@/neon_admin/neon_management_client", async (importOriginal) => ({
 const branchData = vi.hoisted(() => ({
   prepareSchemaOnlyBranchForNeonAuth: vi.fn(async (_uri: string) => {}),
   listForeignKeys: vi.fn(async (_uri: string) => []),
-  copyBranchData: vi.fn(
-    async (_args: { sourceUri: string; targetUri: string }) => ({
+  exportBranchData: vi.fn(
+    async (_args: { sourceUri: string; dir: string }) => ({
       tables: 2,
       rows: 5,
     }),
+  ),
+  importBranchData: vi.fn(
+    async (_args: { targetUri: string; dir: string }) => {},
   ),
 }));
 vi.mock("@/ipc/utils/neon_branch_data", () => branchData);
@@ -127,7 +130,9 @@ describe("Neon database revert (integration)", () => {
   async function connectApp() {
     const { appId, appDir } = await createGitApp();
     const development = fakeNeon.byName("development");
-    const preview = fakeNeon.byName("preview");
+    const preview = [...fakeNeon.branches.values()].find(
+      (b) => b.name === "preview",
+    );
     fs.writeFileSync(
       path.join(appDir, ".env.local"),
       `DATABASE_URL=${fakeNeon.connectionUri(development.id)}\nNEON_AUTH_BASE_URL=${fakeNeon.authBaseUrl(development.id)}\n`,
@@ -137,7 +142,7 @@ describe("Neon database revert (integration)", () => {
       .set({
         neonProjectId: fakeNeon.projectId,
         neonDevelopmentBranchId: development.id,
-        neonPreviewBranchId: preview.id,
+        neonPreviewBranchId: preview?.id ?? null,
         neonActiveBranchId: development.id,
       })
       .where(eq(apps.id, appId));
@@ -313,7 +318,7 @@ describe("Neon database revert (integration)", () => {
     expect(newDevelopment.id).not.toBe(oldDevelopment.id);
     expect(newDevelopment.init_source).toBe("parent-schema");
     expect(newDevelopment.neonAuth).toBe(true);
-    expect(newPreview.id).not.toBe(oldPreview.id);
+    expect(newPreview.id).not.toBe(oldPreview!.id);
 
     // The new branch got version A's schema and data.
     expect(
@@ -330,20 +335,25 @@ describe("Neon database revert (integration)", () => {
     expect(branchData.prepareSchemaOnlyBranchForNeonAuth).toHaveBeenCalledWith(
       fakeNeon.connectionUri(newDevelopment.id),
     );
-    expect(branchData.copyBranchData).toHaveBeenCalledWith(
+    // Read through a temporary branch at version A's timestamp, deleted
+    // again before the new branch was created.
+    const source = fakeNeon
+      .methodCalls("createProjectBranch")
+      .map(([, body]) => (body as any).branch)
+      .find((branch) => branch.name.startsWith("dyad-restore-source-"));
+    expect(source).toMatchObject({
+      parent_id: oldDevelopment.id,
+      parent_timestamp: "2026-10-01T00:00:00Z",
+    });
+    expect(branchData.exportBranchData.mock.calls[0][0].sourceUri).toContain(
+      "br-dyad-restore-source-",
+    );
+    expect(branchData.importBranchData).toHaveBeenCalledWith(
       expect.objectContaining({
-        sourceUri: fakeNeon.connectionUri(oldPreview.id),
         targetUri: fakeNeon.connectionUri(newDevelopment.id),
+        dir: branchData.exportBranchData.mock.calls[0][0].dir,
       }),
     );
-    expect(fakeNeon.methodCalls("restoreProjectBranch").at(-1)).toEqual([
-      fakeNeon.projectId,
-      oldPreview.id,
-      {
-        source_branch_id: oldDevelopment.id,
-        source_timestamp: "2026-10-01T00:00:00Z",
-      },
-    ]);
 
     const app = await appRow(appId);
     expect(app).toMatchObject({
@@ -380,10 +390,10 @@ describe("Neon database revert (integration)", () => {
     });
   });
 
-  it("copies from a temporary branch when the old preview has children", async () => {
+  it("deletes test branches left under the old preview", async () => {
     await legacyLayout(1);
     fakeNeon.addBranch("dyad-test-1-1700000000000", { parent: "preview" });
-    const { appId, versionA, development: oldDevelopment } = await connectApp();
+    const { appId, versionA } = await connectApp();
 
     const notification = await revert(appId, versionA);
 
@@ -393,6 +403,17 @@ describe("Neon database revert (integration)", () => {
       main: null,
       preview: "development",
     });
+  });
+
+  it("reads through a temporary branch when the app has no preview branch", async () => {
+    await legacyLayout(1);
+    fakeNeon.branches.delete(fakeNeon.byName("preview").id);
+    const { appId, versionA, development: oldDevelopment } = await connectApp();
+
+    const notification = await revert(appId, versionA);
+
+    expect(notification?.message).toContain("moved to a new Neon branch");
+    expect(fakeNeon.tree()).toEqual({ development: null, main: null });
     const source = fakeNeon
       .methodCalls("createProjectBranch")
       .map(([, body]) => (body as any).branch)
@@ -401,15 +422,35 @@ describe("Neon database revert (integration)", () => {
       parent_id: oldDevelopment.id,
       parent_timestamp: "2026-10-01T00:00:00Z",
     });
-    // The data came from that branch, which the tree check shows is gone.
-    expect(branchData.copyBranchData.mock.calls[0][0].sourceUri).toContain(
+    expect(branchData.exportBranchData.mock.calls[0][0].sourceUri).toContain(
       "br-dyad-restore-source-",
+    );
+    expect((await appRow(appId)).neonPreviewBranchId).toBeNull();
+  });
+
+  it("migrates a Free-plan project that is already at its branch limit", async () => {
+    // main, development, preview and 7 leaked backups: 10 of 10 branches.
+    await legacyLayout(7);
+    fakeNeon.branchLimit = 10;
+    expect(fakeNeon.branches.size).toBe(10);
+    const { appId, versionA } = await connectApp();
+
+    const notification = await revert(appId, versionA);
+
+    expect(notification?.message).toContain("moved to a new Neon branch");
+    expect(fakeNeon.tree()).toEqual({
+      development: null,
+      main: null,
+      preview: "development",
+    });
+    expect((await appRow(appId)).neonPreviewBranchId).toBe(
+      fakeNeon.byName("preview").id,
     );
   });
 
-  it("falls back to restoring in place when the data copy fails", async () => {
+  it("falls back to restoring in place when loading the data fails", async () => {
     await legacyLayout(1);
-    branchData.copyBranchData.mockRejectedValueOnce(new Error("copy failed"));
+    branchData.importBranchData.mockRejectedValueOnce(new Error("load failed"));
     const { appId, versionA, development, preview } = await connectApp();
 
     const notification = await revert(appId, versionA);
@@ -419,7 +460,8 @@ describe("Neon database revert (integration)", () => {
       message: "Successfully restored to version (including database)",
     });
     // The unfinished root branch is gone and the app still uses the old one,
-    // now restored in place under one more backup.
+    // now restored in place under one more backup. Its preview branch, deleted
+    // to make room, was recreated.
     const newBackup = [...fakeNeon.branches.values()].find(
       (b) => b.name.startsWith("preserve_") && b.name !== LEGACY_BACKUP(1),
     )!.name;
@@ -430,10 +472,29 @@ describe("Neon database revert (integration)", () => {
       [LEGACY_BACKUP(1)]: "main",
       [newBackup]: LEGACY_BACKUP(1),
     });
-    expect(fakeNeon.byName("development").id).toBe(development.id);
+    const recreatedPreview = fakeNeon.byName("preview");
+    expect(recreatedPreview.id).not.toBe(preview!.id);
     expect(await appRow(appId)).toMatchObject({
       neonDevelopmentBranchId: development.id,
-      neonPreviewBranchId: preview.id,
+      neonPreviewBranchId: recreatedPreview.id,
+    });
+  });
+
+  it("explains the branch limit when the fallback cannot fit either", async () => {
+    await legacyLayout(7);
+    fakeNeon.branchLimit = 10;
+    branchData.importBranchData.mockRejectedValueOnce(new Error("load failed"));
+    const { appId, versionA, development } = await connectApp();
+
+    const notification = await revert(appId, versionA);
+
+    expect(notification?.kind).toBe("warning");
+    expect(notification?.message).toContain("branch limit");
+    // Nothing changed for the app: same development branch, and a preview.
+    expect(fakeNeon.branches.size).toBe(10);
+    expect(await appRow(appId)).toMatchObject({
+      neonDevelopmentBranchId: development.id,
+      neonPreviewBranchId: fakeNeon.byName("preview").id,
     });
   });
 

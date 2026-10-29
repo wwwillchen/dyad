@@ -1,3 +1,8 @@
+import { createReadStream } from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
+import readline from "node:readline";
+
 import { neon, Pool } from "@neondatabase/serverless";
 import log from "electron-log";
 import { IS_TEST_BUILD } from "./test_utils";
@@ -130,43 +135,119 @@ async function listInsertableColumns(
   return rows as { name: string; identityAlways: boolean }[];
 }
 
-export interface CopyBranchDataResult {
-  tables: number;
+interface ExportedTable extends CopyTable {
+  columns: string[];
+  file: string;
   rows: number;
 }
 
+interface ExportManifest {
+  tables: ExportedTable[];
+  sequences: { schema: string; name: string; lastValue: string }[];
+}
+
+const MANIFEST_FILE = "manifest.json";
+
 /**
- * Copies every user table's rows from `sourceUri` into the matching tables of
- * `targetUri`, which must already have the same schema (a schema-only branch).
+ * Writes every user table's rows from `sourceUri` to `dir` (one JSON batch per
+ * line), plus the sequence positions. Staging on disk lets the caller delete
+ * the source branch before creating the target, which a project at its
+ * branch limit needs.
+ */
+export async function exportBranchData({
+  sourceUri,
+  dir,
+}: {
+  sourceUri: string;
+  dir: string;
+}): Promise<{ tables: number; rows: number }> {
+  const source = httpQueryable(sourceUri);
+  await fs.mkdir(dir, { recursive: true });
+  const manifest: ExportManifest = { tables: [], sequences: [] };
+  let totalRows = 0;
+  for (const [index, table] of (await listCopyTables(source)).entries()) {
+    const columns = (await listInsertableColumns(source, table)).map(
+      (c) => c.name,
+    );
+    const file = `table-${index}.jsonl`;
+    const handle = await fs.open(path.join(dir, file), "w");
+    let rows = 0;
+    try {
+      if (columns.length > 0) {
+        const tableName = qualifiedName(table.schema, table.name);
+        const columnList = columns.map(quoteIdentifier).join(", ");
+        // Keyset pagination on ctid: nothing writes the source meanwhile.
+        let lastCtid = "(0,0)";
+        for (;;) {
+          const [{ rows: batch, last }] = await source.query(
+            `select coalesce(json_agg(to_json(x)), '[]'::json) as rows,
+               max(x_ctid)::text as last
+             from (
+               select ${columnList}, ctid as x_ctid from ${tableName}
+               where ctid > $1::tid order by ctid limit ${COPY_BATCH_SIZE}
+             ) x`,
+            [lastCtid],
+          );
+          const cleaned = (batch as Record<string, unknown>[]).map(
+            ({ x_ctid: _ctid, ...row }) => row,
+          );
+          if (cleaned.length === 0) break;
+          await handle.write(`${JSON.stringify(cleaned)}\n`);
+          rows += cleaned.length;
+          lastCtid = last;
+          if (cleaned.length < COPY_BATCH_SIZE) break;
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+    manifest.tables.push({ ...table, columns, file, rows });
+    totalRows += rows;
+  }
+  manifest.sequences = (await source.query(`
+    select schemaname as schema, sequencename as name, last_value::text as "lastValue"
+    from pg_sequences
+    where schemaname not in ('pg_catalog', 'information_schema')
+      and last_value is not null`)) as ExportManifest["sequences"];
+  await fs.writeFile(
+    path.join(dir, MANIFEST_FILE),
+    JSON.stringify(manifest),
+    "utf8",
+  );
+  return { tables: manifest.tables.length, rows: totalRows };
+}
+
+/**
+ * Loads data written by `exportBranchData` into `targetUri`, which must
+ * already have the same schema (a schema-only branch).
  *
  * The target is written in one transaction: if anything fails, the target is
  * left as it was. The app role cannot set `session_replication_role`, so
- * foreign keys are dropped for the copy and re-added afterwards (re-adding
+ * foreign keys are dropped for the load and re-added afterwards (re-adding
  * validates them), and user triggers are disabled per table.
  *
  * `extraForeignKeys` are constraints captured from the target before
  * `prepareSchemaOnlyBranchForNeonAuth` dropped them along with the copied
  * `neon_auth` schema; they are restored once the data is in place.
  */
-export async function copyBranchData({
-  sourceUri,
+export async function importBranchData({
   targetUri,
+  dir,
   extraForeignKeys = [],
 }: {
-  sourceUri: string;
   targetUri: string;
+  dir: string;
   extraForeignKeys?: ForeignKeyDefinition[];
-}): Promise<CopyBranchDataResult> {
-  const source = httpQueryable(sourceUri);
-  const sourceTables = await listCopyTables(source);
+}): Promise<void> {
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(dir, MANIFEST_FILE), "utf8"),
+  ) as ExportManifest;
 
   const pool = new Pool({ connectionString: targetUri });
   const client = await pool.connect();
   const target: Queryable = {
     query: async (text, params) => (await client.query(text, params)).rows,
   };
-  let copiedRows = 0;
-  let copiedTables = 0;
   try {
     await target.query("begin");
 
@@ -185,7 +266,7 @@ export async function copyBranchData({
       );
     }
 
-    for (const table of sourceTables) {
+    for (const table of manifest.tables) {
       if (!targetTables.has(`${table.schema}.${table.name}`)) {
         logger.warn(
           `Skipping ${table.schema}.${table.name}: missing on the target branch`,
@@ -196,55 +277,33 @@ export async function copyBranchData({
       const targetColumns = new Map(
         (await listInsertableColumns(target, table)).map((c) => [c.name, c]),
       );
-      const columns = (await listInsertableColumns(source, table)).filter((c) =>
-        targetColumns.has(c.name),
-      );
+      const columns = table.columns.filter((c) => targetColumns.has(c));
       if (columns.length === 0) continue;
-      const columnList = columns.map((c) => quoteIdentifier(c.name)).join(", ");
+      const columnList = columns.map(quoteIdentifier).join(", ");
       const overriding = columns.some(
-        (c) => targetColumns.get(c.name)?.identityAlways,
+        (c) => targetColumns.get(c)?.identityAlways,
       )
         ? "overriding system value"
         : "";
 
       await target.query(`alter table ${tableName} disable trigger user`);
       await target.query(`delete from ${tableName}`);
-      // Keyset pagination on ctid: the source branch is not written during
-      // the copy, so ctids are stable.
-      let lastCtid = "(0,0)";
-      for (;;) {
-        const [{ rows, last }] = await source.query(
-          `select coalesce(json_agg(to_json(x)), '[]'::json) as rows,
-             max(x_ctid)::text as last
-           from (
-             select ${columnList}, ctid as x_ctid from ${tableName}
-             where ctid > $1::tid order by ctid limit ${COPY_BATCH_SIZE}
-           ) x`,
-          [lastCtid],
-        );
-        const batch = (rows as Record<string, unknown>[]).map(
-          ({ x_ctid: _ctid, ...row }) => row,
-        );
-        if (batch.length === 0) break;
+      const lines = readline.createInterface({
+        input: createReadStream(path.join(dir, table.file), "utf8"),
+        crlfDelay: Infinity,
+      });
+      for await (const line of lines) {
+        if (!line) continue;
         await target.query(
           `insert into ${tableName} (${columnList}) ${overriding}
            select ${columnList} from json_populate_recordset(null::${tableName}, $1::json)`,
-          [JSON.stringify(batch)],
+          [line],
         );
-        copiedRows += batch.length;
-        lastCtid = last;
-        if (batch.length < COPY_BATCH_SIZE) break;
       }
       await target.query(`alter table ${tableName} enable trigger user`);
-      copiedTables += 1;
     }
 
-    const sequences = await source.query(`
-      select schemaname as schema, sequencename as name, last_value::text as "lastValue"
-      from pg_sequences
-      where schemaname not in ('pg_catalog', 'information_schema')
-        and last_value is not null`);
-    for (const seq of sequences) {
+    for (const seq of manifest.sequences) {
       const exists = await target.query(
         "select to_regclass($1) is not null as exists",
         [qualifiedName(seq.schema, seq.name)],
@@ -270,6 +329,4 @@ export async function copyBranchData({
     client.release();
     await pool.end();
   }
-
-  return { tables: copiedTables, rows: copiedRows };
 }

@@ -442,6 +442,7 @@ export async function getNeonOrganizationId(): Promise<string> {
 // importers of neon_management_client keep working unchanged.
 export {
   getNeonErrorMessage,
+  isBranchLimitError,
   isRetentionWindowError,
   getRetentionWindowFromError,
 } from "./neon_errors";

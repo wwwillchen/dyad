@@ -11,7 +11,8 @@ import type { Api } from "@neondatabase/api-client";
  *   backup until Neon detaches it (`detachAfterPolls` reads of the branch).
  * - Restoring from another branch makes that branch the parent.
  * - A branch with children cannot be deleted (422); names are unique (409);
- *   creating a root branch past the plan's root limit fails (422).
+ *   at the plan's branch limit every branch creation and every restore fails
+ *   (422), as does creating a root branch past the root limit.
  *
  * The live behaviour is covered by neon_revert.live.integration.test.tsx.
  */
@@ -158,9 +159,7 @@ export class FakeNeonBranchApi {
         call("createProjectBranch", [projectId, body], () => {
           const { name, parent_id, init_source } = body.branch ?? {};
           this.assertNameFree(name);
-          if (this.branches.size >= this.branchLimit) {
-            throw new FakeNeonApiError(422, "branches limit exceeded");
-          }
+          this.assertBelowBranchLimit();
           const schemaOnly = init_source === "schema-only";
           if (schemaOnly && this.rootCount() >= this.rootBranchLimit) {
             throw new FakeNeonApiError(
@@ -225,6 +224,8 @@ export class FakeNeonBranchApi {
           ) {
             throw new FakeNeonApiError(400, "preserve_under_name is required");
           }
+          // Neon rejects every restore at the limit, backup or not.
+          this.assertBelowBranchLimit();
           let backup: FakeBranch | undefined;
           if (body.preserve_under_name) {
             this.assertNameFree(body.preserve_under_name);
@@ -293,6 +294,16 @@ export class FakeNeonBranchApi {
 
   private rootCount(): number {
     return [...this.branches.values()].filter((b) => !b.parent_id).length;
+  }
+
+  private assertBelowBranchLimit() {
+    if (this.branches.size >= this.branchLimit) {
+      throw new FakeNeonApiError(
+        422,
+        "branches limit exceeded",
+        "BRANCHES_LIMIT_EXCEEDED",
+      );
+    }
   }
 
   private assertNameFree(name: string) {
