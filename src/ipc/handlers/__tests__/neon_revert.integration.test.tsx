@@ -21,6 +21,7 @@ import {
 } from "vitest";
 
 import { FakeNeonBranchApi } from "@/testing/fake_neon_branch_api";
+import { CopyVerificationError } from "@/ipc/utils/neon_branch_data";
 
 let fakeNeon = new FakeNeonBranchApi();
 
@@ -54,7 +55,10 @@ const branchData = vi.hoisted(() => ({
     }),
   ),
 }));
-vi.mock("@/ipc/utils/neon_branch_data", () => branchData);
+vi.mock("@/ipc/utils/neon_branch_data", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/ipc/utils/neon_branch_data")>()),
+  ...branchData,
+}));
 
 const telemetry = vi.hoisted(() => ({ sendTelemetryEvent: vi.fn() }));
 vi.mock("@/ipc/utils/telemetry", async (importOriginal) => ({
@@ -992,6 +996,126 @@ describe("Neon database revert (integration)", () => {
     expect(fakeNeon.methodCalls("deleteProjectBranch")).toEqual([]);
   });
 
+  function telemetryEvents(name: string) {
+    return telemetry.sendTelemetryEvent.mock.calls
+      .filter(([event]) => event === name)
+      .map(([, properties]) => properties);
+  }
+
+  it("reports a successful migration", async () => {
+    await legacyLayout(3);
+    const { appId } = await connectApp();
+
+    await migrate(appId);
+
+    expect(telemetryEvents("neon:migration")).toEqual([
+      {
+        outcome: "succeeded",
+        appCount: 1,
+        tables: 2,
+        rows: 5,
+        leakedBackups: 3,
+        // The old development branch, its 3 backups, and the old preview.
+        branchesDeleted: 5,
+        branchesNotDeleted: 0,
+        settingsNotCopied: 0,
+        durationMs: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("reports a refused migration with its reason", async () => {
+    await legacyLayout(1);
+    fakeNeon.addBranch("feature-x", { parent: LEGACY_BACKUP(1) });
+    const { appId } = await connectApp();
+
+    await expect(migrate(appId)).rejects.toThrow(/feature-x/);
+
+    expect(telemetryEvents("neon:migration")).toEqual([
+      {
+        outcome: "refused",
+        reason: "foreign-branches",
+        appCount: 1,
+        durationMs: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("reports refusals at the branch limit and for other apps' state", async () => {
+    await legacyLayout(7);
+    fakeNeon.branchLimit = 10;
+    const { appId, appDir, versionA } = await connectApp();
+
+    await expect(migrate(appId)).rejects.toThrow(/branch limit/);
+    git(appDir, "checkout", "-q", versionA);
+    await expect(migrate(appId)).rejects.toThrow(/earlier version/);
+
+    expect(
+      telemetryEvents("neon:migration").map((e) => (e as any).reason),
+    ).toEqual(["branch-limit", "version-preview"]);
+  });
+
+  it("reports a failed migration with the step it failed at", async () => {
+    await legacyLayout(1);
+    const { appId } = await connectApp();
+    branchData.copyBranchData.mockRejectedValueOnce(
+      Object.assign(new Error("server error"), { response: { status: 503 } }),
+    );
+    await expect(migrate(appId)).rejects.toThrow(/server error/);
+    branchData.copyBranchData.mockRejectedValueOnce(
+      new CopyVerificationError("Copying t produced 1 rows instead of 2"),
+    );
+    await expect(migrate(appId)).rejects.toThrow(/instead of 2/);
+    branchData.exportBranchDataAsSql.mockRejectedValueOnce(new Error("ENOSPC"));
+    await expect(migrate(appId)).rejects.toThrow(/ENOSPC/);
+
+    expect(telemetryEvents("neon:migration")).toEqual([
+      {
+        outcome: "failed",
+        step: "copy",
+        rowCountMismatch: false,
+        neonStatus: 503,
+        appCount: 1,
+        durationMs: expect.any(Number),
+      },
+      {
+        outcome: "failed",
+        step: "copy",
+        rowCountMismatch: true,
+        appCount: 1,
+        durationMs: expect.any(Number),
+      },
+      {
+        outcome: "failed",
+        step: "backup",
+        rowCountMismatch: false,
+        appCount: 1,
+        durationMs: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("reports what became of each restore's backup", async () => {
+    rootLayout();
+    const { appId, appDir, versionA } = await connectApp();
+    await revert(appId, versionA);
+
+    fakeNeon.detachAfterPolls = Number.POSITIVE_INFINITY;
+    detachWait.timeoutMs = 0;
+    const versionC = commit(appDir, "C");
+    await harness.db.insert(versions).values({
+      appId,
+      commitHash: versionC,
+      neonDbTimestamp: "2026-10-03T00:00:00Z",
+    });
+    commit(appDir, "D");
+    await revert(appId, versionC);
+
+    expect(
+      telemetryEvents("neon:backup-cleanup").map((e) => (e as any).outcome),
+    ).toEqual(["deleted", "detach-timed-out"]);
+  });
+
   it("creates new projects with a root development branch", async () => {
     const { appId } = await createGitApp();
 
@@ -1031,5 +1155,14 @@ describe("Neon database revert (integration)", () => {
       neonDevelopmentBranchId: development.id,
       neonPreviewBranchId: fakeNeon.byName("preview").id,
     });
+    expect(telemetryEvents("neon:project-created")).toEqual([
+      {
+        outcome: "succeeded",
+        developmentPrepared: true,
+        authOnMain: true,
+        authOnDevelopment: true,
+        authOnPreview: true,
+      },
+    ]);
   });
 });

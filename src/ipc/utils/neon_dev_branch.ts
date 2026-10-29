@@ -560,6 +560,7 @@ async function migrateToRootDevelopmentBranch({
   plan,
   timestamp,
   backupFilePath,
+  onStep,
 }: {
   backupFilePath: string;
   appIds: number[];
@@ -569,11 +570,17 @@ async function migrateToRootDevelopmentBranch({
   branches: Branch[];
   plan: LegacyMigrationPlan;
   timestamp: string;
+  onStep: (step: MigrationStep) => void;
 }): Promise<{
   developmentBranchId: string;
   previewBranchId: string | null;
   notCopied: string[];
+  tables: number;
+  rows: number;
+  branchesDeleted: number;
+  branchesNotDeleted: number;
 }> {
+  onStep("source");
   const neonClient = await getNeonClient();
   const stamp = Date.now();
   const label = `app${appIds.length > 1 ? "s" : ""} ${appIds.join(", ")}`;
@@ -587,13 +594,18 @@ async function migrateToRootDevelopmentBranch({
   // Test branches a crashed run left under the preview branch would keep it
   // from serving as the source below; they are deleted with the tree anyway.
   let previewHasChildren = false;
+  let branchesDeleted = 0;
+  let branchesNotDeleted = 0;
   if (oldPreview && replacePreview) {
     const leftovers = new Set(
       childrenOf(branches, oldPreview.id).map((b) => b.id),
     );
-    if (leftovers.size > 0) {
+    const found = leftovers.size;
+    if (found > 0) {
+      // Removes what it deletes from `leftovers`.
       await deleteBranchTree(neonClient, projectId, leftovers);
     }
+    branchesDeleted += found - leftovers.size;
     previewHasChildren = leftovers.size > 0;
   }
 
@@ -641,8 +653,11 @@ async function migrateToRootDevelopmentBranch({
   let renamedOld = false;
   let renamedNew = false;
   let notCopied: string[] = [];
+  let copiedTables = 0;
+  let copiedRows = 0;
   const envSnapshots = new Map<string, string | null>();
   try {
+    onStep("backup");
     // Neon cannot recover the old branches once deleted, so the user keeps a
     // copy of the data. No copy, no migration.
     const backup = await exportBranchDataAsSql({
@@ -654,6 +669,7 @@ async function migrateToRootDevelopmentBranch({
       `Saved ${backup.rows} rows in ${backup.tables} tables to ${backupFilePath} for ${label}`,
     );
 
+    onStep("create-branch");
     const created = await createRootBranch({
       projectId,
       sourceBranchId: oldDevelopment.id,
@@ -662,6 +678,7 @@ async function migrateToRootDevelopmentBranch({
     });
     newDevelopment = created.branch;
 
+    onStep("neon-auth");
     const hasAuth = await branchHasNeonAuth(
       neonClient,
       projectId,
@@ -680,15 +697,19 @@ async function migrateToRootDevelopmentBranch({
         newDevelopment.id,
       );
     }
+    onStep("copy");
     const copied = await copyBranchData({
       sourceUri,
       targetUri: created.connectionUri,
       extraForeignKeys: foreignKeys,
     });
+    copiedTables = copied.tables;
+    copiedRows = copied.rows;
     logger.info(
       `Copied ${copied.rows} rows in ${copied.tables} tables to new development branch ${newDevelopment.id} for ${label}`,
     );
 
+    onStep("rename");
     // Branch names are unique, so free the old name before taking it.
     await retryOnLocked(
       () =>
@@ -708,6 +729,7 @@ async function migrateToRootDevelopmentBranch({
     );
     renamedNew = true;
 
+    onStep("env");
     // Point each app's .env.local at the new branch before its row: once the
     // old tree is deleted, an app left on the old connection string (or the
     // old Neon Auth URL) could not reach its database.
@@ -737,6 +759,7 @@ async function migrateToRootDevelopmentBranch({
         );
       }
     }
+    onStep("switch");
     switchAppsToBranch({
       appIds,
       oldDevelopmentId: oldDevelopment.id,
@@ -804,10 +827,17 @@ async function migrateToRootDevelopmentBranch({
   // behind is swept after a later restore.
   if (temporarySourceId) plan.removable.add(temporarySourceId);
   try {
+    const before = plan.removable.size;
+    // Removes what it deletes from `plan.removable`.
     const failed = await deleteBranchTree(
       neonClient,
       projectId,
       plan.removable,
+    );
+    branchesDeleted += before - plan.removable.size;
+    branchesNotDeleted = failed.length;
+    logger.info(
+      `Deleted ${branchesDeleted} old branches after moving ${label} to root development branch ${newDevelopment.id}`,
     );
     if (failed.length > 0) {
       logger.warn(
@@ -868,7 +898,56 @@ async function migrateToRootDevelopmentBranch({
     developmentBranchId: newDevelopment.id,
     previewBranchId: newPreviewId,
     notCopied,
+    tables: copiedTables,
+    rows: copiedRows,
+    branchesDeleted,
+    branchesNotDeleted,
   };
+}
+
+/** Why a migration was refused before it changed anything. */
+export type MigrationRefusalReason =
+  | "foreign-branches"
+  | "unsupported-objects"
+  | "deploys-with-development"
+  | "version-preview"
+  | "apps-changed"
+  | "branch-limit";
+
+/**
+ * A migration refused, before changing anything, because of the project or
+ * apps it would act on rather than a fault.
+ */
+export class MigrationRefusedError extends DyadError {
+  constructor(
+    message: string,
+    readonly reason: MigrationRefusalReason,
+    kind: DyadErrorKind = DyadErrorKind.Precondition,
+  ) {
+    super(message, kind);
+  }
+}
+
+/** The migration step in progress, to attribute a failure. */
+export type MigrationStep =
+  | "source"
+  | "backup"
+  | "create-branch"
+  | "neon-auth"
+  | "copy"
+  | "rename"
+  | "env"
+  | "switch";
+
+/** What a migration did, for its caller's telemetry. */
+export interface MigrationStats {
+  tables: number;
+  rows: number;
+  leakedBackups: number;
+  /** Old branches deleted after the switch (backups, old development...). */
+  branchesDeleted: number;
+  /** Old branches that could not be deleted; a later sweep retries. */
+  branchesNotDeleted: number;
 }
 
 /**
@@ -1000,9 +1079,12 @@ export async function migrateDevelopmentBranch({
   previewBranchId,
   timestamp,
   backupFilePath,
+  onStep = () => {},
 }: {
   /** Where to save a copy of the data before anything changes. */
   backupFilePath: string;
+  /** Called as the migration reaches each step, to attribute a failure. */
+  onStep?: (step: MigrationStep) => void;
   /** Every app using this development branch; all are moved. */
   appIds: number[];
   projectId: string;
@@ -1014,6 +1096,7 @@ export async function migrateDevelopmentBranch({
   previewBranchId: string | null;
   /** Neon Auth settings that could not be carried over. */
   notCopied: string[];
+  stats: MigrationStats;
 }> {
   const neonClient = await getNeonClient();
   // Branches an earlier, interrupted attempt left behind take up room.
@@ -1028,17 +1111,29 @@ export async function migrateDevelopmentBranch({
     developmentBranchId,
   );
   if (isRootLayout(development, branches)) {
-    return { developmentBranchId, previewBranchId, notCopied: [] };
+    return {
+      developmentBranchId,
+      previewBranchId,
+      notCopied: [],
+      stats: {
+        tables: 0,
+        rows: 0,
+        leakedBackups: 0,
+        branchesDeleted: 0,
+        branchesNotDeleted: 0,
+      },
+    };
   }
+  const leakedBackups = countLeakedBackups(branches, developmentBranchId);
   const plan = planLegacyMigration({
     branches,
     developmentBranchId,
     previewBranchId,
   });
   if ("blockedBy" in plan) {
-    throw new DyadError(
+    throw new MigrationRefusedError(
       `Can't migrate the development database: its Neon branches include ones Dyad did not create (${plan.blockedBy.join(", ")}).`,
-      DyadErrorKind.Precondition,
+      "foreign-branches",
     );
   }
   const blockers = await findMigrationBlockers(
@@ -1052,22 +1147,34 @@ export async function migrateDevelopmentBranch({
     },
   );
   if (blockers.length > 0) {
-    throw new DyadError(
+    throw new MigrationRefusedError(
       `Can't migrate the development database: the copy would lose ${blockers.join(", ")}.`,
-      DyadErrorKind.Precondition,
+      "unsupported-objects",
     );
   }
   try {
-    return await migrateToRootDevelopmentBranch({
-      appIds,
-      projectId,
-      oldDevelopment: development,
-      previewBranchId,
-      branches,
-      plan,
-      timestamp,
-      backupFilePath,
-    });
+    const { tables, rows, branchesDeleted, branchesNotDeleted, ...migrated } =
+      await migrateToRootDevelopmentBranch({
+        appIds,
+        projectId,
+        oldDevelopment: development,
+        previewBranchId,
+        branches,
+        plan,
+        timestamp,
+        backupFilePath,
+        onStep,
+      });
+    return {
+      ...migrated,
+      stats: {
+        tables,
+        rows,
+        leakedBackups,
+        branchesDeleted,
+        branchesNotDeleted,
+      },
+    };
   } catch (error) {
     throw (
       leakedBackupsAtBranchLimit(
@@ -1152,18 +1259,20 @@ export async function restoreDevelopmentBranch({
 export async function waitForRestoreDetach({
   projectId,
   developmentBranchId,
-}: RestoreBackupCleanup): Promise<boolean> {
+}: RestoreBackupCleanup): Promise<"detached" | "timed-out" | "error"> {
   try {
-    return await waitForRootBranchDetached(
+    return (await waitForRootBranchDetached(
       await getNeonClient(),
       projectId,
       developmentBranchId,
-    );
+    ))
+      ? "detached"
+      : "timed-out";
   } catch (error) {
     logger.warn(
       `Could not check whether development branch ${developmentBranchId} is detached from its backup; the next restore cleans up: ${getNeonErrorMessage(error)}`,
     );
-    return false;
+    return "error";
   }
 }
 
@@ -1177,19 +1286,21 @@ export async function deleteRestoreBackup({
   projectId,
   developmentBranchId,
   backupName,
-}: RestoreBackupCleanup): Promise<void> {
+}: RestoreBackupCleanup): Promise<{ backupDeleted: boolean }> {
   try {
     const neonClient = await getNeonClient();
     const backup = (await listBranches(neonClient, projectId)).find(
       (b) => b.name === backupName,
     );
-    if (backup) {
-      await deleteBranch(neonClient, projectId, backup.id, "backup branch");
-    }
+    const backupDeleted =
+      !backup ||
+      (await deleteBranch(neonClient, projectId, backup.id, "backup branch"));
     await sweepLeftoverBranches(neonClient, projectId);
+    return { backupDeleted };
   } catch (error) {
     logger.warn(
       `Could not clean up after restoring development branch ${developmentBranchId}; the next restore retries: ${getNeonErrorMessage(error)}`,
     );
+    return { backupDeleted: false };
   }
 }

@@ -59,6 +59,7 @@ import {
 } from "../utils/app_env_var_utils";
 import { storeDbTimestampAtCurrentVersion } from "../utils/neon_timestamp_utils";
 import { retryOnLocked } from "../utils/retryOnLocked";
+import { sendTelemetryEvent } from "../utils/telemetry";
 import {
   backupBranchName,
   deleteRestoreBackup,
@@ -271,18 +272,31 @@ function scheduleNeonBackupCleanup(
   cleanup: RestoreBackupCleanup | null,
 ): void {
   if (!cleanup) return;
+  const startedAt = Date.now();
+  const report = (outcome: string) =>
+    sendTelemetryEvent("neon:backup-cleanup", {
+      outcome,
+      durationMs: Date.now() - startedAt,
+    });
   const task: Promise<void> = (async () => {
-    if (!(await waitForRestoreDetach(cleanup))) return;
-    await appOperationCoordinator.run(
+    const detach = await waitForRestoreDetach(cleanup);
+    if (detach !== "detached") {
+      report(detach === "timed-out" ? "detach-timed-out" : "detach-error");
+      return;
+    }
+    const { backupDeleted } = await appOperationCoordinator.run(
       { appId, operation: "neon-backup-cleanup", resources: ["provider"] },
       () => deleteRestoreBackup(cleanup),
     );
+    report(backupDeleted ? "deleted" : "delete-failed");
   })()
-    .catch((error) =>
+    .catch((error) => {
+      // E.g. the app was deleted before the claim was granted.
+      report("skipped");
       logger.warn(
         `Skipped cleaning up the Neon backup for app ${appId}: ${getNeonErrorMessage(error)}`,
-      ),
-    )
+      );
+    })
     .finally(() => pendingNeonBackupCleanups.delete(task));
   pendingNeonBackupCleanups.add(task);
 }

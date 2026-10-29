@@ -13,6 +13,13 @@ const logger = log.scope("neon_branch_data");
 const NEON_AUTH_SERVICE_TABLES = new Set(["project_config", "jwks"]);
 const COPY_BATCH_SIZE = 500;
 
+/** The copied rows did not match the source; the copy was rolled back. */
+export class CopyVerificationError extends DyadError {
+  constructor(message: string) {
+    super(message, DyadErrorKind.Internal);
+  }
+}
+
 export interface ForeignKeyDefinition {
   schema: string;
   table: string;
@@ -382,9 +389,8 @@ export async function copyBranchData({
         );
       const [expected, actual] = [await count(source), await count(target)];
       if (expected !== actual) {
-        throw new DyadError(
+        throw new CopyVerificationError(
           `Copying ${table} produced ${actual} rows instead of ${expected}; nothing was changed.`,
-          DyadErrorKind.Internal,
         );
       }
     }
