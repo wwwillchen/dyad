@@ -1,7 +1,3 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-
 import type { Api, Branch } from "@neondatabase/api-client";
 import { EndpointType } from "@neondatabase/api-client";
 import { eq } from "drizzle-orm";
@@ -13,16 +9,17 @@ import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import {
   getNeonClient,
   getNeonErrorMessage,
+  isBranchLimitError,
 } from "../../neon_admin/neon_management_client";
 import { getConnectionUri } from "../../neon_admin/neon_context";
 import { retryOnLocked } from "./retryOnLocked";
 import {
-  exportBranchData,
-  importBranchData,
+  copyBranchData,
   listForeignKeys,
   prepareSchemaOnlyBranchForNeonAuth,
 } from "./neon_branch_data";
 import { autoInjectNeonEnvVars, ensureNeonAuth } from "./neon_utils";
+import { sendTelemetryEvent } from "./telemetry";
 
 const logger = log.scope("neon_dev_branch");
 
@@ -294,58 +291,8 @@ async function deleteBranchTree(
 }
 
 /**
- * Creates the app's preview branch under `parentId`, taking `name` unless a
- * branch already has it. Returns null on failure: version previews then fall
- * back to the development database.
- */
-async function createPreviewBranch(
-  neonClient: Api<unknown>,
-  {
-    appId,
-    projectId,
-    parentId,
-    name,
-  }: { appId: number; projectId: string; parentId: string; name: string },
-): Promise<string | null> {
-  try {
-    const taken = (await listBranches(neonClient, projectId)).some(
-      (b) => b.name === name,
-    );
-    const response = await retryOnLocked(
-      () =>
-        neonClient.createProjectBranch(projectId, {
-          endpoints: [{ type: EndpointType.ReadWrite }],
-          branch: {
-            name: taken ? `${name}-${Date.now()}` : name,
-            parent_id: parentId,
-          },
-        }),
-      `Create preview branch for app ${appId}`,
-    );
-    const previewId = response.data.branch.id;
-    await ensureNeonAuth({ projectId, branchId: previewId }).catch((error) =>
-      logger.warn(
-        `Failed to enable Neon Auth on preview branch ${previewId}: ${getNeonErrorMessage(error)}`,
-      ),
-    );
-    return previewId;
-  } catch (error) {
-    logger.error(
-      `Failed to create a preview branch for app ${appId}: ${getNeonErrorMessage(error)}`,
-    );
-    return null;
-  }
-}
-
-/**
  * Replaces a child development branch with a root branch holding its data at
  * `timestamp`, points the app at it, and deletes the old branch tree.
- *
- * The migration needs one free branch at a time, which deleting the old preview
- * branch provides, and stages the data on local disk so the branch it was read
- * from can be deleted before the new branch is created. So Free-plan projects
- * already at their branch limit (the ones leaked backups hurt most) can still
- * migrate.
  *
  * Everything before the app row is updated is undone on failure, so callers
  * can fall back to an in-place restore.
@@ -372,32 +319,23 @@ async function migrateToRootDevelopmentBranch({
   const oldPreview = previewBranchId
     ? branches.find((b) => b.id === previewBranchId)
     : undefined;
-  const stagingDir = path.join(
-    os.tmpdir(),
-    `dyad-neon-migration-${appId}-${stamp}`,
-  );
 
-  // The preview branch lives in the old tree and is replaced at the end.
-  // Deleting it, and any test branches a crashed run left under it, first
-  // frees the branch this needs: at the branch limit Neon rejects every
-  // restore and branch creation, even a restore that keeps no backup.
-  const replacePreview = !!oldPreview && plan.removable.has(oldPreview.id);
-  let previewDeleted = false;
-  if (oldPreview && replacePreview) {
-    const previewTree = new Set(
-      [oldPreview.id, ...descendantsOf(branches, oldPreview.id)].filter((id) =>
-        plan.removable.has(id),
-      ),
-    );
-    await deleteBranchTree(neonClient, projectId, previewTree);
-    previewDeleted = !previewTree.has(oldPreview.id);
-  }
-
+  // The data to keep is the development branch at `timestamp`. The preview
+  // branch already exists for exactly this, so reuse it instead of spending
+  // another branch from the project's limit.
+  let sourceBranchId: string;
   let temporarySourceId: string | null = null;
-  let newDevelopment: Branch | null = null;
-  let renamedOld = false;
-  try {
-    // The data to keep is the development branch at `timestamp`.
+  if (oldPreview && childrenOf(branches, oldPreview.id).length === 0) {
+    await retryOnLocked(
+      () =>
+        neonClient.restoreProjectBranch(projectId, oldPreview.id, {
+          source_branch_id: oldDevelopment.id,
+          source_timestamp: timestamp,
+        }),
+      `Restore preview branch ${oldPreview.id} as migration source`,
+    );
+    sourceBranchId = oldPreview.id;
+  } else {
     const response = await retryOnLocked(
       () =>
         neonClient.createProjectBranch(projectId, {
@@ -410,26 +348,13 @@ async function migrateToRootDevelopmentBranch({
         }),
       `Create migration source branch for app ${appId}`,
     );
-    temporarySourceId = response.data.branch.id;
-    const exported = await exportBranchData({
-      sourceUri: await getConnectionUri({
-        projectId,
-        branchId: temporarySourceId,
-      }),
-      dir: stagingDir,
-    });
-    // Free its branch for the new one.
-    if (
-      await deleteBranch(
-        neonClient,
-        projectId,
-        temporarySourceId,
-        "migration source branch",
-      )
-    ) {
-      temporarySourceId = null;
-    }
+    sourceBranchId = response.data.branch.id;
+    temporarySourceId = sourceBranchId;
+  }
 
+  let newDevelopment: Branch | null = null;
+  let renamedOld = false;
+  try {
     const created = await createRootBranch({
       projectId,
       sourceBranchId: oldDevelopment.id,
@@ -450,13 +375,16 @@ async function migrateToRootDevelopmentBranch({
       await prepareSchemaOnlyBranchForNeonAuth(created.connectionUri);
       await ensureNeonAuth({ projectId, branchId: newDevelopment.id });
     }
-    await importBranchData({
+    const copied = await copyBranchData({
+      sourceUri: await getConnectionUri({
+        projectId,
+        branchId: sourceBranchId,
+      }),
       targetUri: created.connectionUri,
-      dir: stagingDir,
       extraForeignKeys: foreignKeys,
     });
     logger.info(
-      `Copied ${exported.rows} rows in ${exported.tables} tables to new development branch ${newDevelopment.id} for app ${appId}`,
+      `Copied ${copied.rows} rows in ${copied.tables} tables to new development branch ${newDevelopment.id} for app ${appId}`,
     );
 
     // Branch names are unique, so free the old name before taking it.
@@ -507,27 +435,52 @@ async function migrateToRootDevelopmentBranch({
         "migration source branch",
       );
     }
-    if (oldPreview && previewDeleted) {
-      // The app keeps the old development branch, so it needs its preview
-      // branch back; deleting the unfinished branch above freed the slot.
-      const restoredPreviewId = await createPreviewBranch(neonClient, {
-        appId,
-        projectId,
-        parentId: oldDevelopment.id,
-        name: oldPreview.name,
-      });
-      await db
-        .update(apps)
-        .set({ neonPreviewBranchId: restoredPreviewId })
-        .where(eq(apps.id, appId));
-    }
     throw error;
-  } finally {
-    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
 
   // The new branch now holds the data under the development name. Nothing
   // below may throw: the caller would fall back to restoring the old branch.
+  //
+  // The preview branch lives in the old tree, so replace it with a child of
+  // the new development branch.
+  let newPreviewId: string | null = null;
+  if (oldPreview) {
+    try {
+      // Its subtree goes first (e.g. a test branch left by a crashed run), so
+      // the new preview branch can take the name.
+      const previewTree = new Set(
+        [oldPreview.id, ...descendantsOf(branches, oldPreview.id)].filter(
+          (id) => plan.removable.has(id),
+        ),
+      );
+      await deleteBranchTree(neonClient, projectId, previewTree);
+      const freedName = !previewTree.has(oldPreview.id);
+      const response = await retryOnLocked(
+        () =>
+          neonClient.createProjectBranch(projectId, {
+            endpoints: [{ type: EndpointType.ReadWrite }],
+            branch: {
+              name: freedName ? oldPreview.name : `${oldPreview.name}-${stamp}`,
+              parent_id: newDevelopment.id,
+            },
+          }),
+        `Create preview branch for app ${appId}`,
+      );
+      newPreviewId = response.data.branch.id;
+      await ensureNeonAuth({ projectId, branchId: newPreviewId }).catch(
+        (error) =>
+          logger.warn(
+            `Failed to enable Neon Auth on new preview branch ${newPreviewId}: ${getNeonErrorMessage(error)}`,
+          ),
+      );
+    } catch (error) {
+      // Version previews then fall back to the development database.
+      logger.error(
+        `Failed to create a preview branch for app ${appId}: ${getNeonErrorMessage(error)}`,
+      );
+    }
+  }
+
   const app = await db.query.apps.findFirst({ where: eq(apps.id, appId) });
   const activeId = app?.neonActiveBranchId ?? oldDevelopment.id;
   const developmentWasActive =
@@ -536,7 +489,7 @@ async function migrateToRootDevelopmentBranch({
     .update(apps)
     .set({
       neonDevelopmentBranchId: newDevelopment.id,
-      ...(replacePreview ? { neonPreviewBranchId: null } : {}),
+      neonPreviewBranchId: newPreviewId,
       ...(developmentWasActive
         ? { neonActiveBranchId: newDevelopment.id }
         : {}),
@@ -566,6 +519,7 @@ async function migrateToRootDevelopmentBranch({
     }
   }
 
+  if (temporarySourceId) plan.removable.add(temporarySourceId);
   try {
     const failed = await deleteBranchTree(
       neonClient,
@@ -582,26 +536,30 @@ async function migrateToRootDevelopmentBranch({
       `Failed to delete the old development branches of app ${appId}: ${getNeonErrorMessage(error)}`,
     );
   }
-
-  // Created last: until the old tree is gone, a project at its branch limit
-  // has no room for it.
-  let newPreviewId = previewBranchId;
-  if (oldPreview && replacePreview) {
-    newPreviewId = await createPreviewBranch(neonClient, {
-      appId,
-      projectId,
-      parentId: newDevelopment.id,
-      name: oldPreview.name,
-    });
-    await db
-      .update(apps)
-      .set({ neonPreviewBranchId: newPreviewId })
-      .where(eq(apps.id, appId));
-  }
   return {
     developmentBranchId: newDevelopment.id,
     previewBranchId: newPreviewId,
   };
+}
+
+/**
+ * The Neon project is at its plan's branch limit, largely with backups that
+ * older Dyad versions leaked. Moving off them needs one free branch, and none
+ * can be deleted: each leaked backup has a child.
+ */
+export class LeakedBackupsAtBranchLimitError extends DyadError {
+  constructor() {
+    super(
+      "Restored your code to this version, but the database could not be restored: " +
+        "your Neon project is at its plan's branch limit, mostly with backup branches " +
+        "that earlier versions of Dyad left behind after database restores. To clean " +
+        "them up, upgrade this Neon project to a paid plan, then undo again: Dyad will " +
+        "move your database to a new branch and delete the old backups. The project " +
+        "then uses only a few branches, so you can switch back to the Free plan " +
+        "afterwards. Your current database was left unchanged.",
+      DyadErrorKind.Precondition,
+    );
+  }
 }
 
 export type DevelopmentBranchRestoreResult =
@@ -618,7 +576,8 @@ export type DevelopmentBranchRestoreResult =
  * backup branch behind. A child development branch is first replaced by a
  * root branch (see the comment at the top of this file); if that is not
  * possible, it is restored in place as before and its backup is kept, because
- * Neon cannot delete it.
+ * Neon cannot delete it. Throws `LeakedBackupsAtBranchLimitError` when the
+ * project is too full of leaked backups for either.
  */
 export async function restoreDevelopmentBranch({
   appId,
@@ -703,6 +662,18 @@ export async function restoreDevelopmentBranch({
       });
       return { kind: "migrated", ...migrated };
     } catch (error) {
+      const leakedBackups = branches.filter(
+        (b) => plan.removable.has(b.id) && BACKUP_BRANCH_PATTERN.test(b.name),
+      ).length;
+      if (isBranchLimitError(error) && leakedBackups > 0) {
+        // At the limit Neon rejects every restore, so restoring in place would
+        // fail the same way. Only freeing branches gets the app unstuck.
+        sendTelemetryEvent("neon:leaked-backups-at-branch-limit", {
+          leakedBackups,
+          branchCount: branches.length,
+        });
+        throw new LeakedBackupsAtBranchLimitError();
+      }
       logger.error(
         `Failed to move app ${appId} to a root development branch; restoring in place instead: ${getNeonErrorMessage(error)}`,
       );

@@ -51,6 +51,7 @@ import { ipc } from "@/ipc/types";
 import { versionPreviewHandlerService } from "@/ipc/handlers/version_handlers";
 import { storeDbTimestampAtCurrentVersion } from "@/ipc/utils/neon_timestamp_utils";
 import { readEnvFileIfExists } from "@/ipc/utils/app_env_var_utils";
+import { retryOnLocked } from "@/ipc/utils/retryOnLocked";
 import {
   setupHybridChatHarness,
   type HybridChatHarness,
@@ -210,6 +211,11 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     await sleep(3000);
   }
 
+  /** Neon can still be finishing a previous operation (423); retry. */
+  function setup<T>(operation: () => Promise<T>): Promise<T> {
+    return retryOnLocked(operation, "live test setup");
+  }
+
   async function revert(appId: number, previousVersionId: string) {
     const result = await versionPreviewHandlerService.revertVersion({
       appId,
@@ -218,7 +224,7 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     return result.notification;
   }
 
-  it("moves a child development branch at the Free-plan branch limit to a root branch and deletes the leaked backups", async () => {
+  it("moves a child development branch one short of the Free-plan branch limit to a root branch and deletes the leaked backups", async () => {
     const { appId, appDir } = await createGitApp("neon-legacy");
     const versionA = commit(appDir, "A");
 
@@ -231,22 +237,25 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     projectIds.push(projectId);
     await waitForOperations(projectId);
     const main = created.branch;
-    await liveClient.createNeonAuth(projectId, main.id, {
-      auth_provider: "better_auth" as never,
-    });
+    await setup(() =>
+      liveClient.createNeonAuth(projectId, main.id, {
+        auth_provider: "better_auth" as never,
+      }),
+    );
     await waitForOperations(projectId);
-    const { data: devData } = await liveClient.createProjectBranch(projectId, {
-      endpoints: [{ type: "read_write" as never }],
-      branch: { name: "development", parent_id: main.id },
-    });
+    const { data: devData } = await setup(() =>
+      liveClient.createProjectBranch(projectId, {
+        endpoints: [{ type: "read_write" as never }],
+        branch: { name: "development", parent_id: main.id },
+      }),
+    );
     const devId = devData.branch.id;
     await waitForOperations(projectId);
-    const { data: previewData } = await liveClient.createProjectBranch(
-      projectId,
-      {
+    const { data: previewData } = await setup(() =>
+      liveClient.createProjectBranch(projectId, {
         endpoints: [{ type: "read_write" as never }],
         branch: { name: "preview", parent_id: devId },
-      },
+      }),
     );
     const oldPreviewId = previewData.branch.id;
     fs.writeFileSync(
@@ -263,22 +272,25 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
       })
       .where(eq(apps.id, appId));
 
-    // Seven earlier reverts under the old code, each leaving a backup that
+    // Six earlier reverts under the old code, each leaving a backup that
     // became development's parent. With main, development and preview that
-    // is 10 branches: a Free-plan project at its branch limit.
-    for (let i = 0; i < 7; i++) {
+    // is 9 branches: one short of the Free-plan limit, the fullest project
+    // the migration can handle (it needs one free branch).
+    for (let i = 0; i < 6; i++) {
       await sleep(3000);
       await waitForOperations(projectId);
-      await liveClient.restoreProjectBranch(projectId, devId, {
-        source_branch_id: devId,
-        source_timestamp: new Date(Date.now() - 1000).toISOString(),
-        preserve_under_name: `preserve_${"ab".repeat(20)}-${Date.now()}`,
-      });
+      await setup(() =>
+        liveClient.restoreProjectBranch(projectId, devId, {
+          source_branch_id: devId,
+          source_timestamp: new Date(Date.now() - 1000).toISOString(),
+          preserve_under_name: `preserve_${"ab".repeat(20)}-${Date.now()}`,
+        }),
+      );
     }
     expect(
       (await branches(projectId)).filter((b) => b.name.startsWith("preserve_")),
-    ).toHaveLength(7);
-    expect(await branches(projectId)).toHaveLength(10);
+    ).toHaveLength(6);
+    expect(await branches(projectId)).toHaveLength(9);
 
     const dev = await sql(projectId, devId);
     await dev.query(`create type mood as enum ('happy', 'sad')`);

@@ -61,6 +61,7 @@ import { storeDbTimestampAtCurrentVersion } from "../utils/neon_timestamp_utils"
 import { retryOnLocked } from "../utils/retryOnLocked";
 import {
   backupBranchName,
+  LeakedBackupsAtBranchLimitError,
   restoreDevelopmentBranch,
 } from "../utils/neon_dev_branch";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
@@ -174,6 +175,9 @@ function sanitizeDiffContent(content: string): string {
  * dedicated explanation since it isn't an unexpected failure.
  */
 function getDatabaseRestoreWarning(error: unknown): string {
+  if (error instanceof LeakedBackupsAtBranchLimitError) {
+    return error.message;
+  }
   if (isRetentionWindowError(error)) {
     const window = getRetentionWindowFromError(error);
     return (
