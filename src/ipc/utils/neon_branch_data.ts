@@ -47,6 +47,8 @@ async function listForeignKeysWith(
     join pg_class c on c.oid = con.conrelid
     join pg_namespace n on n.oid = c.relnamespace
     where con.contype = 'f' and ${USER_SCHEMA_FILTER}
+      -- Partitions inherit their parent's foreign keys; those go with it.
+      and con.conparentid = 0
     order by 1, 2, 3`);
   return rows as ForeignKeyDefinition[];
 }
@@ -97,13 +99,15 @@ interface CopyTable {
 }
 
 async function listCopyTables(db: Queryable): Promise<CopyTable[]> {
-  // Ordinary and partitioned parent tables; partitions are copied through their
-  // parent. Extension-owned tables belong to the extension on each branch.
+  // Tables that hold rows, partitions included: a partitioned parent holds
+  // none, and paging through it by ctid would skip rows, because ctids repeat
+  // across partitions. Extension-owned tables belong to the extension on each
+  // branch.
   const rows = await db.query(`
     select n.nspname as schema, c.relname as name
     from pg_class c
     join pg_namespace n on n.oid = c.relnamespace
-    where c.relkind in ('r', 'p') and not c.relispartition
+    where c.relkind = 'r'
       and ${USER_SCHEMA_FILTER}
       and not exists (
         select 1 from pg_depend d
@@ -174,10 +178,22 @@ export async function copyBranchData({
       (await listCopyTables(target)).map((t) => `${t.schema}.${t.name}`),
     );
     const currentForeignKeys = await listForeignKeysWith(target);
+    // Every key dropped below is re-added, including those on partitioned
+    // parents, which hold no rows and so are not in `targetTables`. The extra
+    // keys come back only where their table still exists; neon_auth's own
+    // keys belong to Neon Auth's fresh provisioning.
     const foreignKeysToRestore = new Map<string, ForeignKeyDefinition>();
-    for (const fk of [...currentForeignKeys, ...extraForeignKeys]) {
-      if (!targetTables.has(`${fk.schema}.${fk.table}`)) continue;
+    for (const fk of currentForeignKeys) {
       foreignKeysToRestore.set(`${fk.schema}.${fk.table}.${fk.name}`, fk);
+    }
+    for (const fk of extraForeignKeys) {
+      const key = `${fk.schema}.${fk.table}.${fk.name}`;
+      if (fk.schema === "neon_auth" || foreignKeysToRestore.has(key)) continue;
+      const [{ exists }] = await target.query(
+        "select to_regclass($1) is not null as exists",
+        [qualifiedName(fk.schema, fk.table)],
+      );
+      if (exists) foreignKeysToRestore.set(key, fk);
     }
     for (const fk of currentForeignKeys) {
       await target.query(
@@ -208,7 +224,7 @@ export async function copyBranchData({
         : "";
 
       await target.query(`alter table ${tableName} disable trigger user`);
-      await target.query(`delete from ${tableName}`);
+      await target.query(`delete from only ${tableName}`);
       // Keyset pagination on ctid: the source branch is not written during
       // the copy, so ctids are stable.
       let lastCtid = "(0,0)";
@@ -217,7 +233,7 @@ export async function copyBranchData({
           `select coalesce(json_agg(to_json(x)), '[]'::json) as rows,
              max(x_ctid)::text as last
            from (
-             select ${columnList}, ctid as x_ctid from ${tableName}
+             select ${columnList}, ctid as x_ctid from only ${tableName}
              where ctid > $1::tid order by ctid limit ${COPY_BATCH_SIZE}
            ) x`,
           [lastCtid],

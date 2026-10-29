@@ -93,17 +93,24 @@ export async function ensureNeonAuth({
 }): Promise<string | undefined> {
   const neonClient = await getNeonClient();
 
+  // Every call backs off on 423/429: a branch created moments ago can still
+  // have operations running. Callers should not add their own retry on top.
+  const getNeonAuth = () =>
+    retryOnLocked(
+      () => neonClient.getNeonAuth(projectId, branchId),
+      `Get Neon Auth for branch ${branchId}`,
+    );
+
   // Check if Neon Auth is already enabled on this branch
   try {
-    const response = await neonClient.getNeonAuth(projectId, branchId);
+    const response = await getNeonAuth();
     return response.data.base_url;
   } catch (error: any) {
     // 404 means auth not enabled — proceed to create
     if (error.response?.status !== 404) throw error;
   }
 
-  // Enable Neon Auth on this branch. Branch creation can still be running
-  // on a branch created moments ago, which Neon rejects with 423.
+  // Enable Neon Auth on this branch
   try {
     const createResponse = await retryOnLocked(
       () =>
@@ -118,7 +125,7 @@ export async function ensureNeonAuth({
     // Try fetching the auth config again since it may now be available.
     if (createError.response?.status === 409) {
       try {
-        const retryResponse = await neonClient.getNeonAuth(projectId, branchId);
+        const retryResponse = await getNeonAuth();
         return retryResponse.data.base_url;
       } catch (retryError: any) {
         // Auth schema exists but isn't formally enabled — log warning and return undefined

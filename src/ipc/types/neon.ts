@@ -146,11 +146,15 @@ export const NeonDevelopmentBranchParamsSchema = z.object({
  */
 export const NeonDevelopmentBranchStatusSchema = z.object({
   needsMigration: z.boolean(),
+  /** Other apps on the same development branch; migrating moves them too. */
+  otherApps: z.array(z.object({ id: z.number(), name: z.string() })),
   /**
-   * Deployments use the development database, so migrating would cut the live
-   * app off from its database until it is redeployed.
+   * Apps that deploy with this development database. Migrating would cut
+   * their live app off from its database until it is redeployed.
    */
-  deploysWithDevelopment: z.boolean(),
+  appsDeployingWithDevelopment: z.array(
+    z.object({ id: z.number(), name: z.string() }),
+  ),
   /** Backups older Dyad versions left in the project. */
   leakedBackups: z.number(),
   branchCount: z.number(),
@@ -253,7 +257,10 @@ export const neonContracts = {
   migrateDevelopmentBranch: defineContract({
     channel: "neon:migrate-development-branch",
     input: NeonDevelopmentBranchParamsSchema,
-    output: z.object({ success: z.boolean() }),
+    output: z.object({
+      success: z.boolean(),
+      warning: z.string().optional(),
+    }),
     invalidates: (input) => [
       { family: "apps" },
       { family: "app", appId: input.appId },

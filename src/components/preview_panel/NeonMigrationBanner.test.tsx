@@ -23,8 +23,11 @@ const h = vi.hoisted(() => ({
   migrateDevelopmentBranch: vi.fn(),
   stopApp: vi.fn(),
   restartApp: vi.fn(),
+  showWarning: vi.fn(),
   calls: [] as string[],
 }));
+
+vi.mock("@/lib/toast", () => ({ showWarning: h.showWarning }));
 
 vi.mock("@/ipc/types", () => ({
   ipc: {
@@ -49,7 +52,8 @@ vi.mock("@/hooks/useRunApp", () => ({
 
 const LEGACY_STATUS = {
   needsMigration: true,
-  deploysWithDevelopment: false,
+  otherApps: [],
+  appsDeployingWithDevelopment: [],
   leakedBackups: 4,
   branchCount: 7,
 };
@@ -103,7 +107,8 @@ describe("NeonMigrationBanner", () => {
   it("leaves out the backup count when nothing has leaked yet", async () => {
     h.getDevelopmentBranchStatus.mockResolvedValue({
       needsMigration: true,
-      deploysWithDevelopment: false,
+      otherApps: [],
+      appsDeployingWithDevelopment: [],
       leakedBackups: 0,
       branchCount: 3,
     });
@@ -116,7 +121,7 @@ describe("NeonMigrationBanner", () => {
   it("recommends a production database instead of migrating when the app deploys with development", async () => {
     h.getDevelopmentBranchStatus.mockResolvedValue({
       ...LEGACY_STATUS,
-      deploysWithDevelopment: true,
+      appsDeployingWithDevelopment: [{ id: 1, name: "My App" }],
     });
     launch();
 
@@ -135,10 +140,64 @@ describe("NeonMigrationBanner", () => {
     expect(screen.queryByTestId("neon-migration-banner")).toBeNull();
   });
 
+  it("names another app that deploys with the shared development database", async () => {
+    h.getDevelopmentBranchStatus.mockResolvedValue({
+      ...LEGACY_STATUS,
+      otherApps: [{ id: 2, name: "Todo App" }],
+      appsDeployingWithDevelopment: [{ id: 2, name: "Todo App" }],
+    });
+    launch();
+
+    const banner = await screen.findByTestId("neon-migration-banner");
+    expect(banner.textContent).toContain(
+      "Todo App deploys with your development database",
+    );
+    expect(screen.queryByTestId("neon-migration-banner-migrate")).toBeNull();
+  });
+
+  it("names the other apps a shared migration moves, and stops them first", async () => {
+    h.getDevelopmentBranchStatus.mockResolvedValue({
+      ...LEGACY_STATUS,
+      otherApps: [
+        { id: 2, name: "Todo App" },
+        { id: 3, name: "Notes" },
+      ],
+    });
+    launch();
+
+    const banner = await screen.findByTestId("neon-migration-banner");
+    expect(banner.textContent).toContain(
+      "Also used by Todo App and Notes; migrating moves them too.",
+    );
+    fireEvent.click(screen.getByTestId("neon-migration-banner-migrate"));
+    await waitFor(() => expect(h.restartApp).toHaveBeenCalled());
+    expect(h.stopApp.mock.calls.map(([id]) => id)).toEqual([1, 2, 3]);
+    // Only the app on screen restarts; the others start when next opened.
+    expect(h.restartApp).toHaveBeenCalledTimes(1);
+    expect(h.restartApp).toHaveBeenCalledWith({ appId: 1 });
+  });
+
+  it("warns about Neon Auth settings that were not carried over", async () => {
+    h.migrateDevelopmentBranch.mockResolvedValue({
+      success: true,
+      warning: "These Neon Auth settings could not be copied: github sign-in.",
+    });
+    launch();
+
+    fireEvent.click(await screen.findByTestId("neon-migration-banner-migrate"));
+
+    await waitFor(() =>
+      expect(h.showWarning).toHaveBeenCalledWith(
+        "These Neon Auth settings could not be copied: github sign-in.",
+      ),
+    );
+  });
+
   it("stays hidden when the app needs no migration", async () => {
     h.getDevelopmentBranchStatus.mockResolvedValue({
       needsMigration: false,
-      deploysWithDevelopment: false,
+      otherApps: [],
+      appsDeployingWithDevelopment: [],
       leakedBackups: 0,
       branchCount: 0,
     });
@@ -186,7 +245,8 @@ describe("NeonMigrationBanner", () => {
     const migrate = await screen.findByTestId("neon-migration-banner-migrate");
     h.getDevelopmentBranchStatus.mockResolvedValue({
       needsMigration: false,
-      deploysWithDevelopment: false,
+      otherApps: [],
+      appsDeployingWithDevelopment: [],
       leakedBackups: 0,
       branchCount: 0,
     });

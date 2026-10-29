@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   afterAll,
   beforeAll,
@@ -160,7 +160,7 @@ describe("Neon database revert (integration)", () => {
       commitHash: versionB,
       neonDbTimestamp: "2026-10-02T00:00:00Z",
     });
-    return { appId, appDir, versionA, development, preview };
+    return { appId, appDir, versionA, versionB, development, preview };
   }
 
   /** The layout Dyad creates today: development is a root branch. */
@@ -296,7 +296,8 @@ describe("Neon database revert (integration)", () => {
 
     expect(await status(appId)).toEqual({
       needsMigration: true,
-      deploysWithDevelopment: false,
+      otherApps: [],
+      appsDeployingWithDevelopment: [],
       leakedBackups: 3,
       branchCount: 6,
     });
@@ -308,7 +309,8 @@ describe("Neon database revert (integration)", () => {
 
     expect(await status(appId)).toEqual({
       needsMigration: true,
-      deploysWithDevelopment: false,
+      otherApps: [],
+      appsDeployingWithDevelopment: [],
       leakedBackups: 0,
       branchCount: 3,
     });
@@ -325,13 +327,166 @@ describe("Neon database revert (integration)", () => {
 
     expect(await status(appId)).toMatchObject({
       needsMigration: true,
-      deploysWithDevelopment: true,
+      appsDeployingWithDevelopment: [
+        { id: appId, name: (await appRow(appId)).name },
+      ],
     });
     await expect(migrate(appId)).rejects.toThrow(
       /deploys with it\. Deploy with your production database first/,
     );
     expect(fakeNeon.tree()).toEqual(treeBefore);
     expect((await appRow(appId)).neonDevelopmentBranchId).toBe(development.id);
+  });
+
+  it("moves every app on a shared development branch", async () => {
+    await legacyLayout(2);
+    const first = await connectApp();
+    const second = await connectApp();
+    const secondName = (await appRow(second.appId)).name;
+
+    expect(await status(first.appId)).toMatchObject({
+      needsMigration: true,
+      otherApps: [{ id: second.appId, name: secondName }],
+      appsDeployingWithDevelopment: [],
+    });
+    await migrate(first.appId);
+
+    const newDevelopment = fakeNeon.byName("development");
+    const newPreview = fakeNeon.byName("preview");
+    for (const { appId, appDir } of [first, second]) {
+      expect(await appRow(appId)).toMatchObject({
+        neonDevelopmentBranchId: newDevelopment.id,
+        neonPreviewBranchId: newPreview.id,
+        neonActiveBranchId: newDevelopment.id,
+      });
+      expect(
+        fs.readFileSync(path.join(appDir, ".env.local"), "utf8"),
+      ).toContain(fakeNeon.connectionUri(newDevelopment.id));
+    }
+    expect(fakeNeon.tree()).toEqual({
+      development: null,
+      main: null,
+      preview: "development",
+    });
+  });
+
+  it("refuses to migrate a shared branch that another app deploys with", async () => {
+    await legacyLayout(1);
+    const first = await connectApp();
+    const second = await connectApp();
+    const secondName = (await appRow(second.appId)).name;
+    await harness.db
+      .update(apps)
+      .set({ selectedDatabaseBranchType: "development" })
+      .where(eq(apps.id, second.appId));
+    const treeBefore = fakeNeon.tree();
+
+    expect((await status(first.appId)).appsDeployingWithDevelopment).toEqual([
+      { id: second.appId, name: secondName },
+    ]);
+    await expect(migrate(first.appId)).rejects.toThrow(
+      new RegExp(`while ${secondName} deploys with it`),
+    );
+    expect(fakeNeon.tree()).toEqual(treeBefore);
+  });
+
+  it("reports a restore as done when only its backup cleanup fails", async () => {
+    rootLayout();
+    const { appId, versionA, versionB } = await connectApp();
+    fakeNeon.failures.getProjectBranch = () => {
+      throw new Error("network down");
+    };
+
+    expect(await revert(appId, versionA)).toEqual({
+      kind: "success",
+      message: "Successfully restored to version (including database)",
+    });
+    // Newer restore points were cleared as for any restore.
+    const rows = await harness.db.query.versions.findMany({
+      where: eq(versions.appId, appId),
+    });
+    expect(
+      Object.fromEntries(rows.map((r) => [r.commitHash, r.neonDbTimestamp])),
+    ).toMatchObject({ [versionA]: "2026-10-01T00:00:00Z", [versionB]: null });
+  });
+
+  it("undoes the branch swap when switching the apps over fails", async () => {
+    await legacyLayout(1);
+    const { appId, development, preview } = await connectApp();
+    // SQLite rejects the app-row update, as it would when busy or full.
+    harness.db.run(
+      sql.raw(
+        "CREATE TEMP TRIGGER fail_switch BEFORE UPDATE OF neon_development_branch_id ON apps BEGIN SELECT RAISE(ABORT, 'database is locked'); END",
+      ),
+    );
+    try {
+      await expect(migrate(appId)).rejects.toThrow(/database is locked/);
+    } finally {
+      harness.db.run(sql.raw("DROP TRIGGER fail_switch"));
+    }
+
+    // The old branch has its name back and the unfinished one is gone.
+    expect(fakeNeon.byName("development").id).toBe(development.id);
+    expect(
+      [...fakeNeon.branches.values()].filter((b) => !b.parent_id),
+    ).toHaveLength(1);
+    expect(await appRow(appId)).toMatchObject({
+      neonDevelopmentBranchId: development.id,
+      neonPreviewBranchId: preview.id,
+    });
+  });
+
+  it("keeps a preview branch that lives outside the old tree", async () => {
+    // A linked project whose preview branch hangs off main.
+    fakeNeon.addBranch("main", { neonAuth: true });
+    fakeNeon.addBranch("development", { parent: "main", neonAuth: true });
+    fakeNeon.addBranch("preview", { parent: "main", neonAuth: true });
+    const { appId, preview } = await connectApp();
+
+    await migrate(appId);
+
+    expect(fakeNeon.tree()).toEqual({
+      development: null,
+      main: null,
+      preview: "main",
+    });
+    expect(fakeNeon.byName("preview").id).toBe(preview.id);
+    expect((await appRow(appId)).neonPreviewBranchId).toBe(preview.id);
+  });
+
+  it("carries the Neon Auth settings over to the new branch", async () => {
+    await legacyLayout(1);
+    const old = fakeNeon.byName("development");
+    old.auth.email.require_email_verification = true;
+    old.auth.trustedDomains.push("https://myapp.example.com");
+    old.auth.providers.push(
+      {
+        id: "google",
+        type: "standard",
+        client_id: "g-id",
+        client_secret: "g-secret",
+      },
+      // Neon did not return this one's secret, so it cannot be copied.
+      { id: "github", type: "standard", client_id: "gh-id" },
+    );
+    const { appId } = await connectApp();
+
+    const result = await migrate(appId);
+
+    const auth = fakeNeon.byName("development").auth;
+    expect(auth.email.require_email_verification).toBe(true);
+    expect(auth.trustedDomains).toContain("https://myapp.example.com");
+    expect(auth.providers).toContainEqual(
+      expect.objectContaining({
+        id: "google",
+        client_id: "g-id",
+        client_secret: "g-secret",
+      }),
+    );
+    expect(auth.providers.some((p) => p.id === "github")).toBe(false);
+    expect(result.warning).toMatch(
+      /could not be copied to the new branch: github sign-in/,
+    );
   });
 
   it("reports nothing to migrate for root development branches", async () => {

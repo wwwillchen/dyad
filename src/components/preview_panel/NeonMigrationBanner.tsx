@@ -15,12 +15,19 @@ import { useLoadApp } from "@/hooks/useLoadApp";
 import { useRunApp } from "@/hooks/useRunApp";
 import { ipc, type NeonDevelopmentBranchStatus } from "@/ipc/types";
 import { queryKeys } from "@/lib/queryKeys";
+import { showWarning } from "@/lib/toast";
 
 type MigrationState =
   | { kind: "idle" }
   | { kind: "migrating" }
   | { kind: "migrated" }
   | { kind: "error"; message: string };
+
+function formatNames(names: string[]): string {
+  return names.length <= 1
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error && error.message
@@ -69,9 +76,13 @@ function NeonMigrationBannerContent({
   const handleMigrate = async () => {
     setState({ kind: "migrating" });
     try {
-      // Nothing may write to the database while it is copied.
-      await stopApp(appId);
-      await ipc.neon.migrateDevelopmentBranch({ appId });
+      // Nothing may write to the database while it is copied. Other apps on
+      // the same branch are moved too; they start again when next opened.
+      for (const id of [appId, ...status.otherApps.map((a) => a.id)]) {
+        await stopApp(id);
+      }
+      const { warning } = await ipc.neon.migrateDevelopmentBranch({ appId });
+      if (warning) showWarning(warning);
       setState({ kind: "migrated" });
       await queryClient.invalidateQueries({ queryKey: queryKeys.neon.all });
     } catch (error) {
@@ -85,22 +96,32 @@ function NeonMigrationBannerContent({
     status.leakedBackups === 1
       ? "1 old backup"
       : `${status.leakedBackups} old backups`;
-  const message = status.deploysWithDevelopment
-    ? "Your app deploys with your development database, so edits and undos while " +
-      "you build also change your live app. We strongly recommend deploying with " +
-      "your production database instead."
-    : state.kind === "migrated"
-      ? "Development database migrated. Restarting preview..."
-      : state.kind === "error"
-        ? state.message
-        : "Update your Neon development database: earlier Dyad versions set it up so every " +
-          "database undo leaves a backup branch behind, which eventually uses up your " +
-          "Neon branch limit." +
-          (status.leakedBackups > 0
-            ? ` ${backups} (of ${status.branchCount} branches) will be deleted.`
-            : "") +
-          " Migrating copies your data to a new branch; earlier versions can no longer " +
-          "restore the database, and your app's users may need to sign in again.";
+  const deploying = status.appsDeployingWithDevelopment;
+  const deployer =
+    deploying.length === 1 && deploying[0].id === appId
+      ? "Your app deploys"
+      : `${formatNames(deploying.map((a) => a.name))} ${deploying.length === 1 ? "deploys" : "deploy"}`;
+  const otherApps = status.otherApps.map((a) => a.name);
+  const message =
+    deploying.length > 0
+      ? `${deployer} with your development database, so edits and undos while ` +
+        "you build also change the live app. We strongly recommend deploying with " +
+        "your production database instead."
+      : state.kind === "migrated"
+        ? "Development database migrated. Restarting preview..."
+        : state.kind === "error"
+          ? state.message
+          : "Update your Neon development database: earlier Dyad versions set it up so every " +
+            "database undo leaves a backup branch behind, which eventually uses up your " +
+            "Neon branch limit." +
+            (status.leakedBackups > 0
+              ? ` ${backups} (of ${status.branchCount} branches) will be deleted.`
+              : "") +
+            " Migrating copies your data to a new branch; earlier versions can no longer " +
+            "restore the database, and your app's users may need to sign in again." +
+            (otherApps.length > 0
+              ? ` Also used by ${formatNames(otherApps)}; migrating moves ${otherApps.length === 1 ? "it" : "them"} too.`
+              : "");
   const isMigrating = state.kind === "migrating";
 
   return (
@@ -121,7 +142,7 @@ function NeonMigrationBannerContent({
       </Tooltip>
       <div className="flex shrink-0 items-center gap-1.5">
         {/* Migrating deletes the branch the live app talks to. */}
-        {!status.deploysWithDevelopment && (
+        {deploying.length === 0 && (
           <Button
             size="sm"
             variant="ghost"

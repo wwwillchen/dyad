@@ -314,6 +314,39 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     await dev.query(
       `insert into posts(profile_id, title, parent_id) values (1, 'reply', 1)`,
     );
+    // Inheritance: rows read through the parent include the child's.
+    await dev.query(`create table base_items (id int, label text)`);
+    await dev.query(
+      `create table special_items (extra text) inherits (base_items)`,
+    );
+    await dev.query(`insert into base_items values (1, 'base')`);
+    await dev.query(`insert into special_items values (2, 'special', 'x')`);
+    // Partitions: more rows than one copy batch, spread over two partitions,
+    // with a foreign key that the partitions inherit.
+    await dev.query(
+      `create table events (id int, at date, profile_id int references "Profiles"(id), primary key (id, at)) partition by range (at)`,
+    );
+    await dev.query(
+      `create table events_2025 partition of events for values from ('2025-01-01') to ('2026-01-01')`,
+    );
+    await dev.query(
+      `create table events_2026 partition of events for values from ('2026-01-01') to ('2027-01-01')`,
+    );
+    await dev.query(
+      `insert into events select g, case when g % 2 = 0 then date '2025-06-01' else date '2026-06-01' end, 1 from generate_series(1, 1200) g`,
+    );
+    // Neon Auth settings that a fresh provisioning would reset.
+    await setup(() =>
+      liveClient.updateNeonAuthEmailAndPasswordConfig(projectId, devId, {
+        auto_sign_in_after_verification: false,
+      }),
+    );
+    await setup(() =>
+      liveClient.addBranchNeonAuthTrustedDomain(projectId, devId, {
+        domain: "https://myapp.example.com",
+        auth_provider: "better_auth" as never,
+      }),
+    );
     await snapshotVersion(appId); // version A
 
     commit(appDir, "B");
@@ -327,6 +360,8 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     // What the preview banner checks, then its Migrate button.
     expect(await ipc.neon.getDevelopmentBranchStatus({ appId })).toEqual({
       needsMigration: true,
+      otherApps: [],
+      appsDeployingWithDevelopment: [],
       leakedBackups: 6,
       branchCount: 9,
     });
@@ -382,6 +417,33 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
         `insert into posts(profile_id, title) values (999, 'orphan')`,
       ),
     ).rejects.toThrow(/foreign key/);
+
+    // Inherited rows were copied once, and no partitioned row was skipped.
+    expect(
+      await migrated.query(
+        `select (select count(*)::int from only base_items) as base, (select count(*)::int from special_items) as special`,
+      ),
+    ).toEqual([{ base: 1, special: 1 }]);
+    expect(
+      await migrated.query(
+        `select (select count(*)::int from events) as total, (select count(*)::int from events_2025) as y2025, (select count(distinct id)::int from events) as ids`,
+      ),
+    ).toEqual([{ total: 1200, y2025: 600, ids: 1200 }]);
+    await expect(
+      migrated.query(`insert into events values (9999, '2025-02-01', 999)`),
+    ).rejects.toThrow(/foreign key/);
+
+    // Neon Auth settings came along.
+    const { data: emailConfig } =
+      await liveClient.getNeonAuthEmailAndPasswordConfig(projectId, newDev.id);
+    expect(emailConfig.auto_sign_in_after_verification).toBe(false);
+    const { data: trusted } = await liveClient.listBranchNeonAuthTrustedDomains(
+      projectId,
+      newDev.id,
+    );
+    expect(trusted.domains.map((d) => d.domain)).toContain(
+      "https://myapp.example.com",
+    );
 
     // Neon Auth works on the new branch, with the existing users.
     expect(
