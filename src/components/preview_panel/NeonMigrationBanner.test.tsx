@@ -24,10 +24,15 @@ const h = vi.hoisted(() => ({
   stopApp: vi.fn(),
   restartApp: vi.fn(),
   showWarning: vi.fn(),
+  toastSuccess: vi.fn(),
+  showItemInFolder: vi.fn(),
   calls: [] as string[],
 }));
 
-vi.mock("@/lib/toast", () => ({ showWarning: h.showWarning }));
+vi.mock("@/lib/toast", () => ({
+  showWarning: h.showWarning,
+  toast: { success: h.toastSuccess },
+}));
 
 vi.mock("@/ipc/types", () => ({
   ipc: {
@@ -35,6 +40,7 @@ vi.mock("@/ipc/types", () => ({
       getDevelopmentBranchStatus: h.getDevelopmentBranchStatus,
       migrateDevelopmentBranch: h.migrateDevelopmentBranch,
     },
+    system: { showItemInFolder: h.showItemInFolder },
   },
 }));
 
@@ -294,7 +300,30 @@ describe("NeonMigrationBanner", () => {
     ).toBe(false);
   });
 
-  it("asks for confirmation, recommending backups, before migrating", async () => {
+  it("offers to show the saved backup after migrating", async () => {
+    h.migrateDevelopmentBranch.mockResolvedValue({
+      success: true,
+      backupPath: "/data/neon-backups/my-app.sql",
+    });
+    launch();
+
+    await confirmMigrate();
+
+    await waitFor(() =>
+      expect(h.toastSuccess).toHaveBeenCalledWith(
+        "Migrated your development database.",
+        expect.objectContaining({
+          action: expect.objectContaining({ label: "Show backup" }),
+        }),
+      ),
+    );
+    h.toastSuccess.mock.calls[0][1].action.onClick();
+    expect(h.showItemInFolder).toHaveBeenCalledWith(
+      "/data/neon-backups/my-app.sql",
+    );
+  });
+
+  it("asks for confirmation, saying a backup is saved first, before migrating", async () => {
     launch();
 
     fireEvent.click(await screen.findByTestId("neon-migration-banner-migrate"));
@@ -303,7 +332,7 @@ describe("NeonMigrationBanner", () => {
       "Earlier versions can no longer restore the database.",
     );
     expect(dialog.textContent).toContain(
-      "We recommend enabling database backups for your Neon project before migrating.",
+      "Neon can't recover deleted branches, so Dyad first saves a copy of your development data on this computer.",
     );
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 

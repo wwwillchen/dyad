@@ -35,6 +35,12 @@ vi.mock("@/neon_admin/neon_management_client", async (importOriginal) => ({
 const branchData = vi.hoisted(() => ({
   prepareSchemaOnlyBranchForNeonAuth: vi.fn(async (_uri: string) => {}),
   listForeignKeys: vi.fn(async (_uri: string) => []),
+  exportBranchDataAsSql: vi.fn(
+    async (_args: { sourceUri: string; filePath: string; title: string }) => ({
+      tables: 2,
+      rows: 5,
+    }),
+  ),
   findMigrationBlockers: vi.fn(
     async (
       _uri: string,
@@ -545,7 +551,22 @@ describe("Neon database revert (integration)", () => {
       preview: oldPreview,
     } = await connectApp();
 
-    expect(await migrate(appId)).toEqual({ success: true });
+    const result = await migrate(appId);
+    expect(result).toEqual({
+      success: true,
+      backupPath: expect.stringMatching(/neon-backups[\\/].+\.sql$/),
+    });
+    // The backup is taken from the same data the new branch gets, first.
+    expect(branchData.exportBranchDataAsSql).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceUri: fakeNeon.connectionUri(oldPreview.id),
+        filePath: result.backupPath,
+      }),
+    );
+    expect(
+      branchData.exportBranchDataAsSql.mock.invocationCallOrder[0],
+    ).toBeLessThan(branchData.copyBranchData.mock.invocationCallOrder[0]);
+    expect(result.backupPath).not.toContain(appDir);
 
     expect(fakeNeon.tree()).toEqual({
       development: null,
@@ -858,6 +879,23 @@ describe("Neon database revert (integration)", () => {
       main: null,
       preview: "development",
     });
+  });
+
+  it("does not migrate when the backup cannot be saved", async () => {
+    await legacyLayout(1);
+    branchData.exportBranchDataAsSql.mockRejectedValueOnce(
+      new Error("ENOSPC: no space left on device"),
+    );
+    const { appId, development } = await connectApp();
+
+    await expect(migrate(appId)).rejects.toThrow(/no space left/);
+
+    expect(fakeNeon.byName("development").id).toBe(development.id);
+    expect(
+      [...fakeNeon.branches.values()].filter((b) => !b.parent_id),
+    ).toHaveLength(1);
+    expect(branchData.copyBranchData).not.toHaveBeenCalled();
+    expect((await appRow(appId)).neonDevelopmentBranchId).toBe(development.id);
   });
 
   it("leaves the app unchanged when the data copy fails", async () => {

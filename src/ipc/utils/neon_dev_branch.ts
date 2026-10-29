@@ -25,6 +25,7 @@ import { getConnectionUri } from "../../neon_admin/neon_context";
 import { retryOnLocked } from "./retryOnLocked";
 import {
   copyBranchData,
+  exportBranchDataAsSql,
   findMigrationBlockers,
   listForeignKeys,
   prepareSchemaOnlyBranchForNeonAuth,
@@ -558,7 +559,9 @@ async function migrateToRootDevelopmentBranch({
   branches,
   plan,
   timestamp,
+  backupFilePath,
 }: {
+  backupFilePath: string;
   appIds: number[];
   projectId: string;
   oldDevelopment: Branch;
@@ -628,6 +631,10 @@ async function migrateToRootDevelopmentBranch({
     temporarySourceId = sourceBranchId;
   }
 
+  const sourceUri = await getConnectionUri({
+    projectId,
+    branchId: sourceBranchId,
+  });
   const migratingName = `dyad-migrating-${stamp}`;
   const developmentName = oldDevelopment.name;
   let newDevelopment: Branch | null = null;
@@ -636,6 +643,17 @@ async function migrateToRootDevelopmentBranch({
   let notCopied: string[] = [];
   const envSnapshots = new Map<string, string | null>();
   try {
+    // Neon cannot recover the old branches once deleted, so the user keeps a
+    // copy of the data. No copy, no migration.
+    const backup = await exportBranchDataAsSql({
+      sourceUri,
+      filePath: backupFilePath,
+      title: `Dyad backup of the "${developmentName}" Neon branch, saved before migrating it.`,
+    });
+    logger.info(
+      `Saved ${backup.rows} rows in ${backup.tables} tables to ${backupFilePath} for ${label}`,
+    );
+
     const created = await createRootBranch({
       projectId,
       sourceBranchId: oldDevelopment.id,
@@ -663,10 +681,7 @@ async function migrateToRootDevelopmentBranch({
       );
     }
     const copied = await copyBranchData({
-      sourceUri: await getConnectionUri({
-        projectId,
-        branchId: sourceBranchId,
-      }),
+      sourceUri,
       targetUri: created.connectionUri,
       extraForeignKeys: foreignKeys,
     });
@@ -984,7 +999,10 @@ export async function migrateDevelopmentBranch({
   developmentBranchId,
   previewBranchId,
   timestamp,
+  backupFilePath,
 }: {
+  /** Where to save a copy of the data before anything changes. */
+  backupFilePath: string;
   /** Every app using this development branch; all are moved. */
   appIds: number[];
   projectId: string;
@@ -1048,6 +1066,7 @@ export async function migrateDevelopmentBranch({
       branches,
       plan,
       timestamp,
+      backupFilePath,
     });
   } catch (error) {
     throw (

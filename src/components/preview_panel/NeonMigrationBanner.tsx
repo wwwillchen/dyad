@@ -21,7 +21,7 @@ import { useRunApp } from "@/hooks/useRunApp";
 import { ipc, type NeonDevelopmentBranchStatus } from "@/ipc/types";
 import { getErrorMessage } from "@/lib/errors";
 import { queryKeys } from "@/lib/queryKeys";
-import { showWarning } from "@/lib/toast";
+import { showWarning, toast } from "@/lib/toast";
 
 type MigrationState =
   | { kind: "idle" }
@@ -88,8 +88,20 @@ function NeonMigrationBannerContent({
       for (const id of [appId, ...status.otherApps.map((a) => a.id)]) {
         await stopApp(id);
       }
-      const { warning } = await ipc.neon.migrateDevelopmentBranch({ appId });
+      const { warning, backupPath } = await ipc.neon.migrateDevelopmentBranch({
+        appId,
+      });
       migrated = true;
+      if (backupPath) {
+        toast.success("Migrated your development database.", {
+          description: "A copy of the old data was saved on this computer.",
+          duration: 15_000,
+          action: {
+            label: "Show backup",
+            onClick: () => void ipc.system.showItemInFolder(backupPath),
+          },
+        });
+      }
       if (warning) showWarning(warning);
       setState({ kind: "migrated" });
     } catch (error) {
@@ -208,8 +220,9 @@ function NeonMigrationBannerContent({
                 <li>The app stops while the data is copied.</li>
               </ul>
               <p className="font-medium">
-                We recommend enabling database backups for your Neon project
-                before migrating.
+                Neon can't recover deleted branches, so Dyad first saves a copy
+                of your development data on this computer. It includes your
+                app's user accounts, so keep it private.
               </p>
             </AlertDialogDescription>
           </AlertDialogHeader>

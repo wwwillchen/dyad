@@ -1,6 +1,10 @@
 import { neon, Pool } from "@neondatabase/serverless";
+import fs from "node:fs/promises";
+import path from "node:path";
+
 import log from "electron-log";
 import { IS_TEST_BUILD } from "./test_utils";
+import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 
 const logger = log.scope("neon_branch_data");
 
@@ -245,6 +249,7 @@ export async function copyBranchData({
   const target = targetConnection.db;
   let copiedRows = 0;
   let copiedTables = 0;
+  const copiedTableNames: string[] = [];
   try {
     await source.query("begin isolation level repeatable read read only");
     await target.query("begin");
@@ -306,6 +311,7 @@ export async function copyBranchData({
       )) as { name: string; state: string }[];
       await target.query(`alter table ${tableName} disable trigger user`);
       await target.query(`delete from only ${tableName}`);
+      copiedTableNames.push(tableName);
       // Keyset pagination on ctid, stable within the source snapshot.
       let lastCtid = "(0,0)";
       for (;;) {
@@ -366,6 +372,23 @@ export async function copyBranchData({
       );
     }
 
+    // The old branch is deleted after this, so check that every table came
+    // over whole before committing.
+    for (const table of copiedTableNames) {
+      const count = async (db: Queryable) =>
+        Number(
+          (await db.query(`select count(*)::text as n from only ${table}`))[0]
+            .n,
+        );
+      const [expected, actual] = [await count(source), await count(target)];
+      if (expected !== actual) {
+        throw new DyadError(
+          `Copying ${table} produced ${actual} rows instead of ${expected}; nothing was changed.`,
+          DyadErrorKind.Internal,
+        );
+      }
+    }
+
     await target.query("commit");
   } catch (error) {
     await target.query("rollback").catch(() => {});
@@ -377,4 +400,138 @@ export async function copyBranchData({
   }
 
   return { tables: copiedTables, rows: copiedRows };
+}
+
+/** A dollar-quote tag that does not occur in `text`. */
+function dollarQuoteTag(text: string): string {
+  let tag = "$dyad$";
+  for (let i = 0; text.includes(tag); i++) tag = `$dyad${i}$`;
+  return tag;
+}
+
+/**
+ * Writes every user table's rows from `sourceUri` to `filePath` as a plain
+ * SQL script, read in one snapshot. Running the script (in the Neon SQL
+ * editor, or with psql) against a database with the same schema, such as the
+ * new development branch, replaces those tables' rows with the saved ones.
+ *
+ * It holds the app's data, Neon Auth users included, so the file and its
+ * directory are readable by the owner only. A partial file is removed.
+ */
+export async function exportBranchDataAsSql({
+  sourceUri,
+  filePath,
+  title,
+}: {
+  sourceUri: string;
+  filePath: string;
+  /** First line of the file's header comment. */
+  title: string;
+}): Promise<CopyBranchDataResult> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  const file = await fs.open(filePath, "wx", 0o600);
+  const sourceConnection = await poolQueryable(sourceUri);
+  const source = sourceConnection.db;
+  const write = (text: string) => file.write(`${text}\n`);
+  let rowCount = 0;
+  let tableCount = 0;
+  try {
+    await source.query("begin isolation level repeatable read read only");
+    await write(
+      [
+        `-- ${title.replace(/\n/g, " ")}`,
+        `-- Saved ${new Date().toISOString()}. Data only, not the schema; includes Neon Auth users.`,
+        "-- To restore, run this whole file against a database with the same schema",
+        "-- (e.g. in the Neon SQL editor or with psql). It replaces the rows of every",
+        "-- table below.",
+        "begin;",
+      ].join("\n"),
+    );
+    const foreignKeys = await listForeignKeysWith(source);
+    for (const fk of foreignKeys) {
+      await write(
+        `alter table ${qualifiedName(fk.schema, fk.table)} drop constraint if exists ${quoteIdentifier(fk.name)};`,
+      );
+    }
+    for (const table of await listCopyTables(source)) {
+      const tableName = qualifiedName(table.schema, table.name);
+      const columns = await listInsertableColumns(source, table);
+      if (columns.length === 0) continue;
+      const columnList = columns.map((c) => quoteIdentifier(c.name)).join(", ");
+      const overriding = columns.some((c) => c.identityAlways)
+        ? "overriding system value "
+        : "";
+      const triggers = (await source.query(
+        `select tgname as name, tgenabled as state from pg_trigger
+         where tgrelid = $1::regclass and not tgisinternal`,
+        [tableName],
+      )) as { name: string; state: string }[];
+      await write(`\n-- ${tableName}`);
+      await write(`alter table ${tableName} disable trigger user;`);
+      await write(`delete from only ${tableName};`);
+      let lastCtid = "(0,0)";
+      for (;;) {
+        const [{ rows, last }] = await source.query(
+          `select coalesce(json_agg(to_json(x)), '[]'::json) as rows,
+             max(x_ctid)::text as last
+           from (
+             select ${columnList}, ctid as x_ctid from only ${tableName}
+             where ctid > $1::tid order by ctid limit ${COPY_BATCH_SIZE}
+           ) x`,
+          [lastCtid],
+        );
+        const batch = (rows as Record<string, unknown>[]).map(
+          ({ x_ctid: _ctid, ...row }) => row,
+        );
+        if (batch.length === 0) break;
+        const json = JSON.stringify(batch);
+        const tag = dollarQuoteTag(json);
+        await write(
+          `insert into ${tableName} (${columnList}) ${overriding}select ${columnList} from json_populate_recordset(null::${tableName}, ${tag}${json}${tag});`,
+        );
+        rowCount += batch.length;
+        lastCtid = last;
+        if (batch.length < COPY_BATCH_SIZE) break;
+      }
+      for (const trigger of triggers) {
+        await write(
+          `alter table ${tableName} ${ENABLE_TRIGGER[trigger.state] ?? "enable trigger"} ${quoteIdentifier(trigger.name)};`,
+        );
+      }
+      tableCount += 1;
+    }
+    await write("");
+    const sequences = await source.query(`
+      select schemaname as schema, sequencename as name
+      from pg_sequences
+      where schemaname not in ('pg_catalog', 'information_schema')`);
+    for (const seq of sequences) {
+      const sequenceName = qualifiedName(seq.schema, seq.name);
+      const [state] = await source.query(
+        `select last_value::text as "lastValue", is_called as "isCalled" from ${sequenceName}`,
+      );
+      // Text, not a JS number: bigint sequences exceed 2^53.
+      if (!/^-?\d+$/.test(state.lastValue)) {
+        throw new Error(`Unexpected value for sequence ${sequenceName}`);
+      }
+      await write(
+        `select setval('${sequenceName.replace(/'/g, "''")}', ${state.lastValue}, ${state.isCalled ? "true" : "false"});`,
+      );
+    }
+    for (const fk of foreignKeys) {
+      await write(
+        `alter table ${qualifiedName(fk.schema, fk.table)} add constraint ${quoteIdentifier(fk.name)} ${fk.definition};`,
+      );
+    }
+    await write("commit;");
+    await file.close();
+  } catch (error) {
+    await file.close().catch(() => {});
+    await fs.rm(filePath, { force: true });
+    throw error;
+  } finally {
+    await source.query("rollback").catch(() => {});
+    await sourceConnection.close();
+  }
+  return { tables: tableCount, rows: rowCount };
 }

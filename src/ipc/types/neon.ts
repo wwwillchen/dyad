@@ -197,6 +197,8 @@ export const neonContracts = {
     input: SetNeonAppProjectParamsSchema,
     output: z.object({
       success: z.boolean(),
+      /** The copy of the data saved before migrating. */
+      backupPath: z.string().optional(),
       warning: z.string().optional(),
     }),
     invalidates: (input) => [
@@ -220,6 +222,8 @@ export const neonContracts = {
     input: SetNeonActiveBranchParamsSchema,
     output: z.object({
       success: z.boolean(),
+      /** The copy of the data saved before migrating. */
+      backupPath: z.string().optional(),
       warning: z.string().optional(),
     }),
     invalidates: (input) => [
@@ -264,6 +268,8 @@ export const neonContracts = {
     input: NeonDevelopmentBranchParamsSchema,
     output: z.object({
       success: z.boolean(),
+      /** The copy of the data saved before migrating. */
+      backupPath: z.string().optional(),
       warning: z.string().optional(),
     }),
     invalidates: (input) => [

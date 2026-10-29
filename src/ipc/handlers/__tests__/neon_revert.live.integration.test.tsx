@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { createApiClient, type Branch } from "@neondatabase/api-client";
-import { neon, neonConfig } from "@neondatabase/serverless";
+import { neon, neonConfig, Pool } from "@neondatabase/serverless";
 import { fetch as undiciFetch } from "undici";
 import WebSocket from "ws";
 import { eq } from "drizzle-orm";
@@ -137,6 +137,10 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
   }
 
   async function sql(projectId: string, branchId: string) {
+    return neon(await connectionUri(projectId, branchId));
+  }
+
+  async function connectionUri(projectId: string, branchId: string) {
     await waitForOperations(projectId);
     const [{ data: roles }, { data: dbs }] = await Promise.all([
       liveClient.listProjectBranchRoles(projectId, branchId),
@@ -148,7 +152,7 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
       database_name: dbs.databases[0].name,
       role_name: roles.roles[0].name,
     });
-    return neon(data.uri);
+    return data.uri;
   }
 
   async function authRequest(
@@ -409,9 +413,19 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
       leakedBackups: 6,
       branchCount: 9,
     });
-    expect(await ipc.neon.migrateDevelopmentBranch({ appId })).toEqual({
+    const migration = await ipc.neon.migrateDevelopmentBranch({ appId });
+    expect(migration).toEqual({
       success: true,
+      backupPath: expect.any(String),
     });
+    // The copy of the old data lives outside the app folder, owner-only.
+    const backupPath = migration.backupPath!;
+    expect(backupPath.startsWith(appDir)).toBe(false);
+    expect(fs.readFileSync(backupPath, "utf8")).toMatch(/^-- Dyad backup/);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(backupPath).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(path.dirname(backupPath)).mode & 0o777).toBe(0o700);
+    }
     expect(
       (await ipc.neon.getDevelopmentBranchStatus({ appId })).needsMigration,
     ).toBe(false);
@@ -550,6 +564,34 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
         ).query(`select title from posts order by id`)
       ).map((r) => r.title),
     ).toEqual(["first", "reply", "after A", "new"]);
+
+    // The backup restores the data as it was before migrating, as a user
+    // would by running it in the Neon SQL editor.
+    const restorePool = new Pool({
+      connectionString: await connectionUri(projectId, newDev.id),
+    });
+    try {
+      await restorePool.query(fs.readFileSync(backupPath, "utf8"));
+    } finally {
+      await restorePool.end();
+    }
+    const restored = await sql(projectId, newDev.id);
+    expect(
+      (await restored.query(`select title from posts order by id`)).map(
+        (r) => r.title,
+      ),
+    ).toEqual(["first", "reply", "after A"]);
+    expect(
+      await restored.query(`select count(*)::int as n from events`),
+    ).toEqual([{ n: 1200 }]);
+    expect(
+      await restored.query(
+        `select tgenabled as state from pg_trigger where tgname = 'posts_noop'`,
+      ),
+    ).toEqual([{ state: "D" }]);
+    expect(
+      await authRequest(projectId, newDev.id, "sign-in", "b@example.com"),
+    ).toBe(200);
   }, 600_000);
 
   it("creates new apps with a root development branch whose reverts leave no backups", async () => {

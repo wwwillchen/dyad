@@ -52,7 +52,8 @@ import {
   ensureNitroIfVite,
   type EnsureNitroResult,
 } from "../utils/nitro_setup";
-import { getDyadAppPath } from "@/paths/paths";
+import { getDyadAppPath, getUserDataPath } from "@/paths/paths";
+import path from "node:path";
 import { gitCurrentBranch } from "../utils/git_utils";
 import { createAppOperationHandler } from "@/ipc/utils/app_mutation_lock";
 import {
@@ -1098,6 +1099,13 @@ export function registerNeonHandlers() {
       const projectId = app.neonProjectId;
       const developmentBranchId = app.neonDevelopmentBranchId;
       const sharingIds = (await appsOnDevelopmentBranch(app)).map((a) => a.id);
+      // In Dyad's own data directory, not the app folder, where agents can
+      // read files: it holds the app's data, Neon Auth users included.
+      const backupFilePath = path.join(
+        getUserDataPath(),
+        "neon-backups",
+        `${app.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${new Date().toISOString().replace(/[:.]/g, "-")}.sql`,
+      );
       const result = await withAppsLocked(sharingIds, async () => {
         // An app linked meanwhile would be moved without being locked or
         // stopped first.
@@ -1139,19 +1147,22 @@ export function registerNeonHandlers() {
             branchId: developmentBranchId,
           }),
         });
-        return migrateDevelopmentBranch({
+        const migrated = await migrateDevelopmentBranch({
           appIds: sharing.map((a) => a.id),
           projectId,
           developmentBranchId,
           previewBranchId: app.neonPreviewBranchId,
           timestamp,
+          backupFilePath,
         });
+        return migrated;
       });
       logger.info(
         `Migrated the Neon development branch of apps ${sharingIds.join(", ")}`,
       );
       return {
         success: true,
+        backupPath: backupFilePath,
         warning:
           result.notCopied.length > 0
             ? `Migrated the development database, but these Neon Auth settings could not be copied to the new branch: ${result.notCopied.join(", ")}. Set them up again in the Neon console.`
