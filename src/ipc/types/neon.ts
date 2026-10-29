@@ -145,6 +145,11 @@ export const NeonDevelopmentBranchParamsSchema = z.object({
  * layout, which leaves a backup branch behind on every database restore.
  */
 export const NeonDevelopmentBranchStatusSchema = z.object({
+  /**
+   * The branch uses the old layout and can be migrated. False for an old
+   * layout whose branch tree holds branches Dyad did not create, since
+   * migrating would leave those behind.
+   */
   needsMigration: z.boolean(),
   /** Other apps on the same development branch; migrating moves them too. */
   otherApps: z.array(z.object({ id: z.number(), name: z.string() })),

@@ -53,6 +53,7 @@ import {
   type EnsureNitroResult,
 } from "../utils/nitro_setup";
 import { getDyadAppPath } from "@/paths/paths";
+import { gitCurrentBranch } from "../utils/git_utils";
 import { createAppOperationHandler } from "@/ipc/utils/app_mutation_lock";
 import {
   appOperationCoordinator,
@@ -249,7 +250,15 @@ export function registerNeonHandlers() {
           sourceBranchId: mainBranch.id,
           name: "development",
         });
-        await prepareSchemaOnlyBranchForNeonAuth(developmentConnectionUri);
+        // If this fails, enabling Neon Auth on development below fails too,
+        // which is reported as a warning rather than failing the project.
+        await prepareSchemaOnlyBranchForNeonAuth(
+          developmentConnectionUri,
+        ).catch((error) =>
+          logger.warn(
+            `Failed to prepare development branch ${developmentBranch.id} for Neon Auth: ${error}`,
+          ),
+        );
 
         // Enable Neon Auth on the main branch
         if (
@@ -1090,8 +1099,29 @@ export function registerNeonHandlers() {
       const developmentBranchId = app.neonDevelopmentBranchId;
       const sharingIds = (await appsOnDevelopmentBranch(app)).map((a) => a.id);
       const result = await withAppsLocked(sharingIds, async () => {
-        // Re-read under the locks: an app may have been relinked meanwhile.
+        // An app linked meanwhile would be moved without being locked or
+        // stopped first.
         const sharing = await appsOnDevelopmentBranch(app);
+        if (sharing.some((a) => !sharingIds.includes(a.id))) {
+          throw new DyadError(
+            "Another app was connected to this Neon project while preparing the migration. Try again.",
+            DyadErrorKind.Conflict,
+          );
+        }
+        // A historical version's preview reads the preview branch, which the
+        // migration overwrites and replaces.
+        for (const sharingApp of sharing) {
+          if (
+            (await gitCurrentBranch({
+              path: getDyadAppPath(sharingApp.path),
+            })) === null
+          ) {
+            throw new DyadError(
+              `${sharingApp.name} is showing an earlier version. Return to the latest version before migrating.`,
+              DyadErrorKind.Precondition,
+            );
+          }
+        }
         // The old branch is deleted, which would cut a live app off from its
         // database (and lose its writes) until it is redeployed.
         const deploying = sharing.filter(

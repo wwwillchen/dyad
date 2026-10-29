@@ -5,6 +5,16 @@ import { useState } from "react";
 
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { dismissedNeonMigrationBannerAppIdsAtom } from "@/atoms/previewAtoms";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -14,6 +24,7 @@ import {
 import { useLoadApp } from "@/hooks/useLoadApp";
 import { useRunApp } from "@/hooks/useRunApp";
 import { ipc, type NeonDevelopmentBranchStatus } from "@/ipc/types";
+import { getErrorMessage } from "@/lib/errors";
 import { queryKeys } from "@/lib/queryKeys";
 import { showWarning } from "@/lib/toast";
 
@@ -27,12 +38,6 @@ function formatNames(names: string[]): string {
   return names.length <= 1
     ? (names[0] ?? "")
     : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error && error.message
-    ? error.message
-    : `Could not migrate the development database: ${String(error)}`;
 }
 
 /**
@@ -51,6 +56,10 @@ export function NeonMigrationBanner() {
       appId !== null && !!app?.neonProjectId && !!app.neonDevelopmentBranchId,
     // A failed check (offline, expired token) just leaves the banner hidden.
     retry: false,
+    // Each check lists the project's branches over the Neon API; the layout
+    // changes only when the user migrates, which refetches.
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   });
 
   if (appId === null || !status?.needsMigration || dismissed.has(appId)) {
@@ -72,9 +81,12 @@ function NeonMigrationBannerContent({
   const { loading: appRunLoading, restartApp, stopApp } = useRunApp();
   const queryClient = useQueryClient();
   const [state, setState] = useState<MigrationState>({ kind: "idle" });
+  const [confirming, setConfirming] = useState(false);
 
   const handleMigrate = async () => {
+    setConfirming(false);
     setState({ kind: "migrating" });
+    let migrated = false;
     try {
       // Nothing may write to the database while it is copied. Other apps on
       // the same branch are moved too; they start again when next opened.
@@ -82,13 +94,25 @@ function NeonMigrationBannerContent({
         await stopApp(id);
       }
       const { warning } = await ipc.neon.migrateDevelopmentBranch({ appId });
+      migrated = true;
       if (warning) showWarning(warning);
       setState({ kind: "migrated" });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.neon.all });
     } catch (error) {
       setState({ kind: "error", message: getErrorMessage(error) });
-    } finally {
+    }
+    try {
       await restartApp({ appId });
+    } catch (error) {
+      // Keep a migration error if there was one; it matters more.
+      if (migrated) {
+        setState({
+          kind: "error",
+          message: `Migrated the development database, but could not restart the app: ${getErrorMessage(error)}`,
+        });
+      }
+    }
+    if (migrated) {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.neon.all });
     }
   };
 
@@ -146,7 +170,7 @@ function NeonMigrationBannerContent({
           <Button
             size="sm"
             variant="ghost"
-            onClick={handleMigrate}
+            onClick={() => setConfirming(true)}
             disabled={isMigrating || state.kind === "migrated" || appRunLoading}
             data-testid="neon-migration-banner-migrate"
           >
@@ -169,6 +193,46 @@ function NeonMigrationBannerContent({
           <X className="size-3.5" />
         </Button>
       </div>
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+        <AlertDialogContent data-testid="neon-migration-confirm-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Migrate your development database?
+            </AlertDialogTitle>
+            <AlertDialogDescription
+              render={<div />}
+              className="space-y-2 text-left"
+            >
+              <p>
+                Dyad copies your development database to a new Neon branch, then
+                deletes the old branch
+                {status.leakedBackups > 0 ? ` and its ${backups}` : ""}.
+                {otherApps.length > 0
+                  ? ` ${formatNames(otherApps)} ${otherApps.length === 1 ? "uses" : "use"} the same database and ${otherApps.length === 1 ? "moves" : "move"} too.`
+                  : ""}
+              </p>
+              <ul className="list-disc space-y-1 pl-5">
+                <li>Earlier versions can no longer restore the database.</li>
+                <li>Your app's users may need to sign in again.</li>
+                <li>The app stops while the data is copied.</li>
+              </ul>
+              <p className="font-medium">
+                We recommend enabling database backups for your Neon project
+                before migrating.
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleMigrate}
+              data-testid="neon-migration-confirm"
+            >
+              Migrate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

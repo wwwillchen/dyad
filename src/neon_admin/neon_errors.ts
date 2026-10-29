@@ -53,12 +53,6 @@ export function getNeonErrorMessage(error: unknown): string {
   }
 }
 
-/**
- * Returns true when the error is Neon's "timestamp is before retention window"
- * error. This happens when restoring a branch to a point in time that is older
- * than the project's history retention window (e.g. 6 hours on the free plan),
- * so the requested database snapshot can no longer be recovered.
- */
 /** The project has as many branches as its Neon plan allows. */
 export function isBranchLimitError(error: unknown): boolean {
   const data = (error as { response?: { data?: { code?: unknown } } })?.response
@@ -69,6 +63,12 @@ export function isBranchLimitError(error: unknown): boolean {
   );
 }
 
+/**
+ * Returns true when the error is Neon's "timestamp is before retention window"
+ * error. This happens when restoring a branch to a point in time that is older
+ * than the project's history retention window (e.g. 6 hours on the free plan),
+ * so the requested database snapshot can no longer be recovered.
+ */
 export function isRetentionWindowError(error: unknown): boolean {
   return getNeonErrorMessage(error).toLowerCase().includes("retention window");
 }

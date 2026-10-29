@@ -134,6 +134,82 @@ async function listInsertableColumns(
   return rows as { name: string; identityAlways: boolean }[];
 }
 
+/**
+ * What a migration's copy would lose, as user-facing descriptions; empty when
+ * it is safe. When Neon Auth is re-provisioned, views and policies that depend
+ * on its tables would be dropped with the copied `neon_auth` schema (only
+ * foreign keys are carried over). Large objects live in system catalogs that
+ * a schema-only branch starts without.
+ */
+export async function findMigrationBlockers(
+  connectionUri: string,
+  { neonAuth }: { neonAuth: boolean },
+): Promise<string[]> {
+  if (IS_TEST_BUILD) return [];
+  const db = httpQueryable(connectionUri);
+  const blockers: string[] = [];
+  if (neonAuth) {
+    const dependents = await db.query(`
+      with auth_tables as (
+        select c.oid from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'neon_auth'
+      )
+      select format('the %s %I.%I',
+          case c.relkind when 'm' then 'materialized view' else 'view' end,
+          n.nspname, c.relname) as object
+      from pg_depend d
+      join pg_rewrite r on d.classid = 'pg_rewrite'::regclass and r.oid = d.objid
+      join pg_class c on c.oid = r.ev_class
+      join pg_namespace n on n.oid = c.relnamespace
+      where d.refclassid = 'pg_class'::regclass
+        and d.refobjid in (select oid from auth_tables)
+        and n.nspname <> 'neon_auth'
+      union
+      select format('the policy %I on %I.%I', p.polname, n.nspname, c.relname)
+      from pg_depend d
+      join pg_policy p on d.classid = 'pg_policy'::regclass and p.oid = d.objid
+      join pg_class c on c.oid = p.polrelid
+      join pg_namespace n on n.oid = c.relnamespace
+      where d.refclassid = 'pg_class'::regclass
+        and d.refobjid in (select oid from auth_tables)
+        and n.nspname <> 'neon_auth'
+      order by 1`);
+    blockers.push(
+      ...dependents.map((d) => `${d.object} (it uses Neon Auth's tables)`),
+    );
+  }
+  const [{ count }] = await db.query(
+    "select count(*)::int as count from pg_largeobject_metadata",
+  );
+  if (count > 0) {
+    blockers.push(`${count} large object${count === 1 ? "" : "s"}`);
+  }
+  return blockers;
+}
+
+async function poolQueryable(connectionUri: string) {
+  const pool = new Pool({ connectionString: connectionUri });
+  const client = await pool.connect();
+  const db: Queryable = {
+    query: async (text, params) => (await client.query(text, params)).rows,
+  };
+  return {
+    db,
+    close: async () => {
+      client.release();
+      await pool.end();
+    },
+  };
+}
+
+const ENABLE_TRIGGER: Record<string, string> = {
+  O: "enable trigger",
+  D: "disable trigger",
+  R: "enable replica trigger",
+  A: "enable always trigger",
+};
+
 export interface CopyBranchDataResult {
   tables: number;
   rows: number;
@@ -143,10 +219,12 @@ export interface CopyBranchDataResult {
  * Copies every user table's rows from `sourceUri` into the matching tables of
  * `targetUri`, which must already have the same schema (a schema-only branch).
  *
- * The target is written in one transaction: if anything fails, the target is
- * left as it was. The app role cannot set `session_replication_role`, so
- * foreign keys are dropped for the copy and re-added afterwards (re-adding
- * validates them), and user triggers are disabled per table.
+ * The source is read in one repeatable-read snapshot and the target written in
+ * one transaction: if anything fails, the target is left as it was. Both go
+ * over WebSockets, which have no response size limit for wide rows. The app
+ * role cannot set `session_replication_role`, so foreign keys are dropped for
+ * the copy and re-added afterwards (re-adding validates them), and user
+ * triggers are disabled per table, then put back in their original state.
  *
  * `extraForeignKeys` are constraints captured from the target before
  * `prepareSchemaOnlyBranchForNeonAuth` dropped them along with the copied
@@ -161,18 +239,16 @@ export async function copyBranchData({
   targetUri: string;
   extraForeignKeys?: ForeignKeyDefinition[];
 }): Promise<CopyBranchDataResult> {
-  const source = httpQueryable(sourceUri);
-  const sourceTables = await listCopyTables(source);
-
-  const pool = new Pool({ connectionString: targetUri });
-  const client = await pool.connect();
-  const target: Queryable = {
-    query: async (text, params) => (await client.query(text, params)).rows,
-  };
+  const sourceConnection = await poolQueryable(sourceUri);
+  const targetConnection = await poolQueryable(targetUri);
+  const source = sourceConnection.db;
+  const target = targetConnection.db;
   let copiedRows = 0;
   let copiedTables = 0;
   try {
+    await source.query("begin isolation level repeatable read read only");
     await target.query("begin");
+    const sourceTables = await listCopyTables(source);
 
     const targetTables = new Set(
       (await listCopyTables(target)).map((t) => `${t.schema}.${t.name}`),
@@ -223,10 +299,14 @@ export async function copyBranchData({
         ? "overriding system value"
         : "";
 
+      const triggers = (await target.query(
+        `select tgname as name, tgenabled as state from pg_trigger
+         where tgrelid = $1::regclass and not tgisinternal`,
+        [tableName],
+      )) as { name: string; state: string }[];
       await target.query(`alter table ${tableName} disable trigger user`);
       await target.query(`delete from only ${tableName}`);
-      // Keyset pagination on ctid: the source branch is not written during
-      // the copy, so ctids are stable.
+      // Keyset pagination on ctid, stable within the source snapshot.
       let lastCtid = "(0,0)";
       for (;;) {
         const [{ rows, last }] = await source.query(
@@ -251,24 +331,32 @@ export async function copyBranchData({
         lastCtid = last;
         if (batch.length < COPY_BATCH_SIZE) break;
       }
-      await target.query(`alter table ${tableName} enable trigger user`);
+      for (const trigger of triggers) {
+        await target.query(
+          `alter table ${tableName} ${ENABLE_TRIGGER[trigger.state] ?? "enable trigger"} ${quoteIdentifier(trigger.name)}`,
+        );
+      }
       copiedTables += 1;
     }
 
     const sequences = await source.query(`
-      select schemaname as schema, sequencename as name, last_value::text as "lastValue"
+      select schemaname as schema, sequencename as name
       from pg_sequences
-      where schemaname not in ('pg_catalog', 'information_schema')
-        and last_value is not null`);
+      where schemaname not in ('pg_catalog', 'information_schema')`);
     for (const seq of sequences) {
+      const sequenceName = qualifiedName(seq.schema, seq.name);
       const exists = await target.query(
         "select to_regclass($1) is not null as exists",
-        [qualifiedName(seq.schema, seq.name)],
+        [sequenceName],
       );
       if (!exists[0]?.exists) continue;
-      await target.query("select setval($1::regclass, $2::bigint, true)", [
-        qualifiedName(seq.schema, seq.name),
-        seq.lastValue,
+      const [state] = await source.query(
+        `select last_value::text as "lastValue", is_called as "isCalled" from ${sequenceName}`,
+      );
+      await target.query("select setval($1::regclass, $2::bigint, $3)", [
+        sequenceName,
+        state.lastValue,
+        state.isCalled,
       ]);
     }
 
@@ -283,8 +371,9 @@ export async function copyBranchData({
     await target.query("rollback").catch(() => {});
     throw error;
   } finally {
-    client.release();
-    await pool.end();
+    await source.query("rollback").catch(() => {});
+    await sourceConnection.close();
+    await targetConnection.close();
   }
 
   return { tables: copiedTables, rows: copiedRows };

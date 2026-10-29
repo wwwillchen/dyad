@@ -76,6 +76,11 @@ describe("NeonMigrationBanner", () => {
     });
   });
 
+  async function confirmMigrate() {
+    fireEvent.click(await screen.findByTestId("neon-migration-banner-migrate"));
+    fireEvent.click(await screen.findByTestId("neon-migration-confirm"));
+  }
+
   /** A fresh Jotai store and query cache stand in for a fresh Dyad launch. */
   function launch(store = createStore()) {
     store.set(selectedAppIdAtom, 1);
@@ -169,8 +174,9 @@ describe("NeonMigrationBanner", () => {
     expect(banner.textContent).toContain(
       "Also used by Todo App and Notes; migrating moves them too.",
     );
-    fireEvent.click(screen.getByTestId("neon-migration-banner-migrate"));
+    await confirmMigrate();
     await waitFor(() => expect(h.restartApp).toHaveBeenCalled());
+    expect(h.calls).toEqual(["stop", "stop", "stop", "migrate", "restart"]);
     expect(h.stopApp.mock.calls.map(([id]) => id)).toEqual([1, 2, 3]);
     // Only the app on screen restarts; the others start when next opened.
     expect(h.restartApp).toHaveBeenCalledTimes(1);
@@ -184,7 +190,7 @@ describe("NeonMigrationBanner", () => {
     });
     launch();
 
-    fireEvent.click(await screen.findByTestId("neon-migration-banner-migrate"));
+    await confirmMigrate();
 
     await waitFor(() =>
       expect(h.showWarning).toHaveBeenCalledWith(
@@ -210,7 +216,7 @@ describe("NeonMigrationBanner", () => {
   });
 
   it("does not check apps without a Neon development branch", () => {
-    h.app = { id: 1, neonProjectId: null, neonDevelopmentBranchId: null };
+    h.app = { id: 1, neonProjectId: "p", neonDevelopmentBranchId: null };
     launch();
 
     expect(h.getDevelopmentBranchStatus).not.toHaveBeenCalled();
@@ -242,7 +248,7 @@ describe("NeonMigrationBanner", () => {
 
   it("stops the app, migrates, and restarts it", async () => {
     launch();
-    const migrate = await screen.findByTestId("neon-migration-banner-migrate");
+    await screen.findByTestId("neon-migration-banner-migrate");
     h.getDevelopmentBranchStatus.mockResolvedValue({
       needsMigration: false,
       otherApps: [],
@@ -251,7 +257,7 @@ describe("NeonMigrationBanner", () => {
       branchCount: 0,
     });
 
-    fireEvent.click(migrate);
+    await confirmMigrate();
 
     await waitFor(() =>
       expect(screen.queryByTestId("neon-migration-banner")).toBeNull(),
@@ -261,23 +267,58 @@ describe("NeonMigrationBanner", () => {
     expect(h.restartApp).toHaveBeenCalledWith({ appId: 1 });
   });
 
-  it("shows why a migration failed and restarts the app anyway", async () => {
+  it("shows why a migration failed, without the IPC prefix, and restarts the app anyway", async () => {
     h.migrateDevelopmentBranch.mockRejectedValue(
       new Error(
-        "Could not migrate the development database: your Neon project is at its plan's branch limit.",
+        "Error invoking remote method 'neon:migrate-development-branch': Error: Could not migrate the development database: your Neon project is at its plan's branch limit.",
       ),
     );
     launch();
 
-    fireEvent.click(await screen.findByTestId("neon-migration-banner-migrate"));
+    await confirmMigrate();
 
     const banner = await screen.findByTestId("neon-migration-banner");
     await waitFor(() => expect(banner.textContent).toContain("branch limit"));
+    expect(banner.textContent).not.toContain("Error invoking remote method");
     expect(h.restartApp).toHaveBeenCalledWith({ appId: 1 });
     expect(
       screen
         .getByTestId("neon-migration-banner-migrate")
         .hasAttribute("disabled"),
     ).toBe(false);
+  });
+
+  it("asks for confirmation, recommending backups, before migrating", async () => {
+    launch();
+
+    fireEvent.click(await screen.findByTestId("neon-migration-banner-migrate"));
+    const dialog = await screen.findByTestId("neon-migration-confirm-dialog");
+    expect(dialog.textContent).toContain(
+      "Earlier versions can no longer restore the database.",
+    );
+    expect(dialog.textContent).toContain(
+      "We recommend enabling database backups for your Neon project before migrating.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("neon-migration-confirm-dialog")).toBeNull(),
+    );
+    expect(h.stopApp).not.toHaveBeenCalled();
+    expect(h.migrateDevelopmentBranch).not.toHaveBeenCalled();
+  });
+
+  it("says so when the app could not restart after migrating", async () => {
+    h.restartApp.mockRejectedValue(new Error("port in use"));
+    launch();
+
+    await confirmMigrate();
+
+    const banner = await screen.findByTestId("neon-migration-banner");
+    await waitFor(() =>
+      expect(banner.textContent).toContain(
+        "Migrated the development database, but could not restart the app: port in use",
+      ),
+    );
   });
 });

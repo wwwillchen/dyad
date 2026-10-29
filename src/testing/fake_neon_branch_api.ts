@@ -162,7 +162,7 @@ export class FakeNeonBranchApi {
           return {
             data: {
               project: { id: this.projectId, name: body.project?.name },
-              branch: publicBranch(main),
+              branch: publicBranch(main, this.projectId),
               connection_uris: [
                 { connection_uri: this.connectionUri(main.id) },
               ],
@@ -176,7 +176,11 @@ export class FakeNeonBranchApi {
         }),
       listProjectBranches: async ({ projectId }: { projectId: string }) =>
         call("listProjectBranches", [projectId], () => ({
-          data: { branches: [...this.branches.values()].map(publicBranch) },
+          data: {
+            branches: [...this.branches.values()].map((b) =>
+              publicBranch(b, this.projectId),
+            ),
+          },
         })),
       getProjectBranch: async (projectId: string, branchId: string) =>
         call("getProjectBranch", [projectId, branchId], () => {
@@ -190,7 +194,7 @@ export class FakeNeonBranchApi {
               this.pendingDetach.set(branchId, remaining - 1);
             }
           }
-          return { data: { branch: publicBranch(branch) } };
+          return { data: { branch: publicBranch(branch, this.projectId) } };
         }),
       createProjectBranch: async (projectId: string, body: any) =>
         call("createProjectBranch", [projectId, body], () => {
@@ -212,7 +216,7 @@ export class FakeNeonBranchApi {
           });
           return {
             data: {
-              branch: publicBranch(branch),
+              branch: publicBranch(branch, this.projectId),
               connection_uris: [
                 { connection_uri: this.connectionUri(branch.id) },
               ],
@@ -230,7 +234,7 @@ export class FakeNeonBranchApi {
             this.assertNameFree(body.branch.name);
             branch.name = body.branch.name;
           }
-          return { data: { branch: publicBranch(branch) } };
+          return { data: { branch: publicBranch(branch, this.projectId) } };
         }),
       deleteProjectBranch: async (projectId: string, branchId: string) =>
         call("deleteProjectBranch", [projectId, branchId], () => {
@@ -279,7 +283,7 @@ export class FakeNeonBranchApi {
             for (const child of children) child.parent_id = backup!.id;
             target.parent_id = selfRestore ? backup!.id : source.id;
           }
-          return { data: { branch: publicBranch(target) } };
+          return { data: { branch: publicBranch(target, this.projectId) } };
         }),
       getNeonAuth: async (projectId: string, branchId: string) =>
         call("getNeonAuth", [projectId, branchId], () => {
@@ -298,15 +302,18 @@ export class FakeNeonBranchApi {
           branch.auth = defaultAuthSettings();
           return { data: { base_url: this.authBaseUrl(branchId) } };
         }),
-      listProjectBranchRoles: async () => ({
-        data: { roles: [{ name: "neondb_owner", protected: false }] },
-      }),
-      listProjectBranchDatabases: async () => ({
-        data: { databases: [{ name: "neondb" }] },
-      }),
-      getConnectionUri: async ({ branch_id }: { branch_id: string }) => ({
-        data: { uri: this.connectionUri(this.get(branch_id).id) },
-      }),
+      listProjectBranchRoles: async (projectId: string, branchId: string) =>
+        call("listProjectBranchRoles", [projectId, branchId], () => ({
+          data: { roles: [{ name: "neondb_owner", protected: false }] },
+        })),
+      listProjectBranchDatabases: async (projectId: string, branchId: string) =>
+        call("listProjectBranchDatabases", [projectId, branchId], () => ({
+          data: { databases: [{ name: "neondb" }] },
+        })),
+      getConnectionUri: async (params: { branch_id: string }) =>
+        call("getConnectionUri", [params], () => ({
+          data: { uri: this.connectionUri(this.get(params.branch_id).id) },
+        })),
       getNeonAuthEmailAndPasswordConfig: async (
         projectId: string,
         branchId: string,
@@ -466,7 +473,7 @@ export class FakeNeonBranchApi {
   }
 }
 
-function publicBranch(branch: FakeBranch) {
+function publicBranch(branch: FakeBranch, projectId: string) {
   const { neonAuth: _neonAuth, auth: _auth, ...rest } = branch;
-  return rest;
+  return { ...rest, project_id: projectId };
 }

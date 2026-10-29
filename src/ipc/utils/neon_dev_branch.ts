@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+
 import type {
   Api,
   Branch,
@@ -23,10 +25,12 @@ import { getConnectionUri } from "../../neon_admin/neon_context";
 import { retryOnLocked } from "./retryOnLocked";
 import {
   copyBranchData,
+  findMigrationBlockers,
   listForeignKeys,
   prepareSchemaOnlyBranchForNeonAuth,
 } from "./neon_branch_data";
 import { autoInjectNeonEnvVars, ensureNeonAuth } from "./neon_utils";
+import { getEnvFilePath, readEnvFileIfExists } from "./app_env_var_utils";
 import { sendTelemetryEvent } from "./telemetry";
 
 const logger = log.scope("neon_dev_branch");
@@ -56,8 +60,15 @@ const logger = log.scope("neon_dev_branch");
  * signing keys) that a revert should not spring on them.
  */
 
+// Branches Dyad creates, recognisable by name.
 const BACKUP_BRANCH_PATTERN = /^preserve_[0-9a-f]+-\d+$/;
 const TEST_BRANCH_PATTERN = /^dyad-test-\d+-\d+$/;
+/** A migration's temporary copy of the data to keep. */
+const MIGRATION_SOURCE_PATTERN = /^dyad-restore-source-\d+$/;
+/** A migration's new development branch, until it takes over the name. */
+const MIGRATING_PATTERN = /^dyad-migrating-\d+$/;
+/** An old development branch a migration replaced. */
+const REPLACED_PATTERN = /-replaced-\d+$/;
 
 /** How long to wait for Neon to detach a restored root branch. Tests shorten it. */
 export const detachWait = { pollIntervalMs: 1_000, timeoutMs: 120_000 };
@@ -172,21 +183,55 @@ async function waitForRootBranchDetached(
   }
 }
 
-/** Root `preserve_*` branches with no children are backups a cleanup missed. */
-async function deleteLeakedBackups(
+/**
+ * Deletes branches a restore or migration left behind: backups, replaced
+ * development branches, and a migration's temporary branches. Only branches
+ * without children go, so the sweep works up a leftover chain leaf by leaf and
+ * never touches anything a branch still depends on. Best-effort.
+ */
+async function sweepLeftoverBranches(
   neonClient: Api<unknown>,
   projectId: string,
-  branches: Branch[],
 ): Promise<void> {
-  for (const branch of branches) {
-    if (
-      !branch.parent_id &&
-      BACKUP_BRANCH_PATTERN.test(branch.name) &&
-      childrenOf(branches, branch.id).length === 0
-    ) {
-      await deleteBranch(neonClient, projectId, branch.id, "leaked backup");
+  const failed = new Set<string>();
+  for (;;) {
+    const branches = await listBranches(neonClient, projectId);
+    const leftovers = branches.filter(
+      (b) =>
+        !failed.has(b.id) &&
+        childrenOf(branches, b.id).length === 0 &&
+        (BACKUP_BRANCH_PATTERN.test(b.name) ||
+          REPLACED_PATTERN.test(b.name) ||
+          MIGRATION_SOURCE_PATTERN.test(b.name) ||
+          MIGRATING_PATTERN.test(b.name)),
+    );
+    if (leftovers.length === 0) return;
+    for (const branch of leftovers) {
+      if (
+        !(await deleteBranch(
+          neonClient,
+          projectId,
+          branch.id,
+          "leftover branch",
+        ))
+      ) {
+        failed.add(branch.id);
+      }
     }
   }
+}
+
+/**
+ * Whether the development branch uses the root layout. Right after a restore,
+ * a root branch is briefly a child of its backup (see the top of this file);
+ * an old-layout branch's parent is never a root backup.
+ */
+function isRootLayout(development: Branch, branches: Branch[]): boolean {
+  if (!development.parent_id) return true;
+  const parent = branches.find((b) => b.id === development.parent_id);
+  return (
+    !!parent && !parent.parent_id && BACKUP_BRANCH_PATTERN.test(parent.name)
+  );
 }
 
 interface LegacyMigrationPlan {
@@ -230,7 +275,8 @@ function planLegacyMigration({
       if (
         child.id === previewBranchId ||
         BACKUP_BRANCH_PATTERN.test(child.name) ||
-        TEST_BRANCH_PATTERN.test(child.name)
+        TEST_BRANCH_PATTERN.test(child.name) ||
+        MIGRATION_SOURCE_PATTERN.test(child.name)
       ) {
         removable.add(child.id);
         pending.push(child.id);
@@ -248,7 +294,10 @@ async function branchHasNeonAuth(
   branchId: string,
 ): Promise<boolean> {
   try {
-    await neonClient.getNeonAuth(projectId, branchId);
+    await retryOnLocked(
+      () => neonClient.getNeonAuth(projectId, branchId),
+      `Get Neon Auth for branch ${branchId}`,
+    );
     return true;
   } catch (error: any) {
     if (error?.response?.status === 404) return false;
@@ -426,6 +475,28 @@ async function copyNeonAuthSettings(
   return notCopied;
 }
 
+/** Whether the app runs against the development (or preview) branch. */
+function developmentIsActive(
+  app: { neonActiveBranchId: string | null },
+  developmentBranchId: string,
+  previewBranchId: string | null,
+): boolean {
+  const activeId = app.neonActiveBranchId ?? developmentBranchId;
+  return activeId === developmentBranchId || activeId === previewBranchId;
+}
+
+async function restoreEnvFile(
+  appPath: string,
+  snapshot: string | null,
+): Promise<void> {
+  const envFilePath = getEnvFilePath({ appPath });
+  if (snapshot === null) {
+    await fs.rm(envFilePath, { force: true });
+  } else {
+    await fs.writeFile(envFilePath, snapshot);
+  }
+}
+
 /**
  * Points every app on the old development branch at the new one. One
  * transaction: if it fails, every app stays on the old branch, which the
@@ -446,9 +517,11 @@ function switchAppsToBranch({
     appIds.flatMap((appId) => {
       const app = tx.select().from(apps).where(eq(apps.id, appId)).get();
       if (!app) return [];
-      const activeId = app.neonActiveBranchId ?? oldDevelopmentId;
-      const developmentWasActive =
-        activeId === oldDevelopmentId || activeId === previewBranchId;
+      const developmentWasActive = developmentIsActive(
+        app,
+        oldDevelopmentId,
+        previewBranchId,
+      );
       tx.update(apps)
         .set({
           neonDevelopmentBranchId: newDevelopmentId,
@@ -474,7 +547,8 @@ function switchAppsToBranch({
  * `timestamp`, points every app using it (`appIds`) at the new branch, and
  * deletes the old branch tree.
  *
- * Everything up to switching the apps is undone on failure.
+ * Everything up to and including switching the apps (their `.env.local`
+ * files, then their rows) is undone on failure.
  */
 async function migrateToRootDevelopmentBranch({
   appIds,
@@ -507,6 +581,19 @@ async function migrateToRootDevelopmentBranch({
   // survives the migration, so it is kept rather than replaced.
   const replacePreview = !!oldPreview && plan.removable.has(oldPreview.id);
 
+  // Test branches a crashed run left under the preview branch would keep it
+  // from serving as the source below; they are deleted with the tree anyway.
+  let previewHasChildren = false;
+  if (oldPreview && replacePreview) {
+    const leftovers = new Set(
+      childrenOf(branches, oldPreview.id).map((b) => b.id),
+    );
+    if (leftovers.size > 0) {
+      await deleteBranchTree(neonClient, projectId, leftovers);
+    }
+    previewHasChildren = leftovers.size > 0;
+  }
+
   // The data to keep is the development branch at `timestamp`. The preview
   // branch already exists for exactly this, so reuse it instead of spending
   // another branch from the project's limit. Restoring it makes it a child of
@@ -514,11 +601,7 @@ async function migrateToRootDevelopmentBranch({
   // old tree can serve.
   let sourceBranchId: string;
   let temporarySourceId: string | null = null;
-  if (
-    oldPreview &&
-    replacePreview &&
-    childrenOf(branches, oldPreview.id).length === 0
-  ) {
+  if (oldPreview && replacePreview && !previewHasChildren) {
     await retryOnLocked(
       () =>
         neonClient.restoreProjectBranch(projectId, oldPreview.id, {
@@ -545,15 +628,18 @@ async function migrateToRootDevelopmentBranch({
     temporarySourceId = sourceBranchId;
   }
 
+  const migratingName = `dyad-migrating-${stamp}`;
+  const developmentName = oldDevelopment.name;
   let newDevelopment: Branch | null = null;
   let renamedOld = false;
+  let renamedNew = false;
   let notCopied: string[] = [];
-  let switched: ReturnType<typeof switchAppsToBranch>;
+  const envSnapshots = new Map<string, string | null>();
   try {
     const created = await createRootBranch({
       projectId,
       sourceBranchId: oldDevelopment.id,
-      name: `${oldDevelopment.name}-${stamp}`,
+      name: migratingName,
       sourceTimestamp: timestamp,
     });
     newDevelopment = created.branch;
@@ -589,7 +675,6 @@ async function migrateToRootDevelopmentBranch({
     );
 
     // Branch names are unique, so free the old name before taking it.
-    const developmentName = oldDevelopment.name;
     await retryOnLocked(
       () =>
         neonClient.updateProjectBranch(projectId, oldDevelopment.id, {
@@ -606,27 +691,80 @@ async function migrateToRootDevelopmentBranch({
         }),
       `Rename new development branch ${newDevelopmentId}`,
     );
-    switched = switchAppsToBranch({
+    renamedNew = true;
+
+    // Point each app's .env.local at the new branch before its row: once the
+    // old tree is deleted, an app left on the old connection string (or the
+    // old Neon Auth URL) could not reach its database.
+    const switching = await db
+      .select()
+      .from(apps)
+      .where(inArray(apps.id, appIds));
+    for (const app of switching) {
+      if (!developmentIsActive(app, oldDevelopment.id, previewBranchId)) {
+        continue;
+      }
+      envSnapshots.set(
+        app.path,
+        (await readEnvFileIfExists({ appPath: app.path })) ?? null,
+      );
+      const warning = await autoInjectNeonEnvVars({
+        appId: app.id,
+        appPath: app.path,
+        projectId,
+        branchId: newDevelopmentId,
+        branchType: "development",
+      });
+      if (warning) {
+        throw new DyadError(
+          `Could not point ${app.name} at the new development branch: ${warning}`,
+          DyadErrorKind.External,
+        );
+      }
+    }
+    switchAppsToBranch({
       appIds,
       oldDevelopmentId: oldDevelopment.id,
       previewBranchId,
       newDevelopmentId,
     });
   } catch (error) {
-    // The new branch goes first: it may hold the development name.
+    for (const [appPath, snapshot] of envSnapshots) {
+      await restoreEnvFile(appPath, snapshot).catch((restoreError) =>
+        logger.error(
+          `Failed to restore .env.local for ${appPath}: ${restoreError}`,
+        ),
+      );
+    }
+    // The new branch goes first: it may hold the development name. If it
+    // can't be deleted, it gives the name back and a later sweep deletes it.
     if (newDevelopment) {
-      await deleteBranch(
+      const newDevelopmentId = newDevelopment.id;
+      const deleted = await deleteBranch(
         neonClient,
         projectId,
-        newDevelopment.id,
+        newDevelopmentId,
         "unfinished development branch",
       );
+      if (!deleted && renamedNew) {
+        await retryOnLocked(
+          () =>
+            neonClient.updateProjectBranch(projectId, newDevelopmentId, {
+              branch: { name: migratingName },
+            }),
+          `Rename unfinished development branch ${newDevelopmentId}`,
+        ).catch((renameError) =>
+          logger.error(
+            `Failed to rename unfinished development branch ${newDevelopmentId}: ${getNeonErrorMessage(renameError)}`,
+          ),
+        );
+      }
     }
     if (renamedOld) {
       await retryOnLocked(
         () =>
           neonClient.updateProjectBranch(projectId, oldDevelopment.id, {
-            branch: { name: oldDevelopment.name },
+            branch: { name: developmentName },
           }),
         `Restore old development branch name ${oldDevelopment.id}`,
       ).catch((renameError) =>
@@ -647,25 +785,8 @@ async function migrateToRootDevelopmentBranch({
   }
 
   // The apps now use the new branch. What follows is best-effort cleanup:
-  // failing it must not report the migration as failed.
-  for (const app of switched.filter((a) => a.developmentWasActive)) {
-    // Neon Auth's URL changed with the branch.
-    try {
-      const warning = await autoInjectNeonEnvVars({
-        appId: app.appId,
-        appPath: app.path,
-        projectId,
-        branchId: newDevelopment.id,
-        branchType: "development",
-      });
-      if (warning) logger.warn(warning);
-    } catch (error) {
-      logger.error(
-        `Failed to update Neon env vars for app ${app.appId} after moving its development branch: ${getNeonErrorMessage(error)}`,
-      );
-    }
-  }
-
+  // failing it must not report the migration as failed. Whatever it leaves
+  // behind is swept after a later restore.
   if (temporarySourceId) plan.removable.add(temporarySourceId);
   try {
     const failed = await deleteBranchTree(
@@ -758,19 +879,32 @@ export class LeakedBackupsAtBranchLimitError extends DyadError {
   }
 }
 
-/** Backups older Dyad versions leaked under a child development branch. */
-function countLeakedBackups(branches: Branch[]): number {
-  return branches.filter(
-    (b) => b.parent_id && BACKUP_BRANCH_PATTERN.test(b.name),
-  ).length;
+/**
+ * Backups older Dyad versions leaked above this development branch: the
+ * chain of `preserve_*` branches between it and its first other ancestor.
+ */
+function countLeakedBackups(
+  branches: Branch[],
+  developmentBranchId: string,
+): number {
+  let count = 0;
+  let parentId = branches.find((b) => b.id === developmentBranchId)?.parent_id;
+  while (parentId) {
+    const parent = branches.find((b) => b.id === parentId);
+    if (!parent || !BACKUP_BRANCH_PATTERN.test(parent.name)) break;
+    count += 1;
+    parentId = parent.parent_id;
+  }
+  return count;
 }
 
 function leakedBackupsAtBranchLimit(
   branches: Branch[],
+  developmentBranchId: string,
   error: unknown,
   during: "restore" | "migrate",
 ): LeakedBackupsAtBranchLimitError | null {
-  const leakedBackups = countLeakedBackups(branches);
+  const leakedBackups = countLeakedBackups(branches, developmentBranchId);
   if (!isBranchLimitError(error) || leakedBackups === 0) return null;
   sendTelemetryEvent("neon:leaked-backups-at-branch-limit", {
     leakedBackups,
@@ -825,7 +959,7 @@ export async function getDevelopmentBranchStatus({
     projectId,
     developmentBranchId,
   );
-  if (!development.parent_id) return { layout: "root" };
+  if (isRootLayout(development, branches)) return { layout: "root" };
   const plan = planLegacyMigration({
     branches,
     developmentBranchId,
@@ -834,7 +968,7 @@ export async function getDevelopmentBranchStatus({
   return {
     layout: "legacy",
     migratable: !("blockedBy" in plan),
-    leakedBackups: countLeakedBackups(branches),
+    leakedBackups: countLeakedBackups(branches, developmentBranchId),
     branchCount: branches.length,
   };
 }
@@ -864,12 +998,18 @@ export async function migrateDevelopmentBranch({
   notCopied: string[];
 }> {
   const neonClient = await getNeonClient();
+  // Branches an earlier, interrupted attempt left behind take up room.
+  await sweepLeftoverBranches(neonClient, projectId).catch((error) =>
+    logger.warn(
+      `Failed to clean up leftover branches in Neon project ${projectId}: ${getNeonErrorMessage(error)}`,
+    ),
+  );
   const { branches, development } = await findDevelopmentBranch(
     neonClient,
     projectId,
     developmentBranchId,
   );
-  if (!development.parent_id) {
+  if (isRootLayout(development, branches)) {
     return { developmentBranchId, previewBranchId, notCopied: [] };
   }
   const plan = planLegacyMigration({
@@ -880,6 +1020,22 @@ export async function migrateDevelopmentBranch({
   if ("blockedBy" in plan) {
     throw new DyadError(
       `Can't migrate the development database: its Neon branches include ones Dyad did not create (${plan.blockedBy.join(", ")}).`,
+      DyadErrorKind.Precondition,
+    );
+  }
+  const blockers = await findMigrationBlockers(
+    await getConnectionUri({ projectId, branchId: developmentBranchId }),
+    {
+      neonAuth: await branchHasNeonAuth(
+        neonClient,
+        projectId,
+        developmentBranchId,
+      ),
+    },
+  );
+  if (blockers.length > 0) {
+    throw new DyadError(
+      `Can't migrate the development database: the copy would lose ${blockers.join(", ")}.`,
       DyadErrorKind.Precondition,
     );
   }
@@ -894,17 +1050,33 @@ export async function migrateDevelopmentBranch({
       timestamp,
     });
   } catch (error) {
-    throw leakedBackupsAtBranchLimit(branches, error, "migrate") ?? error;
+    throw (
+      leakedBackupsAtBranchLimit(
+        branches,
+        developmentBranchId,
+        error,
+        "migrate",
+      ) ?? error
+    );
   }
 }
 
+/** A restored root branch's backup, for `cleanUpAfterRestore` to delete. */
+export interface RestoreBackupCleanup {
+  projectId: string;
+  developmentBranchId: string;
+  backupName: string;
+}
+
 /**
- * Restores the app's development branch to `timestamp`. A root branch's
- * backup is deleted once Neon detaches it. A child branch (the old layout) is
- * restored in place and its backup is kept, because Neon cannot delete it;
- * the preview banner offers moving such apps to a root branch. Throws
- * `LeakedBackupsAtBranchLimitError` when leaked backups have filled the
- * project.
+ * Restores the app's development branch to `timestamp`. A child branch (the
+ * old layout) is restored in place and its backup is kept, because Neon
+ * cannot delete it; the preview banner offers moving such apps to a root
+ * branch. A root branch's backup can be deleted, but only once Neon detaches
+ * the restored branch from it, which can take a while: the returned cleanup
+ * is for the caller to run with `cleanUpAfterRestore` after it releases its
+ * claims. Throws `LeakedBackupsAtBranchLimitError` when leaked backups have
+ * filled the project.
  */
 export async function restoreDevelopmentBranch({
   appId,
@@ -918,67 +1090,68 @@ export async function restoreDevelopmentBranch({
   developmentBranchId: string;
   timestamp: string;
   backupName: string;
-}): Promise<{ backupDeleted: boolean }> {
+}): Promise<{ cleanup: RestoreBackupCleanup | null }> {
   const neonClient = await getNeonClient();
   const { branches, development } = await findDevelopmentBranch(
     neonClient,
     projectId,
     developmentBranchId,
   );
-
-  if (development.parent_id) {
-    try {
-      await retryOnLocked(
-        () =>
-          neonClient.restoreProjectBranch(projectId, developmentBranchId, {
-            source_branch_id: developmentBranchId,
-            source_timestamp: timestamp,
-            preserve_under_name: backupName,
-          }),
-        `Restore development branch ${developmentBranchId} for app ${appId}`,
-      );
-    } catch (error) {
-      throw leakedBackupsAtBranchLimit(branches, error, "restore") ?? error;
-    }
-    return { backupDeleted: false };
-  }
-
-  await deleteLeakedBackups(neonClient, projectId, branches);
-  await retryOnLocked(
-    () =>
-      neonClient.restoreProjectBranch(projectId, developmentBranchId, {
-        source_branch_id: developmentBranchId,
-        source_timestamp: timestamp,
-        preserve_under_name: backupName,
-      }),
-    `Restore development branch ${developmentBranchId} for app ${appId}`,
-  );
-  // The restore succeeded; cleaning up its backup must not report it as
-  // failed. A backup that outlives this (slow detach, failed delete) is a
-  // leaked backup that the next restore deletes.
+  const rootLayout = isRootLayout(development, branches);
   try {
+    await retryOnLocked(
+      () =>
+        neonClient.restoreProjectBranch(projectId, developmentBranchId, {
+          source_branch_id: developmentBranchId,
+          source_timestamp: timestamp,
+          preserve_under_name: backupName,
+        }),
+      `Restore development branch ${developmentBranchId} for app ${appId}`,
+    );
+  } catch (error) {
+    throw (
+      leakedBackupsAtBranchLimit(
+        branches,
+        developmentBranchId,
+        error,
+        "restore",
+      ) ?? error
+    );
+  }
+  return {
+    cleanup: rootLayout ? { projectId, developmentBranchId, backupName } : null,
+  };
+}
+
+/**
+ * Deletes a restore's backup once Neon detaches the restored branch from it,
+ * then sweeps anything earlier restores or migrations left behind.
+ * Best-effort: never throws.
+ */
+export async function cleanUpAfterRestore({
+  projectId,
+  developmentBranchId,
+  backupName,
+}: RestoreBackupCleanup): Promise<void> {
+  try {
+    const neonClient = await getNeonClient();
     const detached = await waitForRootBranchDetached(
       neonClient,
       projectId,
       developmentBranchId,
     );
-    const backup = (await listBranches(neonClient, projectId)).find(
-      (b) => b.name === backupName,
-    );
-    const backupDeleted =
-      !backup ||
-      (detached &&
-        (await deleteBranch(
-          neonClient,
-          projectId,
-          backup.id,
-          "backup branch",
-        )));
-    return { backupDeleted };
+    if (detached) {
+      const backup = (await listBranches(neonClient, projectId)).find(
+        (b) => b.name === backupName,
+      );
+      if (backup) {
+        await deleteBranch(neonClient, projectId, backup.id, "backup branch");
+      }
+      await sweepLeftoverBranches(neonClient, projectId);
+    }
   } catch (error) {
     logger.warn(
-      `Restored development branch ${developmentBranchId} for app ${appId}, but could not delete its backup ${backupName}: ${getNeonErrorMessage(error)}`,
+      `Could not clean up after restoring development branch ${developmentBranchId}; the next restore retries: ${getNeonErrorMessage(error)}`,
     );
-    return { backupDeleted: false };
   }
 }

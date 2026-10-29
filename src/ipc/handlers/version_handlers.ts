@@ -61,8 +61,10 @@ import { storeDbTimestampAtCurrentVersion } from "../utils/neon_timestamp_utils"
 import { retryOnLocked } from "../utils/retryOnLocked";
 import {
   backupBranchName,
+  cleanUpAfterRestore,
   LeakedBackupsAtBranchLimitError,
   restoreDevelopmentBranch,
+  type RestoreBackupCleanup,
 } from "../utils/neon_dev_branch";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { syncCloudSandboxSnapshot } from "../utils/cloud_sandbox_provider";
@@ -251,6 +253,39 @@ async function redeploySupabaseFunctionsAfterRevert(
     logger.warn(warning);
     return warning;
   }
+}
+
+const pendingNeonBackupCleanups = new Set<Promise<void>>();
+
+/**
+ * Deletes a restore's Neon backup in the background, once the revert has
+ * released its claims. Neon must first detach the restored branch from the
+ * backup, which can take a while; the user's undo and other work on the app
+ * should not wait for that. Takes its own provider claim, as it changes the
+ * app's Neon project.
+ */
+function scheduleNeonBackupCleanup(
+  appId: number,
+  cleanup: RestoreBackupCleanup | null,
+): void {
+  if (!cleanup) return;
+  const task: Promise<void> = appOperationCoordinator
+    .run(
+      { appId, operation: "neon-backup-cleanup", resources: ["provider"] },
+      () => cleanUpAfterRestore(cleanup),
+    )
+    .catch((error) =>
+      logger.warn(
+        `Skipped cleaning up the Neon backup for app ${appId}: ${getNeonErrorMessage(error)}`,
+      ),
+    )
+    .finally(() => pendingNeonBackupCleanups.delete(task));
+  pendingNeonBackupCleanups.add(task);
+}
+
+/** Waits for background Neon backup cleanups; for tests. */
+export async function settleNeonBackupCleanups(): Promise<void> {
+  await Promise.all(pendingNeonBackupCleanups);
 }
 
 function withRedeployWarning<
@@ -582,6 +617,7 @@ async function revertCodebaseToVersion({
   preserveDirtyTree = false,
   onRestoreProgress,
   onSupabaseRedeployNeeded,
+  onNeonBackupCleanupNeeded,
 }: {
   appId: number;
   app: typeof apps.$inferSelect;
@@ -595,6 +631,8 @@ async function revertCodebaseToVersion({
    * their claims, including when a later step of the operation fails.
    */
   onSupabaseRedeployNeeded?: (target: SupabaseRedeployTarget) => void;
+  /** Called after a restore whose Neon backup can be deleted later. */
+  onNeonBackupCleanupNeeded?: (cleanup: RestoreBackupCleanup) => void;
 }): Promise<{
   successMessage: string;
   warningMessage: string;
@@ -798,13 +836,14 @@ async function revertCodebaseToVersion({
     });
     if (version && version.neonDbTimestamp) {
       try {
-        await restoreDevelopmentBranch({
+        const { cleanup } = await restoreDevelopmentBranch({
           appId,
           projectId: app.neonProjectId,
           developmentBranchId: app.neonDevelopmentBranchId,
           timestamp: version.neonDbTimestamp,
           backupName: backupBranchName(currentCommitHash),
         });
+        if (cleanup) onNeonBackupCleanupNeeded?.(cleanup);
         // Update all versions which have a newer DB timestamp than the version we're restoring to
         // and remove their DB timestamp.
         await db
@@ -1085,6 +1124,7 @@ export function registerVersionHandlers() {
       targetBranchName,
     } = params;
     let supabaseRedeploy = null as SupabaseRedeployTarget | null;
+    let neonBackupCleanup = null as RestoreBackupCleanup | null;
     // A recording holds repository, provider and runtime-config for its whole
     // session, so this would queue invisibly behind it for up to the 30-minute
     // cap. It is also rewriting the tree the recording is capturing against.
@@ -1150,6 +1190,9 @@ export function registerVersionHandlers() {
             targetBranchName,
             preserveDirtyTree,
             onRestoreProgress,
+            onNeonBackupCleanupNeeded: (cleanup) => {
+              neonBackupCleanup = cleanup;
+            },
             onSupabaseRedeployNeeded: (target) => {
               supabaseRedeploy = target;
             },
@@ -1267,6 +1310,8 @@ export function registerVersionHandlers() {
       // The tree may already be restored; keep functions in sync with it.
       await redeploySupabaseFunctionsAfterRevert(appId, supabaseRedeploy);
       throw error;
+    } finally {
+      scheduleNeonBackupCleanup(appId, neonBackupCleanup);
     }
     return withRedeployWarning(
       result,
@@ -1443,6 +1488,7 @@ export function registerVersionHandlers() {
     let releaseStreamAdmissionBlock: (() => void) | undefined;
     let releaseRecordingBlock: (() => void) | undefined;
     let supabaseRedeploy = null as SupabaseRedeployTarget | null;
+    let neonBackupCleanup = null as RestoreBackupCleanup | null;
     let restoreResult: ReturnType<typeof versionCommandResult> | undefined;
     let restoreFailure: { error: unknown } | undefined;
 
@@ -1658,6 +1704,9 @@ export function registerVersionHandlers() {
               targetBranchName,
               preserveDirtyTree,
               onRestoreProgress,
+              onNeonBackupCleanupNeeded: (cleanup) => {
+                neonBackupCleanup = cleanup;
+              },
               onSupabaseRedeployNeeded: (target) => {
                 supabaseRedeploy = target;
               },
@@ -1870,6 +1919,7 @@ export function registerVersionHandlers() {
       releaseStreamAdmissionBlock?.();
       releaseActorAdmissionBlock?.();
       releaseRecordingBlock?.();
+      scheduleNeonBackupCleanup(appId, neonBackupCleanup);
     }
     // After the admission blocks are released: new turns need not wait for
     // the upload. A failure after the tree was restored still redeploys.

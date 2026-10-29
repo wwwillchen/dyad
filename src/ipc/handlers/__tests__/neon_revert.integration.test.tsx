@@ -35,6 +35,12 @@ vi.mock("@/neon_admin/neon_management_client", async (importOriginal) => ({
 const branchData = vi.hoisted(() => ({
   prepareSchemaOnlyBranchForNeonAuth: vi.fn(async (_uri: string) => {}),
   listForeignKeys: vi.fn(async (_uri: string) => []),
+  findMigrationBlockers: vi.fn(
+    async (
+      _uri: string,
+      _options: { neonAuth: boolean },
+    ): Promise<string[]> => [],
+  ),
   copyBranchData: vi.fn(
     async (_args: { sourceUri: string; targetUri: string }) => ({
       tables: 2,
@@ -59,7 +65,10 @@ vi.mock("@/ipc/utils/neon_timestamp_utils", () => ({
 
 import { apps, chats, versions } from "@/db/schema";
 import { ipc } from "@/ipc/types";
-import { versionPreviewHandlerService } from "@/ipc/handlers/version_handlers";
+import {
+  settleNeonBackupCleanups,
+  versionPreviewHandlerService,
+} from "@/ipc/handlers/version_handlers";
 import { detachWait } from "@/ipc/utils/neon_dev_branch";
 import {
   setupHybridChatHarness,
@@ -201,6 +210,8 @@ describe("Neon database revert (integration)", () => {
       appId,
       previousVersionId,
     });
+    // The backup cleanup runs in the background once the revert is done.
+    await settleNeonBackupCleanups();
     return result.notification;
   }
 
@@ -610,10 +621,10 @@ describe("Neon database revert (integration)", () => {
     });
   });
 
-  it("copies from a temporary branch when the old preview has children", async () => {
+  it("deletes test branches left under the old preview and reads through it", async () => {
     await legacyLayout(1);
     fakeNeon.addBranch("dyad-test-1-1700000000000", { parent: "preview" });
-    const { appId, development: oldDevelopment } = await connectApp();
+    const { appId, preview: oldPreview } = await connectApp();
 
     await migrate(appId);
 
@@ -622,6 +633,23 @@ describe("Neon database revert (integration)", () => {
       main: null,
       preview: "development",
     });
+    expect(branchData.copyBranchData.mock.calls[0][0].sourceUri).toBe(
+      fakeNeon.connectionUri(oldPreview.id),
+    );
+  });
+
+  it("reads through a temporary branch when the app has no preview branch", async () => {
+    await legacyLayout(1);
+    const { appId, development: oldDevelopment } = await connectApp();
+    fakeNeon.branches.delete(fakeNeon.byName("preview").id);
+    await harness.db
+      .update(apps)
+      .set({ neonPreviewBranchId: null })
+      .where(eq(apps.id, appId));
+
+    await migrate(appId);
+
+    expect(fakeNeon.tree()).toEqual({ development: null, main: null });
     const source = fakeNeon
       .methodCalls("createProjectBranch")
       .map(([, body]) => (body as any).branch)
@@ -630,10 +658,169 @@ describe("Neon database revert (integration)", () => {
       parent_id: oldDevelopment.id,
       parent_timestamp: DB_NOW,
     });
-    // The data came from that branch, which the tree check shows is gone.
     expect(branchData.copyBranchData.mock.calls[0][0].sourceUri).toContain(
       "br-dyad-restore-source-",
     );
+    expect((await appRow(appId)).neonPreviewBranchId).toBeNull();
+  });
+
+  it("migrates past a source branch an interrupted attempt left behind", async () => {
+    await legacyLayout(1);
+    fakeNeon.addBranch("dyad-restore-source-1700000000000", {
+      parent: "development",
+    });
+    const { appId } = await connectApp();
+
+    expect((await status(appId)).needsMigration).toBe(true);
+    await migrate(appId);
+
+    expect(fakeNeon.tree()).toEqual({
+      development: null,
+      main: null,
+      preview: "development",
+    });
+  });
+
+  it("finishes deleting an old tree a migration could not fully delete", async () => {
+    rootLayout();
+    // Left by a migration whose final cleanup failed: the replaced branch
+    // under the backups it used to sit on.
+    fakeNeon.addBranch(LEGACY_BACKUP(1), { parent: "main" });
+    fakeNeon.addBranch(LEGACY_BACKUP(2), { parent: LEGACY_BACKUP(1) });
+    fakeNeon.addBranch("development-replaced-1700000000000", {
+      parent: LEGACY_BACKUP(2),
+    });
+    const { appId, versionA } = await connectApp();
+
+    await revert(appId, versionA);
+
+    expect(fakeNeon.tree()).toEqual({
+      development: null,
+      main: null,
+      preview: "development",
+    });
+  });
+
+  it("returns from an undo before Neon detaches, and cleans up afterwards", async () => {
+    rootLayout();
+    fakeNeon.detachAfterPolls = Number.POSITIVE_INFINITY;
+    const { appId, versionA } = await connectApp();
+
+    const result = await versionPreviewHandlerService.revertVersion({
+      appId,
+      previousVersionId: versionA,
+    });
+
+    expect(result.notification).toEqual({
+      kind: "success",
+      message: "Successfully restored to version (including database)",
+    });
+    // Still attached to its backup: an old-layout check must not be fooled.
+    expect(fakeNeon.tree().development).toMatch(/^preserve_/);
+    expect((await status(appId)).needsMigration).toBe(false);
+
+    fakeNeon.finishDetach();
+    await settleNeonBackupCleanups();
+    expect(fakeNeon.tree()).toEqual({
+      development: null,
+      main: null,
+      preview: "development",
+    });
+  });
+
+  it("refuses to migrate when the copy would lose objects", async () => {
+    await legacyLayout(1);
+    branchData.findMigrationBlockers.mockResolvedValueOnce([
+      "the view public.member_emails (it uses Neon Auth's tables)",
+    ]);
+    const { appId } = await connectApp();
+    const treeBefore = fakeNeon.tree();
+
+    await expect(migrate(appId)).rejects.toThrow(
+      /would lose the view public\.member_emails/,
+    );
+    expect(fakeNeon.tree()).toEqual(treeBefore);
+    expect(branchData.findMigrationBlockers).toHaveBeenCalledWith(
+      fakeNeon.connectionUri(fakeNeon.byName("development").id),
+      { neonAuth: true },
+    );
+  });
+
+  it("refuses to migrate while an earlier version is being previewed", async () => {
+    await legacyLayout(1);
+    const { appId, appDir, versionA } = await connectApp();
+    git(appDir, "checkout", "-q", versionA);
+    const treeBefore = fakeNeon.tree();
+
+    await expect(migrate(appId)).rejects.toThrow(/showing an earlier version/);
+    expect(fakeNeon.tree()).toEqual(treeBefore);
+  });
+
+  it("puts everything back when the apps' .env.local cannot be updated", async () => {
+    await legacyLayout(1);
+    const { appId, appDir, development, preview } = await connectApp();
+    const envBefore = fs.readFileSync(path.join(appDir, ".env.local"), "utf8");
+    // Connection strings for the new (schema-only) branch cannot be fetched.
+    fakeNeon.failures.getConnectionUri = (params: { branch_id: string }) => {
+      if (
+        fakeNeon.branches.get(params.branch_id)?.init_source === "parent-schema"
+      ) {
+        throw new Error("Neon is unavailable");
+      }
+    };
+
+    await expect(migrate(appId)).rejects.toThrow(/Neon is unavailable/);
+
+    expect(fs.readFileSync(path.join(appDir, ".env.local"), "utf8")).toBe(
+      envBefore,
+    );
+    expect(fakeNeon.byName("development").id).toBe(development.id);
+    expect(
+      [...fakeNeon.branches.values()].filter((b) => !b.parent_id),
+    ).toHaveLength(1);
+    expect(await appRow(appId)).toMatchObject({
+      neonDevelopmentBranchId: development.id,
+      neonPreviewBranchId: preview.id,
+    });
+  });
+
+  it("gives the development name back when the new branch cannot be deleted", async () => {
+    await legacyLayout(1);
+    const { appId, development } = await connectApp();
+    harness.db.run(
+      sql.raw(
+        "CREATE TEMP TRIGGER fail_switch BEFORE UPDATE OF neon_development_branch_id ON apps BEGIN SELECT RAISE(ABORT, 'database is locked'); END",
+      ),
+    );
+    fakeNeon.failures.deleteProjectBranch = (
+      _projectId: string,
+      id: string,
+    ) => {
+      if (fakeNeon.branches.get(id)?.init_source === "parent-schema") {
+        throw new Error("Neon is unavailable");
+      }
+    };
+    try {
+      await expect(migrate(appId)).rejects.toThrow(/database is locked/);
+    } finally {
+      harness.db.run(sql.raw("DROP TRIGGER fail_switch"));
+    }
+
+    expect(fakeNeon.byName("development").id).toBe(development.id);
+    expect(
+      [...fakeNeon.branches.values()].some((b) =>
+        /^dyad-migrating-\d+$/.test(b.name),
+      ),
+    ).toBe(true);
+
+    // The next attempt sweeps the leftover and succeeds.
+    delete fakeNeon.failures.deleteProjectBranch;
+    await migrate(appId);
+    expect(fakeNeon.tree()).toEqual({
+      development: null,
+      main: null,
+      preview: "development",
+    });
   });
 
   it("leaves the app unchanged when the data copy fails", async () => {

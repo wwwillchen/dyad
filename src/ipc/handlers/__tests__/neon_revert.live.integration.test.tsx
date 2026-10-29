@@ -48,7 +48,10 @@ vi.mock("@/neon_admin/neon_management_client", async (importOriginal) => ({
 
 import { apps, chats, versions } from "@/db/schema";
 import { ipc } from "@/ipc/types";
-import { versionPreviewHandlerService } from "@/ipc/handlers/version_handlers";
+import {
+  settleNeonBackupCleanups,
+  versionPreviewHandlerService,
+} from "@/ipc/handlers/version_handlers";
 import { storeDbTimestampAtCurrentVersion } from "@/ipc/utils/neon_timestamp_utils";
 import { readEnvFileIfExists } from "@/ipc/utils/app_env_var_utils";
 import { retryOnLocked } from "@/ipc/utils/retryOnLocked";
@@ -77,14 +80,29 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     appsRoot = path.dirname(harness.appDir);
   }, 60_000);
 
+  // A project is forgotten only once deleted, so a transient Neon error is
+  // retried and a project that can't be deleted fails the run loudly.
   afterEach(async () => {
-    for (const projectId of projectIds.splice(0)) {
-      await waitForOperations(projectId);
-      await liveClient.deleteProject(projectId).catch((error) => {
-        console.error(`Failed to delete Neon project ${projectId}`, error);
-      });
+    const failed: string[] = [];
+    for (const projectId of projectIds) {
+      let deleted = false;
+      for (let attempt = 0; attempt < 5 && !deleted; attempt++) {
+        try {
+          await waitForOperations(projectId);
+          await liveClient.deleteProject(projectId);
+          deleted = true;
+        } catch (error) {
+          console.error(`Failed to delete Neon project ${projectId}`, error);
+          await sleep(5000);
+        }
+      }
+      if (!deleted) failed.push(projectId);
     }
-  }, 120_000);
+    projectIds.splice(0, projectIds.length, ...failed);
+    if (failed.length > 0) {
+      throw new Error(`Left Neon projects behind: ${failed.join(", ")}`);
+    }
+  }, 300_000);
 
   afterAll(async () => {
     await harness?.dispose();
@@ -221,6 +239,8 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
       appId,
       previousVersionId,
     });
+    // The backup cleanup runs in the background once the revert is done.
+    await settleNeonBackupCleanups();
     return result.notification;
   }
 
@@ -357,6 +377,30 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
       await authRequest(projectId, devId, "sign-up", "b@example.com"),
     ).toBe(200);
 
+    // A disabled trigger must stay disabled after the copy.
+    await dev.query(
+      `create function noop() returns trigger language plpgsql as $$ begin return new; end $$`,
+    );
+    await dev.query(
+      `create trigger posts_noop before insert on posts for each row execute function noop()`,
+    );
+    await dev.query(`alter table posts disable trigger posts_noop`);
+
+    // The copy would lose a view on Neon Auth's tables and large objects, so
+    // the migration refuses until they are gone.
+    await dev.query(
+      `create view member_emails as select email from neon_auth."user"`,
+    );
+    const [{ oid: largeObject }] = await dev.query(
+      `select lo_from_bytea(0, 'blob'::bytea)::int as oid`,
+    );
+    await expect(ipc.neon.migrateDevelopmentBranch({ appId })).rejects.toThrow(
+      /view public\.member_emails.*1 large object/s,
+    );
+    expect(await branches(projectId)).toHaveLength(9);
+    await dev.query(`drop view member_emails`);
+    await dev.query(`select lo_unlink($1)`, [largeObject]);
+
     // What the preview banner checks, then its Migrate button.
     expect(await ipc.neon.getDevelopmentBranchStatus({ appId })).toEqual({
       needsMigration: true,
@@ -432,6 +476,12 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     await expect(
       migrated.query(`insert into events values (9999, '2025-02-01', 999)`),
     ).rejects.toThrow(/foreign key/);
+
+    expect(
+      await migrated.query(
+        `select tgenabled as state from pg_trigger where tgname = 'posts_noop'`,
+      ),
+    ).toEqual([{ state: "D" }]);
 
     // Neon Auth settings came along.
     const { data: emailConfig } =
