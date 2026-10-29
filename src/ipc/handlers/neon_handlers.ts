@@ -22,12 +22,19 @@ import { retryOnLocked } from "../utils/retryOnLocked";
 import {
   createRootBranch,
   getDevelopmentBranchStatus,
+  LeakedBackupsAtBranchLimitError,
   migrateDevelopmentBranch,
+  MigrationRefusedError,
+  type MigrationStep,
 } from "../utils/neon_dev_branch";
+import { sendTelemetryEvent } from "../utils/telemetry";
 import { getPreciseNeonTimestamp } from "../utils/neon_timestamp_utils";
 import { getConnectionUri } from "../../neon_admin/neon_context";
-import { prepareSchemaOnlyBranchForNeonAuth } from "../utils/neon_branch_data";
-import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
+import {
+  CopyVerificationError,
+  prepareSchemaOnlyBranchForNeonAuth,
+} from "../utils/neon_branch_data";
+import { DyadError, DyadErrorKind, isDyadError } from "@/errors/dyad_error";
 import {
   getEnvFilePath,
   readEnvFileIfExists,
@@ -97,6 +104,42 @@ function createLockedHandler<
       refuseWhenRecording,
     ),
   );
+}
+
+/**
+ * Telemetry for a migration that did not succeed: "refused" when it stopped
+ * before changing anything because of the user's project or apps, "failed"
+ * when it went wrong partway (and rolled back). Fixed categories only: error
+ * text can carry user data.
+ */
+function classifyMigrationError(
+  error: unknown,
+  step: MigrationStep | undefined,
+): Record<string, string | number | boolean> {
+  if (error instanceof LeakedBackupsAtBranchLimitError) {
+    return { outcome: "refused", reason: "branch-limit" };
+  }
+  if (error instanceof MigrationRefusedError) {
+    return { outcome: "refused", reason: error.reason };
+  }
+  // Before the first step nothing has changed; a refusal there is e.g. an
+  // active recording session.
+  if (
+    step === undefined &&
+    isDyadError(error) &&
+    (error.kind === DyadErrorKind.Precondition ||
+      error.kind === DyadErrorKind.Conflict)
+  ) {
+    return { outcome: "refused", reason: "other" };
+  }
+  const neonStatus = (error as { response?: { status?: unknown } })?.response
+    ?.status;
+  return {
+    outcome: "failed",
+    step: step ?? "prepare",
+    rowCountMismatch: error instanceof CopyVerificationError,
+    ...(typeof neonStatus === "number" ? { neonStatus } : {}),
+  };
 }
 
 /** Apps (this one included) linked to the same Neon development branch. */
@@ -231,6 +274,10 @@ export function registerNeonHandlers() {
       const project = response.data.project;
       const mainBranch = response.data.branch;
       const authWarnings: string[] = [];
+      // For telemetry on the root development branch setup, which depends on
+      // preparing a schema-only branch for Neon Auth.
+      let developmentPrepared = true;
+      const authOn = { main: true, development: true, preview: true };
 
       // Snapshot env file before modification so we can restore on failure
       let envFileSnapshot: string | null | undefined = undefined;
@@ -255,11 +302,12 @@ export function registerNeonHandlers() {
         // which is reported as a warning rather than failing the project.
         await prepareSchemaOnlyBranchForNeonAuth(
           developmentConnectionUri,
-        ).catch((error) =>
+        ).catch((error) => {
+          developmentPrepared = false;
           logger.warn(
             `Failed to prepare development branch ${developmentBranch.id} for Neon Auth: ${error}`,
-          ),
-        );
+          );
+        });
 
         // Enable Neon Auth on the main branch
         if (
@@ -268,6 +316,7 @@ export function registerNeonHandlers() {
             branchId: mainBranch.id,
           }))
         ) {
+          authOn.main = false;
           authWarnings.push(buildNeonAuthActivationWarning("production"));
         }
 
@@ -278,6 +327,7 @@ export function registerNeonHandlers() {
             branchId: developmentBranch.id,
           }))
         ) {
+          authOn.development = false;
           authWarnings.push(buildNeonAuthActivationWarning("development"));
         }
 
@@ -314,6 +364,7 @@ export function registerNeonHandlers() {
             branchId: previewBranch.id,
           }))
         ) {
+          authOn.preview = false;
           authWarnings.push(buildNeonAuthActivationWarning("preview"));
         }
 
@@ -343,6 +394,13 @@ export function registerNeonHandlers() {
           }),
         );
 
+        sendTelemetryEvent("neon:project-created", {
+          outcome: "succeeded",
+          developmentPrepared,
+          authOnMain: authOn.main,
+          authOnDevelopment: authOn.development,
+          authOnPreview: authOn.preview,
+        });
         logger.info(
           `Successfully created Neon project: ${project.id} with main branch: ${mainBranch.id} and development branch: ${developmentBranch.id} for app ${appId}`,
         );
@@ -354,6 +412,14 @@ export function registerNeonHandlers() {
           warning,
         };
       } catch (postCreateError) {
+        const neonStatus = (
+          postCreateError as { response?: { status?: unknown } }
+        )?.response?.status;
+        sendTelemetryEvent("neon:project-created", {
+          outcome: "failed",
+          developmentPrepared,
+          ...(typeof neonStatus === "number" ? { neonStatus } : {}),
+        });
         // Best-effort cleanup: delete the orphan Neon project
         logger.warn(
           `Post-creation step failed for project ${project.id}, attempting cleanup: ${postCreateError}`,
@@ -1106,56 +1172,79 @@ export function registerNeonHandlers() {
         "neon-backups",
         `${app.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${new Date().toISOString().replace(/[:.]/g, "-")}.sql`,
       );
-      const result = await withAppsLocked(sharingIds, async () => {
-        // An app linked meanwhile would be moved without being locked or
-        // stopped first.
-        const sharing = await appsOnDevelopmentBranch(app);
-        if (sharing.some((a) => !sharingIds.includes(a.id))) {
-          throw new DyadError(
-            "Another app was connected to this Neon project while preparing the migration. Try again.",
-            DyadErrorKind.Conflict,
-          );
-        }
-        // A historical version's preview reads the preview branch, which the
-        // migration overwrites and replaces.
-        for (const sharingApp of sharing) {
-          if (
-            (await gitCurrentBranch({
-              path: getDyadAppPath(sharingApp.path),
-            })) === null
-          ) {
-            throw new DyadError(
-              `${sharingApp.name} is showing an earlier version. Return to the latest version before migrating.`,
-              DyadErrorKind.Precondition,
+      const startedAt = Date.now();
+      let step: MigrationStep | undefined;
+      let result: Awaited<ReturnType<typeof migrateDevelopmentBranch>>;
+      try {
+        result = await withAppsLocked(sharingIds, async () => {
+          // An app linked meanwhile would be moved without being locked or
+          // stopped first.
+          const sharing = await appsOnDevelopmentBranch(app);
+          if (sharing.some((a) => !sharingIds.includes(a.id))) {
+            throw new MigrationRefusedError(
+              "Another app was connected to this Neon project while preparing the migration. Try again.",
+              "apps-changed",
+              DyadErrorKind.Conflict,
             );
           }
-        }
-        // The old branch is deleted, which would cut a live app off from its
-        // database (and lose its writes) until it is redeployed.
-        const deploying = sharing.filter(
-          (a) => getSelectedDeployBranchType(a) === "development",
-        );
-        if (deploying.length > 0) {
-          throw new DyadError(
-            `Can't migrate the development database while ${deploying.map((a) => a.name).join(", ")} deploys with it. Deploy with your production database first.`,
-            DyadErrorKind.Precondition,
+          // A historical version's preview reads the preview branch, which the
+          // migration overwrites and replaces.
+          for (const sharingApp of sharing) {
+            if (
+              (await gitCurrentBranch({
+                path: getDyadAppPath(sharingApp.path),
+              })) === null
+            ) {
+              throw new MigrationRefusedError(
+                `${sharingApp.name} is showing an earlier version. Return to the latest version before migrating.`,
+                "version-preview",
+              );
+            }
+          }
+          // The old branch is deleted, which would cut a live app off from its
+          // database (and lose its writes) until it is redeployed.
+          const deploying = sharing.filter(
+            (a) => getSelectedDeployBranchType(a) === "development",
           );
-        }
-        const timestamp = await getPreciseNeonTimestamp({
-          neonConnectionUri: await getConnectionUri({
+          if (deploying.length > 0) {
+            throw new MigrationRefusedError(
+              `Can't migrate the development database while ${deploying.map((a) => a.name).join(", ")} deploys with it. Deploy with your production database first.`,
+              "deploys-with-development",
+            );
+          }
+          const timestamp = await getPreciseNeonTimestamp({
+            neonConnectionUri: await getConnectionUri({
+              projectId,
+              branchId: developmentBranchId,
+            }),
+          });
+          const migrated = await migrateDevelopmentBranch({
+            appIds: sharing.map((a) => a.id),
             projectId,
-            branchId: developmentBranchId,
-          }),
+            developmentBranchId,
+            previewBranchId: app.neonPreviewBranchId,
+            timestamp,
+            backupFilePath,
+            onStep: (next) => {
+              step = next;
+            },
+          });
+          return migrated;
         });
-        const migrated = await migrateDevelopmentBranch({
-          appIds: sharing.map((a) => a.id),
-          projectId,
-          developmentBranchId,
-          previewBranchId: app.neonPreviewBranchId,
-          timestamp,
-          backupFilePath,
+      } catch (error) {
+        sendTelemetryEvent("neon:migration", {
+          ...classifyMigrationError(error, step),
+          appCount: sharingIds.length,
+          durationMs: Date.now() - startedAt,
         });
-        return migrated;
+        throw error;
+      }
+      sendTelemetryEvent("neon:migration", {
+        outcome: "succeeded",
+        appCount: sharingIds.length,
+        ...result.stats,
+        settingsNotCopied: result.notCopied.length,
+        durationMs: Date.now() - startedAt,
       });
       logger.info(
         `Migrated the Neon development branch of apps ${sharingIds.join(", ")}`,

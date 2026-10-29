@@ -775,12 +775,13 @@ describe("getSettingsPersonTelemetryProperties", () => {
 });
 
 describe("shouldBypassNonProTelemetrySampling", () => {
-  it("always sends Neon leaked-backup branch-limit events", () => {
-    expect(
-      shouldBypassNonProTelemetrySampling({
-        event: "neon:leaked-backups-at-branch-limit",
-      }),
-    ).toBe(true);
+  it.each([
+    "neon:leaked-backups-at-branch-limit",
+    "neon:migration",
+    "neon:project-created",
+    "neon:backup-cleanup",
+  ])("always sends the Neon migration event %s", (event) => {
+    expect(shouldBypassNonProTelemetrySampling({ event })).toBe(true);
   });
 
   it("always sends concurrent chat starts", () => {

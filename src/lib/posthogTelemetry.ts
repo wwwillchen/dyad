@@ -771,6 +771,13 @@ export function shouldFilterPostHogExceptionEvent(
   );
 }
 
+const NEON_MIGRATION_EVENTS = new Set([
+  "neon:leaked-backups-at-branch-limit",
+  "neon:migration",
+  "neon:project-created",
+  "neon:backup-cleanup",
+]);
+
 export function shouldBypassNonProTelemetrySampling(
   event: PostHogTelemetryEvent | null | undefined,
 ): boolean {
@@ -792,9 +799,9 @@ export function shouldBypassNonProTelemetrySampling(
     return true;
   }
 
-  // Rare, and nearly all from Neon Free-plan users: sampling would hide how
-  // many users are stuck behind leaked backup branches.
-  if (eventName === "neon:leaked-backups-at-branch-limit") {
+  // Rare, and how the Neon development branch migration fares in beta: the
+  // users are mostly on free plans, and sampling would hide failures.
+  if (NEON_MIGRATION_EVENTS.has(eventName ?? "")) {
     return true;
   }
 
