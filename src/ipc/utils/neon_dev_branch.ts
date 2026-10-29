@@ -308,13 +308,15 @@ async function branchHasNeonAuth(
 
 /**
  * Deletes `ids` children-first; a failed delete keeps its ancestors. Removes
- * deleted branches from `ids` and returns the names it could not delete.
+ * deleted branches from `ids`. Returns how many it deleted and the names of
+ * the existing branches it left: those it failed to delete and their kept
+ * ancestors. Ids of branches that no longer exist count as neither.
  */
 async function deleteBranchTree(
   neonClient: Api<unknown>,
   projectId: string,
   ids: Set<string>,
-): Promise<string[]> {
+): Promise<{ deleted: number; left: string[] }> {
   const remaining = new Set(ids);
   const failed: string[] = [];
   const branches = await listBranches(neonClient, projectId);
@@ -340,7 +342,10 @@ async function deleteBranchTree(
       }
     }
   }
-  return failed;
+  return {
+    deleted: live.length - live.filter((b) => ids.has(b.id)).length,
+    left: live.filter((b) => ids.has(b.id)).map((b) => b.name),
+  };
 }
 
 /**
@@ -579,6 +584,7 @@ async function migrateToRootDevelopmentBranch({
   rows: number;
   branchesDeleted: number;
   branchesNotDeleted: number;
+  cleanupFailed: boolean;
 }> {
   onStep("source");
   const neonClient = await getNeonClient();
@@ -596,16 +602,20 @@ async function migrateToRootDevelopmentBranch({
   let previewHasChildren = false;
   let branchesDeleted = 0;
   let branchesNotDeleted = 0;
+  let cleanupFailed = false;
   if (oldPreview && replacePreview) {
     const leftovers = new Set(
       childrenOf(branches, oldPreview.id).map((b) => b.id),
     );
-    const found = leftovers.size;
-    if (found > 0) {
+    if (leftovers.size > 0) {
       // Removes what it deletes from `leftovers`.
-      await deleteBranchTree(neonClient, projectId, leftovers);
+      const { deleted } = await deleteBranchTree(
+        neonClient,
+        projectId,
+        leftovers,
+      );
+      branchesDeleted += deleted;
     }
-    branchesDeleted += found - leftovers.size;
     previewHasChildren = leftovers.size > 0;
   }
 
@@ -827,24 +837,24 @@ async function migrateToRootDevelopmentBranch({
   // behind is swept after a later restore.
   if (temporarySourceId) plan.removable.add(temporarySourceId);
   try {
-    const before = plan.removable.size;
-    // Removes what it deletes from `plan.removable`.
-    const failed = await deleteBranchTree(
+    const { deleted, left } = await deleteBranchTree(
       neonClient,
       projectId,
       plan.removable,
     );
-    branchesDeleted += before - plan.removable.size;
-    branchesNotDeleted = failed.length;
+    branchesDeleted += deleted;
+    branchesNotDeleted = left.length;
     logger.info(
       `Deleted ${branchesDeleted} old branches after moving ${label} to root development branch ${newDevelopment.id}`,
     );
-    if (failed.length > 0) {
+    if (left.length > 0) {
       logger.warn(
-        `Moved ${label} to root development branch ${newDevelopment.id}, but could not delete old branches: ${failed.join(", ")}`,
+        `Moved ${label} to root development branch ${newDevelopment.id}, but could not delete old branches: ${left.join(", ")}`,
       );
     }
   } catch (error) {
+    // Nothing is known about what was left; a later sweep retries.
+    cleanupFailed = true;
     logger.warn(
       `Failed to delete the old development branches of ${label}: ${getNeonErrorMessage(error)}`,
     );
@@ -902,6 +912,7 @@ async function migrateToRootDevelopmentBranch({
     rows: copiedRows,
     branchesDeleted,
     branchesNotDeleted,
+    cleanupFailed,
   };
 }
 
@@ -946,8 +957,13 @@ export interface MigrationStats {
   leakedBackups: number;
   /** Old branches deleted after the switch (backups, old development...). */
   branchesDeleted: number;
-  /** Old branches that could not be deleted; a later sweep retries. */
+  /**
+   * Old branches left behind: those that could not be deleted and their
+   * ancestors. A later sweep retries.
+   */
   branchesNotDeleted: number;
+  /** The cleanup stopped before it could tell; the counts are incomplete. */
+  cleanupFailed: boolean;
 }
 
 /**
@@ -1121,6 +1137,7 @@ export async function migrateDevelopmentBranch({
         leakedBackups: 0,
         branchesDeleted: 0,
         branchesNotDeleted: 0,
+        cleanupFailed: false,
       },
     };
   }
@@ -1153,18 +1170,24 @@ export async function migrateDevelopmentBranch({
     );
   }
   try {
-    const { tables, rows, branchesDeleted, branchesNotDeleted, ...migrated } =
-      await migrateToRootDevelopmentBranch({
-        appIds,
-        projectId,
-        oldDevelopment: development,
-        previewBranchId,
-        branches,
-        plan,
-        timestamp,
-        backupFilePath,
-        onStep,
-      });
+    const {
+      tables,
+      rows,
+      branchesDeleted,
+      branchesNotDeleted,
+      cleanupFailed,
+      ...migrated
+    } = await migrateToRootDevelopmentBranch({
+      appIds,
+      projectId,
+      oldDevelopment: development,
+      previewBranchId,
+      branches,
+      plan,
+      timestamp,
+      backupFilePath,
+      onStep,
+    });
     return {
       ...migrated,
       stats: {
@@ -1173,6 +1196,7 @@ export async function migrateDevelopmentBranch({
         leakedBackups,
         branchesDeleted,
         branchesNotDeleted,
+        cleanupFailed,
       },
     };
   } catch (error) {

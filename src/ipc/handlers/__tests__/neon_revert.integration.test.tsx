@@ -1018,10 +1018,58 @@ describe("Neon database revert (integration)", () => {
         // The old development branch, its 3 backups, and the old preview.
         branchesDeleted: 5,
         branchesNotDeleted: 0,
+        cleanupFailed: false,
         settingsNotCopied: 0,
         durationMs: expect.any(Number),
       },
     ]);
+  });
+
+  it("counts every old branch a failed delete leaves behind", async () => {
+    await legacyLayout(3);
+    const { appId } = await connectApp();
+    // The old development branch can't be deleted, so its 3 backups stay too.
+    fakeNeon.failures.deleteProjectBranch = (
+      _projectId: string,
+      id: string,
+    ) => {
+      if (/-replaced-\d+$/.test(fakeNeon.branches.get(id)?.name ?? "")) {
+        throw new Error("Neon is unavailable");
+      }
+    };
+
+    await migrate(appId);
+
+    expect(telemetryEvents("neon:migration")[0]).toMatchObject({
+      outcome: "succeeded",
+      branchesDeleted: 1, // the old preview
+      branchesNotDeleted: 4,
+      cleanupFailed: false,
+    });
+  });
+
+  it("flags a cleanup that stopped before it could count", async () => {
+    await legacyLayout(2);
+    const { appId } = await connectApp();
+    // Listing branches fails once the old branch has been replaced.
+    fakeNeon.failures.listProjectBranches = () => {
+      if (
+        [...fakeNeon.branches.values()].some((b) =>
+          /-replaced-\d+$/.test(b.name),
+        )
+      ) {
+        throw new Error("Neon is unavailable");
+      }
+    };
+
+    await migrate(appId);
+
+    expect(telemetryEvents("neon:migration")[0]).toMatchObject({
+      outcome: "succeeded",
+      branchesDeleted: 0,
+      branchesNotDeleted: 0,
+      cleanupFailed: true,
+    });
   });
 
   it("reports a refused migration with its reason", async () => {
