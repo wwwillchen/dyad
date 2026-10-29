@@ -194,12 +194,17 @@ async function sweepLeftoverBranches(
   neonClient: Api<unknown>,
   projectId: string,
 ): Promise<void> {
+  // Names alone can't tell a leftover from a branch an app still uses: a
+  // migration interrupted after renaming the old development branch leaves
+  // the app on `*-replaced-*`.
+  const inUse = await branchesInUse(projectId);
   const failed = new Set<string>();
   for (;;) {
     const branches = await listBranches(neonClient, projectId);
     const leftovers = branches.filter(
       (b) =>
         !failed.has(b.id) &&
+        !inUse.has(b.id) &&
         childrenOf(branches, b.id).length === 0 &&
         (BACKUP_BRANCH_PATTERN.test(b.name) ||
           REPLACED_PATTERN.test(b.name) ||
@@ -219,6 +224,106 @@ async function sweepLeftoverBranches(
         failed.add(branch.id);
       }
     }
+  }
+}
+
+/** Branches any Dyad app in the project uses; a sweep never deletes them. */
+async function branchesInUse(projectId: string): Promise<Set<string>> {
+  const rows = await db
+    .select({
+      development: apps.neonDevelopmentBranchId,
+      preview: apps.neonPreviewBranchId,
+      active: apps.neonActiveBranchId,
+    })
+    .from(apps)
+    .where(eq(apps.neonProjectId, projectId));
+  return new Set(
+    rows
+      .flatMap((r) => [r.development, r.preview, r.active])
+      .filter((id): id is string => !!id),
+  );
+}
+
+/**
+ * Undoes what a migration interrupted between renaming the old development
+ * branch and switching the apps (a crash or quit, so its rollback never ran)
+ * left behind: the apps still use the old branch, now named `*-replaced-*`,
+ * and the unfinished new branch may hold the development name. Deletes the
+ * unfinished branch, gives the old one its name back, and points the apps'
+ * `.env.local` at it again, which the interrupted attempt may have changed.
+ */
+async function repairInterruptedMigration({
+  neonClient,
+  projectId,
+  developmentBranchId,
+  appIds,
+}: {
+  neonClient: Api<unknown>;
+  projectId: string;
+  developmentBranchId: string;
+  appIds: number[];
+}): Promise<void> {
+  const branches = await listBranches(neonClient, projectId);
+  const development = branches.find((b) => b.id === developmentBranchId);
+  if (!development || !REPLACED_PATTERN.test(development.name)) return;
+  const originalName = development.name.replace(REPLACED_PATTERN, "");
+  logger.warn(
+    `Repairing an interrupted migration of development branch ${developmentBranchId} in Neon project ${projectId}`,
+  );
+
+  const inUse = await branchesInUse(projectId);
+  const holder = branches.find(
+    (b) => b.name === originalName && b.id !== developmentBranchId,
+  );
+  if (holder) {
+    // Only the unfinished new branch could have taken the name: a root branch
+    // no app uses.
+    if (holder.parent_id || inUse.has(holder.id)) {
+      throw new DyadError(
+        `Can't migrate the development database: the branch "${originalName}" is in use, so the old development branch can't get its name back.`,
+        DyadErrorKind.Precondition,
+      );
+    }
+    if (
+      !(await deleteBranch(
+        neonClient,
+        projectId,
+        holder.id,
+        "unfinished development branch",
+      ))
+    ) {
+      throw new DyadError(
+        `Could not delete the unfinished development branch "${originalName}" left by an interrupted migration. Try again.`,
+        DyadErrorKind.External,
+      );
+    }
+  }
+  await retryOnLocked(
+    () =>
+      neonClient.updateProjectBranch(projectId, developmentBranchId, {
+        branch: { name: originalName },
+      }),
+    `Restore development branch name ${developmentBranchId}`,
+  );
+
+  const switching = await db
+    .select()
+    .from(apps)
+    .where(inArray(apps.id, appIds));
+  for (const app of switching) {
+    if (
+      !developmentIsActive(app, developmentBranchId, app.neonPreviewBranchId)
+    ) {
+      continue;
+    }
+    const warning = await autoInjectNeonEnvVars({
+      appId: app.id,
+      appPath: app.path,
+      projectId,
+      branchId: developmentBranchId,
+      branchType: "development",
+    });
+    if (warning) logger.warn(warning);
   }
 }
 
@@ -1115,6 +1220,12 @@ export async function migrateDevelopmentBranch({
   stats: MigrationStats;
 }> {
   const neonClient = await getNeonClient();
+  await repairInterruptedMigration({
+    neonClient,
+    projectId,
+    developmentBranchId,
+    appIds,
+  });
   // Branches an earlier, interrupted attempt left behind take up room.
   await sweepLeftoverBranches(neonClient, projectId).catch((error) =>
     logger.warn(

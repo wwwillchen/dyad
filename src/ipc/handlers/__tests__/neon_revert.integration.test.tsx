@@ -790,6 +790,101 @@ describe("Neon database revert (integration)", () => {
     });
   });
 
+  it("never sweeps away a branch a Dyad app still uses", async () => {
+    rootLayout();
+    // Looks like a leftover by name, but another app runs on it: what a
+    // migration interrupted after renaming its old branch leaves behind.
+    const replaced = fakeNeon.addBranch("development-replaced-1700000000000", {
+      parent: "main",
+    });
+    const { appId, versionA } = await connectApp();
+    const { appId: otherAppId } = await createGitApp();
+    await harness.db
+      .update(apps)
+      .set({
+        neonProjectId: fakeNeon.projectId,
+        neonDevelopmentBranchId: replaced.id,
+      })
+      .where(eq(apps.id, otherAppId));
+
+    await revert(appId, versionA);
+
+    expect(fakeNeon.branches.has(replaced.id)).toBe(true);
+    expect(
+      Object.keys(fakeNeon.tree()).filter((n) => n.startsWith("preserve_")),
+    ).toEqual([]);
+  });
+
+  it("repairs a migration interrupted between the renames and the switch", async () => {
+    await legacyLayout(2);
+    const {
+      appId,
+      appDir,
+      development: oldDevelopment,
+      preview: oldPreview,
+    } = await connectApp();
+    // The state a crash leaves: the old branch renamed (the app still uses it
+    // by id), the unfinished new branch holding the development name, and
+    // .env.local already pointing at it.
+    oldDevelopment.name = "development-replaced-1700000000000";
+    const unfinished = fakeNeon.addBranch("development", {
+      parent: "main",
+      schemaOnly: true,
+      neonAuth: true,
+    });
+    fs.writeFileSync(
+      path.join(appDir, ".env.local"),
+      `DATABASE_URL=${fakeNeon.connectionUri(unfinished.id)}\n`,
+    );
+
+    await migrate(appId);
+
+    // The old branch was the source, so its data came along...
+    expect(branchData.copyBranchData.mock.calls[0][0].sourceUri).toBe(
+      fakeNeon.connectionUri(oldPreview.id),
+    );
+    expect(
+      fakeNeon
+        .methodCalls("createProjectBranch")
+        .map(([, body]) => (body as any).branch)
+        .find((b) => b.init_source === "schema-only"),
+    ).toMatchObject({ parent_id: oldDevelopment.id });
+    // ...and the migration finished as usual.
+    const newDevelopment = fakeNeon.byName("development");
+    expect(newDevelopment.id).not.toBe(oldDevelopment.id);
+    expect(newDevelopment.id).not.toBe(unfinished.id);
+    expect(fakeNeon.tree()).toEqual({
+      development: null,
+      main: null,
+      preview: "development",
+    });
+    expect((await appRow(appId)).neonDevelopmentBranchId).toBe(
+      newDevelopment.id,
+    );
+    expect(fs.readFileSync(path.join(appDir, ".env.local"), "utf8")).toContain(
+      fakeNeon.connectionUri(newDevelopment.id),
+    );
+  });
+
+  it("repairs a migration interrupted right after the first rename", async () => {
+    await legacyLayout(1);
+    const { appId, development: oldDevelopment } = await connectApp();
+    oldDevelopment.name = "development-replaced-1700000000000";
+    const unfinished = fakeNeon.addBranch("dyad-migrating-1700000000000", {
+      parent: "main",
+      schemaOnly: true,
+    });
+
+    await migrate(appId);
+
+    expect(fakeNeon.branches.has(unfinished.id)).toBe(false);
+    expect(fakeNeon.tree()).toEqual({
+      development: null,
+      main: null,
+      preview: "development",
+    });
+  });
+
   it("refuses to migrate when the copy would lose objects", async () => {
     await legacyLayout(1);
     branchData.findMigrationBlockers.mockResolvedValueOnce([
