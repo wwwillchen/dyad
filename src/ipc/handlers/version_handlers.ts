@@ -790,8 +790,6 @@ async function revertCodebaseToVersion({
   }
 
   if (app.neonProjectId && app.neonDevelopmentBranchId) {
-    // Restoring may replace the development branch (see neon_dev_branch.ts).
-    let neonDevelopmentBranchId = app.neonDevelopmentBranchId;
     const version = await db.query.versions.findFirst({
       where: and(
         eq(versions.appId, appId),
@@ -800,11 +798,10 @@ async function revertCodebaseToVersion({
     });
     if (version && version.neonDbTimestamp) {
       try {
-        const restore = await restoreDevelopmentBranch({
+        await restoreDevelopmentBranch({
           appId,
           projectId: app.neonProjectId,
           developmentBranchId: app.neonDevelopmentBranchId,
-          previewBranchId: app.neonPreviewBranchId,
           timestamp: version.neonDbTimestamp,
           backupName: backupBranchName(currentCommitHash),
         });
@@ -825,11 +822,6 @@ async function revertCodebaseToVersion({
         // `warningMessage` was set.
         successMessage =
           "Successfully restored to version (including database)";
-        if (restore.kind === "migrated") {
-          neonDevelopmentBranchId = restore.developmentBranchId;
-          successMessage +=
-            ". Your development database moved to a new Neon branch so old database backups no longer pile up; versions before this one can no longer restore the database.";
-        }
       } catch (error) {
         logger.error(
           "Error restoring Neon development branch during revert:",
@@ -845,7 +837,7 @@ async function revertCodebaseToVersion({
     try {
       await switchPostgresToDevelopmentBranch({
         neonProjectId: app.neonProjectId,
-        neonDevelopmentBranchId,
+        neonDevelopmentBranchId: app.neonDevelopmentBranchId,
         appPath: app.path,
       });
     } catch (error) {

@@ -136,6 +136,30 @@ export type GetNeonBranchEnvVarsResponse = z.infer<
   typeof GetNeonBranchEnvVarsResponseSchema
 >;
 
+export const NeonDevelopmentBranchParamsSchema = z.object({
+  appId: z.number(),
+});
+
+/**
+ * Whether the app's Neon development branch still uses the old child-branch
+ * layout, which leaves a backup branch behind on every database restore.
+ */
+export const NeonDevelopmentBranchStatusSchema = z.object({
+  needsMigration: z.boolean(),
+  /**
+   * Deployments use the development database, so migrating would cut the live
+   * app off from its database until it is redeployed.
+   */
+  deploysWithDevelopment: z.boolean(),
+  /** Backups older Dyad versions left in the project. */
+  leakedBackups: z.number(),
+  branchCount: z.number(),
+});
+
+export type NeonDevelopmentBranchStatus = z.infer<
+  typeof NeonDevelopmentBranchStatusSchema
+>;
+
 // =============================================================================
 // Neon Contracts
 // =============================================================================
@@ -218,6 +242,22 @@ export const neonContracts = {
     channel: "neon:get-branch-env-vars",
     input: GetNeonBranchEnvVarsParamsSchema,
     output: GetNeonBranchEnvVarsResponseSchema,
+  }),
+
+  getDevelopmentBranchStatus: defineContract({
+    channel: "neon:get-development-branch-status",
+    input: NeonDevelopmentBranchParamsSchema,
+    output: NeonDevelopmentBranchStatusSchema,
+  }),
+
+  migrateDevelopmentBranch: defineContract({
+    channel: "neon:migrate-development-branch",
+    input: NeonDevelopmentBranchParamsSchema,
+    output: z.object({ success: z.boolean() }),
+    invalidates: (input) => [
+      { family: "apps" },
+      { family: "app", appId: input.appId },
+    ],
   }),
 
   setSelectedDatabaseBranchType: defineContract({

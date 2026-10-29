@@ -42,8 +42,10 @@ const logger = log.scope("neon_dev_branch");
  *   background, so the backup can only be deleted after that.
  *
  * Root branches with data can only be made as schema-only branches plus a data
- * copy, so existing child development branches are migrated on their next
- * database revert.
+ * copy. Existing child development branches are migrated when the user
+ * chooses to, from a banner above the preview: the copy has side effects
+ * (earlier versions lose their database restore points, Neon Auth gets new
+ * signing keys) that a revert should not spring on them.
  */
 
 const BACKUP_BRANCH_PATTERN = /^preserve_[0-9a-f]+-\d+$/;
@@ -548,53 +550,50 @@ async function migrateToRootDevelopmentBranch({
  * can be deleted: each leaked backup has a child.
  */
 export class LeakedBackupsAtBranchLimitError extends DyadError {
-  constructor() {
+  constructor(during: "restore" | "migrate") {
+    const cause =
+      "your Neon project is at its plan's branch limit, mostly with backup " +
+      "branches that earlier versions of Dyad left behind after database restores.";
+    const fix =
+      "upgrade this Neon project to a paid plan, then migrate the development " +
+      "database from the banner above the preview. Dyad deletes the old backups, " +
+      "so you can switch back to the Free plan afterwards.";
     super(
-      "Restored your code to this version, but the database could not be restored: " +
-        "your Neon project is at its plan's branch limit, mostly with backup branches " +
-        "that earlier versions of Dyad left behind after database restores. To clean " +
-        "them up, upgrade this Neon project to a paid plan, then undo again: Dyad will " +
-        "move your database to a new branch and delete the old backups. The project " +
-        "then uses only a few branches, so you can switch back to the Free plan " +
-        "afterwards. Your current database was left unchanged.",
+      during === "restore"
+        ? `Restored your code to this version, but the database could not be restored: ${cause} To fix this, ${fix} Your current database was left unchanged.`
+        : `Could not migrate the development database: ${cause} To fix this, ${fix}`,
       DyadErrorKind.Precondition,
     );
   }
 }
 
-export type DevelopmentBranchRestoreResult =
-  | { kind: "restored"; backupDeleted: boolean }
-  | { kind: "restored-in-place-legacy" }
-  | {
-      kind: "migrated";
-      developmentBranchId: string;
-      previewBranchId: string | null;
-    };
+/** Backups older Dyad versions leaked under a child development branch. */
+function countLeakedBackups(branches: Branch[]): number {
+  return branches.filter(
+    (b) => b.parent_id && BACKUP_BRANCH_PATTERN.test(b.name),
+  ).length;
+}
 
-/**
- * Restores the app's development branch to `timestamp` without leaving a
- * backup branch behind. A child development branch is first replaced by a
- * root branch (see the comment at the top of this file); if that is not
- * possible, it is restored in place as before and its backup is kept, because
- * Neon cannot delete it. Throws `LeakedBackupsAtBranchLimitError` when the
- * project is too full of leaked backups for either.
- */
-export async function restoreDevelopmentBranch({
-  appId,
-  projectId,
-  developmentBranchId,
-  previewBranchId,
-  timestamp,
-  backupName,
-}: {
-  appId: number;
-  projectId: string;
-  developmentBranchId: string;
-  previewBranchId: string | null;
-  timestamp: string;
-  backupName: string;
-}): Promise<DevelopmentBranchRestoreResult> {
-  const neonClient = await getNeonClient();
+function leakedBackupsAtBranchLimit(
+  branches: Branch[],
+  error: unknown,
+  during: "restore" | "migrate",
+): LeakedBackupsAtBranchLimitError | null {
+  const leakedBackups = countLeakedBackups(branches);
+  if (!isBranchLimitError(error) || leakedBackups === 0) return null;
+  sendTelemetryEvent("neon:leaked-backups-at-branch-limit", {
+    leakedBackups,
+    branchCount: branches.length,
+    during,
+  });
+  return new LeakedBackupsAtBranchLimitError(during);
+}
+
+async function findDevelopmentBranch(
+  neonClient: Api<unknown>,
+  projectId: string,
+  developmentBranchId: string,
+): Promise<{ branches: Branch[]; development: Branch }> {
   const branches = await listBranches(neonClient, projectId);
   const development = branches.find((b) => b.id === developmentBranchId);
   if (!development) {
@@ -603,82 +602,173 @@ export async function restoreDevelopmentBranch({
       DyadErrorKind.NotFound,
     );
   }
+  return { branches, development };
+}
 
-  const restoreInPlace = () =>
-    retryOnLocked(
-      () =>
-        neonClient.restoreProjectBranch(projectId, developmentBranchId, {
-          source_branch_id: developmentBranchId,
-          source_timestamp: timestamp,
-          preserve_under_name: backupName,
-        }),
-      `Restore development branch ${developmentBranchId} for app ${appId}`,
-    );
+export type DevelopmentBranchStatus =
+  | { layout: "root" }
+  | {
+      layout: "legacy";
+      /** False when the old tree holds branches Dyad did not create. */
+      migratable: boolean;
+      leakedBackups: number;
+      branchCount: number;
+    };
 
+/**
+ * Whether the app's development branch still uses the child-branch layout
+ * that leaks a backup on every database restore (see the top of this file).
+ */
+export async function getDevelopmentBranchStatus({
+  projectId,
+  developmentBranchId,
+  previewBranchId,
+}: {
+  projectId: string;
+  developmentBranchId: string;
+  previewBranchId: string | null;
+}): Promise<DevelopmentBranchStatus> {
+  const neonClient = await getNeonClient();
+  const { branches, development } = await findDevelopmentBranch(
+    neonClient,
+    projectId,
+    developmentBranchId,
+  );
+  if (!development.parent_id) return { layout: "root" };
+  const plan = planLegacyMigration({
+    branches,
+    developmentBranchId,
+    previewBranchId,
+  });
+  return {
+    layout: "legacy",
+    migratable: !("blockedBy" in plan),
+    leakedBackups: countLeakedBackups(branches),
+    branchCount: branches.length,
+  };
+}
+
+/**
+ * Moves a child development branch, as it is at `timestamp`, to a root
+ * branch and deletes the old tree with its leaked backups. The caller stops
+ * the app first so nothing is written after `timestamp`.
+ */
+export async function migrateDevelopmentBranch({
+  appId,
+  projectId,
+  developmentBranchId,
+  previewBranchId,
+  timestamp,
+}: {
+  appId: number;
+  projectId: string;
+  developmentBranchId: string;
+  previewBranchId: string | null;
+  timestamp: string;
+}): Promise<{ developmentBranchId: string; previewBranchId: string | null }> {
+  const neonClient = await getNeonClient();
+  const { branches, development } = await findDevelopmentBranch(
+    neonClient,
+    projectId,
+    developmentBranchId,
+  );
   if (!development.parent_id) {
-    await deleteLeakedBackups(neonClient, projectId, branches);
-    await restoreInPlace();
-    // A backup that outlives this (slow detach, failed delete) is a leaked
-    // backup that the next revert deletes.
-    const detached = await waitForRootBranchDetached(
-      neonClient,
-      projectId,
-      developmentBranchId,
-    );
-    const backup = (await listBranches(neonClient, projectId)).find(
-      (b) => b.name === backupName,
-    );
-    const backupDeleted =
-      !backup ||
-      (detached &&
-        (await deleteBranch(
-          neonClient,
-          projectId,
-          backup.id,
-          "backup branch",
-        )));
-    return { kind: "restored", backupDeleted };
+    return { developmentBranchId, previewBranchId };
   }
-
   const plan = planLegacyMigration({
     branches,
     developmentBranchId,
     previewBranchId,
   });
   if ("blockedBy" in plan) {
-    logger.warn(
-      `Not moving app ${appId} to a root development branch: the old branch tree contains branches Dyad did not create (${plan.blockedBy.join(", ")}). Restoring in place; its backup cannot be deleted.`,
+    throw new DyadError(
+      `Can't migrate the development database: its Neon branches include ones Dyad did not create (${plan.blockedBy.join(", ")}).`,
+      DyadErrorKind.Precondition,
     );
-  } else {
-    try {
-      const migrated = await migrateToRootDevelopmentBranch({
-        appId,
-        projectId,
-        oldDevelopment: development,
-        previewBranchId,
-        branches,
-        plan,
-        timestamp,
-      });
-      return { kind: "migrated", ...migrated };
-    } catch (error) {
-      const leakedBackups = branches.filter(
-        (b) => plan.removable.has(b.id) && BACKUP_BRANCH_PATTERN.test(b.name),
-      ).length;
-      if (isBranchLimitError(error) && leakedBackups > 0) {
-        // At the limit Neon rejects every restore, so restoring in place would
-        // fail the same way. Only freeing branches gets the app unstuck.
-        sendTelemetryEvent("neon:leaked-backups-at-branch-limit", {
-          leakedBackups,
-          branchCount: branches.length,
-        });
-        throw new LeakedBackupsAtBranchLimitError();
-      }
-      logger.error(
-        `Failed to move app ${appId} to a root development branch; restoring in place instead: ${getNeonErrorMessage(error)}`,
-      );
-    }
   }
-  await restoreInPlace();
-  return { kind: "restored-in-place-legacy" };
+  try {
+    return await migrateToRootDevelopmentBranch({
+      appId,
+      projectId,
+      oldDevelopment: development,
+      previewBranchId,
+      branches,
+      plan,
+      timestamp,
+    });
+  } catch (error) {
+    throw leakedBackupsAtBranchLimit(branches, error, "migrate") ?? error;
+  }
+}
+
+/**
+ * Restores the app's development branch to `timestamp`. A root branch's
+ * backup is deleted once Neon detaches it. A child branch (the old layout) is
+ * restored in place and its backup is kept, because Neon cannot delete it;
+ * the preview banner offers moving such apps to a root branch. Throws
+ * `LeakedBackupsAtBranchLimitError` when leaked backups have filled the
+ * project.
+ */
+export async function restoreDevelopmentBranch({
+  appId,
+  projectId,
+  developmentBranchId,
+  timestamp,
+  backupName,
+}: {
+  appId: number;
+  projectId: string;
+  developmentBranchId: string;
+  timestamp: string;
+  backupName: string;
+}): Promise<{ backupDeleted: boolean }> {
+  const neonClient = await getNeonClient();
+  const { branches, development } = await findDevelopmentBranch(
+    neonClient,
+    projectId,
+    developmentBranchId,
+  );
+
+  if (development.parent_id) {
+    try {
+      await retryOnLocked(
+        () =>
+          neonClient.restoreProjectBranch(projectId, developmentBranchId, {
+            source_branch_id: developmentBranchId,
+            source_timestamp: timestamp,
+            preserve_under_name: backupName,
+          }),
+        `Restore development branch ${developmentBranchId} for app ${appId}`,
+      );
+    } catch (error) {
+      throw leakedBackupsAtBranchLimit(branches, error, "restore") ?? error;
+    }
+    return { backupDeleted: false };
+  }
+
+  await deleteLeakedBackups(neonClient, projectId, branches);
+  await retryOnLocked(
+    () =>
+      neonClient.restoreProjectBranch(projectId, developmentBranchId, {
+        source_branch_id: developmentBranchId,
+        source_timestamp: timestamp,
+        preserve_under_name: backupName,
+      }),
+    `Restore development branch ${developmentBranchId} for app ${appId}`,
+  );
+  // A backup that outlives this (slow detach, failed delete) is a leaked
+  // backup that the next restore deletes.
+  const detached = await waitForRootBranchDetached(
+    neonClient,
+    projectId,
+    developmentBranchId,
+  );
+  const backup = (await listBranches(neonClient, projectId)).find(
+    (b) => b.name === backupName,
+  );
+  const backupDeleted =
+    !backup ||
+    (detached &&
+      (await deleteBranch(neonClient, projectId, backup.id, "backup branch")));
+  return { backupDeleted };
 }

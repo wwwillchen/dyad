@@ -224,9 +224,9 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     return result.notification;
   }
 
-  it("moves a child development branch one short of the Free-plan branch limit to a root branch and deletes the leaked backups", async () => {
+  it("migrates a child development branch one short of the Free-plan branch limit to a root branch and deletes the leaked backups", async () => {
     const { appId, appDir } = await createGitApp("neon-legacy");
-    const versionA = commit(appDir, "A");
+    commit(appDir, "A");
 
     // Recreate the layout Dyad used to make: development is a child of
     // main, preview a child of development, Neon Auth on each.
@@ -316,7 +316,6 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     );
     await snapshotVersion(appId); // version A
 
-    // Data written after version A, which the revert must discard.
     commit(appDir, "B");
     await dev.query(
       `insert into posts(profile_id, title) values (1, 'after A')`,
@@ -325,10 +324,18 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
       await authRequest(projectId, devId, "sign-up", "b@example.com"),
     ).toBe(200);
 
-    const notification = await revert(appId, versionA);
-    expect(notification).toMatchObject({ kind: "success" });
-    expect(notification?.message).toContain("including database");
-    expect(notification?.message).toContain("moved to a new Neon branch");
+    // What the preview banner checks, then its Migrate button.
+    expect(await ipc.neon.getDevelopmentBranchStatus({ appId })).toEqual({
+      needsMigration: true,
+      leakedBackups: 6,
+      branchCount: 9,
+    });
+    expect(await ipc.neon.migrateDevelopmentBranch({ appId })).toEqual({
+      success: true,
+    });
+    expect(
+      (await ipc.neon.getDevelopmentBranchStatus({ appId })).needsMigration,
+    ).toBe(false);
 
     const app = await appRow(appId);
     const tree = await branches(projectId);
@@ -345,7 +352,7 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
       tree.find((b) => b.name === "preview")!.id,
     );
 
-    // Data, generated/identity columns and sequences match version A.
+    // The current data, generated/identity columns and sequences came along.
     const migrated = await sql(projectId, newDev.id);
     expect(
       await migrated.query(
@@ -354,6 +361,7 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     ).toEqual([
       { id: "1", title: "first", title_len: 5, parent_id: null },
       { id: "2", title: "reply", title_len: 5, parent_id: "1" },
+      { id: "3", title: "after A", title_len: 7, parent_id: null },
     ]);
     expect(await migrated.query(`select mood, meta from "Profiles"`)).toEqual([
       { mood: "happy", meta: { tags: [1, 2] } },
@@ -363,7 +371,7 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     const [{ id: newPostId }] = await migrated.query(
       `insert into posts(profile_id, title) values (1, 'new') returning id`,
     );
-    expect(Number(newPostId)).toBeGreaterThan(2);
+    expect(Number(newPostId)).toBeGreaterThan(3);
     // Foreign keys, including the one into neon_auth, still hold.
     const foreignKeys = await migrated.query(
       `select conname from pg_constraint where contype = 'f' and conrelid in ('"Profiles"'::regclass, 'posts'::regclass) order by 1`,
@@ -375,13 +383,13 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
       ),
     ).rejects.toThrow(/foreign key/);
 
-    // Neon Auth works on the new branch and kept version A's users only.
+    // Neon Auth works on the new branch, with the existing users.
     expect(
       await authRequest(projectId, newDev.id, "sign-in", "a@example.com"),
     ).toBe(200);
     expect(
       await authRequest(projectId, newDev.id, "sign-in", "b@example.com"),
-    ).not.toBe(200);
+    ).toBe(200);
     expect(
       await authRequest(projectId, newDev.id, "sign-up", "c@example.com"),
     ).toBe(200);
@@ -405,7 +413,7 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     });
     expect(timestamps.every((v) => v.neonDbTimestamp === null)).toBe(true);
 
-    // The next revert restores the root branch and deletes its backup.
+    // Undo now restores the root branch and deletes its backup.
     const versionC = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: appDir,
       encoding: "utf8",
@@ -417,7 +425,7 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
     );
     const second = await revert(appId, versionC);
     expect(second).toMatchObject({ kind: "success" });
-    expect(second?.message).not.toContain("moved to a new Neon branch");
+    expect(second?.message).toContain("including database");
     expect(describeTree(await branches(projectId))).toEqual([
       { name: "development", parent: null },
       { name: "main", parent: null },
@@ -429,7 +437,7 @@ describe.skipIf(!LIVE_KEY)("Neon database revert (live Neon API)", () => {
           await sql(projectId, newDev.id)
         ).query(`select title from posts order by id`)
       ).map((r) => r.title),
-    ).toEqual(["first", "reply", "new"]);
+    ).toEqual(["first", "reply", "after A", "new"]);
   }, 600_000);
 
   it("creates new apps with a root development branch whose reverts leave no backups", async () => {

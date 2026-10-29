@@ -19,7 +19,13 @@ import { apps } from "../../db/schema";
 import { eq } from "drizzle-orm";
 import { EndpointType } from "@neondatabase/api-client";
 import { retryOnLocked } from "../utils/retryOnLocked";
-import { createRootBranch } from "../utils/neon_dev_branch";
+import {
+  createRootBranch,
+  getDevelopmentBranchStatus,
+  migrateDevelopmentBranch,
+} from "../utils/neon_dev_branch";
+import { getPreciseNeonTimestamp } from "../utils/neon_timestamp_utils";
+import { getConnectionUri } from "../../neon_admin/neon_context";
 import { prepareSchemaOnlyBranchForNeonAuth } from "../utils/neon_branch_data";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import {
@@ -32,6 +38,7 @@ import {
   combineWarnings,
   buildNeonAuthActivationWarning,
   getAppWithNeonBranch,
+  getSelectedDeployBranchType,
   ensureNeonAuth,
   autoInjectNeonEnvVars,
   assertNoSupabaseProject,
@@ -987,6 +994,77 @@ export function registerNeonHandlers() {
       return { success: true };
     },
     ["provider"],
+  );
+
+  createTypedHandler(
+    neonContracts.getDevelopmentBranchStatus,
+    async (_, { appId }) => {
+      const app = await db.query.apps.findFirst({ where: eq(apps.id, appId) });
+      const nothingToMigrate = {
+        needsMigration: false,
+        deploysWithDevelopment: false,
+        leakedBackups: 0,
+        branchCount: 0,
+      };
+      if (!app?.neonProjectId || !app.neonDevelopmentBranchId) {
+        return nothingToMigrate;
+      }
+      const status = await getDevelopmentBranchStatus({
+        projectId: app.neonProjectId,
+        developmentBranchId: app.neonDevelopmentBranchId,
+        previewBranchId: app.neonPreviewBranchId,
+      });
+      if (status.layout === "root") {
+        return nothingToMigrate;
+      }
+      return {
+        // Branches Dyad did not create block the migration, and deleting
+        // them is not Dyad's call, so there is nothing to offer.
+        needsMigration: status.migratable,
+        deploysWithDevelopment:
+          getSelectedDeployBranchType(app) === "development",
+        leakedBackups: status.leakedBackups,
+        branchCount: status.branchCount,
+      };
+    },
+  );
+
+  // The renderer stops the app first, so nothing writes to the database after
+  // the timestamp the data is copied at.
+  createLockedHandler(
+    neonContracts.migrateDevelopmentBranch,
+    async (_, { appId }) => {
+      const app = await db.query.apps.findFirst({ where: eq(apps.id, appId) });
+      if (!app?.neonProjectId || !app.neonDevelopmentBranchId) {
+        throw new DyadError(
+          `App ${appId} has no Neon development branch to migrate`,
+          DyadErrorKind.Precondition,
+        );
+      }
+      // The old branch is deleted, which would cut the live app off from its
+      // database (and lose its writes) until it is redeployed.
+      if (getSelectedDeployBranchType(app) === "development") {
+        throw new DyadError(
+          "Can't migrate the development database while your app deploys with it. Deploy with your production database first.",
+          DyadErrorKind.Precondition,
+        );
+      }
+      const timestamp = await getPreciseNeonTimestamp({
+        neonConnectionUri: await getConnectionUri({
+          projectId: app.neonProjectId,
+          branchId: app.neonDevelopmentBranchId,
+        }),
+      });
+      await migrateDevelopmentBranch({
+        appId,
+        projectId: app.neonProjectId,
+        developmentBranchId: app.neonDevelopmentBranchId,
+        previewBranchId: app.neonPreviewBranchId,
+        timestamp,
+      });
+      logger.info(`Migrated the Neon development branch of app ${appId}`);
+      return { success: true };
+    },
   );
 
   testOnlyHandle("neon:fake-connect", async () => {
