@@ -792,6 +792,12 @@ export function shouldBypassNonProTelemetrySampling(
     return true;
   }
 
+  // Rare, and nearly all from Neon Free-plan users: sampling would hide how
+  // many users are stuck behind leaked backup branches.
+  if (eventName === "neon:leaked-backups-at-branch-limit") {
+    return true;
+  }
+
   // PostHog people.set emits a $set event. Sampling it would leave person
   // properties stale even though the corresponding settings update succeeded.
   if (eventName === "$set") {

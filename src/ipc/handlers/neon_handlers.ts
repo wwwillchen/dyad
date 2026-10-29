@@ -16,9 +16,17 @@ import {
 import { neonContracts, type NeonBranch } from "../types/neon";
 import { db } from "../../db";
 import { apps } from "../../db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { EndpointType } from "@neondatabase/api-client";
 import { retryOnLocked } from "../utils/retryOnLocked";
+import {
+  createRootBranch,
+  getDevelopmentBranchStatus,
+  migrateDevelopmentBranch,
+} from "../utils/neon_dev_branch";
+import { getPreciseNeonTimestamp } from "../utils/neon_timestamp_utils";
+import { getConnectionUri } from "../../neon_admin/neon_context";
+import { prepareSchemaOnlyBranchForNeonAuth } from "../utils/neon_branch_data";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import {
   getEnvFilePath,
@@ -30,6 +38,7 @@ import {
   combineWarnings,
   buildNeonAuthActivationWarning,
   getAppWithNeonBranch,
+  getSelectedDeployBranchType,
   ensureNeonAuth,
   autoInjectNeonEnvVars,
   assertNoSupabaseProject,
@@ -43,9 +52,14 @@ import {
   ensureNitroIfVite,
   type EnsureNitroResult,
 } from "../utils/nitro_setup";
-import { getDyadAppPath } from "@/paths/paths";
+import { getDyadAppPath, getUserDataPath } from "@/paths/paths";
+import path from "node:path";
+import { gitCurrentBranch } from "../utils/git_utils";
 import { createAppOperationHandler } from "@/ipc/utils/app_mutation_lock";
-import { readAppResource } from "@/ipc/services/app_operation_coordinator";
+import {
+  appOperationCoordinator,
+  readAppResource,
+} from "@/ipc/services/app_operation_coordinator";
 import type { AppOperationRequest } from "@/ipc/services/app_operation_coordinator";
 
 const testOnlyHandle = createTestOnlyLoggedHandler(logger);
@@ -82,6 +96,41 @@ function createLockedHandler<
       // swapped for its isolated branch.
       refuseWhenRecording,
     ),
+  );
+}
+
+/** Apps (this one included) linked to the same Neon development branch. */
+async function appsOnDevelopmentBranch(app: {
+  neonProjectId: string | null;
+  neonDevelopmentBranchId: string | null;
+}) {
+  if (!app.neonProjectId || !app.neonDevelopmentBranchId) return [];
+  return db
+    .select()
+    .from(apps)
+    .where(
+      and(
+        eq(apps.neonProjectId, app.neonProjectId),
+        eq(apps.neonDevelopmentBranchId, app.neonDevelopmentBranchId),
+      ),
+    );
+}
+
+/**
+ * Runs `fn` holding the Neon mutation claims on every app in `appIds`,
+ * acquired in ascending app-ID order as cross-app operations must.
+ */
+function withAppsLocked<T>(appIds: number[], fn: () => Promise<T>): Promise<T> {
+  const [first, ...rest] = [...new Set(appIds)].sort((a, b) => a - b);
+  if (first === undefined) return fn();
+  return appOperationCoordinator.run(
+    {
+      appId: first,
+      operation: "neon:migrate-development-branch",
+      resources: NEON_APP_MUTATION_RESOURCES,
+      refuseWhenRecording: "change this app's database",
+    },
+    () => withAppsLocked(rest, fn),
   );
 }
 
@@ -189,6 +238,29 @@ export function registerNeonHandlers() {
       // Post-creation steps: if any fail, best-effort delete the orphan project
       try {
         envFileSnapshot = await readEnvFileIfExists({ appPath });
+
+        // The development branch must be a root branch so database reverts
+        // can delete their backups (see neon_dev_branch.ts). Create it before
+        // enabling Neon Auth on main: a schema-only branch copies main's
+        // neon_auth schema, which would block provisioning auth on it.
+        const {
+          branch: developmentBranch,
+          connectionUri: developmentConnectionUri,
+        } = await createRootBranch({
+          projectId: project.id,
+          sourceBranchId: mainBranch.id,
+          name: "development",
+        });
+        // If this fails, enabling Neon Auth on development below fails too,
+        // which is reported as a warning rather than failing the project.
+        await prepareSchemaOnlyBranchForNeonAuth(
+          developmentConnectionUri,
+        ).catch((error) =>
+          logger.warn(
+            `Failed to prepare development branch ${developmentBranch.id} for Neon Auth: ${error}`,
+          ),
+        );
+
         // Enable Neon Auth on the main branch
         if (
           !(await ensureNeonAuth({
@@ -198,32 +270,6 @@ export function registerNeonHandlers() {
         ) {
           authWarnings.push(buildNeonAuthActivationWarning("production"));
         }
-
-        // Create development branch as a child of main (production)
-        const developmentBranchResponse = await retryOnLocked(
-          () =>
-            neonClient.createProjectBranch(project.id, {
-              endpoints: [{ type: EndpointType.ReadWrite }],
-              branch: {
-                name: "development",
-                parent_id: mainBranch.id,
-              },
-            }),
-          `Create development branch for project ${project.id}`,
-        );
-
-        if (
-          !developmentBranchResponse.data.branch ||
-          !developmentBranchResponse.data.connection_uris ||
-          developmentBranchResponse.data.connection_uris.length === 0
-        ) {
-          throw new DyadError(
-            "Failed to create development branch: No branch data returned.",
-            DyadErrorKind.External,
-          );
-        }
-
-        const developmentBranch = developmentBranchResponse.data.branch;
 
         // Enable Neon Auth on the development branch
         if (
@@ -282,8 +328,7 @@ export function registerNeonHandlers() {
           })
           .where(eq(apps.id, appId));
 
-        const connectionUri =
-          developmentBranchResponse.data.connection_uris[0].connection_uri;
+        const connectionUri = developmentConnectionUri;
 
         // Auto-inject env vars into the app's .env.local
         const warning = combineWarnings(
@@ -997,6 +1042,133 @@ export function registerNeonHandlers() {
       return { success: true };
     },
     ["provider"],
+  );
+
+  createTypedHandler(
+    neonContracts.getDevelopmentBranchStatus,
+    async (_, { appId }) => {
+      const app = await db.query.apps.findFirst({ where: eq(apps.id, appId) });
+      const nothingToMigrate = {
+        needsMigration: false,
+        otherApps: [],
+        appsDeployingWithDevelopment: [],
+        leakedBackups: 0,
+        branchCount: 0,
+      };
+      if (!app?.neonProjectId || !app.neonDevelopmentBranchId) {
+        return nothingToMigrate;
+      }
+      const status = await getDevelopmentBranchStatus({
+        projectId: app.neonProjectId,
+        developmentBranchId: app.neonDevelopmentBranchId,
+        previewBranchId: app.neonPreviewBranchId,
+      });
+      if (status.layout === "root") {
+        return nothingToMigrate;
+      }
+      const sharing = await appsOnDevelopmentBranch(app);
+      return {
+        // Branches Dyad did not create block the migration, and deleting
+        // them is not Dyad's call, so there is nothing to offer.
+        needsMigration: status.migratable,
+        otherApps: sharing
+          .filter((a) => a.id !== appId)
+          .map(({ id, name }) => ({ id, name })),
+        appsDeployingWithDevelopment: sharing
+          .filter((a) => getSelectedDeployBranchType(a) === "development")
+          .map(({ id, name }) => ({ id, name })),
+        leakedBackups: status.leakedBackups,
+        branchCount: status.branchCount,
+      };
+    },
+  );
+
+  // Moves every app on the development branch, since the old branch is
+  // deleted. The renderer stops them first, so nothing writes to the
+  // database after the timestamp the data is copied at.
+  createTypedHandler(
+    neonContracts.migrateDevelopmentBranch,
+    async (_, { appId }) => {
+      const app = await db.query.apps.findFirst({ where: eq(apps.id, appId) });
+      if (!app?.neonProjectId || !app.neonDevelopmentBranchId) {
+        throw new DyadError(
+          `App ${appId} has no Neon development branch to migrate`,
+          DyadErrorKind.Precondition,
+        );
+      }
+      const projectId = app.neonProjectId;
+      const developmentBranchId = app.neonDevelopmentBranchId;
+      const sharingIds = (await appsOnDevelopmentBranch(app)).map((a) => a.id);
+      // In Dyad's own data directory, not the app folder, where agents can
+      // read files: it holds the app's data, Neon Auth users included.
+      const backupFilePath = path.join(
+        getUserDataPath(),
+        "neon-backups",
+        `${app.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${new Date().toISOString().replace(/[:.]/g, "-")}.sql`,
+      );
+      const result = await withAppsLocked(sharingIds, async () => {
+        // An app linked meanwhile would be moved without being locked or
+        // stopped first.
+        const sharing = await appsOnDevelopmentBranch(app);
+        if (sharing.some((a) => !sharingIds.includes(a.id))) {
+          throw new DyadError(
+            "Another app was connected to this Neon project while preparing the migration. Try again.",
+            DyadErrorKind.Conflict,
+          );
+        }
+        // A historical version's preview reads the preview branch, which the
+        // migration overwrites and replaces.
+        for (const sharingApp of sharing) {
+          if (
+            (await gitCurrentBranch({
+              path: getDyadAppPath(sharingApp.path),
+            })) === null
+          ) {
+            throw new DyadError(
+              `${sharingApp.name} is showing an earlier version. Return to the latest version before migrating.`,
+              DyadErrorKind.Precondition,
+            );
+          }
+        }
+        // The old branch is deleted, which would cut a live app off from its
+        // database (and lose its writes) until it is redeployed.
+        const deploying = sharing.filter(
+          (a) => getSelectedDeployBranchType(a) === "development",
+        );
+        if (deploying.length > 0) {
+          throw new DyadError(
+            `Can't migrate the development database while ${deploying.map((a) => a.name).join(", ")} deploys with it. Deploy with your production database first.`,
+            DyadErrorKind.Precondition,
+          );
+        }
+        const timestamp = await getPreciseNeonTimestamp({
+          neonConnectionUri: await getConnectionUri({
+            projectId,
+            branchId: developmentBranchId,
+          }),
+        });
+        const migrated = await migrateDevelopmentBranch({
+          appIds: sharing.map((a) => a.id),
+          projectId,
+          developmentBranchId,
+          previewBranchId: app.neonPreviewBranchId,
+          timestamp,
+          backupFilePath,
+        });
+        return migrated;
+      });
+      logger.info(
+        `Migrated the Neon development branch of apps ${sharingIds.join(", ")}`,
+      );
+      return {
+        success: true,
+        backupPath: backupFilePath,
+        warning:
+          result.notCopied.length > 0
+            ? `Migrated the development database, but these Neon Auth settings could not be copied to the new branch: ${result.notCopied.join(", ")}. Set them up again in the Neon console.`
+            : undefined,
+      };
+    },
   );
 
   testOnlyHandle("neon:fake-connect", async () => {
