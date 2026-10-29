@@ -728,6 +728,43 @@ describe("Neon database revert (integration)", () => {
     });
   });
 
+  it("lets a second undo run while the first one's backup waits for its detach", async () => {
+    rootLayout();
+    fakeNeon.detachAfterPolls = Number.POSITIVE_INFINITY;
+    const { appId, appDir, versionA } = await connectApp();
+    await versionPreviewHandlerService.revertVersion({
+      appId,
+      previousVersionId: versionA,
+    });
+    const versionC = commit(appDir, "C");
+    await harness.db.insert(versions).values({
+      appId,
+      commitHash: versionC,
+      neonDbTimestamp: "2026-10-03T00:00:00Z",
+    });
+    commit(appDir, "D");
+
+    // The first cleanup is still waiting (up to detachWait.timeoutMs); the
+    // second undo must not queue behind it.
+    const second = versionPreviewHandlerService.revertVersion({
+      appId,
+      previousVersionId: versionC,
+    });
+    const outcome = await Promise.race([
+      second.then(() => "done"),
+      new Promise((resolve) => setTimeout(() => resolve("blocked"), 2_000)),
+    ]);
+    expect(outcome).toBe("done");
+
+    fakeNeon.finishDetach();
+    await settleNeonBackupCleanups();
+    expect(fakeNeon.tree()).toEqual({
+      development: null,
+      main: null,
+      preview: "development",
+    });
+  });
+
   it("refuses to migrate when the copy would lose objects", async () => {
     await legacyLayout(1);
     branchData.findMigrationBlockers.mockResolvedValueOnce([

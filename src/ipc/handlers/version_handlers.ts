@@ -61,10 +61,11 @@ import { storeDbTimestampAtCurrentVersion } from "../utils/neon_timestamp_utils"
 import { retryOnLocked } from "../utils/retryOnLocked";
 import {
   backupBranchName,
-  cleanUpAfterRestore,
+  deleteRestoreBackup,
   LeakedBackupsAtBranchLimitError,
   restoreDevelopmentBranch,
   type RestoreBackupCleanup,
+  waitForRestoreDetach,
 } from "../utils/neon_dev_branch";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { syncCloudSandboxSnapshot } from "../utils/cloud_sandbox_provider";
@@ -260,20 +261,23 @@ const pendingNeonBackupCleanups = new Set<Promise<void>>();
 /**
  * Deletes a restore's Neon backup in the background, once the revert has
  * released its claims. Neon must first detach the restored branch from the
- * backup, which can take a while; the user's undo and other work on the app
- * should not wait for that. Takes its own provider claim, as it changes the
- * app's Neon project.
+ * backup, which can take up to two minutes; that wait holds no claim, so
+ * another undo, a version checkout or any other work on the app goes ahead
+ * meanwhile. Only the delete and sweep that follow take the provider claim,
+ * briefly, as they change the app's Neon project.
  */
 function scheduleNeonBackupCleanup(
   appId: number,
   cleanup: RestoreBackupCleanup | null,
 ): void {
   if (!cleanup) return;
-  const task: Promise<void> = appOperationCoordinator
-    .run(
+  const task: Promise<void> = (async () => {
+    if (!(await waitForRestoreDetach(cleanup))) return;
+    await appOperationCoordinator.run(
       { appId, operation: "neon-backup-cleanup", resources: ["provider"] },
-      () => cleanUpAfterRestore(cleanup),
-    )
+      () => deleteRestoreBackup(cleanup),
+    );
+  })()
     .catch((error) =>
       logger.warn(
         `Skipped cleaning up the Neon backup for app ${appId}: ${getNeonErrorMessage(error)}`,

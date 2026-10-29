@@ -16,11 +16,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { useLoadApp } from "@/hooks/useLoadApp";
 import { useRunApp } from "@/hooks/useRunApp";
 import { ipc, type NeonDevelopmentBranchStatus } from "@/ipc/types";
@@ -56,8 +51,8 @@ export function NeonMigrationBanner() {
       appId !== null && !!app?.neonProjectId && !!app.neonDevelopmentBranchId,
     // A failed check (offline, expired token) just leaves the banner hidden.
     retry: false,
-    // Each check lists the project's branches over the Neon API; the layout
-    // changes only when the user migrates, which refetches.
+    // Each check lists the project's branches over the Neon API. Changes to
+    // the app, its deploy database, and undos invalidate it instead.
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
@@ -154,16 +149,14 @@ function NeonMigrationBannerContent({
       data-testid="neon-migration-banner"
     >
       <Database className="size-4 shrink-0 text-amber-700 dark:text-amber-300" />
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <span className="min-w-0 flex-1 truncate text-left">{message}</span>
-          }
-        />
-        <TooltipContent side="bottom" align="start" className="max-w-md">
-          {message}
-        </TooltipContent>
-      </Tooltip>
+      {/* Wraps rather than truncating: errors such as the branch-limit
+          upgrade steps must be readable in full. */}
+      <span
+        className="min-w-0 flex-1 text-left"
+        data-testid="neon-migration-banner-message"
+      >
+        {message}
+      </span>
       <div className="flex shrink-0 items-center gap-1.5">
         {/* Migrating deletes the branch the live app talks to. */}
         {deploying.length === 0 && (

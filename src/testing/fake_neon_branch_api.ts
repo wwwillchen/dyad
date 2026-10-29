@@ -267,15 +267,19 @@ export class FakeNeonBranchApi {
           }
           // Neon rejects every restore at the limit, backup or not.
           this.assertBelowBranchLimit();
+          // A branch still detaching from a root restore is a root branch.
+          const rootRestore =
+            selfRestore &&
+            (!target.parent_id || this.pendingDetach.has(target.id));
           let backup: FakeBranch | undefined;
           if (body.preserve_under_name) {
             this.assertNameFree(body.preserve_under_name);
             backup = this.addBranch(body.preserve_under_name);
-            backup.parent_id = target.parent_id;
+            backup.parent_id = rootRestore ? undefined : target.parent_id;
             backup.init_source = target.init_source;
             backup.neonAuth = target.neonAuth;
           }
-          if (selfRestore && !target.parent_id) {
+          if (rootRestore) {
             // Root: independent backup, children stay, detached later.
             target.parent_id = backup!.id;
             this.pendingDetach.set(target.id, this.detachAfterPolls);

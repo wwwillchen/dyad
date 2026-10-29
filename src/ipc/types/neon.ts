@@ -276,6 +276,7 @@ export const neonContracts = {
     channel: "neon:set-selected-database-branch-type",
     input: SetSelectedDatabaseBranchTypeParamsSchema,
     output: z.object({ success: z.boolean() }),
+    invalidates: (input) => [{ family: "app", appId: input.appId }],
   }),
 } as const;
 

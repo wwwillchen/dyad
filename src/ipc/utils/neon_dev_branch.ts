@@ -1061,7 +1061,10 @@ export async function migrateDevelopmentBranch({
   }
 }
 
-/** A restored root branch's backup, for `cleanUpAfterRestore` to delete. */
+/**
+ * A restored root branch's backup, for `waitForRestoreDetach` and
+ * `deleteRestoreBackup` to delete.
+ */
 export interface RestoreBackupCleanup {
   projectId: string;
   developmentBranchId: string;
@@ -1074,8 +1077,7 @@ export interface RestoreBackupCleanup {
  * cannot delete it; the preview banner offers moving such apps to a root
  * branch. A root branch's backup can be deleted, but only once Neon detaches
  * the restored branch from it, which can take a while: the returned cleanup
- * is for the caller to run with `cleanUpAfterRestore` after it releases its
- * claims. Throws `LeakedBackupsAtBranchLimitError` when leaked backups have
+ * is for the caller to run after it releases its claims. Throws `LeakedBackupsAtBranchLimitError` when leaked backups have
  * filled the project.
  */
 export async function restoreDevelopmentBranch({
@@ -1124,31 +1126,48 @@ export async function restoreDevelopmentBranch({
 }
 
 /**
- * Deletes a restore's backup once Neon detaches the restored branch from it,
- * then sweeps anything earlier restores or migrations left behind.
- * Best-effort: never throws.
+ * Waits until Neon detaches a restored branch from its backup, so the backup
+ * can be deleted. Only reads, so callers need no claim for it. Never throws:
+ * false means give up and leave the backup for a later sweep.
  */
-export async function cleanUpAfterRestore({
+export async function waitForRestoreDetach({
+  projectId,
+  developmentBranchId,
+}: RestoreBackupCleanup): Promise<boolean> {
+  try {
+    return await waitForRootBranchDetached(
+      await getNeonClient(),
+      projectId,
+      developmentBranchId,
+    );
+  } catch (error) {
+    logger.warn(
+      `Could not check whether development branch ${developmentBranchId} is detached from its backup; the next restore cleans up: ${getNeonErrorMessage(error)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Deletes a detached restore's backup, then sweeps anything earlier restores
+ * or migrations left behind. The caller holds the app's provider claim: the
+ * sweep must not run during a migration, whose unfinished branch looks like a
+ * leftover. Best-effort: never throws.
+ */
+export async function deleteRestoreBackup({
   projectId,
   developmentBranchId,
   backupName,
 }: RestoreBackupCleanup): Promise<void> {
   try {
     const neonClient = await getNeonClient();
-    const detached = await waitForRootBranchDetached(
-      neonClient,
-      projectId,
-      developmentBranchId,
+    const backup = (await listBranches(neonClient, projectId)).find(
+      (b) => b.name === backupName,
     );
-    if (detached) {
-      const backup = (await listBranches(neonClient, projectId)).find(
-        (b) => b.name === backupName,
-      );
-      if (backup) {
-        await deleteBranch(neonClient, projectId, backup.id, "backup branch");
-      }
-      await sweepLeftoverBranches(neonClient, projectId);
+    if (backup) {
+      await deleteBranch(neonClient, projectId, backup.id, "backup branch");
     }
+    await sweepLeftoverBranches(neonClient, projectId);
   } catch (error) {
     logger.warn(
       `Could not clean up after restoring development branch ${developmentBranchId}; the next restore retries: ${getNeonErrorMessage(error)}`,

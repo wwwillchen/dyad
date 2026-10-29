@@ -280,6 +280,10 @@ describe("NeonMigrationBanner", () => {
     const banner = await screen.findByTestId("neon-migration-banner");
     await waitFor(() => expect(banner.textContent).toContain("branch limit"));
     expect(banner.textContent).not.toContain("Error invoking remote method");
+    // The guidance wraps instead of being cut off at one line.
+    expect(
+      screen.getByTestId("neon-migration-banner-message").className,
+    ).not.toMatch(/truncate|line-clamp/);
     expect(h.restartApp).toHaveBeenCalledWith({ appId: 1 });
     expect(
       screen
