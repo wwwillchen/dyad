@@ -274,8 +274,8 @@ async function branchEndpointIds(
 const CLOCK_SKEW_MS = 60 * 60_000;
 
 /**
- * Whether \`branch\` is the new development branch of the migration that
- * renamed the old one at \`stamp\`: a schema-only root branch no app uses,
+ * Whether `branch` is the new development branch of the migration that
+ * renamed the old one at `stamp`: a schema-only root branch no app uses,
  * created during that migration. Anything else is left alone.
  *
  * `stamp` comes from the local clock and the creation time from Neon's, so
@@ -301,7 +301,7 @@ function isUnfinishedMigrationBranch(
 /**
  * Finishes or undoes a migration interrupted (a crash or quit, so its
  * rollback never ran) between renaming the old development branch to
- * \`*-replaced-<stamp>\` and switching the apps. The apps' rows still point at
+ * `*-replaced-<stamp>` and switching the apps. The apps' rows still point at
  * the old branch; which way to go depends on where their .env.local points:
  *
  * - None at the new branch: nothing has written to it since the copy. Delete
@@ -1108,7 +1108,7 @@ async function migrateToRootDevelopmentBranch({
 
 /**
  * After the apps are switched to the new development branch: deletes the old
- * branch tree (\`removable\`) and recreates the preview branch under the new
+ * branch tree (`removable`) and recreates the preview branch under the new
  * branch. Best-effort: failing it must not report the migration as failed;
  * whatever it leaves behind is swept after a later restore.
  */
