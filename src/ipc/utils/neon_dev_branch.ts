@@ -271,10 +271,17 @@ async function branchEndpointIds(
   return new Set(data.endpoints.map((e) => e.id));
 }
 
+const CLOCK_SKEW_MS = 60 * 60_000;
+
 /**
  * Whether \`branch\` is the new development branch of the migration that
  * renamed the old one at \`stamp\`: a schema-only root branch no app uses,
  * created during that migration. Anything else is left alone.
+ *
+ * `stamp` comes from the local clock and the creation time from Neon's, so
+ * the window allows for a computer clock that runs fast. It ends a day later
+ * because the branch is only created after the backup, which can take a
+ * while for a large database.
  */
 function isUnfinishedMigrationBranch(
   branch: Branch,
@@ -286,7 +293,7 @@ function isUnfinishedMigrationBranch(
     !branch.parent_id &&
     branch.init_source === "parent-schema" &&
     !inUse.has(branch.id) &&
-    createdAt >= stamp - 60_000 &&
+    createdAt >= stamp - CLOCK_SKEW_MS &&
     createdAt <= stamp + 24 * 60 * 60_000
   );
 }

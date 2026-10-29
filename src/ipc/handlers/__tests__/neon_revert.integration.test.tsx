@@ -945,6 +945,38 @@ describe("Neon database revert (integration)", () => {
     expect(fakeNeon.tree()).toEqual(treeBefore);
   });
 
+  it("recognises its unfinished branch when the computer's clock runs fast", async () => {
+    await legacyLayout(1);
+    const { appId, development: oldDevelopment } = await connectApp();
+    const { unfinished } = interruptAfterRenames(oldDevelopment);
+    // The local clock was 30 minutes ahead when the migration recorded its
+    // start, so Neon's creation time looks earlier than the start.
+    oldDevelopment.name = `development-replaced-${Date.now() + 30 * 60_000}`;
+
+    await migrate(appId);
+
+    expect(fakeNeon.branches.has(unfinished.id)).toBe(false);
+    expect(telemetryEvents("neon:migration")[0]).toMatchObject({
+      outcome: "succeeded",
+      repair: "rolled-back",
+    });
+  });
+
+  it("does not treat a branch from long before the migration as its unfinished one", async () => {
+    await legacyLayout(1);
+    const { appId, development: oldDevelopment } = await connectApp();
+    const { unfinished } = interruptAfterRenames(oldDevelopment);
+    // Everything else matches; only the creation time is two hours early.
+    unfinished.created_at = new Date(
+      Date.now() - 2 * 60 * 60_000,
+    ).toISOString();
+
+    await expect(migrate(appId)).rejects.toThrow(
+      /isn't the one an interrupted migration created/,
+    );
+    expect(fakeNeon.branches.has(unfinished.id)).toBe(true);
+  });
+
   it("rolls back a migration interrupted right after the first rename", async () => {
     await legacyLayout(1);
     const { appId, development: oldDevelopment } = await connectApp();
