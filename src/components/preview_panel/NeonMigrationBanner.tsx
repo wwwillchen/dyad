@@ -123,23 +123,16 @@ function NeonMigrationBannerContent({
   const otherApps = status.otherApps.map((a) => a.name);
   const message =
     deploying.length > 0
-      ? `${deployer} with your development database, so edits and undos while ` +
-        "you build also change the live app. We strongly recommend deploying with " +
-        "your production database instead."
+      ? `${deployer} with your development database. We recommend deploying with production.`
       : state.kind === "migrated"
         ? "Development database migrated. Restarting preview..."
         : state.kind === "error"
           ? state.message
-          : "Update your Neon development database: earlier Dyad versions set it up so every " +
-            "database undo leaves a backup branch behind, which eventually uses up your " +
-            "Neon branch limit." +
-            (status.leakedBackups > 0
-              ? ` ${backups} (of ${status.branchCount} branches) will be deleted.`
-              : "") +
-            " Migrating copies your data to a new branch; earlier versions can no longer " +
-            "restore the database, and your app's users may need to sign in again." +
+          : // The details and side effects are in the confirmation dialog.
+            "Your Neon database is using a legacy setup that leaves backup branches " +
+            "behind. Migrate to clean them up." +
             (otherApps.length > 0
-              ? ` Also used by ${formatNames(otherApps)}; migrating moves ${otherApps.length === 1 ? "it" : "them"} too.`
+              ? ` Also used by ${formatNames(otherApps)}.`
               : "");
   const isMigrating = state.kind === "migrating";
 
@@ -196,6 +189,11 @@ function NeonMigrationBannerContent({
               render={<div />}
               className="space-y-2 text-left"
             >
+              <p>
+                Your database uses a legacy setup that leaves a backup branch
+                behind on every database undo, which eventually uses up your
+                Neon branch limit.
+              </p>
               <p>
                 Dyad copies your development database to a new Neon branch, then
                 deletes the old branch

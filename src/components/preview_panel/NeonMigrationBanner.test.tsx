@@ -101,11 +101,13 @@ describe("NeonMigrationBanner", () => {
 
     const banner = await screen.findByTestId("neon-migration-banner");
     expect(banner.textContent).toContain(
-      "Update your Neon development database",
+      "Your Neon database is using a legacy setup that leaves backup branches behind. Migrate to clean them up.",
     );
-    expect(banner.textContent).toContain(
-      "4 old backups (of 7 branches) will be deleted",
-    );
+    // The backup count is in the confirmation dialog.
+    fireEvent.click(screen.getByTestId("neon-migration-banner-migrate"));
+    expect(
+      (await screen.findByTestId("neon-migration-confirm-dialog")).textContent,
+    ).toContain("deletes the old branch and its 4 old backups");
     expect(h.getDevelopmentBranchStatus).toHaveBeenCalledWith({ appId: 1 });
   });
 
@@ -119,8 +121,10 @@ describe("NeonMigrationBanner", () => {
     });
     launch();
 
-    const banner = await screen.findByTestId("neon-migration-banner");
-    expect(banner.textContent).not.toContain("old backup");
+    fireEvent.click(await screen.findByTestId("neon-migration-banner-migrate"));
+    const dialog = await screen.findByTestId("neon-migration-confirm-dialog");
+    expect(dialog.textContent).toContain("then deletes the old branch.");
+    expect(dialog.textContent).not.toContain("old backup");
   });
 
   it("recommends a production database instead of migrating when the app deploys with development", async () => {
@@ -135,7 +139,7 @@ describe("NeonMigrationBanner", () => {
       "Your app deploys with your development database",
     );
     expect(banner.textContent).toContain(
-      "We strongly recommend deploying with your production database instead",
+      "We recommend deploying with production.",
     );
     expect(screen.queryByTestId("neon-migration-banner-migrate")).toBeNull();
     // It can still be closed.
@@ -171,9 +175,7 @@ describe("NeonMigrationBanner", () => {
     launch();
 
     const banner = await screen.findByTestId("neon-migration-banner");
-    expect(banner.textContent).toContain(
-      "Also used by Todo App and Notes; migrating moves them too.",
-    );
+    expect(banner.textContent).toContain("Also used by Todo App and Notes.");
     await confirmMigrate();
     await waitFor(() => expect(h.restartApp).toHaveBeenCalled());
     expect(h.calls).toEqual(["stop", "stop", "stop", "migrate", "restart"]);
