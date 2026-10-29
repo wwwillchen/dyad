@@ -58,6 +58,10 @@ import {
 } from "../utils/app_env_var_utils";
 import { storeDbTimestampAtCurrentVersion } from "../utils/neon_timestamp_utils";
 import { retryOnLocked } from "../utils/retryOnLocked";
+import {
+  backupBranchName,
+  restoreDevelopmentBranch,
+} from "../utils/neon_dev_branch";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import { syncCloudSandboxSnapshot } from "../utils/cloud_sandbox_provider";
 import {
@@ -773,6 +777,8 @@ async function revertCodebaseToVersion({
   }
 
   if (app.neonProjectId && app.neonDevelopmentBranchId) {
+    // Restoring may replace the development branch (see neon_dev_branch.ts).
+    let neonDevelopmentBranchId = app.neonDevelopmentBranchId;
     const version = await db.query.versions.findFirst({
       where: and(
         eq(versions.appId, appId),
@@ -781,21 +787,14 @@ async function revertCodebaseToVersion({
     });
     if (version && version.neonDbTimestamp) {
       try {
-        const preserveBranchName = `preserve_${currentCommitHash}-${Date.now()}`;
-        const neonClient = await getNeonClient();
-        const response = await retryOnLocked(
-          () =>
-            neonClient.restoreProjectBranch(
-              app.neonProjectId!,
-              app.neonDevelopmentBranchId!,
-              {
-                source_branch_id: app.neonDevelopmentBranchId!,
-                source_timestamp: version.neonDbTimestamp!,
-                preserve_under_name: preserveBranchName,
-              },
-            ),
-          `Restore development branch ${app.neonDevelopmentBranchId} for app ${appId}`,
-        );
+        const restore = await restoreDevelopmentBranch({
+          appId,
+          projectId: app.neonProjectId,
+          developmentBranchId: app.neonDevelopmentBranchId,
+          previewBranchId: app.neonPreviewBranchId,
+          timestamp: version.neonDbTimestamp,
+          backupName: backupBranchName(currentCommitHash),
+        });
         // Update all versions which have a newer DB timestamp than the version we're restoring to
         // and remove their DB timestamp.
         await db
@@ -807,41 +806,17 @@ async function revertCodebaseToVersion({
               gt(versions.neonDbTimestamp, version.neonDbTimestamp),
             ),
           );
-
-        const preserveBranchId = response.data.branch.parent_id;
-        if (!preserveBranchId) {
-          throw new DyadError(
-            "Preserve branch ID not found",
-            DyadErrorKind.NotFound,
-          );
-        }
-        logger.info(
-          `Deleting preserve branch ${preserveBranchId} for app ${appId}`,
-        );
-        // Intentionally do not await this because it's not
-        // critical for the restore operation, it's to clean up branches
-        // so the user doesn't hit the branch limit later. The error is
-        // handled via `.catch()` rather than a surrounding try/catch
-        // because, without an `await`, a try/catch would not catch the
-        // promise rejection and it would surface as an unhandled rejection.
-        retryOnLocked(
-          () =>
-            neonClient.deleteProjectBranch(
-              app.neonProjectId!,
-              preserveBranchId,
-            ),
-          `Delete preserve branch ${preserveBranchId} for app ${appId}`,
-          { retryBranchWithChildError: true },
-        ).catch((error) => {
-          const errorMessage = getNeonErrorMessage(error);
-          logger.error("Error in deleteProjectBranch:", errorMessage);
-        });
         // Only claim the database was included when the restore actually
         // succeeded. Setting this after the catch would wrongly report
         // "(including database)" even when the Neon restore failed and
         // `warningMessage` was set.
         successMessage =
           "Successfully restored to version (including database)";
+        if (restore.kind === "migrated") {
+          neonDevelopmentBranchId = restore.developmentBranchId;
+          successMessage +=
+            ". Your development database moved to a new Neon branch so old database backups no longer pile up; versions before this one can no longer restore the database.";
+        }
       } catch (error) {
         logger.error(
           "Error restoring Neon development branch during revert:",
@@ -857,7 +832,7 @@ async function revertCodebaseToVersion({
     try {
       await switchPostgresToDevelopmentBranch({
         neonProjectId: app.neonProjectId,
-        neonDevelopmentBranchId: app.neonDevelopmentBranchId,
+        neonDevelopmentBranchId,
         appPath: app.path,
       });
     } catch (error) {

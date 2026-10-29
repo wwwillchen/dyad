@@ -19,6 +19,8 @@ import { apps } from "../../db/schema";
 import { eq } from "drizzle-orm";
 import { EndpointType } from "@neondatabase/api-client";
 import { retryOnLocked } from "../utils/retryOnLocked";
+import { createRootBranch } from "../utils/neon_dev_branch";
+import { prepareSchemaOnlyBranchForNeonAuth } from "../utils/neon_branch_data";
 import { DyadError, DyadErrorKind } from "@/errors/dyad_error";
 import {
   getEnvFilePath,
@@ -189,6 +191,21 @@ export function registerNeonHandlers() {
       // Post-creation steps: if any fail, best-effort delete the orphan project
       try {
         envFileSnapshot = await readEnvFileIfExists({ appPath });
+
+        // The development branch must be a root branch so database reverts
+        // can delete their backups (see neon_dev_branch.ts). Create it before
+        // enabling Neon Auth on main: a schema-only branch copies main's
+        // neon_auth schema, which would block provisioning auth on it.
+        const {
+          branch: developmentBranch,
+          connectionUri: developmentConnectionUri,
+        } = await createRootBranch({
+          projectId: project.id,
+          sourceBranchId: mainBranch.id,
+          name: "development",
+        });
+        await prepareSchemaOnlyBranchForNeonAuth(developmentConnectionUri);
+
         // Enable Neon Auth on the main branch
         if (
           !(await ensureNeonAuth({
@@ -198,32 +215,6 @@ export function registerNeonHandlers() {
         ) {
           authWarnings.push(buildNeonAuthActivationWarning("production"));
         }
-
-        // Create development branch as a child of main (production)
-        const developmentBranchResponse = await retryOnLocked(
-          () =>
-            neonClient.createProjectBranch(project.id, {
-              endpoints: [{ type: EndpointType.ReadWrite }],
-              branch: {
-                name: "development",
-                parent_id: mainBranch.id,
-              },
-            }),
-          `Create development branch for project ${project.id}`,
-        );
-
-        if (
-          !developmentBranchResponse.data.branch ||
-          !developmentBranchResponse.data.connection_uris ||
-          developmentBranchResponse.data.connection_uris.length === 0
-        ) {
-          throw new DyadError(
-            "Failed to create development branch: No branch data returned.",
-            DyadErrorKind.External,
-          );
-        }
-
-        const developmentBranch = developmentBranchResponse.data.branch;
 
         // Enable Neon Auth on the development branch
         if (
@@ -282,8 +273,7 @@ export function registerNeonHandlers() {
           })
           .where(eq(apps.id, appId));
 
-        const connectionUri =
-          developmentBranchResponse.data.connection_uris[0].connection_uri;
+        const connectionUri = developmentConnectionUri;
 
         // Auto-inject env vars into the app's .env.local
         const warning = combineWarnings(

@@ -102,14 +102,15 @@ export async function ensureNeonAuth({
     if (error.response?.status !== 404) throw error;
   }
 
-  // Enable Neon Auth on this branch
+  // Enable Neon Auth on this branch. Branch creation can still be running
+  // on a branch created moments ago, which Neon rejects with 423.
   try {
-    const createResponse = await neonClient.createNeonAuth(
-      projectId,
-      branchId,
-      {
-        auth_provider: NeonAuthSupportedAuthProvider.BetterAuth,
-      },
+    const createResponse = await retryOnLocked(
+      () =>
+        neonClient.createNeonAuth(projectId, branchId, {
+          auth_provider: NeonAuthSupportedAuthProvider.BetterAuth,
+        }),
+      `Enable Neon Auth on branch ${branchId}`,
     );
     return createResponse.data.base_url;
   } catch (createError: any) {
